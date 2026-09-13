@@ -1,5 +1,18 @@
 # zenpi Execution Blueprint
 
+## Goal and Flow revision (2026-09-13)
+
+The proposed [Goal, Flow and intervention contract](feat-goal-flow-intervention.md)
+adds outcome/KR-driven Goals, Plan/DAG prompt presets, deferred input, two-press
+Esc, interrupted-task resume, read-only planning forks, compact/model behavior
+and bounded root-host child ownership. CF-801 through CF-807 are new unchecked
+implementation rows, mapped to V2-211 through V2-217 in the 2.2 review draft.
+This documentation change is not an implementation or product acceptance receipt.
+Historical accepted rows retain their prior scope; they do not prove these new
+interactions. The frozen automation policy, including `nested_agents: forbidden`,
+is unchanged. Future product-host planning/child execution requires its own
+gates and grants no repository worker permission to delegate or launch services.
+
 ## Slash and persona revision (2026-09-06)
 
 The interactive surface is one unified workspace; project, goal, learn, review,
@@ -255,7 +268,23 @@ does not accept the remaining worker, session, or cross-platform contracts.
 - [x] **CF-702** | layer `observability` | Add structured opt-in diagnostics and bounded metrics | Deliverables: provider/tool/session correlation, redacted tracing, quiet defaults and bounded-cardinality counters | Depends: CF-302,CF-701 | Owner scope: Rust/Observability | Owned paths: `src/diagnostics.rs`, `src/core.rs`, `tests/diagnostics.rs` | Validators: traces correlate IDs without prompt/key leakage | Rollback: disable opt-in tracing | Estimate: 1d | Estimated LOC: 1600
 - [ ] **CF-703** | layer `governance` | Enforce token, time, disk, process, concurrency, and network budgets | Deliverables: durable accounting for worker lease, prohibition-gate decisions, network hosts, credentials, processes, concurrency, time, disk, and token use, plus typed budget terminal events | Depends: CF-205,CF-402,CF-406 | Owner scope: Rust/Governance | Owned paths: `src/governance.rs`, `src/core.rs`, `src/session.rs`, `tests/governance.rs` | Validators: retries, tools, workers, and user-shell routes cannot bypass exhausted budgets; policy digest and lease accounting survive resume; budget exhaustion cancels and reaps owned work | Rollback: cancel work at first exceeded budget | Estimate: 1.5d | Estimated LOC: 2200
 - [x] **CF-704** | layer `release` | Publish reproducible cross-platform binaries, checksums, and SBOM | Deliverables: macOS arm64/x86_64, Linux arm64/x86_64, Windows artifacts and upgrade-safe installer | Depends: CF-003,CF-701 | Owner scope: Release/CI | Owned paths: `.github/workflows/release.yml`, `tools/release.sh`, `Docs/quality/release.md` | Validators: clean-machine packaged binary smoke; signature/checksum/SBOM verification; no fixtures or credentials | Rollback: do not publish incomplete artifacts | Estimate: 1.5d | Estimated LOC: 2500
-- [ ] **CF-705** | layer `acceptance` | Close the complete end-to-end matrix and migration documentation | Deliverables: real Responses, Codex import, worker allow/prohibition gates, tools/approval, cancel/steer, compaction/recovery, session checkpoint/mailbox/lifecycle/live-recipient dispatch, explicit `!echo`, skills/extensions, reconnect, and packaged install | Depends: CF-105,CF-305,CF-306,CF-307,CF-402,CF-408,CF-409,CF-503,CF-504,CF-505,CF-506,CF-704 | Owner scope: QA/Master | Owned paths: `README.md`, `CONTRIBUTING.md`, `.github/workflows/ci.yml`, `tools/user_smoke.py` | Validators: all CF dependencies, V2-112--V2-119 scenarios, and reopened rows pass in CI; all incomplete rows remain visibly unaccepted; no compile-only receipt calls the framework complete | Rollback: keep exact failed rows open and do not call the framework complete | Estimate: 1d | Estimated LOC: 900
+- [ ] **CF-705** | layer `acceptance` | Close the complete end-to-end matrix and migration documentation | Deliverables: real Responses, Codex import, worker allow/prohibition gates, tools/approval, cancel/steer, compaction/recovery, session checkpoint/mailbox/lifecycle/live-recipient dispatch, explicit `!echo`, skills/extensions, reconnect, packaged install, and outcome Goal/Flow interactions | Depends: CF-105,CF-305,CF-306,CF-307,CF-402,CF-408,CF-409,CF-503,CF-504,CF-505,CF-506,CF-704,CF-807 | Owner scope: QA/Master | Owned paths: `README.md`, `CONTRIBUTING.md`, `.github/workflows/ci.yml`, `tools/user_smoke.py` | Validators: all CF dependencies, V2-112--V2-119 and V2-211--V2-217 scenarios, and reopened rows pass in CI; all incomplete rows remain visibly unaccepted; no compile-only receipt calls the framework complete | Rollback: keep exact failed rows open and do not call the framework complete | Estimate: 1d | Estimated LOC: 900
+
+## F8 - Outcome Goal, Flow and intervention
+
+These rows implement the self-contained feature contract linked above. One
+Core owner admits ordinary input and fork proposals; Goal continuation reuses
+the Agent Loop rather than adding a scheduler. Owned-path overlap requires
+serialized edits or a single integrating owner, even for dependency-ready rows.
+Validators below describe future evidence and do not claim existing test coverage.
+
+- [ ] **CF-801** | layer `goal` | Add durable outcome Goal and scoped Flow guidance | Deliverables: Objective, stable verifiable KRs, optional Blueprint link, semantic revision/epoch, budget reference, default understanding/plan confirmation, Plan/DAG prompt presets, and boundary compatibility | Depends: CF-304,CF-501 | Owner scope: Rust/Goal | Owned paths: `src/domains.rs`, `src/domain_store.rs`, `src/core.rs`, `src/session.rs`, `src/slash.rs`, `tests/` | Validators: outcome/legacy round trips; no invented KRs, implicit objective replacement or legacy done bypass; confirmation grants no tool permissions | Rollback: preserve records and refuse unsupported execution | Estimate: 2d | Estimated LOC: 2200
+- [ ] **CF-802** | layer `runtime` | Centralize intervention admission and settled continuation | Deliverables: one bounded Core queue, exact-content identities, task/KR/run boundary binding, promotion, durable delivery state, typed refusal and one continuation intent after runtime settlement | Depends: CF-304,CF-305,CF-306,CF-307,CF-504 | Owner scope: Rust/Runtime | Owned paths: `src/core.rs`, `src/runtime.rs`, `src/protocol.rs`, `src/session.rs`, `tests/` | Validators: rejection preserves state; deferred text stays out of context; task closure, completion, stop, retry and compact races cannot lose input or double-dispatch; accepted/durable/applied remain distinct | Rollback: stop dispatch and retain pending records for recovery | Estimate: 2.5d | Estimated LOC: 2600
+- [ ] **CF-803** | layer `interaction` | Wire Enter, two-press Esc, Goal controls and continue aliases through Core | Deliverables: typed root-bound editor gesture, deferred Enter, immediate promotion, root stop, exact continue/Chinese resume alias, read-only project projections and headless equivalent intents | Depends: CF-801,CF-802 | Owner scope: Rust/TUIHeadless | Owned paths: `src/tui.rs`, `src/headless.rs`, `src/slash.rs`, `src/protocol.rs`, `tests/` | Validators: PTY/headless draft/pending/empty Esc cases, rejected draft preservation, key-repeat/modal isolation, ordinary-run parity and one resume after reconciliation | Rollback: reject unsupported intents without clearing drafts or losing checkpoints | Estimate: 2d | Estimated LOC: 1800
+- [ ] **CF-804** | layer `planning` | Fork read-only task context for Plan/DAG and return proposals | Deliverables: committed causal snapshot, bounded reads, parent budget reservation, provenance/file hashes, same-queue return, immediate-on-ready and stale-result handling | Depends: CF-801,CF-802,CF-803,CF-703 | Owner scope: Rust/Planning | Owned paths: `src/core.rs`, `src/runtime.rs`, `src/session.rs`, `src/governance.rs`, `src/tools.rs`, `tests/` | Validators: mainline advances while planning; writes/commands/delegation denied; Plan then DAG preserves progress and request ordering; timeout, drift, stop and replacement cannot revive work | Rollback: disable new forks, reap owned work and preserve proposals as inactive artifacts | Estimate: 2.5d | Estimated LOC: 2400
+- [ ] **CF-805** | layer `context` | Preserve Goal/Flow, delivery state and model snapshots across compact/resume | Deliverables: authoritative context projection, interrupted normal/Goal checkpoints, inactive stopped goals, cumulative accounting and validated next-request configuration | Depends: CF-801,CF-802,CF-803,CF-502,CF-504 | Owner scope: Rust/Context | Owned paths: `src/core.rs`, `src/context.rs`, `src/session.rs`, `src/config.rs`, `src/runtime.rs`, `tests/` | Validators: compact failure keeps last valid state; restart never auto-spends; pending text is not injected early; stale epochs cannot finish work; in-flight model stays fixed and refusal preserves settings/usage | Rollback: retain checkpoint and require explicit supported resume | Estimate: 2d | Estimated LOC: 2000
+- [ ] **CF-806** | layer `children` | Own bounded root-host child execution and result acceptance | Deliverables: task/KR/Flow scope, immutable permission/path/budget envelope, writer-conflict checks, per-child steer receipts, cancel/reap, rebuild and acknowledged handoff | Depends: CF-801,CF-802,CF-409,CF-506,CF-703 | Owner scope: Rust/ChildHost | Owned paths: `src/core.rs`, `src/runtime.rs`, `src/domain_execution.rs`, `src/governance.rs`, `src/tools.rs`, `src/session.rs`, `tests/` | Validators: no recursive delegation or overlapping writers; old attempts fenced before replacement; unknown children stay visibly stopping; parent verifies KR evidence and rejects stale results | Rollback: deny new children and reconcile existing owners without abandoning effects | Estimate: 3d | Estimated LOC: 2800
+- [ ] **CF-807** | layer `acceptance` | Close Goal/Flow interaction, failure and outcome acceptance | Deliverables: production-owner PTY/headless fixtures for every case in feat-goal-flow-intervention.md section 10, migration checks and explicit gap receipts | Depends: CF-801,CF-802,CF-803,CF-804,CF-805,CF-806 | Owner scope: QA/Goal | Owned paths: `tests/`, `tools/user_smoke.py`, `Docs/` | Validators: controlled race fixtures, child/fork isolation, interruption/recovery and every-KR evidence; both Blueprint validators pass; no compile-only or bookkeeping-only product acceptance | Rollback: retain exact failed rows as unchecked and disable unaccepted execution lanes | Estimate: 2d | Estimated LOC: 1600
 
 ## Parallel execution envelopes
 
@@ -270,6 +299,7 @@ does not accept the remaining worker, session, or cross-platform contracts.
 | V1 | ZP-201..ZP-207 | Tests/gates close individually; no global presentation barrier beyond dependencies |
 | R2 | ZP-301..ZP-304 | Master-only reconciliation and publication sequence |
 | F0-F7 | CF-001..CF-705 | Complete-framework DAG; rows remain open until their own acceptance tests pass |
+| F8 | CF-801..CF-807 | Goal/Flow dependency gates and single-owner edits on overlapping runtime paths |
 
 ## Historical v1 completion checklist
 
@@ -277,8 +307,10 @@ Writing this file is not current product acceptance. The earlier historical
 v1 workflow receipt was complete only when all required rows, including all
 `CF-*` complete-framework rows, were `[x]`. Version 2.1 has deliberately
 reopened eleven CF contract rows and added CF-408, CF-409, CF-505, and CF-506,
-so the current receipt has 15 `[ ]` rows;
-the Gantt projection and validator summary reflect that state. Completion
+with ZP-013 leaving 16 unchecked rows before the 2.2 revision. The seven new
+CF-801--CF-807 requirements bring this to 23 unchecked rows out of 81 total;
+58 historical accepted rows remain unchanged. The Gantt projection and
+validator summary reflect that state. Completion
 still requires every row to carry a strict `Estimated LOC < 5000` value with
 durable validation evidence, no `[ ]` or `[_]`/repair/integration remains, the
 binary exposes only `tui` and `headless`, and the `weiyangzen/zenpi` draft2repo
