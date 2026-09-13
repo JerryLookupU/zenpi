@@ -4,7 +4,7 @@
 > This file describes how work is claimed, isolated, validated, integrated,
 > and published. It is not a second product checklist; the authoritative
 > checklist is `Zenpi_Execution_Blueprint.md`. Its v1 receipt is a workflow
-> record, not proof of end-user product usability; the versioned v2.1.0 draft
+> record, not proof of end-user product usability; the versioned v2.2.0 draft
 > (`Docs/Zenpi_Execution_Blueprint_v2.md`) is the current UX audit and re-plan.
 
 ```yaml
@@ -84,8 +84,9 @@ scheduling decisions:
    compact validation, route, estimate, and feedback evidence. They are
    append/transfer data only; zenpi does not implement the b3ehive controller,
    optimizer, competition, or looper around them. A `ParentLeaseRef` may
-   describe work performed by an external host, but zenpi never spawns or
-   hides a nested agent.
+   describe work performed by an external host. These records do not spawn
+   agents; current product-host child execution remains unavailable pending
+   the specific Goal/Flow gates in section 2.1.
 4. The append-only session journal records user input, assistant output,
    selected operation/lifecycle markers, errors, and handoffs in sequence order.
    Validated journal envelopes retain their durable sequence for bounded local
@@ -108,6 +109,37 @@ proposal competition, looper/ROI controller, remote queue, dashboard, plugin
 marketplace, or a second protocol/server. If a future feature needs one of
 these, it requires a new specification revision and a fresh checklist item;
 the implementation must not smuggle it into either public mode.
+
+### 2.1 Proposed product Goal/Flow revision (2026-09-13)
+
+[feat-goal-flow-intervention.md](feat-goal-flow-intervention.md) specifies the
+new product behavior; CF-801--CF-807 and V2-211--V2-217 track implementation
+and acceptance. Goal is an outcome/KR contract with optional Blueprint linkage.
+Plan and DAG are scoped procedural prompts. They share Core input admission,
+the Agent Loop, runtime ownership and authoritative session/domain persistence;
+there is no new scheduler, database, event bus or execution mode.
+
+The only proposed exception to the current product-host child prohibition is
+explicit bounded root-owned work: read-only planning forks and scoped child
+tasks, admitted under permissions, budget and writer-conflict gates. Children
+cannot recurse, and owned work must be stopped/reaped or visibly reconciled
+before replacement. This exception is unavailable until its implementation and
+isolation gates pass; it does not enable hidden or worker-created agents.
+
+The frozen YAML and repository execution-worker lifecycle remain unchanged.
+In particular, `nested_agents: forbidden`, `automatic_goal_continuation:
+forbidden`, worker transport and capacity still govern automation workers.
+They are not switches for the future product's explicitly requested Goal
+continuation. That product continuation may proceed only after runtime
+settlement, within the existing budget, and never after user stop without
+explicit resume. Publishing this design authorizes no worker launch or policy
+relaxation in the current checkout.
+
+The feature contract governs Enter boundary delivery, two-press Esc, exact
+resume aliases, read-only Plan/DAG fork return, compaction and model snapshots
+in both public transports. Existing implementation receipts remain historical;
+neither a documentation validator nor a control-plane status proves that the
+new interaction or a KR has completed.
 
 ## 3. Runtime and data contracts
 
