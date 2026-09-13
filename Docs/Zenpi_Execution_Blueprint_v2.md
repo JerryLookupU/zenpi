@@ -1,6 +1,6 @@
 # zenpi Execution Blueprint v2
 
-> **Review draft, version 2.2.0 (2026-09-13).** This document is a
+> **Review draft, version 2.3.0 (2026-09-13).** This document is a
 > self-audit and re-plan for the terminal-agent product. It is intentionally
 > **not** the current authoritative checklist and it does not mutate or
 > supersede `Docs/Zenpi_Execution_Blueprint.md` until the Master accepts the
@@ -10,7 +10,7 @@
 
 ```yaml
 schema_version: execution-blueprint/v2
-blueprint_version: 2.2.0
+blueprint_version: 2.3.0
 revision_date: 2026-09-13
 status: proposed-audit
 authoritative: false
@@ -47,20 +47,12 @@ The review draft is checked independently of the v1 authority:
 
 ```text
 python3 tools/validate_blueprint_v2.py
-Blueprint v2 valid: 53 rows, max LOC 2800 < 5000
+Blueprint v2 valid: 56 rows, max LOC 2800 < 5000
 ```
 
 `tools/validate_blueprint.py` continues to validate the single authoritative
 v1 Blueprint; the v2 checker verifies this draft's version, status vocabulary,
 dependency DAG, duplicate IDs, and strict per-item LOC cap.
-
-Revision 2.2 adds the proposed outcome Goal, scoped Flow and intervention
-contract in [feat-goal-flow-intervention.md](feat-goal-flow-intervention.md).
-Rows V2-211 through V2-217 are all PLANNED; this revision changes no runtime,
-released wire schema, existing acceptance receipt or repository worker policy.
-The header's nested-agent denial continues to bind workers. Only the explicitly
-gated future root-product-host planning/child lanes may create bounded children;
-workers cannot delegate recursively, and no scheduler or daemon is added.
 
 ## 1. Why a v2 review is necessary
 
@@ -270,12 +262,10 @@ fields currently persisted by the in-memory records:
   paths, acceptance commands, and per-item LOC forecast. A blueprint has an
   immutable content digest and can be inspected or validated without running
   work.
-* **Goal**: a durable Objective and verifiable KRs with constraints, cumulative
-  budget, revision/epoch, progress and evidence. Blueprint linkage is optional.
-  Status is `queued`, `running`, `paused`, `blocked`, `cancelled` or `done`;
-  typed wait reasons distinguish confirmation, limits and interruption. Default
-  behavior is understand, propose KRs/plan, confirm, execute, then verify each
-  KR. Resume preserves prior work and usage; a job ending is not Goal success.
+* **Goal**: a user-facing execution intent linked to one blueprint/version,
+  with status (`queued`, `running`, `blocked`, `cancelled`, `done`), budget,
+  lease reference, current item, and evidence links. A goal may be resumed or
+  cancelled without rewriting prior journal records.
 * **Learn**: a source-to-target transformation task with source manifest,
   target contract, mapping/evidence records, and a bounded result handoff. It
   is not an opaque prompt alias.
@@ -287,9 +277,8 @@ fields currently persisted by the in-memory records:
 2. `/loop` requests a bounded continuation/feedback pass and records its lease,
    attempt, and evidence.
 3. An external b3ehive runtime may execute those requests. zenpi imports only a
-   validated result manifest; these calls never start a nested agent, cron
-   daemon or competition controller. The separately gated root-host child
-   contract in section 4.4 does not broaden these runtime-call routes.
+   validated result manifest and never spawns a nested agent, cron daemon, or
+   competition controller on its own.
 
 This distinction keeps blueprint/goal/learn useful when zenpi is standalone,
 while preserving the user's b3ehive composition model.
@@ -316,16 +305,9 @@ request so TUI and headless behavior cannot drift.
 | `/doctor` | run redacted configuration/runtime diagnostics | core/config |
 | `/settings [key] [value]` | inspect or change a bounded user setting | core/config |
 | `/init [path]` | initialize a project blueprint/goal context without a model call | first-class |
-| `/plan [instruction]` | propose procedural guidance without implicitly creating a Goal or executable graph | first-class |
+| `/plan [instruction]` | propose a plan that can be saved as a Blueprint | first-class |
 | `/blueprint show\|status\|validate\|put\|run` | inspect, persist, or execute a versioned DAG | first-class |
-| `/goal [objective]` | inspect current Goal, or create an outcome Goal and propose KRs/plan for confirmation | first-class |
-| `/goal plan [instruction]`, `/goal dag [instruction]` | read-only task-context fork using a Flow preset; return a proposal through shared intervention admission | first-class |
-| `/goal approve [revision]`, `/goal edit <objective>` | confirm an expected proposal revision or explicitly revise the outcome; not a tool permission grant | first-class |
-| `/goal status`, `/goal list`, `/goal supervise` | read-only project-local Goal projections | first-class |
-| `/goal steer <text>`, `/goal pause`, `/goal stop`, `/goal resume [id]`, `/goal cancel`, `/goal clear` | immediate guidance, pause/resume, cancel or detach without deleting history | first-class |
-| `/goal rebuild <id>`, `/goal handoff <id>`, `/goal rollout --force` | bounded replacement/transfer or simpler remaining path; no double ownership or relaxed outcome gate | first-class |
-| `/goal put`, `/goal show`, legacy transitions | boundary compatibility for durable records; completion still requires validated KR evidence | first-class |
-| `continue`, `继续` | exact trimmed resume intent for the current interrupted Goal or ordinary execution; never duplicate a running task | core |
+| `/goal put\|show\|run\|pause\|resume\|cancel` | inspect/persist or manage one durable goal | first-class |
 | `/learn put\|show\|resume\|evidence` | inspect/persist or manage a source-to-target learn task | first-class |
 | `/compete submit\|status` | hand a bounded proposal request to the runtime | runtime call |
 | `/loop start\|status\|stop` | hand a bounded continuation request to the runtime | runtime call |
@@ -346,40 +328,6 @@ Unknown commands, ambiguous arguments, and shell-looking payloads fail before
 mutating the journal; only the explicit V2-118 bang route may request a local
 shell operation. `/compete` and `/loop` never imply that zenpi itself has
 started a scheduler.
-
-### 4.4 Outcome Goal, Flow and runtime intervention
-
-The [feature contract](feat-goal-flow-intervention.md) defines commands, state,
-failure paths and the executable acceptance matrix without external dependencies.
-The ownership rule is one Core input owner, one bounded intervention queue and
-the existing Agent Loop. Goal manages outcomes; Plan and DAG are scoped Flow
-prompt presets, not modes with separate loops, databases or schedulers.
-
-During Goal or ordinary execution, Enter admits exact prompt text for the
-current task boundary, else current KR boundary, else run boundary. Deferred
-text stays out of current provider context. First Esc submits the draft as
-immediate steer or promotes an existing pending item; second consecutive Esc
-stops the root and its owned work. Modal dismissal and terminal repeats cannot
-accidentally stop work. Headless submits equivalent typed intents to Core.
-Admission, persistence, consumption and actual model application are distinct.
-
-Plan/DAG forks read committed causal context while mainline work continues.
-They allow controlled reads but no workspace writes, execution commands or
-delegation. Only a provenance-bearing proposal returns through the same input
-owner, deferred by default. Esc before readiness sets immediate-on-ready.
-Late results must reconcile Goal revision, epoch, task and file drift. Applying
-new guidance never erases completed work; local DAG guidance may refine a Plan
-subtask without replacing the outer Plan or automatically starting parallel work.
-
-Runtime fences dispatch before stopping, cancels/reaps owned work, and resumes
-once from a reconciled checkpoint on `continue` or `继续`. Compact restores
-Goal/KRs, Flow and progress from authoritative records without delivering
-pending prompts early or reviving stopped work. Model changes apply to the next
-request snapshot, not in-flight requests; usage is never reset. Only the root
-host may admit bounded child work with scoped permissions, budgets and owned
-paths after its safety gates pass. Children cannot recurse; results need parent
-validation. Automatic Goal continuation waits for runtime settlement and
-eligible user interventions. Every KR needs evidence before completion.
 
 ## 5. BentoBox workspace contract
 
@@ -519,7 +467,7 @@ independent forecast and is `<5000`.
 | ID | State | Deliverable | Paths | Depends | Gate | Estimated LOC |
 |---|---|---|---|---|---|---:|
 | V2-201 | PARTIAL | Durable Blueprint store, digest, DAG validation, read-only `/blueprint show`/`status`/`validate`, explicit `/blueprint put <json-path>` persistence, and a bounded local `/blueprint run ID[@VERSION]` owner now exist. The owner selects one dependency-ready item, writes a private receipt snapshot with running/terminal state, enforces the linked Goal budget, and resumes a running receipt without allocating a duplicate attempt; TUI and headless share the adapter and never call the provider for this local evidence operation. The receipt proves only deterministic control-plane admission/recovery: it does **not** execute or validate the Blueprint item's described implementation work, so its `succeeded` state is not product-work completion. Production TUI still projects a 32 KiB/96-row Blueprint/Goal summary through an independent single-slot worker, retains the last good result, and rejects stale results after a session switch. This is not yet item-progress/evidence Gantt semantics, production worker bootstrap/lease admission, or a general worker scheduler | `src/b3.rs`, `src/domain_execution.rs`, `src/domains.rs`, `src/domain_store.rs`, `src/session.rs`, `src/slash.rs`, `src/headless.rs`, `src/tui.rs`, `src/tools.rs`, `src/governance.rs`, `tests/domain_execution_owner.rs`, `tests/domain_execution_host.rs` | V2-005,V2-006 | Duplicate/cycle/missing dependency, budget/cancel/restart receipt, and shared host-owner tests pass; executing the item's real work, binding an external worker to immutable gate+budget lease, importing acceptance evidence, multi-item worker parallelism, Goal cancellation, and external handoff remain | 2400 |
-| V2-202 | PARTIAL | Current durable Goal records link immutable Blueprint digests; host show/list/status/transition and explicit put routes exist. Outcome-based creation, optional Blueprint linkage and execution remain open under V2-211; old status receipts do not prove KR completion | `src/b3.rs`, `src/domains.rs`, `src/domain_store.rs`, `src/session.rs`, `src/core.rs`, `src/tui.rs`, `src/headless.rs`, `tests/` | V2-006 | Typed idempotent status/recovery and legacy decoding; no legacy transition bypasses the new outcome gate | 1600 |
+| V2-202 | PARTIAL | Durable Goal records are linked to immutable Blueprint digests with bounded status transitions; headless and TUI `/goal show`/`list`/`status`/`transition` inspect and durably transition goals, and `/goal put <json-path>` persists a validated record; natural-language create/run/resume/cancel owner commands remain open | `src/b3.rs`, `src/domains.rs`, `src/domain_store.rs`, `src/session.rs`, `src/core.rs`, `src/tui.rs`, `src/headless.rs`, `tests/` | V2-006,V2-201 | Goal status transitions and restart recovery are typed and idempotent through the command owner | 1600 |
 | V2-203 | PARTIAL | Bounded Learn records, `/learn show`, and explicit `/learn put <json-path>` persistence now exist. `/learn evidence <id> <repo-relative-ref>` validates and hashes a bounded local artifact, persists only an idempotent reference, and returns a receipt in both hosts; `/learn resume <id>` validates and exposes a durable read-only checkpoint with `zenpi_started: false`, `execution_state: untracked`, and `external_owner_required` rather than pretending to run a worker | `src/b3.rs`, `src/domains.rs`, `src/domain_store.rs`, `src/session.rs`, `src/slash.rs`, `src/headless.rs`, `tests/learn_owner.rs` | V2-006,V2-202 | Add actual source-to-target worker resume, mapping/result handoff, and external execution lifecycle while preserving bounded traceability | 1900 |
 | V2-204 | PARTIAL | `/compete` and `/loop` now create bounded typed route/envelope/optional-parent-lease intents, recover them from the session journal, and expose submit/status in TUI and headless. Headless source request ID plus payload fingerprint provide cross-restart replay/no-second-append and conflict detection. Responses explicitly say `route: runtime_intent`, `delivery: journal_only`, `zenpi_started: false`, and `execution_state: untracked`; this is not external runtime execution | `src/b3.rs`, `src/runtime_intent.rs`, `src/session.rs`, `src/headless.rs`, `src/tui.rs`, `tests/runtime_intent_owner.rs` | V2-006,V2-202 | Add external delivery/claim/acknowledgement, result-manifest import, multi-writer journal serialization, and lifecycle evidence without a hidden scheduler or nested agent | 1600 |
 | V2-205 | PARTIAL | Complete the slash-command dispatcher, completion/help metadata, aliases, and command events; TUI/headless owner paths now include goal status/show, bounded diff, attachment staging, domain read/put plus Learn evidence/checkpoint inspection, session list/open/fork/export/import and explicitly confirmed bounded GC, durable resume/compact, real approval decisions, cancel, redacted `/models` and `/doctor`, and journal-only compete/loop intent submit/status | `src/slash.rs`, `src/core.rs`, `src/config.rs`, `src/tui.rs`, `src/headless.rs`, `tests/` | V2-005,V2-201,V2-203 | Remaining plan/domain execution and external runtime lifecycle actions need success/error/abort parity | 1800 |
@@ -528,22 +476,6 @@ independent forecast and is `<5000`.
 | V2-208 | PARTIAL | Bounded workspace/resource collector, headless `resources`, and a live TUI Resources pane now exist; startup and `/resources` refreshes run through an independent single-slot bounded worker and retain the last good snapshot | `src/resources.rs`, `src/headless.rs`, `src/tui.rs`, `tests/tui_bentobox.rs` | V2-206,V2-207 | Non-blocking refresh and rendering are covered; periodic polling and portable disk metrics remain open | 1800 |
 | V2-209 | DEFERRED | Optional browser capability pane via an external, bounded snapshot adapter | `src/adapters/browser.rs`, feature docs, `tests/` | V2-206 | Feature is absent from default build; no browser process or credential leak by default | 2200 |
 | V2-210 | DEFERRED | Optional PTY terminal pane with explicit child ownership and approval | `src/adapters/pty.rs`, feature docs, `tests/` | V2-104,V2-206 | Feature is absent from default build; child, resize, signal, and cleanup tests pass when enabled | 2200 |
-
-### C2. Proposed 2.2 Goal and intervention contract
-
-These rows map one-to-one to CF-801 through CF-807. Shared paths require a
-single integrating owner or serialized edits; DAG readiness is not permission
-for concurrent writers. All gates below are future evidence, not test receipts.
-
-| ID | State | Deliverable | Paths | Depends | Gate | Estimated LOC |
-|---|---|---|---|---|---|---:|
-| V2-211 | PLANNED | Outcome Goal, stable KRs, optional Blueprint link, scoped Plan/DAG Flow, revision/epoch and default confirmation; compatibility at storage/command boundaries | `src/domains.rs`, `src/domain_store.rs`, `src/core.rs`, `src/session.rs`, `src/slash.rs`, `tests/` | V2-202 | Round-trip outcomes and old records without fabricated KRs; confirmation is not permission; no implicit objective replacement or unchecked done transition | 2200 |
-| V2-212 | PLANNED | One Core intervention owner with bounded atomic admission, promotion, typed task/KR/run boundaries, durable receipts and exactly one settled continuation intent | `src/core.rs`, `src/runtime.rs`, `src/protocol.rs`, `src/session.rs`, `tests/` | V2-003,V2-005,V2-109,V2-115 | Queue-full/refusal leaves state unchanged; deferred text is absent from provider context; closure/stop/compact/retry races do not lose input or double-dispatch | 2600 |
-| V2-213 | PLANNED | TUI Enter/two-press Esc and exact continue aliases; Goal command projections and equivalent headless intents use Core, not adapter-owned business queues | `src/tui.rs`, `src/headless.rs`, `src/slash.rs`, `src/protocol.rs`, `tests/` | V2-211,V2-212 | PTY/headless evidence for draft/pending/empty Esc, key-repeat/modal isolation, rejected drafts, stop/resume race and ordinary execution parity | 1800 |
-| V2-214 | PLANNED | Bounded read-only task-context Plan/DAG fork, parent ledger reservation, provenance/file-drift checks and proposal return through intervention admission | `src/core.rs`, `src/runtime.rs`, `src/session.rs`, `src/governance.rs`, `src/tools.rs`, `tests/` | V2-211,V2-212,V2-213 | Mainline advances; writes/commands/delegation are denied; sequential Plan then DAG preserves progress; immediate-on-ready, timeout, replacement and stale result paths cannot revive work | 2400 |
-| V2-215 | PLANNED | Authoritative Goal/Flow compact projection, pending delivery recovery, interrupted execution resume and immutable per-request model/config snapshots | `src/core.rs`, `src/context.rs`, `src/session.rs`, `src/config.rs`, `src/runtime.rs`, `tests/` | V2-211,V2-212,V2-213,V2-105 | Kill/restart and failed compact retain valid state and usage; pending prompts are not injected early; old epochs/configs cannot mutate new execution | 2000 |
-| V2-216 | PLANNED | Root-host-only bounded child ownership, task/KR scope, conflict/budget gates, steering receipts, cancel/reap, validated result and acknowledged handoff | `src/core.rs`, `src/runtime.rs`, `src/domain_execution.rs`, `src/governance.rs`, `src/tools.rs`, `src/session.rs`, `tests/` | V2-211,V2-212,V2-112,V2-113,V2-114,V2-115,V2-119 | No recursive spawn or overlapping writers; no detached unknown worker called stopped; root changes invalidate stale results and every KR requires parent-validated evidence | 2800 |
-| V2-217 | PLANNED | Close the feature interaction matrix with production-owner PTY/headless fixtures, outcome gates, migration and explicit remaining-gap receipts | `tests/`, `tools/user_smoke.py`, `Docs/` | V2-211,V2-212,V2-213,V2-214,V2-215,V2-216,V2-305 | Every case in feat-goal-flow-intervention.md section 10 passes; no prose/bookkeeping success, compile-only proof, silent fallback loop or premature acceptance | 1600 |
 
 ### D. Headless parity, quality, and release gates
 
@@ -581,7 +513,36 @@ and local-shell integration boundaries.
 | V2-401 | DEFERRED | Publish a stable core/headless/layout protocol that a future GUI can consume | `Docs/Zenpi_GUI_Future_Contract.md` | V2-003,V2-007 | Contract names macOS, Linux, and Windows without adding GUI dependencies now | 0 |
 | V2-402 | DEFERRED | Future macOS GUI workspace (Svelte-quality interaction target) | `Docs/Zenpi_GUI_Future_Contract.md` | V2-401 | Requires a separately approved blueprint/version and platform acceptance matrix | 0 |
 | V2-403 | DEFERRED | Future Linux/Windows GUI workspace (same shared protocol) | `Docs/Zenpi_GUI_Future_Contract.md` | V2-401 | Requires a separately approved blueprint/version and platform acceptance matrix | 0 |
-| V2-999 | PLANNED | Master acceptance, v1 archive/migration, Gantt regeneration, and final user receipt | `Docs/`, `tools/`, `.github/` | V2-001,V2-002,V2-003,V2-004,V2-005,V2-006,V2-007,V2-101,V2-102,V2-103,V2-104,V2-105,V2-106,V2-107,V2-108,V2-109,V2-110,V2-111,V2-112,V2-113,V2-114,V2-115,V2-116,V2-117,V2-118,V2-119,V2-201,V2-202,V2-203,V2-204,V2-205,V2-206,V2-207,V2-208,V2-211,V2-212,V2-213,V2-214,V2-215,V2-216,V2-217,V2-301,V2-302,V2-303,V2-304,V2-305,V2-306 | All required rows `ACCEPTED`, zero unresolved partials, clean gates, and size receipt; deferred adapter/GUI rows are not lightweight v2 blockers | 0 |
+
+### G. Account service feature 2.3
+
+These proposed rows add no runtime acceptance. The detailed contracts are
+[provider/account routing](feat-provider-account-routing.md),
+[scheduler plugins](feat-account-scheduler-plugins.md), and
+[local broker](feat-account-broker.md). The matching CF row owns executable
+scope, rollback and validation. External research is separate evidence, not
+an instruction to reproduce another project's implementation. Spec section
+1.1 is the only product service exception; worker policy remains unchanged.
+This feature does not absorb independent Goal-flow changes.
+
+| ID | State | Deliverable | Paths | Depends | Gate | Estimated LOC |
+|---|---|---|---|---|---|---:|
+| V2-501 | PLANNED | Typed provider/account identities and canonical request/event adapters; executable scope CF-901 | `src/`, `tests/`, `Docs/` | V2-003,V2-104 | Protocol fixtures; capability/OAuth eligibility fails closed | 2600 |
+| V2-502 | PLANNED | One explicitly approved local broker with bounded authenticated IPC; executable scope CF-902 | `src/`, `tests/`, `Docs/` | V2-501,V2-113 | Multi-process startup, generation reuse, scoped authorization and lifecycle evidence | 2700 |
+| V2-503 | PLANNED | Single-owner durable model quota admission and recovery; executable scope CF-903 | `src/`, `tests/`, `Docs/` | V2-502 | Commit uncertainty, duplicate receipt, client journal failure and crash fixtures | 2800 |
+| V2-504 | PLANNED | Shared actual provider connections and bounded stream workers; executable scope CF-904 | `src/`, `tests/`, `Docs/` | V2-503 | No per-CLI pools; token isolation, partial body, slow reader and disconnect fixtures | 2600 |
+| V2-505 | PLANNED | Replaceable deterministic account scheduling strategies; executable scope CF-905 | `src/`, `tests/`, `Docs/` | V2-503 | Pinned/sticky/spread/auto, stale snapshot and shared scope fixtures | 2200 |
+| V2-506 | PLANNED | Optional bounded strategy plugins and version-safe replacement; executable scope CF-906 | `src/`, `tests/`, `Docs/` | V2-505 | Sandbox limits, quarantine, unchanged existing bindings and feature-off build | 2500 |
+| V2-507 | PLANNED | TUI/headless routing intervention and subagent overrides; executable scope CF-907 | `src/`, `tests/`, `Docs/` | V2-504,V2-505 | Scheduled versus applied changes, immutable active request and inherited budget limits | 2200 |
+| V2-508 | PLANNED | Explicit external broker adapter with one remote quota authority; executable scope CF-908 | `src/`, `tests/`, `Docs/` | V2-504,V2-505 | Endpoint authorization, remote outage, replay gaps and no local fail-open | 2000 |
+| V2-509 | PLANNED | Measured 5000-client service admission and control performance; executable scope CF-909 | `src/`, `tests/`, `Docs/` | V2-502,V2-503,V2-504,V2-505 | Raw bounded-load evidence; durable throughput not substituted by memory-only throughput | 1800 |
+| V2-510 | PLANNED | Installed account-service compatibility and security acceptance; executable scope CF-910 | `src/`, `tests/`, `Docs/` | V2-501,V2-502,V2-503,V2-504,V2-505,V2-506,V2-507,V2-508,V2-509 | Existing Profile/Session/v1 tools remain readable; two modes and frozen worker policy preserved | 1400 |
+
+### H. Master gate
+
+| ID | State | Deliverable | Paths | Depends | Gate | Estimated LOC |
+|---|---|---|---|---|---|---:|
+| V2-999 | PLANNED | Master acceptance, v1 archive/migration, Gantt regeneration, and final user receipt | `Docs/`, `tools/`, `.github/` | V2-001,V2-002,V2-003,V2-004,V2-005,V2-006,V2-007,V2-101,V2-102,V2-103,V2-104,V2-105,V2-106,V2-107,V2-108,V2-109,V2-110,V2-111,V2-112,V2-113,V2-114,V2-115,V2-116,V2-117,V2-118,V2-119,V2-201,V2-202,V2-203,V2-204,V2-205,V2-206,V2-207,V2-208,V2-301,V2-302,V2-303,V2-304,V2-305,V2-306,V2-501,V2-502,V2-503,V2-504,V2-505,V2-506,V2-507,V2-508,V2-509,V2-510 | All required rows `ACCEPTED`, zero unresolved partials, clean gates, and size receipt; deferred adapter/GUI rows are not lightweight v2 blockers | 0 |
 
 ## 8. Acceptance matrix for the ten core experiences
 
@@ -626,10 +587,9 @@ receipt.
 
 ## 9. Versioning and migration policy
 
-* `2.2.0` adds proposed Goal/Flow/intervention requirements to the `2.1.0`
-  audit without claiming implementation or changing a released wire schema.
-  Additive corrections use `2.2.x`; incompatible released protocol, event or
-  layout changes still require `3.0.0` and an explicit migration gate.
+* `2.1.0` is a product-contract revision, not a claim that the rows are done.
+  Additive v2.1 fixes use `2.1.x`; protocol, event, or layout incompatibilities
+  require `3.0.0`.
 * Until `V2-999` is accepted, the v1 file and v1 Gantt remain authoritative
   only for the historical v1 receipt and its validator. A worker must not mark
   a v1 row complete to imply a v2 row is complete.
@@ -669,19 +629,6 @@ The following document edits are recorded, not implementation acceptance:
 | `CF-409` | Existing worker rows do not connect Blueprint execution receipts to a real external worker lease, immutable policy digest, and evidence manifest | `V2-112`, `V2-113`, `V2-114`, `V2-119` |
 | `CF-505`, `CF-506` | Existing session rows provide local mailbox/lifecycle pieces but do not prove durable recipient delivery, live-owner dispatch, result linkage, or offline/dead-owner handling | `V2-115`, `V2-116`, `V2-117`, `V2-119` |
 | `CF-408`, `CF-705` | The local `!echo` lane and aggregate acceptance must include all new policy, session IPC, lifecycle, live-recipient, and shell gates; both remain open | `V2-118`, `V2-119`, `V2-999` |
-
-The additive 2.2 rows are unchecked in v1 and PLANNED in v2; no historical
-acceptance is rewritten. CF-705 and V2-999 also require this new lane:
-
-| New v1 row | Responsibility | v2 row |
-|---|---|---|
-| `CF-801` | Outcome Goal and scoped Flow | `V2-211` |
-| `CF-802` | Shared intervention owner and settled continuation | `V2-212` |
-| `CF-803` | TUI/headless input and resume parity | `V2-213` |
-| `CF-804` | Read-only planning fork and proposal return | `V2-214` |
-| `CF-805` | Compact, recovery and model snapshots | `V2-215` |
-| `CF-806` | Bounded root-host children | `V2-216` |
-| `CF-807` | Interaction and outcome acceptance | `V2-217` |
 
 ## 10. Open decisions for the Master review
 
