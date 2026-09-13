@@ -8,15 +8,15 @@
 
 ```yaml
 schema_version: execution-gantt/v1
-generated_at: 2026-09-13T05:17:43Z
+generated_at: 2026-09-13T10:04:46Z
 source_path: Docs/Zenpi_Execution_Blueprint.md
-source_sha256: e23f359403d13a71b89223efde725d0027f7fe10c7e1504f46fc51a69945f987
+source_sha256: 6763dc18b08beb99bbe8645e00f27bcf1209a0e84d1aad57c6f23c26909f65c7
 spec_path: Docs/Zenpi_Execution_Spec.md
-spec_sha256: 7add719f8d70baa45a358d1c8cba58640e9b01ecd3b806459b270e669b870285
+spec_sha256: 7cfb9416e3035d2c66542ae4cc9d7991700555037767f1c7e4cd301afcce5c09
 projection_authority: false
 timing_policy: relative phase estimates only; no calendar dates invented
 state_summary:
-  unclaimed: 23
+  unclaimed: 26
   self_tested: 0
   master_accepted: 58
   pending_repair: 0
@@ -178,21 +178,27 @@ Blueprint and intentionally omitted from this relative-time projection.
 
 | CF-704 | master_accepted | CF-003,CF-701 | Release/CI | none | none | dependency |
 
-| CF-705 | unclaimed | CF-105,CF-305,CF-306,CF-307,CF-402,CF-408,CF-409,CF-503,CF-504,CF-505,CF-506,CF-704,CF-807 | QA/Master | none | none | dependency |
+| CF-705 | unclaimed | CF-105,CF-305,CF-306,CF-307,CF-402,CF-408,CF-409,CF-503,CF-504,CF-505,CF-506,CF-704,CF-910 | QA/Master | none | none | dependency |
 
-| CF-801 | unclaimed | CF-304,CF-501 | Rust/Goal | none | none | dependency |
+| CF-901 | unclaimed | CF-101,CF-103 | Rust/Config/Provider | none | none | dependency |
 
-| CF-802 | unclaimed | CF-304,CF-305,CF-306,CF-307,CF-504 | Rust/Runtime | none | none | dependency |
+| CF-902 | unclaimed | CF-901,CF-701 | Rust/Broker | none | none | dependency |
 
-| CF-803 | unclaimed | CF-801,CF-802 | Rust/TUIHeadless | none | none | dependency |
+| CF-903 | unclaimed | CF-902,CF-703 | Rust/Broker/Persistence | none | none | dependency |
 
-| CF-804 | unclaimed | CF-801,CF-802,CF-803,CF-703 | Rust/Planning | none | none | dependency |
+| CF-904 | unclaimed | CF-903 | Rust/Provider/Broker | none | none | dependency |
 
-| CF-805 | unclaimed | CF-801,CF-802,CF-803,CF-502,CF-504 | Rust/Context | none | none | dependency |
+| CF-905 | unclaimed | CF-903 | Rust/Scheduler | none | none | dependency |
 
-| CF-806 | unclaimed | CF-801,CF-802,CF-409,CF-506,CF-703 | Rust/ChildHost | none | none | dependency |
+| CF-906 | unclaimed | CF-905 | Rust/Extensions/Scheduler | none | none | dependency |
 
-| CF-807 | unclaimed | CF-801,CF-802,CF-803,CF-804,CF-805,CF-806 | QA/Goal | none | none | dependency |
+| CF-907 | unclaimed | CF-904,CF-905 | Rust/Core/TUI/Headless | none | none | dependency |
+
+| CF-908 | unclaimed | CF-904,CF-905 | Rust/Broker/Security | none | none | dependency |
+
+| CF-909 | unclaimed | CF-902,CF-903,CF-904,CF-905 | QA/Broker | none | none | dependency |
+
+| CF-910 | unclaimed | CF-901,CF-902,CF-903,CF-904,CF-905,CF-906,CF-907,CF-908,CF-909 | QA/Master | none | none | dependency |
 
 ## Unscheduled work
 

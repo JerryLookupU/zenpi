@@ -4,7 +4,7 @@
 > This file describes how work is claimed, isolated, validated, integrated,
 > and published. It is not a second product checklist; the authoritative
 > checklist is `Zenpi_Execution_Blueprint.md`. Its v1 receipt is a workflow
-> record, not proof of end-user product usability; the versioned v2.2.0 draft
+> record, not proof of end-user product usability; the versioned v2.3.0 draft
 > (`Docs/Zenpi_Execution_Blueprint_v2.md`) is the current UX audit and re-plan.
 
 ```yaml
@@ -42,8 +42,10 @@ two modes selected by `--mode`:
 
 The parser must reject `print`, `json`, `rpc`, `server`, `daemon`, and any
 unknown mode with a typed error before opening a session or backend. These are
-not hidden aliases and no third mode, HTTP listener, broker, daemon, or app
-server is in scope. TUI and headless call the same core, backend trait, session
+not hidden aliases. No third mode, HTTP listener, or app server is in scope.
+The only proposed shared-service extension is bounded by section 1.1 below;
+it is not part of the accepted implementation baseline.
+TUI and headless call the same core, backend trait, session
 journal, and handoff codec; mode-specific code owns only transport and view.
 
 The migration inventory is based on these read-only local evidence points:
@@ -67,6 +69,44 @@ foundation row does not implicitly close any `CF-*` row. The 5,000 LOC cap is
 evaluated independently for each item; there is neither a 5,000-item target
 nor an aggregate 5,000-line cap.
 
+### 1.1 Proposed account service extension (2026-09-13)
+
+CF-901 through CF-910 add account routing and a shared connection service as
+unaccepted product work. Their detailed contracts are
+[provider and account routing](feat-provider-account-routing.md),
+[scheduler plugins](feat-account-scheduler-plugins.md), and
+[local account broker](feat-account-broker.md). These documents specify
+behavior; external learning evidence is not an implementation dependency.
+
+Keep `RunMode` limited to `tui` and `headless`. A separate administrative
+`broker` subcommand owns a user-approved service lifecycle, not another agent
+host or a hidden mode alias. First-use configuration requires explicit user
+approval; only then may ordinary CLI clients start the configured instance.
+One instance per OS user and canonical state root owns account state, model
+quota reservations, credentials, and actual upstream HTTP connections. Client
+processes retain agent loops, tools, and session journals. No SQLite, Redis,
+general async runtime, worker scheduler, or HTTP listener is added by default.
+
+The service uses authenticated local IPC, one state owner, one journal writer,
+bounded synchronous network workers, and a replaceable pure scheduling port.
+Durable admission precedes paid dispatch. External relay mode must use one
+remote quota authority and must never fail open into an independent local
+ledger. A shared UID is not sufficient worker authorization: workers receive
+only revocable, scope-bound capabilities protected by host isolation.
+
+This product extension does not change any frozen execution-worker YAML field,
+transport, nested-service prohibition, credential boundary, or launch policy.
+Workers may not start/manage a broker, acquire admin credentials, or use IPC
+to bypass their lease. Root-product service integration needs explicit
+preflight network/IPC grants and acceptance evidence. Documentation approval
+does not authorize starting services in this repository task.
+
+Existing two-mode tests remain mandatory. CF-910 must additionally prove
+administrative lifecycle separation, unchanged worker prohibitions, and no
+automatic migration or creation of account state during legacy config reads.
+5000-client support is a measured service capability, not a promise of 5000
+simultaneous model streams or of low total RSS across 5000 CLI processes.
+
 ## 2. Lean b3ehive subset
 
 The following b3ehive concepts are first-class zenpi data, not an external
@@ -84,9 +124,8 @@ scheduling decisions:
    compact validation, route, estimate, and feedback evidence. They are
    append/transfer data only; zenpi does not implement the b3ehive controller,
    optimizer, competition, or looper around them. A `ParentLeaseRef` may
-   describe work performed by an external host. These records do not spawn
-   agents; current product-host child execution remains unavailable pending
-   the specific Goal/Flow gates in section 2.1.
+   describe work performed by an external host, but zenpi never spawns or
+   hides a nested agent.
 4. The append-only session journal records user input, assistant output,
    selected operation/lifecycle markers, errors, and handoffs in sequence order.
    Validated journal envelopes retain their durable sequence for bounded local
@@ -109,37 +148,6 @@ proposal competition, looper/ROI controller, remote queue, dashboard, plugin
 marketplace, or a second protocol/server. If a future feature needs one of
 these, it requires a new specification revision and a fresh checklist item;
 the implementation must not smuggle it into either public mode.
-
-### 2.1 Proposed product Goal/Flow revision (2026-09-13)
-
-[feat-goal-flow-intervention.md](feat-goal-flow-intervention.md) specifies the
-new product behavior; CF-801--CF-807 and V2-211--V2-217 track implementation
-and acceptance. Goal is an outcome/KR contract with optional Blueprint linkage.
-Plan and DAG are scoped procedural prompts. They share Core input admission,
-the Agent Loop, runtime ownership and authoritative session/domain persistence;
-there is no new scheduler, database, event bus or execution mode.
-
-The only proposed exception to the current product-host child prohibition is
-explicit bounded root-owned work: read-only planning forks and scoped child
-tasks, admitted under permissions, budget and writer-conflict gates. Children
-cannot recurse, and owned work must be stopped/reaped or visibly reconciled
-before replacement. This exception is unavailable until its implementation and
-isolation gates pass; it does not enable hidden or worker-created agents.
-
-The frozen YAML and repository execution-worker lifecycle remain unchanged.
-In particular, `nested_agents: forbidden`, `automatic_goal_continuation:
-forbidden`, worker transport and capacity still govern automation workers.
-They are not switches for the future product's explicitly requested Goal
-continuation. That product continuation may proceed only after runtime
-settlement, within the existing budget, and never after user stop without
-explicit resume. Publishing this design authorizes no worker launch or policy
-relaxation in the current checkout.
-
-The feature contract governs Enter boundary delivery, two-press Esc, exact
-resume aliases, read-only Plan/DAG fork return, compaction and model snapshots
-in both public transports. Existing implementation receipts remain historical;
-neither a documentation validator nor a control-plane status proves that the
-new interaction or a KR has completed.
 
 ## 3. Runtime and data contracts
 
