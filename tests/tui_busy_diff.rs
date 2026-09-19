@@ -13,6 +13,7 @@ fn metadata(root: &Path) -> ProjectTabMetadata {
         approval_mode: Default::default(),
         style: None,
         source: None,
+        display_name: None,
     }
 }
 

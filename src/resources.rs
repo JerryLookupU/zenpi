@@ -6,6 +6,7 @@
 //! portable operating-system API. Callers that need to keep an interactive
 //! provider loop responsive should run `ResourceCollector::collect` on a
 //! background worker (the work itself has explicit node/file/byte limits).
+#![allow(dead_code)] // Public resource/budget/lease surface for hosts and embedders.
 
 use std::{
     collections::BTreeMap,

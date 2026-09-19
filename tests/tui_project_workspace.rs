@@ -831,6 +831,7 @@ fn project_opens_on_current_layer_and_worktree_rename_concurrency() {
     assert_eq!(state.subtabs()[active].concurrency, 1);
 }
 
+#[allow(dead_code)]
 fn find_col(terminal: &Terminal<TestBackend>, row: u16, needle: &str) -> u16 {
     let width = terminal.backend().buffer().area.width;
     let line: String = (0..width)

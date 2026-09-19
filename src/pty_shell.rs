@@ -30,7 +30,7 @@ mod imp {
         os::{fd::RawFd, unix::ffi::OsStrExt},
         sync::{
             Arc, Mutex,
-            mpsc::{self, Receiver, TryRecvError},
+            mpsc::{self, Receiver},
         },
         thread::JoinHandle,
     };
@@ -42,20 +42,20 @@ mod imp {
 
     /// One screen cell. `width == 0` marks the second cell of a wide glyph.
     #[derive(Clone, Copy)]
-    struct Cell {
+    pub struct Cell {
         ch: char,
         width: u8,
     }
 
     impl Cell {
-        const BLANK: Self = Self { ch: ' ', width: 1 };
+        pub const BLANK: Self = Self { ch: ' ', width: 1 };
     }
 
     /// A bounded character grid produced by a minimal VT parser.
     pub struct Screen {
-        lines: Vec<Vec<Cell>>,
-        row: usize,
-        col: usize,
+        pub lines: Vec<Vec<Cell>>,
+        pub row: usize,
+        pub col: usize,
     }
 
     impl Screen {
@@ -217,10 +217,6 @@ mod imp {
                 _ => {}
             }
             self.ensure_row();
-        }
-
-        pub fn column(&self) -> usize {
-            self.col
         }
 
         fn line_text(&self, row: usize) -> String {
@@ -533,19 +529,14 @@ mod imp {
                 return false;
             };
             let mut changed = false;
-            loop {
-                match inner.rx.try_recv() {
-                    Ok(chunk) => {
-                        // Split the borrow so the parser can touch both fields.
-                        let Inner {
-                            screen, pending, ..
-                        } = &mut *inner;
-                        pending.extend_from_slice(&chunk);
-                        feed(screen, pending);
-                        changed = true;
-                    }
-                    Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
-                }
+            while let Ok(chunk) = inner.rx.try_recv() {
+                // Split the borrow so the parser can touch both fields.
+                let Inner {
+                    screen, pending, ..
+                } = &mut *inner;
+                pending.extend_from_slice(&chunk);
+                feed(screen, pending);
+                changed = true;
             }
             flush_input(&mut inner);
             changed
@@ -624,15 +615,6 @@ mod imp {
                 libc::close(self.master);
             }
         }
-    }
-
-    /// Parse a full byte stream into plain text (screen contents). Used by the
-    /// fixtures; the live pane keeps its `Screen` incrementally.
-    pub fn render(bytes: &[u8]) -> String {
-        let mut screen = Screen::new();
-        let mut pending = bytes.to_vec();
-        feed(&mut screen, &mut pending);
-        screen.content(screen.lines.len())
     }
 
     /// Map a crossterm key to the bytes a terminal would send. Returns `None`
@@ -756,7 +738,10 @@ mod tests {
 
     #[cfg(unix)]
     fn render(bytes: &[u8]) -> String {
-        imp::render(bytes)
+        let mut screen = imp::Screen::new();
+        let mut pending = bytes.to_vec();
+        imp::feed(&mut screen, &mut pending);
+        screen.content(screen.lines.len())
     }
 
     #[cfg(unix)]
@@ -777,7 +762,7 @@ mod tests {
         imp::feed(&mut screen, &mut pending);
         assert_eq!(screen.content(10), "你好");
         // Backspace moves exactly one cell (into the second glyph).
-        assert_eq!(screen.column(), 3);
+        assert_eq!(screen.col, 3);
     }
 
     #[cfg(unix)]

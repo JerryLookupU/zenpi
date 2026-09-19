@@ -935,10 +935,10 @@ pub fn list_worktrees(project: &Path) -> Result<Vec<WorktreeEntry>, String> {
     let mut path: Option<std::path::PathBuf> = None;
     let mut detached = false;
     let mut branch: Option<String> = None;
-    let mut flush = |path: &mut Option<std::path::PathBuf>,
-                     detached: &mut bool,
-                     branch: &mut Option<String>,
-                     entries: &mut Vec<WorktreeEntry>| {
+    let flush = |path: &mut Option<std::path::PathBuf>,
+                 detached: &mut bool,
+                 branch: &mut Option<String>,
+                 entries: &mut Vec<WorktreeEntry>| {
         if let Some(path) = path.take() {
             entries.push(WorktreeEntry {
                 path,

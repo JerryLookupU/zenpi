@@ -193,7 +193,6 @@ fn isolated_subtab_root(base: &std::path::Path, tabs: &[SubTab], name: &str) -> 
 enum SubTabHit {
     Select(usize),
     AddWorktree,
-    AddInPlace,
     ConcurrencyUp(usize),
     ConcurrencyDown(usize),
     Close(usize),
@@ -2873,7 +2872,7 @@ impl TuiState {
     /// Last provider usage tracked for the active conversation (the header
     /// status strip was removed, so hosts/tests read this accessor).
     pub fn tracked_usage(&self) -> Option<crate::backend::Usage> {
-        self.transcript_ux.usage.clone()
+        self.transcript_ux.usage
     }
 
     pub fn status(&self) -> &str {
@@ -5350,14 +5349,14 @@ impl TuiState {
         // transcript as its feedback target; everything else keeps the
         // master-session bash/steer classification.
         let trimmed = self.arch_input.trim();
-        if trimmed.starts_with('/') {
-            if let Ok(InputRoute::Slash(command)) = slash::route_input(trimmed) {
-                let text = trimmed.to_owned();
-                self.arch_input.clear();
-                self.arch_cursor = 0;
-                self.dirty = true;
-                return Ok(TuiAction::SubmitArchSlash { command, text });
-            }
+        if trimmed.starts_with('/')
+            && let Ok(InputRoute::Slash(command)) = slash::route_input(trimmed)
+        {
+            let text = trimmed.to_owned();
+            self.arch_input.clear();
+            self.arch_cursor = 0;
+            self.dirty = true;
+            return Ok(TuiAction::SubmitArchSlash { command, text });
         }
         let command = classify_master_session_input(&self.arch_input)?;
         if command.is_bash() && self.master_busy {
@@ -7129,9 +7128,6 @@ impl TuiState {
                         );
                     }
                 },
-                SubTabHit::AddInPlace => {
-                    self.subtab_add_in_place(None);
-                }
                 SubTabHit::ConcurrencyUp(index) => {
                     self.subtab_concurrency(index, 1);
                 }
@@ -9312,7 +9308,7 @@ impl TuiState {
     /// receives clipped rectangles and renders the existing transcript and
     /// prompt.  Browser and PTY panes are not enabled by default, so their
     /// adapters cannot accidentally start a child process or network view.
-    pub fn render_bentobox(&mut self, frame: &mut Frame<'_>, title: &str) {
+    pub fn render_bentobox(&mut self, frame: &mut Frame<'_>, _title: &str) {
         let area = frame.area();
         if area.width == 0 || area.height == 0 {
             return;
@@ -9391,7 +9387,7 @@ impl TuiState {
             return;
         };
         let screen = frame.area();
-        let width = screen.width.saturating_sub(4).min(64).max(20);
+        let width = screen.width.saturating_sub(4).clamp(20, 64);
         let area = Rect::new(
             screen.x + (screen.width.saturating_sub(width)) / 2,
             screen.y + 5,
@@ -9509,13 +9505,12 @@ impl TuiState {
         let width = usize::from(area.width);
         let max_rows = usize::from(area.height).max(1);
         let mut row = 0usize;
-        let mut column = 0usize;
         let header_shown = truncate_chars(header, width);
         frame.render_widget(
             Paragraph::new(header_shown.clone()).style(Style::default().fg(Color::DarkGray)),
             Rect::new(area.x, area.y, width as u16, 1),
         );
-        column = header_shown.chars().count();
+        let mut column = header_shown.chars().count();
         if column >= width {
             row += 1;
             column = 0;
@@ -10274,16 +10269,6 @@ impl TuiState {
         bound_gantt_pane_content(lines.join("\n"))
     }
 
-    /// Execution projection: the external owner plus the Blueprint/Goal
-    /// snapshot the host already holds.
-    fn execution_pane_content(&self) -> String {
-        let mut lines = vec![
-            "owner: external (b3ehive); zenpi persists intents only".to_owned(),
-            self.gantt_pane_content(),
-        ];
-        bound_gantt_pane_content(lines.join("\n"))
-    }
-
     /// The Execution pane is an embedded terminal: it mirrors the live local
     /// PTY snapshot so unix-fluent users can drive commands in place.
     fn execution_terminal_content(&self) -> String {
@@ -10299,10 +10284,10 @@ impl TuiState {
     fn shell_cwd(&self) -> std::path::PathBuf {
         let tabs = self.subtabs();
         let mut candidates = Vec::new();
-        if let Some(tab) = tabs.get(self.active_subtab()) {
-            if !tab.root.trim().is_empty() {
-                candidates.push(std::path::PathBuf::from(&tab.root));
-            }
+        if let Some(tab) = tabs.get(self.active_subtab())
+            && !tab.root.trim().is_empty()
+        {
+            candidates.push(std::path::PathBuf::from(&tab.root));
         }
         candidates.push(std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
         crate::pty_shell::resolve_cwd(candidates)
@@ -10324,10 +10309,10 @@ impl TuiState {
     /// Drain pending shell output into the bounded scrollback. Safe to call on
     /// every loop iteration; marks the frame dirty only on real output.
     pub fn pump_shell(&mut self) {
-        if let Some(shell) = self.pty_shell.as_mut() {
-            if shell.pump() {
-                self.dirty = true;
-            }
+        if let Some(shell) = self.pty_shell.as_mut()
+            && shell.pump()
+        {
+            self.dirty = true;
         }
     }
 
@@ -15233,10 +15218,10 @@ pub fn run_async_with_profile(
                         JobOutcome::Succeeded((query, entries)) => {
                             state.apply_file_completion(query, entries);
                         }
-                        JobOutcome::Failed(error) => {
-                            if state.file_completion_query() == last_file_query {
-                                state.set_status(format!("File completion: {error}"));
-                            }
+                        JobOutcome::Failed(error)
+                            if state.file_completion_query() == last_file_query =>
+                        {
+                            state.set_status(format!("File completion: {error}"));
                         }
                         _ => {}
                     }
@@ -15381,12 +15366,11 @@ pub fn run_async_with_profile(
             let now = Instant::now();
             if active_lan_job.is_none()
                 && now.saturating_duration_since(last_lan_refresh) >= LAN_REFRESH_INTERVAL
+                && let Ok(id) = lan_runner.try_submit(())
             {
-                if let Ok(id) = lan_runner.try_submit(()) {
-                    active_lan_job = Some(id);
-                    last_lan_refresh = now;
-                    scheduler.request();
-                }
+                active_lan_job = Some(id);
+                last_lan_refresh = now;
+                scheduler.request();
             }
             if active_resource_job.is_none()
                 && now.saturating_duration_since(last_resource_refresh) >= RESOURCE_REFRESH_INTERVAL
