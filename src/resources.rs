@@ -1039,11 +1039,14 @@ fn unix_disk_signal(root: &Path) -> DiskSignal {
     // SAFETY: statvfs initialized the structure when it returned success.
     let stats = unsafe { stats.assume_init() };
     let block_size = stats.f_frsize;
-    // `f_frsize` is u32 on macOS and (here) u64 on Linux; a `u64` parameter
-    // coerces both without a platform-constant cast.
-    let widen = |blocks: u64| blocks.checked_mul(block_size);
-    let total_bytes = widen(stats.f_blocks as u64);
-    let available_bytes = widen(stats.f_bavail as u64);
+    #[cfg(target_os = "macos")]
+    let total_bytes = u64::from(stats.f_blocks).checked_mul(block_size);
+    #[cfg(target_os = "macos")]
+    let available_bytes = u64::from(stats.f_bavail).checked_mul(block_size);
+    #[cfg(not(target_os = "macos"))]
+    let total_bytes = stats.f_blocks.checked_mul(block_size);
+    #[cfg(not(target_os = "macos"))]
+    let available_bytes = stats.f_bavail.checked_mul(block_size);
     DiskSignal {
         status: if total_bytes.is_some() && available_bytes.is_some() {
             SignalStatus::Available
