@@ -971,15 +971,16 @@ fn memory_signal() -> MemorySignal {
         let available_bytes = values
             .get("MemAvailable")
             .and_then(|value| value.checked_mul(1024));
-        return MemorySignal {
+        let status = if total_bytes.is_some() && available_bytes.is_some() {
+            SignalStatus::Available
+        } else {
+            SignalStatus::Unavailable
+        };
+        MemorySignal {
             total_bytes,
             available_bytes,
-            status: if total_bytes.is_some() && available_bytes.is_some() {
-                SignalStatus::Available
-            } else {
-                SignalStatus::Unavailable
-            },
-        };
+            status,
+        }
     }
     #[cfg(target_os = "macos")]
     {
@@ -1511,7 +1512,7 @@ fn load_one_minute() -> Option<f64> {
     #[cfg(target_os = "linux")]
     {
         let text = fs::read_to_string("/proc/loadavg").ok()?;
-        return text.split_whitespace().next()?.parse().ok();
+        text.split_whitespace().next()?.parse().ok()
     }
     #[cfg(target_os = "macos")]
     {
