@@ -209,15 +209,30 @@ pub enum SlashCommand {
 #[serde(rename_all = "snake_case")]
 pub enum ProjectAction {
     List,
-    Open { name: String },
-    Select { name: String },
-    Close { name: String },
+    Open {
+        name: String,
+    },
+    Select {
+        name: String,
+    },
+    Close {
+        name: String,
+    },
     /// Move a project tab to a zero-based position.
-    Move { name: String, index: usize },
+    Move {
+        name: String,
+        index: usize,
+    },
     /// Rename a project tab.
-    Rename { old: String, new: String },
+    Rename {
+        old: String,
+        new: String,
+    },
     /// Set a project tab's display style from a small named palette.
-    Style { name: String, style: String },
+    Style {
+        name: String,
+        style: String,
+    },
 }
 
 /// Layer-2 worktree sub-tab operations for the active project.
@@ -232,13 +247,26 @@ pub enum WorktreeAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
     },
-    Select { index: usize },
-    Close { index: usize },
-    Move { index: usize, target: usize },
+    Select {
+        index: usize,
+    },
+    Close {
+        index: usize,
+    },
+    Move {
+        index: usize,
+        target: usize,
+    },
     /// Rename one layer-2 tab.
-    Rename { index: usize, name: String },
+    Rename {
+        index: usize,
+        name: String,
+    },
     /// Adjust one layer-2 tab's default harness concurrency by `delta`.
-    Concurrency { index: usize, delta: i32 },
+    Concurrency {
+        index: usize,
+        delta: i32,
+    },
 }
 
 /// Recovery decisions require explicit host confirmation and never dispatch work.
@@ -963,7 +991,9 @@ pub fn route_input(input: &str) -> Result<InputRoute, SlashError> {
 /// malformed or unknown commands never silently reach the model.
 fn parse_worktree(args: &[String]) -> Result<WorktreeAction, SlashError> {
     use WorktreeAction as W;
-    let bad = || SlashError::UnexpectedArgument { command: "worktree" };
+    let bad = || SlashError::UnexpectedArgument {
+        command: "worktree",
+    };
     let index = |value: &str| value.parse::<usize>().map_err(|_| bad());
     let in_place = |value: &str| {
         value.eq_ignore_ascii_case("--in-place")
@@ -1009,7 +1039,8 @@ fn parse_worktree(args: &[String]) -> Result<WorktreeAction, SlashError> {
     }
 }
 
-pub fn parse(input: &str) -> Result<Option<SlashCommand>, SlashError> {    if input.trim().is_empty() {
+pub fn parse(input: &str) -> Result<Option<SlashCommand>, SlashError> {
+    if input.trim().is_empty() {
         return Ok(None);
     }
     if input.len() > MAX_SLASH_INPUT_BYTES {
@@ -1185,9 +1216,10 @@ pub fn parse(input: &str) -> Result<Option<SlashCommand>, SlashError> {    if in
             [action, name, value] if action.eq_ignore_ascii_case("move") => SlashCommand::Project {
                 action: ProjectAction::Move {
                     name: name.trim().to_owned(),
-                    index: value.trim().parse::<usize>().map_err(|_| {
-                        SlashError::UnexpectedArgument { command: "project" }
-                    })?,
+                    index: value
+                        .trim()
+                        .parse::<usize>()
+                        .map_err(|_| SlashError::UnexpectedArgument { command: "project" })?,
                 },
             },
             [action, old, new] if action.eq_ignore_ascii_case("rename") => SlashCommand::Project {
@@ -1196,12 +1228,14 @@ pub fn parse(input: &str) -> Result<Option<SlashCommand>, SlashError> {    if in
                     new: new.trim().to_owned(),
                 },
             },
-            [action, name, style] if action.eq_ignore_ascii_case("style") => SlashCommand::Project {
-                action: ProjectAction::Style {
-                    name: name.trim().to_owned(),
-                    style: style.trim().to_owned(),
-                },
-            },
+            [action, name, style] if action.eq_ignore_ascii_case("style") => {
+                SlashCommand::Project {
+                    action: ProjectAction::Style {
+                        name: name.trim().to_owned(),
+                        style: style.trim().to_owned(),
+                    },
+                }
+            }
             _ => return Err(SlashError::UnexpectedArgument { command: "project" }),
         },
         "yolo" => {

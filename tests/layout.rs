@@ -189,10 +189,7 @@ fn pane_focus_cycles_in_preset_order_and_skips_collapsed_or_unavailable_panes() 
     );
 
     model.set_collapsed(PaneId::Resources, true);
-    assert_eq!(
-        model.focus_next(viewport.0, viewport.1),
-        Some(PaneId::Arch)
-    );
+    assert_eq!(model.focus_next(viewport.0, viewport.1), Some(PaneId::Arch));
     model.set_capabilities(PaneCapabilities::default());
     assert!(
         !model

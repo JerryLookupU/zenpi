@@ -8106,7 +8106,11 @@ fn execute_headless_slash(
             let queued = if receipt.duplicate {
                 false
             } else {
-                let args = vec!["start".to_owned(), receipt.item_id.clone(), requirement.clone()];
+                let args = vec![
+                    "start".to_owned(),
+                    receipt.item_id.clone(),
+                    requirement.clone(),
+                ];
                 crate::runtime_intent::runtime_intent_value_with_source(
                     agent,
                     crate::b3::RuntimeIntentKind::Loop,

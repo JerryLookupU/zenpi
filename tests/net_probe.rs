@@ -179,15 +179,9 @@ fn real_topology_fixture() -> FixtureBackend {
         gpus: Vec::new(),
         services: vec!["ssh".into(), "screen-sharing".into()],
     };
-    resources.insert(
-        "10.0.0.15".into(),
-        mac("Apple M1 Ultra", 64_000_000_000),
-    );
+    resources.insert("10.0.0.15".into(), mac("Apple M1 Ultra", 64_000_000_000));
     resources.insert("10.0.0.16".into(), mac("Apple M2 Max", 64_000_000_000));
-    resources.insert(
-        "10.0.0.182".into(),
-        mac("Apple M1 Ultra", 64_000_000_000),
-    );
+    resources.insert("10.0.0.182".into(), mac("Apple M1 Ultra", 64_000_000_000));
 
     FixtureBackend {
         arp,
@@ -250,12 +244,7 @@ fn fixture_scan_reproduces_real_topology_blocks() {
         .iter()
         .map(|index| snapshot.hosts[*index].ip.as_str())
         .collect();
-    for expected in [
-        "10.0.0.55",
-        "10.0.0.56",
-        "10.0.0.228",
-        "10.0.0.249",
-    ] {
+    for expected in ["10.0.0.55", "10.0.0.56", "10.0.0.228", "10.0.0.249"] {
         assert!(gpu_ips.contains(&expected), "missing gpu host {expected}");
     }
 

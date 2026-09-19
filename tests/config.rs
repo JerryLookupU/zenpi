@@ -683,7 +683,10 @@ fn zone_models_persist_and_resolve_with_a_global_fallback() {
     .unwrap();
     // Discussion and arch keep their independent choices; the worker pool uses
     // the global model.
-    assert_eq!(resolved.zone_model(Zone::Discussion), Some("discussion-model"));
+    assert_eq!(
+        resolved.zone_model(Zone::Discussion),
+        Some("discussion-model")
+    );
     assert_eq!(resolved.zone_model(Zone::Arch), Some("arch-model"));
     assert_eq!(resolved.zone_model(Zone::Worker), Some("global-model"));
 

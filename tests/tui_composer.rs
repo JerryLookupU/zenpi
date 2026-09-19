@@ -774,7 +774,11 @@ fn folded_payload_counts_toward_input_and_pretty_checkpoint_budgets() {
     crowded.handle_event(Event::Paste("x".repeat(MAX_MESSAGE_BYTES - 4)));
     assert_eq!(crowded.input(), "keep");
     assert_eq!(saved_draft(&crowded)["next_paste_id"], 1);
-    assert!(crowded.status().contains("4 MiB"), "status: {}", crowded.status());
+    assert!(
+        crowded.status().contains("4 MiB"),
+        "status: {}",
+        crowded.status()
+    );
 }
 
 #[test]

@@ -130,9 +130,8 @@ pub struct TuiMessage {
 }
 
 /// Named per-project display styles accepted by `/project style`.
-pub const PROJECT_STYLES: [&str; 7] = [
-    "cyan", "green", "yellow", "magenta", "blue", "red", "white",
-];
+pub const PROJECT_STYLES: [&str; 7] =
+    ["cyan", "green", "yellow", "magenta", "blue", "red", "white"];
 
 /// Layer-2 sub-tab kind within one project.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -178,11 +177,7 @@ impl SubTab {
 
 /// Derive a layer-2 workspace root that cannot collide with the layer-1 root
 /// or with any sibling tab, even when two tabs share the same display name.
-fn isolated_subtab_root(
-    base: &std::path::Path,
-    tabs: &[SubTab],
-    name: &str,
-) -> std::path::PathBuf {
+fn isolated_subtab_root(base: &std::path::Path, tabs: &[SubTab], name: &str) -> std::path::PathBuf {
     let parent = base.join(".zenpi-workspaces");
     let mut candidate = parent.join(name);
     let mut suffix = 1u32;
@@ -3380,7 +3375,8 @@ impl TuiState {
         if name.is_empty() || too_long || index >= self.project_tabs.len() {
             return false;
         }
-        if (0..self.project_tabs.len()).any(|other| other != index && self.project_label(other) == name)
+        if (0..self.project_tabs.len())
+            .any(|other| other != index && self.project_label(other) == name)
         {
             return false;
         }
@@ -3394,7 +3390,9 @@ impl TuiState {
     /// Begin an inline rename of a header tab card (ZS1-169).
     fn begin_tab_rename(&mut self, layer1: bool, index: usize) {
         let current = if layer1 {
-            self.project_tabs.get(index).map(|_| self.project_label(index))
+            self.project_tabs
+                .get(index)
+                .map(|_| self.project_label(index))
         } else {
             self.subtabs().get(index).map(|tab| tab.name.clone())
         };
@@ -3605,14 +3603,13 @@ impl TuiState {
             .filter(|i| basename(*i).as_deref() == Some(name.as_str()))
             .count();
         if duplicates > 1
-            && let Some(parent) = cwd_of(index)
-                .and_then(|cwd| {
-                    std::path::Path::new(&cwd)
-                        .parent()
-                        .and_then(|parent| parent.file_name())
-                        .and_then(|name| name.to_str())
-                        .map(str::to_owned)
-                })
+            && let Some(parent) = cwd_of(index).and_then(|cwd| {
+                std::path::Path::new(&cwd)
+                    .parent()
+                    .and_then(|parent| parent.file_name())
+                    .and_then(|name| name.to_str())
+                    .map(str::to_owned)
+            })
         {
             return format!("{name} ·{parent}");
         }
@@ -7272,8 +7269,8 @@ impl TuiState {
                     }
                     let scroll =
                         usize::from(*self.pane_scroll.get(&PaneId::Resources).unwrap_or(&0));
-                    let row =
-                        usize::from(mouse.row.saturating_sub(pane.rect.y.saturating_add(2))) + scroll;
+                    let row = usize::from(mouse.row.saturating_sub(pane.rect.y.saturating_add(2)))
+                        + scroll;
                     if row < self.resource_block_count() {
                         self.resource_block_index = row;
                         self.activate_resource_block();
@@ -9448,10 +9445,7 @@ impl TuiState {
                 if y >= area.bottom() {
                     break;
                 }
-                frame.render_widget(
-                    Paragraph::new(line),
-                    Rect::new(area.x, y, banner_width, 1),
-                );
+                frame.render_widget(Paragraph::new(line), Rect::new(area.x, y, banner_width, 1));
             }
         }
         let info = Rect::new(
@@ -9526,7 +9520,11 @@ impl TuiState {
             row += 1;
             column = 0;
         }
-        let active = if layer1 { self.active_project } else { self.active_subtab() };
+        let active = if layer1 {
+            self.active_project
+        } else {
+            self.active_subtab()
+        };
         let mut hits: Vec<(Rect, u8, usize)> = Vec::new();
         'entries: for (index, segments) in entries.iter() {
             for (text, kind) in segments {
@@ -9554,8 +9552,16 @@ impl TuiState {
                 } else {
                     Color::Gray
                 };
-                let rect = Rect::new(area.x + column as u16, area.y + row as u16, shown_len as u16, 1);
-                frame.render_widget(Paragraph::new(shown).style(Style::default().fg(colour)), rect);
+                let rect = Rect::new(
+                    area.x + column as u16,
+                    area.y + row as u16,
+                    shown_len as u16,
+                    1,
+                );
+                frame.render_widget(
+                    Paragraph::new(shown).style(Style::default().fg(colour)),
+                    rect,
+                );
                 hits.push((rect, *kind, *index));
                 column += shown_len;
                 if shown_len < len {
@@ -9566,7 +9572,12 @@ impl TuiState {
             if column + sep_len <= width && row < max_rows {
                 frame.render_widget(
                     Paragraph::new(separator).style(Style::default().fg(Color::DarkGray)),
-                    Rect::new(area.x + column as u16, area.y + row as u16, sep_len as u16, 1),
+                    Rect::new(
+                        area.x + column as u16,
+                        area.y + row as u16,
+                        sep_len as u16,
+                        1,
+                    ),
                 );
                 column += sep_len;
             }
@@ -9578,8 +9589,16 @@ impl TuiState {
             column = 0;
         }
         if row < max_rows {
-            let rect = Rect::new(area.x + column as u16, area.y + row as u16, plus_len as u16, 1);
-            frame.render_widget(Paragraph::new(plus).style(Style::default().fg(Color::Green)), rect);
+            let rect = Rect::new(
+                area.x + column as u16,
+                area.y + row as u16,
+                plus_len as u16,
+                1,
+            );
+            frame.render_widget(
+                Paragraph::new(plus).style(Style::default().fg(Color::Green)),
+                rect,
+            );
             if layer1 {
                 self.project_hits.push((rect, self.project_tabs.len()));
             } else {
@@ -9596,8 +9615,12 @@ impl TuiState {
             } else {
                 match kind {
                     1 => self.subtab_hits.push((rect, SubTabHit::Close(index))),
-                    2 => self.subtab_hits.push((rect, SubTabHit::ConcurrencyUp(index))),
-                    3 => self.subtab_hits.push((rect, SubTabHit::ConcurrencyDown(index))),
+                    2 => self
+                        .subtab_hits
+                        .push((rect, SubTabHit::ConcurrencyUp(index))),
+                    3 => self
+                        .subtab_hits
+                        .push((rect, SubTabHit::ConcurrencyDown(index))),
                     _ => self.subtab_hits.push((rect, SubTabHit::Select(index))),
                 }
             }
@@ -10138,7 +10161,10 @@ impl TuiState {
             _ => 0.0,
         };
         let memory_bar = if snapshot.memory.total_bytes.is_some() {
-            format!("  [{}] {memory_util:.0}%", crate::resources::render_bar(memory_util, 16))
+            format!(
+                "  [{}] {memory_util:.0}%",
+                crate::resources::render_bar(memory_util, 16)
+            )
         } else {
             String::new()
         };
@@ -11086,11 +11112,8 @@ pub fn dispatch_slash_command(
                         if ok {
                             if let Some(index) = state.project_index(&name) {
                                 let key = state.project_tabs[index].clone();
-                                state
-                                    .project_metadata
-                                    .entry(key)
-                                    .or_default()
-                                    .source = Some(format!("ssh:{}", spec.display()));
+                                state.project_metadata.entry(key).or_default().source =
+                                    Some(format!("ssh:{}", spec.display()));
                             }
                             match spec.probe(&spec.path) {
                                 Ok(entries) => state.push_message(
@@ -12459,8 +12482,9 @@ pub fn dispatch_slash_command(
                         );
                     }
                 }
-                Err(error) => state
-                    .push_message(MessageRole::Error, format!("sync failed: {error}")),
+                Err(error) => {
+                    state.push_message(MessageRole::Error, format!("sync failed: {error}"))
+                }
             }
         }
         SlashCommand::Execute { args } => {
@@ -15021,7 +15045,8 @@ pub fn run_async_with_profile(
             if token.is_cancelled() {
                 return Err("lan scan cancelled".into());
             }
-            let local = crate::net_probe::local_ipv4().ok_or_else(|| "no local ipv4".to_string())?;
+            let local =
+                crate::net_probe::local_ipv4().ok_or_else(|| "no local ipv4".to_string())?;
             let credentials = crate::net_probe::NetCredentials::from_env();
             // Credentialed scans use the SSH backend for resource extraction;
             // without credentials the read-only system backend is enough.
@@ -16305,7 +16330,9 @@ pub fn run_async_with_profile(
                                                 if ok {
                                                     format!("project style: {name} = {style}")
                                                 } else {
-                                                    format!("unknown project or style: {name}/{style}")
+                                                    format!(
+                                                        "unknown project or style: {name}/{style}"
+                                                    )
                                                 },
                                             );
                                             None

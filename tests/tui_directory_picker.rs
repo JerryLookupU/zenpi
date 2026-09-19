@@ -27,7 +27,10 @@ fn parses_ssh_config_alias_and_explicit_forms() {
 
     // Optional explicit identity key.
     let spec = RemoteSpec::parse("ssh://h/p?identity=/keys/id_ed25519").unwrap();
-    assert_eq!(spec.identity.unwrap().display().to_string(), "/keys/id_ed25519");
+    assert_eq!(
+        spec.identity.unwrap().display().to_string(),
+        "/keys/id_ed25519"
+    );
 
     assert!(RemoteSpec::parse("").is_err());
     assert!(RemoteSpec::parse("host-only").is_err());
@@ -44,7 +47,10 @@ fn probe_argv_is_read_only_and_bounded() {
     assert!(argv.contains(&"alice@example.com".to_owned()));
     let command = argv.last().unwrap();
     assert!(command.starts_with("ls -1Ap -- "), "{command}");
-    assert!(!command.contains("rm ") && !command.contains(">"), "{command}");
+    assert!(
+        !command.contains("rm ") && !command.contains(">"),
+        "{command}"
+    );
 }
 
 #[test]
@@ -67,7 +73,11 @@ fn resolve_distinguishes_local_and_remote() {
 fn remote_probe_uses_stub_and_bounds_output() {
     let dir = tempdir().unwrap();
     let stub = dir.path().join("ssh-stub.sh");
-    fs::write(&stub, "#!/bin/sh\nprintf 'alpha/\\nbeta.txt\\n./\\n../\\ngamma/\\n'\n").unwrap();
+    fs::write(
+        &stub,
+        "#!/bin/sh\nprintf 'alpha/\\nbeta.txt\\n./\\n../\\ngamma/\\n'\n",
+    )
+    .unwrap();
     fs::set_permissions(&stub, fs::Permissions::from_mode(0o700)).unwrap();
     // SAFETY: single-threaded test process during setup.
     unsafe { std::env::set_var("ZENPI_SSH_BIN", &stub) };

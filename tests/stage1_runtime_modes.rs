@@ -73,7 +73,9 @@ impl Host {
 
 impl Drop for Host {
     fn drop(&mut self) {
-        let _ = self.stdin.write_all(b"{\"schema_version\":2,\"type\":\"shutdown\",\"id\":\"stop\"}\n");
+        let _ = self
+            .stdin
+            .write_all(b"{\"schema_version\":2,\"type\":\"shutdown\",\"id\":\"stop\"}\n");
         let _ = self.stdin.flush();
         let _ = self.child.wait();
         if let Some(reader) = self.reader.take() {

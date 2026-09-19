@@ -557,7 +557,11 @@ fn actual_headless_unknown_is_open_and_models_query_is_local() {
     let sent = requests.recv_timeout(Duration::from_secs(5)).unwrap();
     assert_eq!(sent["model"], "nonexistent-model");
     assert_eq!(sent["stream"], true);
-    assert!(sent["tools"].as_array().is_some_and(|tools| !tools.is_empty()));
+    assert!(
+        sent["tools"]
+            .as_array()
+            .is_some_and(|tools| !tools.is_empty())
+    );
     assert_eq!(sent["max_completion_tokens"], 4096);
     server.join().unwrap();
 }

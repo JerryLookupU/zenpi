@@ -27,7 +27,9 @@ const BINARY: &str = env!("CARGO_BIN_EXE_zenpi");
 static HOST_TEST_SERIAL: Mutex<()> = Mutex::new(());
 
 fn serial_guard() -> std::sync::MutexGuard<'static, ()> {
-    HOST_TEST_SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    HOST_TEST_SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 #[derive(Clone)]

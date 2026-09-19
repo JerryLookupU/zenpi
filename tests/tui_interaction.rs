@@ -242,7 +242,7 @@ fn project_select_binds_real_agent_session_and_workspace() {
             display_name: None,
             approval_mode: Default::default(),
             style: None,
-        source: None,
+            source: None,
             cwd: dir.path().display().to_string(),
             session_path: Some(api_path.display().to_string()),
         },
@@ -280,7 +280,7 @@ fn closing_active_project_rebinds_agent_to_remaining_project() {
             display_name: None,
             approval_mode: Default::default(),
             style: None,
-        source: None,
+            source: None,
             cwd: dir.path().display().to_string(),
             session_path: Some(default_path.display().to_string()),
         },
@@ -292,7 +292,7 @@ fn closing_active_project_rebinds_agent_to_remaining_project() {
             display_name: None,
             approval_mode: Default::default(),
             style: None,
-        source: None,
+            source: None,
             cwd: dir.path().display().to_string(),
             session_path: Some(api_path.display().to_string()),
         },
@@ -340,7 +340,7 @@ fn closing_project_removes_its_runtime_metadata_projection() {
     let mut state = TuiState::default();
     assert!(state.open_project_tab("api"));
     state.set_active_project_metadata(zenpi::tui::ProjectTabMetadata {
-            display_name: None,
+        display_name: None,
         approval_mode: Default::default(),
         style: None,
         source: None,
@@ -389,7 +389,7 @@ fn project_metadata_round_trips_with_project_strip() {
             display_name: None,
             approval_mode: Default::default(),
             style: None,
-        source: None,
+            source: None,
             cwd: "/workspace/api".into(),
             session_path: Some("/sessions/api.jsonl".into()),
         },
@@ -423,7 +423,7 @@ fn project_checkpoint_restores_isolated_transcript_and_layout() {
     assert!(state.open_project_tab("api"));
     state.push_message(zenpi::tui::MessageRole::Assistant, "api message");
     state.set_active_project_metadata(zenpi::tui::ProjectTabMetadata {
-            display_name: None,
+        display_name: None,
         approval_mode: Default::default(),
         style: None,
         source: None,
@@ -457,7 +457,7 @@ fn project_view_reports_identity_and_current_feature_projection() {
     let mut state = TuiState::default();
     assert!(state.open_project_tab("api"));
     state.set_active_project_metadata(zenpi::tui::ProjectTabMetadata {
-            display_name: None,
+        display_name: None,
         approval_mode: Default::default(),
         style: None,
         source: None,
@@ -882,8 +882,8 @@ fn zone_models_round_trip_through_a_restart_snapshot() {
 
 #[test]
 fn focused_arch_model_selection_does_not_disturb_the_discussion_agent() {
-    use zenpi::view_model::Zone;
     use zenpi::tui::LeftPrompt;
+    use zenpi::view_model::Zone;
 
     let dir = tempfile::tempdir().unwrap();
     let mut agent = Agent::with_echo(SessionStore::open(dir.path().join("s.jsonl")).unwrap());

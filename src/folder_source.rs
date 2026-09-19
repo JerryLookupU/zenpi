@@ -75,9 +75,17 @@ pub struct RemoteSpec {
 
 impl RemoteSpec {
     pub fn display(&self) -> String {
-        let user = self.user.as_deref().map(|u| format!("{u}@")).unwrap_or_default();
+        let user = self
+            .user
+            .as_deref()
+            .map(|u| format!("{u}@"))
+            .unwrap_or_default();
         let port = self.port.map(|p| format!(":{p}")).unwrap_or_default();
-        format!("{user}{host}{port}:{path}", host = self.host, path = self.path)
+        format!(
+            "{user}{host}{port}:{path}",
+            host = self.host,
+            path = self.path
+        )
     }
 
     /// Accepts `ssh://[user@]host[:port]/path`, `[user@]host:/path`, and an
@@ -93,9 +101,7 @@ impl RemoteSpec {
             None => (spec, None),
         };
         if let Some(rest) = body.strip_prefix("ssh://") {
-            let (authority, path) = rest
-                .split_once('/')
-                .ok_or(FolderSourceError::InvalidSpec)?;
+            let (authority, path) = rest.split_once('/').ok_or(FolderSourceError::InvalidSpec)?;
             let (user, host_port) = match authority.split_once('@') {
                 Some((user, host_port)) => (Some(user.to_owned()), host_port),
                 None => (None, authority),
@@ -103,7 +109,10 @@ impl RemoteSpec {
             let (host, port) = match host_port.rsplit_once(':') {
                 Some((host, port)) => (
                     host.to_owned(),
-                    Some(port.parse::<u16>().map_err(|_| FolderSourceError::InvalidSpec)?),
+                    Some(
+                        port.parse::<u16>()
+                            .map_err(|_| FolderSourceError::InvalidSpec)?,
+                    ),
                 ),
                 None => (host_port.to_owned(), None),
             };
@@ -210,7 +219,9 @@ fn shell_quote(value: &str) -> String {
 /// consistent.
 pub fn list_local(path: &Path) -> Result<Vec<String>, FolderSourceError> {
     let mut entries = Vec::new();
-    for entry in std::fs::read_dir(path).map_err(|error| FolderSourceError::Local(error.to_string()))? {
+    for entry in
+        std::fs::read_dir(path).map_err(|error| FolderSourceError::Local(error.to_string()))?
+    {
         if entries.len() >= MAX_REMOTE_ENTRIES {
             break;
         }

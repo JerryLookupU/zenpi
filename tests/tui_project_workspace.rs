@@ -139,10 +139,20 @@ fn topmost_plus_opens_picker_and_cancel_never_creates_a_tab_or_changes_draft() {
     terminal
         .draw(|frame| state.render_bentobox(frame, "zenpi"))
         .unwrap();
-    let screen: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+    let screen: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
     assert!(screen.contains("[+]"));
     let (plus_col, plus_row) = find_pos(&terminal, "[+]");
-    state.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), plus_col, plus_row));
+    state.handle_mouse(mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        plus_col,
+        plus_row,
+    ));
     assert!(state.directory_picker_open());
     assert_eq!(state.project_tab_count(), 1);
     key(&mut state, KeyCode::Esc, KeyModifiers::NONE);
@@ -592,20 +602,26 @@ fn layer1_project_tabs_move_rename_and_style() {
     use zenpi::slash::{ProjectAction, SlashCommand};
     // Parsing exposes the three new layer-1 operations.
     match zenpi::slash::parse("/project move alpha 2").unwrap() {
-        Some(SlashCommand::Project { action: ProjectAction::Move { name, index } }) => {
+        Some(SlashCommand::Project {
+            action: ProjectAction::Move { name, index },
+        }) => {
             assert_eq!(name, "alpha");
             assert_eq!(index, 2);
         }
         other => panic!("unexpected: {other:?}"),
     }
     match zenpi::slash::parse("/project rename alpha beta").unwrap() {
-        Some(SlashCommand::Project { action: ProjectAction::Rename { old, new } }) => {
+        Some(SlashCommand::Project {
+            action: ProjectAction::Rename { old, new },
+        }) => {
             assert_eq!((old.as_str(), new.as_str()), ("alpha", "beta"));
         }
         other => panic!("unexpected: {other:?}"),
     }
     match zenpi::slash::parse("/project style alpha green").unwrap() {
-        Some(SlashCommand::Project { action: ProjectAction::Style { name, style } }) => {
+        Some(SlashCommand::Project {
+            action: ProjectAction::Style { name, style },
+        }) => {
             assert_eq!((name.as_str(), style.as_str()), ("alpha", "green"));
         }
         other => panic!("unexpected: {other:?}"),
@@ -626,7 +642,11 @@ fn layer1_project_tabs_move_rename_and_style() {
     assert_eq!(order(&state).last().unwrap(), "alpha");
     assert!(state.move_project_tab("beta", 0));
     assert_eq!(order(&state)[0], "beta");
-    assert_eq!(state.active_project(), "gamma", "active project follows by name");
+    assert_eq!(
+        state.active_project(),
+        "gamma",
+        "active project follows by name"
+    );
     let _ = alpha_index;
 
     assert!(state.rename_project_tab("beta", "beta-2"));
@@ -714,8 +734,17 @@ fn worktree_helpers_create_list_and_remove() {
     let repo = tempdir().unwrap();
     let root = repo.path();
     let git = |args: &[&str]| {
-        let out = Command::new("git").arg("-C").arg(root).args(args).output().unwrap();
-        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     };
     git(&["init", "-q"]);
     git(&["config", "user.email", "t@example.invalid"]);
@@ -733,12 +762,19 @@ fn worktree_helpers_create_list_and_remove() {
     let entries = zenpi::project_workspace::list_worktrees(root).unwrap();
     assert_eq!(entries.len(), 2);
     assert!(
-        entries.iter().any(|e| e.branch.as_deref() == Some("feature")),
+        entries
+            .iter()
+            .any(|e| e.branch.as_deref() == Some("feature")),
         "{entries:?}"
     );
 
     zenpi::project_workspace::remove_worktree(root, &wt).unwrap();
-    assert_eq!(zenpi::project_workspace::list_worktrees(root).unwrap().len(), 1);
+    assert_eq!(
+        zenpi::project_workspace::list_worktrees(root)
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[test]
@@ -920,13 +956,19 @@ fn header_controls_click_to_add_close_and_change_concurrency() {
     assert!(state.open_project_tab("alpha"));
     assert!(state.subtab_add_in_place(Some("one".into())));
     let mut terminal = Terminal::new(TestBackend::new(160, 40)).unwrap();
-    terminal.draw(|f| state.render_bentobox(f, "zenpi")).unwrap();
+    terminal
+        .draw(|f| state.render_bentobox(f, "zenpi"))
+        .unwrap();
 
     // Click the layer-2 concurrency "up" glyph beside the active sub-tab.
     // The first ↑ belongs to the first sub-tab ("main").
     let (up_col, up_row) = find_pos(&terminal, "↑");
     let before = state.subtabs()[0].concurrency;
-    state.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), up_col, up_row));
+    state.handle_mouse(mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        up_col,
+        up_row,
+    ));
     assert_eq!(
         state.subtabs()[0].concurrency,
         before + 1,
@@ -936,8 +978,16 @@ fn header_controls_click_to_add_close_and_change_concurrency() {
     // Click a project "-" to close that tab.
     let projects = state.project_tab_count();
     let (close_col, close_row) = find_pos(&terminal, "[-]");
-    state.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), close_col, close_row));
-    assert_eq!(state.project_tab_count(), projects - 1, "close control wired");
+    state.handle_mouse(mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        close_col,
+        close_row,
+    ));
+    assert_eq!(
+        state.project_tab_count(),
+        projects - 1,
+        "close control wired"
+    );
 
     // Confirm Esc still works after clicks.
     let _ = state.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));

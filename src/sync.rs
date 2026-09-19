@@ -15,7 +15,9 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, thiserror::Error)]
 pub enum SyncError {
-    #[error("no blueprint found (set ZENPI_BLUEPRINT or run inside a project with Docs/*blueprint*.md)")]
+    #[error(
+        "no blueprint found (set ZENPI_BLUEPRINT or run inside a project with Docs/*blueprint*.md)"
+    )]
     NoBlueprint,
     #[error("requirement is empty")]
     Empty,
@@ -43,7 +45,11 @@ const MAX_REQUIREMENT_BYTES: usize = 8 * 1024;
 pub fn discover_blueprint(workspace: &Path) -> Result<PathBuf, SyncError> {
     if let Some(path) = std::env::var_os("ZENPI_BLUEPRINT") {
         let path = PathBuf::from(path);
-        let path = if path.is_absolute() { path } else { workspace.join(path) };
+        let path = if path.is_absolute() {
+            path
+        } else {
+            workspace.join(path)
+        };
         if path.is_file() {
             return Ok(path);
         }
@@ -153,9 +159,7 @@ pub fn sync_requirement(workspace: &Path, requirement: &str) -> Result<SyncRecei
     updated.push_str(&format!(
         "\n- [ ] **{item_id}** — {summary}；layer `L3` | Depends: — | Owner scope: /sync 追加的用户要求 | Owned paths: — | Validators: G-CODE | Rollback: 撤回本项 | Estimate: 由 /sync 追加 | Estimated LOC: 0\n"
     ));
-    updated.push_str(&format!(
-        "\n  /sync {digest}: {requirement}\n"
-    ));
+    updated.push_str(&format!("\n  /sync {digest}: {requirement}\n"));
     atomic_write(&blueprint_path, updated.as_bytes())?;
     ledger.push(SyncEntry {
         item_id: item_id.clone(),
@@ -210,6 +214,7 @@ fn read_ledger(path: &Path) -> Vec<SyncEntry> {
 }
 
 fn write_ledger(path: &Path, ledger: &[SyncEntry]) -> Result<(), SyncError> {
-    let text = serde_json::to_string_pretty(ledger).map_err(|e| SyncError::Ledger(e.to_string()))?;
+    let text =
+        serde_json::to_string_pretty(ledger).map_err(|e| SyncError::Ledger(e.to_string()))?;
     atomic_write(path, text.as_bytes())
 }
