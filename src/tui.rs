@@ -36,8 +36,12 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::domains::GoalStatus;
 use crate::layout::{
     Breakpoint, FocusDirection, LayoutModel, LayoutSnapshot, PaneId, PaneRect, TabId, Visibility,
+    arch_prompt_group, conversation_prompt_group,
 };
 use crate::slash::{self, BlueprintAction, InputRoute, LayoutAction, PaneAction, SlashCommand};
+use crate::tool_runtime::{
+    MasterSessionCommand, MasterSessionInputError, classify_master_session_input,
+};
 
 /// Bound retained transcript memory even when a provider streams forever.
 pub const DEFAULT_MAX_MESSAGES: usize = 2_048;
@@ -62,11 +66,23 @@ pub const MAX_SESSION_PANE_RECORDS: usize = 32;
 /// prompts remain editable; the input viewport scrolls to keep the cursor
 /// visible instead of growing without bound and starving the transcript.
 pub const MAX_INPUT_LINES: usize = 8;
+/// Rows reserved for the resident discussion prompt inside the top-left
+/// conversation group (ZS1-147). Keeping it fixed leaves the rest of the
+/// column for the transcript.
+pub const PROMPT_PANE_ROWS: u16 = 4;
+/// Rows reserved for the resident arch prompt inside the lower-left arch group
+/// (ZS1-148). The arch console is single-line oriented, so it needs fewer rows
+/// than the discussion prompt while still sharing the left-column width.
+pub const ARCH_PROMPT_PANE_ROWS: u16 = 3;
 pub const DEFAULT_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(100);
-/// Periodic resource collection is deliberately slower than rendering and
-/// uses the single-slot worker so it never competes with interactive input.
-pub const RESOURCE_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+/// The compact htop/nvidia-smi style resource monitor refreshes on a 5 second
+/// cadence. Collection still runs on the single-slot worker so it never
+/// competes with interactive input.
+pub const RESOURCE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+/// The LAN topology changes slowly and a scan touches the network, so it
+/// refreshes far less often than the local host monitor (ZS1-158).
+pub const LAN_REFRESH_INTERVAL: Duration = Duration::from_secs(120);
 const MIN_LOOP_INTERVAL: Duration = Duration::from_millis(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -113,12 +129,98 @@ pub struct TuiMessage {
     pub block_id: Option<String>,
 }
 
+/// Named per-project display styles accepted by `/project style`.
+pub const PROJECT_STYLES: [&str; 7] =
+    ["cyan", "green", "yellow", "magenta", "blue", "red", "white"];
+
+/// Layer-2 sub-tab kind within one project.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubTabKind {
+    /// Reuses the layer-1 project workspace (default).
+    Main,
+    /// A dedicated `git worktree` for this project.
+    Worktree,
+    /// Explicit "work in the current place" choice (no new worktree).
+    InPlace,
+}
+
+/// One layer-2 tab inside a project. Default reuses the layer-1 information.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubTab {
+    pub name: String,
+    pub root: String,
+    pub kind: SubTabKind,
+    /// Default harness concurrency (parallel workers) for this workspace.
+    #[serde(default = "default_subtab_concurrency")]
+    pub concurrency: u16,
+}
+
+fn default_subtab_concurrency() -> u16 {
+    1
+}
+
+impl SubTab {
+    /// Every layer-2 open lands in an isolated workspace/worktree. The
+    /// default `Main` tab intentionally reuses the layer-1 project root so it
+    /// stays a zero-cost view of that project; each explicitly opened tab
+    /// owns its own root instead of sharing the current workspace.
+    pub fn is_isolated(&self) -> bool {
+        !matches!(self.kind, SubTabKind::Main)
+    }
+
+    /// Canonical root for this tab's isolated workspace.
+    pub fn workspace_root(&self) -> std::path::PathBuf {
+        std::path::PathBuf::from(&self.root)
+    }
+}
+
+/// Derive a layer-2 workspace root that cannot collide with the layer-1 root
+/// or with any sibling tab, even when two tabs share the same display name.
+fn isolated_subtab_root(base: &std::path::Path, tabs: &[SubTab], name: &str) -> std::path::PathBuf {
+    let parent = base.join(".zenpi-workspaces");
+    let mut candidate = parent.join(name);
+    let mut suffix = 1u32;
+    while candidate.as_path() == base || tabs.iter().any(|tab| tab.workspace_root() == candidate) {
+        candidate = parent.join(format!("{name}-{suffix}"));
+        suffix += 1;
+    }
+    candidate
+}
+
+/// A clickable region in the layer-2 tab row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SubTabHit {
+    Select(usize),
+    AddWorktree,
+    ConcurrencyUp(usize),
+    ConcurrencyDown(usize),
+    Close(usize),
+}
+
+/// Inline rename of a layer-1 workspace or layer-2 worktree card (ZS1-169).
+#[derive(Debug, Clone)]
+struct TabRename {
+    layer1: bool,
+    index: usize,
+    buffer: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProjectTabMetadata {
     pub cwd: String,
     pub session_path: Option<String>,
     #[serde(default)]
     pub approval_mode: crate::approval::ApprovalMode,
+    /// Optional per-project display style (a small named colour palette).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<String>,
+    /// Folder source: `local:<path>` or `ssh:<spec>` for a remote project.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// Optional card label overriding the folder basename (ZS1-169).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -133,6 +235,9 @@ impl ProjectTabMetadata {
             cwd: session.header().cwd.clone(),
             session_path: Some(session.path().display().to_string()),
             approval_mode: crate::approval::ApprovalMode::Always,
+            style: None,
+            source: None,
+            display_name: None,
         }
     }
 }
@@ -143,6 +248,9 @@ impl Default for ProjectTabMetadata {
             cwd: String::new(),
             session_path: None,
             approval_mode: crate::approval::ApprovalMode::Always,
+            style: None,
+            source: None,
+            display_name: None,
         }
     }
 }
@@ -509,10 +617,43 @@ impl TuiMessage {
     }
 }
 
+/// The two left-column prompt hot zones that can own keyboard focus (ZS1-148).
+///
+/// `Discussion` is the resident top-left Conversation prompt (ZS1-147).
+/// `Arch` is the lower-left arch console that belongs to the master session and
+/// can execute bash/steering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum LeftPrompt {
+    #[default]
+    Discussion,
+    Arch,
+}
+
+/// Which transcript receives host feedback while a command runs. The two left
+/// prompts are independent (ZS1-165), so a slash command launched from the arch
+/// console reports into the arch transcript and never the discussion one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MessageTarget {
+    #[default]
+    Discussion,
+    Arch,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TuiAction {
     None,
     Submit(String),
+    /// A submission from the lower-left Arch master-session console (ZS1-148).
+    /// The typed command is already classified so any host can execute it
+    /// without re-parsing the operator's text.
+    SubmitArch(MasterSessionCommand),
+    /// A slash command submitted from the arch console (ZS1-165). The host
+    /// executes it with the arch transcript as the feedback target so the two
+    /// prompts can use `/` independently without cross-writing.
+    SubmitArchSlash {
+        command: SlashCommand,
+        text: String,
+    },
     RespondApproval {
         project: String,
         request_id: String,
@@ -2424,6 +2565,27 @@ pub struct TuiState {
     /// rendering only reads this small value and therefore never walks disk.
     resource_snapshot: Option<crate::resources::ResourceSnapshot>,
     resource_status: ResourcePaneStatus,
+    /// Last bounded LAN snapshot (ZS1-158). Global rather than per-project
+    /// because the local subnet does not depend on the active workspace.
+    lan_snapshot: Option<crate::net_probe::LanSnapshot>,
+    /// Selected block row in the Resources pane when no block is open.
+    resource_block_index: usize,
+    /// Block whose detail table is currently open, if any.
+    resource_open_block: Option<crate::net_probe::DeviceClass>,
+    /// Last bounded LAN headless cluster projection (ZS1-160). The local
+    /// control plane owns dispatch and aggregation; rendering only reads this
+    /// small, credential-free value.
+    cluster_snapshot: Option<crate::cluster::ClusterSnapshot>,
+    /// Unified resource/information bus (ZS1-161). Recomputed from the
+    /// individual host/LAN/cluster/budget/lease inputs whenever one changes so
+    /// the Resources pane and the external projection never disagree.
+    resource_bus: Option<crate::resources::ResourceBusSnapshot>,
+    /// Agent balance/budget signal folded into the bus. Set by the host that
+    /// owns the governance ledger; unavailable until then.
+    agent_budget: crate::resources::AgentBudgetSignal,
+    /// Local development-port leases folded into the bus (ZS1-161). Bounded,
+    /// in-memory ownership ledger with expiry-based preemption.
+    port_leases: crate::resources::PortLeaseRegistry,
     /// Last valid Blueprint/Goal projection. Collection and store validation
     /// happen on a dedicated bounded worker in the production host.
     gantt_snapshot: Option<GanttPaneSnapshot>,
@@ -2432,6 +2594,9 @@ pub struct TuiState {
     /// pane. The pane never owns a child process; execution remains in the
     /// host runner.
     terminal_snapshot: String,
+    /// Interactive shell bound to the active workspace cwd (ZS1-166). `None`
+    /// until the Shell pane is first rendered or if the PTY cannot be created.
+    pty_shell: Option<crate::pty_shell::PtyShell>,
     session_snapshot: Option<SessionPaneSnapshot>,
     session_browser: Vec<crate::session::SessionSummary>,
     session_browser_cursor: usize,
@@ -2447,6 +2612,11 @@ pub struct TuiState {
     project_transcripts: BTreeMap<String, VecDeque<TuiMessage>>,
     project_layouts: BTreeMap<String, LayoutModel>,
     project_metadata: BTreeMap<String, ProjectTabMetadata>,
+    project_subtabs: BTreeMap<String, Vec<SubTab>>,
+    active_subtab: BTreeMap<String, usize>,
+    subtab_hits: Vec<(Rect, SubTabHit)>,
+    /// Active inline rename for a header tab card (ZS1-169).
+    tab_rename: Option<TabRename>,
     project_session_cursors: BTreeMap<String, ProjectSessionCursor>,
     project_checkpoint_dirty: bool,
     checkpoint_error: Option<String>,
@@ -2454,11 +2624,59 @@ pub struct TuiState {
     palette_index: usize,
     palette_dismissed: bool,
     model_menu: ModelMenu,
+    /// Per-zone model selections for the discussion and arch regions (ZS1-152).
+    /// The actual parallel work count still comes from the active project's
+    /// layer-2 workspace.
+    zone_models: crate::view_model::ZoneModels,
     workspace_area: Rect,
+    /// Inline editable Goal for the top-left conversation group (ZS1-147).
+    goal_edit: Option<crate::view_model::GoalEdit>,
+    /// Last committed Goal label shown beside the discussion conversation.
+    goal_text: String,
+    /// Committed Goal handed to the domain owner on the next host tick.
+    goal_edit_intent: Option<String>,
+    /// Rectangle of the docked discussion prompt while it is rendered in the
+    /// left column. Used to anchor the command palette above the docked input.
+    docked_prompt_rect: Option<Rect>,
+    /// Which left-column prompt owns keyboard focus (ZS1-148). The discussion
+    /// prompt is the default so existing single-prompt behavior is unchanged.
+    left_prompt: LeftPrompt,
+    /// Resident transcript for the lower-left Arch master-session console
+    /// (ZS1-148). It is intentionally separate from the discussion transcript:
+    /// arch records operator bash/steer submissions and their bounded results.
+    arch_messages: VecDeque<TuiMessage>,
+    /// Draft buffer for the arch console. Edited only while `left_prompt` is
+    /// [`LeftPrompt::Arch`].
+    arch_input: String,
+    arch_cursor: usize,
+    /// Rectangle of the docked arch prompt while it is rendered in the left
+    /// column, so a mouse press can move focus into the arch console.
+    arch_prompt_rect: Option<Rect>,
+    /// Single-concurrency guard for the master session. A bash command cannot
+    /// start while a master turn is already active; a steering instruction
+    /// joins the active turn instead of forking a second worker.
+    master_busy: bool,
+    /// Last classified arch submission, drained by the host that owns the
+    /// master session. The view layer never executes a command itself.
+    arch_intent: Option<MasterSessionCommand>,
+    /// Set by an arch submission so the host routes it to the independent arch
+    /// runtime owner instead of the discussion owner (ZS1-156).
+    arch_submit_pending: bool,
+    /// Transcript that receives feedback for the command currently running
+    /// (ZS1-165). Reset to [`MessageTarget::Discussion`] after arch dispatch.
+    message_target: MessageTarget,
+    /// Whether the current frame renders the prompt inside the left column.
+    dock_prompt: bool,
     palette_area: Rect,
     palette_start: usize,
     palette_rows: usize,
     project_hits: Vec<(Rect, usize)>,
+    /// Layer-1 tab currently armed by a left-button press so a subsequent
+    /// drag can reorder it. Cleared on release; never persisted.
+    dragging_project_tab: Option<usize>,
+    /// Layer-2 sub-tab currently armed by a left-button press for drag
+    /// reordering. Cleared on release; never persisted.
+    dragging_subtab: Option<usize>,
     dragging_split: Option<(
         crate::layout::Column,
         crate::layout::Column,
@@ -2531,9 +2749,17 @@ impl TuiState {
             layout_resets: BTreeSet::new(),
             resource_snapshot: None,
             resource_status: ResourcePaneStatus::Idle,
+            lan_snapshot: None,
+            resource_block_index: 0,
+            resource_open_block: None,
+            cluster_snapshot: None,
+            resource_bus: None,
+            agent_budget: crate::resources::AgentBudgetSignal::unavailable(),
+            port_leases: crate::resources::PortLeaseRegistry::new(),
             gantt_snapshot: None,
             gantt_status: GanttPaneStatus::Idle,
             terminal_snapshot: "No local shell result".into(),
+            pty_shell: None,
             session_snapshot: None,
             session_browser: Vec::new(),
             session_browser_cursor: 0,
@@ -2545,6 +2771,10 @@ impl TuiState {
             project_transcripts: BTreeMap::new(),
             project_layouts: BTreeMap::new(),
             project_metadata: BTreeMap::new(),
+            project_subtabs: BTreeMap::new(),
+            active_subtab: BTreeMap::new(),
+            subtab_hits: Vec::new(),
+            tab_rename: None,
             project_session_cursors: BTreeMap::new(),
             project_checkpoint_dirty: false,
             checkpoint_error: None,
@@ -2552,11 +2782,28 @@ impl TuiState {
             palette_index: 0,
             palette_dismissed: false,
             model_menu: ModelMenu::default(),
+            zone_models: crate::view_model::ZoneModels::default(),
             workspace_area: Rect::default(),
+            goal_edit: None,
+            goal_text: String::new(),
+            goal_edit_intent: None,
+            docked_prompt_rect: None,
+            left_prompt: LeftPrompt::Discussion,
+            arch_messages: VecDeque::new(),
+            arch_input: String::new(),
+            arch_cursor: 0,
+            arch_prompt_rect: None,
+            master_busy: false,
+            arch_intent: None,
+            arch_submit_pending: false,
+            message_target: MessageTarget::Discussion,
+            dock_prompt: false,
             palette_area: Rect::default(),
             palette_start: 0,
             palette_rows: 0,
             project_hits: Vec::new(),
+            dragging_project_tab: None,
+            dragging_subtab: None,
             dragging_split: None,
             dragging_row: None,
             pane_scroll: BTreeMap::new(),
@@ -2622,6 +2869,12 @@ impl TuiState {
         self.cursor
     }
 
+    /// Last provider usage tracked for the active conversation (the header
+    /// status strip was removed, so hosts/tests read this accessor).
+    pub fn tracked_usage(&self) -> Option<crate::backend::Usage> {
+        self.transcript_ux.usage
+    }
+
     pub fn status(&self) -> &str {
         &self.status
     }
@@ -2677,8 +2930,11 @@ impl TuiState {
             return false;
         }
         self.touch_editor_draft();
-        self.project_tabs.push(name);
-        self.select_project_tab(self.project_tabs.len() - 1)
+        // A new project opens on the current layer: insert it right after the
+        // active project instead of appending to the far right.
+        let insert_at = (self.active_project + 1).min(self.project_tabs.len());
+        self.project_tabs.insert(insert_at, name);
+        self.select_project_tab(insert_at)
     }
 
     pub fn select_project_tab(&mut self, index: usize) -> bool {
@@ -2804,6 +3060,417 @@ impl TuiState {
         true
     }
 
+    /// Move a project tab to a new zero-based position, preserving the active
+    /// project by name.
+    pub fn move_project_tab(&mut self, name: &str, target: usize) -> bool {
+        let Some(index) = self.project_index(name) else {
+            return false;
+        };
+        let len = self.project_tabs.len();
+        if len < 2 {
+            return false;
+        }
+        let target = target.min(len - 1);
+        if target == index {
+            return true;
+        }
+        let active_name = self.project_tabs[self.active_project].clone();
+        let tab = self.project_tabs.remove(index);
+        self.project_tabs.insert(target, tab);
+        self.active_project = self
+            .project_tabs
+            .iter()
+            .position(|item| item == &active_name)
+            .unwrap_or(0);
+        self.project_name = self.project_tabs[self.active_project].clone();
+        true
+    }
+
+    /// Set a project tab's display style from the small named palette.
+    pub fn style_project_tab(&mut self, name: &str, style: &str) -> bool {
+        let style = style.to_ascii_lowercase();
+        if !PROJECT_STYLES.contains(&style.as_str()) {
+            return false;
+        }
+        let Some(index) = self.project_index(name) else {
+            return false;
+        };
+        let key = self.project_tabs[index].clone();
+        self.project_metadata.entry(key).or_default().style = Some(style);
+        true
+    }
+
+    fn project_style_color(&self, index: usize) -> Option<Color> {
+        let name = self.project_tabs.get(index)?;
+        match self.project_metadata.get(name)?.style.as_deref()? {
+            "cyan" => Some(Color::Cyan),
+            "green" => Some(Color::Green),
+            "yellow" => Some(Color::Yellow),
+            "magenta" => Some(Color::Magenta),
+            "blue" => Some(Color::Blue),
+            "red" => Some(Color::Red),
+            "white" => Some(Color::White),
+            _ => None,
+        }
+    }
+
+    fn ensure_subtabs(&mut self) {
+        let project = self.active_project().to_owned();
+        if !self.project_subtabs.contains_key(&project) {
+            let root = self
+                .project_metadata
+                .get(&project)
+                .map(|metadata| metadata.cwd.clone())
+                .filter(|cwd| !cwd.is_empty())
+                .unwrap_or_else(|| self.project_cwd().display().to_string());
+            self.project_subtabs.insert(
+                project.clone(),
+                vec![SubTab {
+                    name: "main".to_owned(),
+                    root,
+                    kind: SubTabKind::Main,
+                    concurrency: 1,
+                }],
+            );
+            self.active_subtab.insert(project, 0);
+        }
+    }
+
+    /// Layer-2 tabs of the active project (default reuses the layer-1 data).
+    pub fn subtabs(&self) -> Vec<SubTab> {
+        let project = self.active_project();
+        if let Some(tabs) = self.project_subtabs.get(project) {
+            return tabs.clone();
+        }
+        // Default layer-2 view reuses layer 1 and reads as the `main` worktree.
+        let root = self
+            .project_metadata
+            .get(project)
+            .map(|meta| meta.cwd.clone())
+            .filter(|cwd| !cwd.is_empty())
+            .unwrap_or_else(|| self.project_cwd().display().to_string());
+        vec![SubTab {
+            name: "main".to_owned(),
+            root,
+            kind: SubTabKind::Main,
+            concurrency: 1,
+        }]
+    }
+
+    pub fn active_subtab(&self) -> usize {
+        *self.active_subtab.get(self.active_project()).unwrap_or(&0)
+    }
+
+    /// Root of the active layer-2 workspace. The default `Main` tab resolves
+    /// to the layer-1 project folder; every other tab resolves to its own
+    /// isolated root. Layer-1 and layer-2 state are never aliased implicitly.
+    pub fn active_subtab_root(&mut self) -> String {
+        let index = self.active_subtab();
+        self.subtabs()
+            .get(index)
+            .map(|tab| tab.root.clone())
+            .unwrap_or_else(|| self.project_cwd().display().to_string())
+    }
+
+    pub fn subtab_select(&mut self, index: usize) -> bool {
+        self.ensure_subtabs();
+        let project = self.active_project().to_owned();
+        let len = self
+            .project_subtabs
+            .get(&project)
+            .map(Vec::len)
+            .unwrap_or(0);
+        if index < len {
+            self.active_subtab.insert(project, index);
+            self.project_checkpoint_dirty = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Add a layer-2 tab that works without creating a git worktree. It still
+    /// receives an isolated workspace root under the project so two layer-2
+    /// opens never share the layer-1 working folder.
+    pub fn subtab_add_in_place(&mut self, name: Option<String>) -> bool {
+        self.ensure_subtabs();
+        let project = self.active_project().to_owned();
+        let base = self.project_cwd();
+        let tabs = self.project_subtabs.entry(project.clone()).or_default();
+        if tabs.len() >= crate::project_workspace::MAX_PROJECT_SUBTABS {
+            return false;
+        }
+        let name = name.unwrap_or_else(|| format!("in-place-{}", tabs.len()));
+        let root = isolated_subtab_root(&base, tabs, &name);
+        tabs.push(SubTab {
+            name,
+            root: root.display().to_string(),
+            kind: SubTabKind::InPlace,
+            concurrency: 1,
+        });
+        let index = tabs.len() - 1;
+        self.active_subtab.insert(project, index);
+        self.project_checkpoint_dirty = true;
+        true
+    }
+
+    /// Create a fresh `git worktree` and open it as a layer-2 tab.
+    pub fn subtab_add_worktree(&mut self, name: Option<String>) -> Result<String, String> {
+        self.ensure_subtabs();
+        let project = self.active_project().to_owned();
+        let base = self.project_cwd();
+        let tabs = self.project_subtabs.entry(project.clone()).or_default();
+        if tabs.len() >= crate::project_workspace::MAX_PROJECT_SUBTABS {
+            return Err("too many sub-tabs".into());
+        }
+        let name = name.unwrap_or_else(|| format!("wt-{}", tabs.len()));
+        if name.is_empty()
+            || !name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+        {
+            return Err("invalid worktree name".into());
+        }
+        let path = base.join(".zenpi-worktrees").join(&name);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+        crate::project_workspace::add_worktree(&base, &path, &name)?;
+        tabs.push(SubTab {
+            name: name.clone(),
+            root: path.display().to_string(),
+            kind: SubTabKind::Worktree,
+            concurrency: 1,
+        });
+        let index = tabs.len() - 1;
+        self.active_subtab.insert(project, index);
+        self.project_checkpoint_dirty = true;
+        Ok(name)
+    }
+
+    pub fn subtab_close(&mut self, index: usize) -> bool {
+        self.ensure_subtabs();
+        let project = self.active_project().to_owned();
+        let cwd = self.project_cwd();
+        let Some(tabs) = self.project_subtabs.get_mut(&project) else {
+            return false;
+        };
+        if index == 0 || index >= tabs.len() {
+            return false;
+        }
+        let removed = tabs.remove(index);
+        if removed.kind == SubTabKind::Worktree {
+            let _ = crate::project_workspace::remove_worktree(
+                &cwd,
+                std::path::Path::new(&removed.root),
+            );
+        }
+        let active = self.active_subtab.entry(project).or_insert(0);
+        if *active >= tabs.len() {
+            *active = tabs.len().saturating_sub(1);
+        } else if *active > index {
+            *active -= 1;
+        }
+        self.project_checkpoint_dirty = true;
+        true
+    }
+
+    pub fn subtab_move(&mut self, index: usize, target: usize) -> bool {
+        self.ensure_subtabs();
+        let project = self.active_project().to_owned();
+        let active_name = {
+            let active = *self.active_subtab.get(&project).unwrap_or(&0);
+            self.project_subtabs
+                .get(&project)
+                .and_then(|tabs| tabs.get(active))
+                .map(|tab| tab.name.clone())
+        };
+        let Some(tabs) = self.project_subtabs.get_mut(&project) else {
+            return false;
+        };
+        if index == 0 || index >= tabs.len() || tabs.len() < 3 {
+            return false;
+        }
+        let target = target.min(tabs.len() - 1).max(1);
+        if target == index {
+            return true;
+        }
+        let item = tabs.remove(index);
+        tabs.insert(target, item);
+        if let Some(name) = active_name
+            && let Some(position) = tabs.iter().position(|tab| tab.name == name)
+        {
+            self.active_subtab.insert(project, position);
+        }
+        self.project_checkpoint_dirty = true;
+        true
+    }
+
+    /// Move the active layer-1 project tab by one position (wraps).
+    pub fn move_active_project(&mut self, delta: isize) -> bool {
+        let len = self.project_tabs.len();
+        if len < 2 {
+            return false;
+        }
+        let target = (self.active_project as isize + delta).rem_euclid(len as isize) as usize;
+        let name = self.active_project().to_owned();
+        self.move_project_tab(&name, target)
+    }
+
+    /// Move the active layer-2 sub-tab by one position (the Main tab stays at 0).
+    pub fn move_active_subtab(&mut self, delta: isize) -> bool {
+        self.ensure_subtabs();
+        let project = self.active_project().to_owned();
+        let len = self
+            .project_subtabs
+            .get(&project)
+            .map(Vec::len)
+            .unwrap_or(0);
+        if len < 3 {
+            return false;
+        }
+        let current = *self.active_subtab.get(&project).unwrap_or(&0);
+        if current == 0 {
+            return false;
+        }
+        let target = (current as isize + delta).clamp(1, len as isize - 1) as usize;
+        if target == current {
+            return false;
+        }
+        self.subtab_move(current, target)
+    }
+
+    /// Rename one layer-2 tab (worktree or otherwise).
+    pub fn subtab_rename(&mut self, index: usize, name: &str) -> bool {
+        self.ensure_subtabs();
+        let name = name.trim();
+        if name.is_empty() {
+            return false;
+        }
+        let project = self.active_project().to_owned();
+        let Some(tabs) = self.project_subtabs.get_mut(&project) else {
+            return false;
+        };
+        if index >= tabs.len() {
+            return false;
+        }
+        if tabs
+            .iter()
+            .enumerate()
+            .any(|(other, tab)| other != index && tab.name == name)
+        {
+            return false;
+        }
+        tabs[index].name = name.to_owned();
+        self.project_checkpoint_dirty = true;
+        true
+    }
+
+    /// Rename a layer-1 workspace card by setting a display alias (ZS1-169).
+    /// The underlying folder and session id are never touched.
+    pub fn rename_project_display(&mut self, index: usize, name: &str) -> bool {
+        let name = name.trim();
+        let too_long = name.chars().count() > 20;
+        if name.is_empty() || too_long || index >= self.project_tabs.len() {
+            return false;
+        }
+        if (0..self.project_tabs.len())
+            .any(|other| other != index && self.project_label(other) == name)
+        {
+            return false;
+        }
+        let key = self.project_tabs[index].clone();
+        self.project_metadata.entry(key).or_default().display_name = Some(name.to_owned());
+        self.project_checkpoint_dirty = true;
+        self.dirty = true;
+        true
+    }
+
+    /// Begin an inline rename of a header tab card (ZS1-169).
+    fn begin_tab_rename(&mut self, layer1: bool, index: usize) {
+        let current = if layer1 {
+            self.project_tabs
+                .get(index)
+                .map(|_| self.project_label(index))
+        } else {
+            self.subtabs().get(index).map(|tab| tab.name.clone())
+        };
+        if let Some(name) = current {
+            self.tab_rename = Some(TabRename {
+                layer1,
+                index,
+                buffer: name,
+            });
+            self.dirty = true;
+        }
+    }
+
+    /// Commit the active inline rename, applying existing name validation.
+    fn commit_tab_rename(&mut self) {
+        let Some(rename) = self.tab_rename.take() else {
+            return;
+        };
+        let name = rename.buffer.trim().to_owned();
+        if name.is_empty() {
+            self.set_status("rename cancelled: empty name");
+            self.dirty = true;
+            return;
+        }
+        if rename.layer1 {
+            if !self.rename_project_display(rename.index, &name) {
+                self.set_status("rename rejected: duplicate or invalid name");
+            }
+        } else if !self.subtab_rename(rename.index, &name) {
+            self.set_status("rename rejected: duplicate or invalid name");
+        }
+        self.dirty = true;
+    }
+
+    /// Key handling for the inline tab rename overlay.
+    fn tab_rename_key(&mut self, key: KeyEvent) -> TuiAction {
+        match key.code {
+            KeyCode::Esc => {
+                self.tab_rename = None;
+                self.set_status("rename cancelled");
+            }
+            KeyCode::Enter => self.commit_tab_rename(),
+            KeyCode::Backspace => {
+                if let Some(rename) = self.tab_rename.as_mut() {
+                    rename.buffer.pop();
+                }
+            }
+            KeyCode::Char(character) if !character.is_control() => {
+                if let Some(rename) = self.tab_rename.as_mut()
+                    && rename.buffer.len() + character.len_utf8() <= 64
+                {
+                    rename.buffer.push(character);
+                }
+            }
+            _ => {}
+        }
+        self.dirty = true;
+        TuiAction::Redraw
+    }
+
+    /// Adjust the default harness concurrency for one layer-2 tab.
+    pub fn subtab_concurrency(&mut self, index: usize, delta: isize) -> bool {
+        self.ensure_subtabs();
+        let project = self.active_project().to_owned();
+        let Some(tabs) = self.project_subtabs.get_mut(&project) else {
+            return false;
+        };
+        if index >= tabs.len() {
+            return false;
+        }
+        let next = (tabs[index].concurrency as isize + delta).clamp(1, 64) as u16;
+        if next == tabs[index].concurrency {
+            return false;
+        }
+        tabs[index].concurrency = next;
+        self.project_checkpoint_dirty = true;
+        true
+    }
+
     pub fn close_project_tab(&mut self, name: &str) -> bool {
         if self.project_tabs.len() <= 1 {
             return false;
@@ -2883,39 +3550,69 @@ impl TuiState {
     }
     pub fn project_label(&self, index: usize) -> String {
         let key = &self.project_tabs[index];
-        self.project_workspace
-            .as_ref()
-            .and_then(|w| w.tabs().iter().find(|t| t.id().as_str() == key))
-            .map(|tab| {
-                let duplicate = self
-                    .project_workspace
+        // An explicit card rename wins over the folder basename (ZS1-169).
+        if let Some(name) = self
+            .project_metadata
+            .get(key)
+            .and_then(|meta| meta.display_name.clone())
+            .filter(|name| !name.trim().is_empty())
+        {
+            return name;
+        }
+        let cwd_of = |i: usize| -> Option<String> {
+            let k = &self.project_tabs[i];
+            self.project_metadata
+                .get(k)
+                .map(|meta| meta.cwd.clone())
+                .filter(|cwd| !cwd.is_empty())
+                .or_else(|| {
+                    self.project_workspace.as_ref().and_then(|workspace| {
+                        workspace
+                            .tabs()
+                            .iter()
+                            .find(|tab| tab.id().as_str() == k)
+                            .map(|tab| tab.cwd().display().to_string())
+                    })
+                })
+        };
+        let basename = |i: usize| -> Option<String> {
+            let cwd = cwd_of(i)?;
+            std::path::Path::new(&cwd)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned)
+        };
+        // Layer-1 tabs read as folder names, never as project-id hashes.
+        let name = basename(index)
+            .or_else(|| {
+                self.project_workspace
                     .as_ref()
-                    .unwrap()
-                    .tabs()
-                    .iter()
-                    .filter(|t| t.title() == tab.title())
-                    .count()
-                    > 1;
-                if duplicate {
-                    format!(
-                        "{} ·{} #{}",
-                        truncate_to_width(tab.title(), 12),
-                        truncate_to_width(
-                            &tab.cwd()
-                                .parent()
-                                .unwrap_or(tab.cwd())
-                                .file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy(),
-                            6
-                        ),
-                        &tab.id().as_str()[..6]
-                    )
-                } else {
-                    tab.title().to_owned()
-                }
+                    .and_then(|workspace| {
+                        workspace
+                            .tabs()
+                            .iter()
+                            .find(|tab| tab.id().as_str() == key)
+                            .map(|tab| tab.title().to_owned())
+                    })
+                    .filter(|title| !title.is_empty() && !looks_like_hash(title))
             })
-            .unwrap_or_else(|| key.clone())
+            .unwrap_or_else(|| key.chars().take(12).collect());
+        let duplicates = (0..self.project_tabs.len())
+            .filter(|i| basename(*i).as_deref() == Some(name.as_str()))
+            .count();
+        if duplicates > 1
+            && let Some(parent) = cwd_of(index).and_then(|cwd| {
+                std::path::Path::new(&cwd)
+                    .parent()
+                    .and_then(|parent| parent.file_name())
+                    .and_then(|name| name.to_str())
+                    .map(str::to_owned)
+            })
+        {
+            return format!("{name} ·{parent}");
+        }
+        name
     }
 
     /// Migrate legacy display-name keys to canonical directory IDs, preserving
@@ -2970,6 +3667,14 @@ impl TuiState {
             .position(|id| Some(id.as_str()) == workspace.active().map(|t| t.id().as_str()))
             .unwrap_or(0);
         self.project_name = self.project_tabs[self.active_project].clone();
+        for tab in workspace.tabs() {
+            let id = tab.id().as_str().to_owned();
+            let cwd = tab.cwd().display().to_string();
+            let entry = self.project_metadata.entry(id).or_default();
+            if entry.cwd.is_empty() {
+                entry.cwd = cwd;
+            }
+        }
         self.project_workspace = Some(workspace);
         self.project_checkpoint_dirty = true;
         self.cached_transcript = None;
@@ -3105,12 +3810,29 @@ impl TuiState {
                             "presets":draft.presets,"reasoning_folded":draft.ux.reasoning_folded})
                     }).unwrap_or_default()
                 };
+                // Persist layer-2 sub-tabs so a restart keeps their order,
+                // names, and harness concurrency (ZS1-157). The lazily created
+                // default `Main` tab is omitted so an untouched project keeps
+                // its historical checkpoint bytes.
+                let is_default_main = |tabs: &Vec<SubTab>| {
+                    tabs.len() == 1
+                        && tabs[0].kind == SubTabKind::Main
+                        && tabs[0].name == name.as_str()
+                        && tabs[0].concurrency == 1
+                };
+                let subtabs = self
+                    .project_subtabs
+                    .get(name)
+                    .filter(|tabs| !is_default_main(tabs));
+                let active_subtab = subtabs.and(self.active_subtab.get(name));
                 serde_json::json!({
                     "draft": draft,
                     "name": name,
                     "metadata": self.project_metadata.get(name),
                     "layout": layout,
                     "messages": messages,
+                    "subtabs": subtabs,
+                    "active_subtab": active_subtab,
                 })
             })
             .collect::<Vec<_>>();
@@ -3246,6 +3968,8 @@ impl TuiState {
         self.project_layouts.clear();
         self.project_metadata.clear();
         self.project_session_cursors.clear();
+        self.project_subtabs.clear();
+        self.active_subtab.clear();
         if let Some(metadata) = value.get("metadata") {
             self.project_metadata = serde_json::from_value(metadata.clone()).unwrap_or_default();
         }
@@ -3358,6 +4082,24 @@ impl TuiState {
                         serde_json::from_value::<ProjectTabMetadata>(metadata.clone())
                 {
                     self.project_metadata.insert(name.to_owned(), metadata);
+                }
+                if let Some(subtabs) = state.get("subtabs")
+                    && let Ok(subtabs) = serde_json::from_value::<Vec<SubTab>>(subtabs.clone())
+                {
+                    let bounded: Vec<SubTab> = subtabs
+                        .into_iter()
+                        .take(crate::project_workspace::MAX_PROJECT_SUBTABS)
+                        .filter(|tab| !tab.name.is_empty() && tab.name.len() <= 128)
+                        .collect();
+                    if !bounded.is_empty() {
+                        let active = state
+                            .get("active_subtab")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0) as usize;
+                        let active = active.min(bounded.len().saturating_sub(1));
+                        self.active_subtab.insert(name.to_owned(), active);
+                        self.project_subtabs.insert(name.to_owned(), bounded);
+                    }
                 }
             }
         }
@@ -3585,6 +4327,7 @@ impl TuiState {
     pub fn set_resource_snapshot(&mut self, snapshot: crate::resources::ResourceSnapshot) {
         self.resource_snapshot = Some(snapshot);
         self.resource_status = ResourcePaneStatus::Ready;
+        self.rebuild_resource_bus();
         self.dirty = true;
     }
 
@@ -3599,6 +4342,210 @@ impl TuiState {
     /// that a refresh reached the UI without coupling to rendered text.
     pub fn resource_snapshot(&self) -> Option<&crate::resources::ResourceSnapshot> {
         self.resource_snapshot.as_ref()
+    }
+
+    /// Publish a completed LAN scan for the Resources pane block list.
+    pub fn set_lan_snapshot(&mut self, snapshot: crate::net_probe::LanSnapshot) {
+        if snapshot.blocks.is_empty() {
+            self.resource_block_index = 0;
+        } else {
+            self.resource_block_index = self.resource_block_index.min(snapshot.blocks.len() - 1);
+        }
+        self.lan_snapshot = Some(snapshot);
+        self.rebuild_resource_bus();
+        self.dirty = true;
+    }
+
+    pub fn lan_snapshot(&self) -> Option<&crate::net_probe::LanSnapshot> {
+        self.lan_snapshot.as_ref()
+    }
+
+    pub fn resource_block_count(&self) -> usize {
+        self.lan_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.blocks.len())
+            .unwrap_or(0)
+    }
+
+    /// Move the block selection, wrapping at both ends so the list is always
+    /// reachable from the keyboard.
+    pub fn move_resource_block(&mut self, delta: isize) {
+        let count = self.resource_block_count();
+        if count == 0 {
+            self.resource_block_index = 0;
+            return;
+        }
+        let current = self.resource_block_index as isize;
+        let next = (current + delta).rem_euclid(count as isize);
+        self.resource_block_index = next as usize;
+        self.dirty = true;
+    }
+
+    /// Open the selected block's detail table. Returns a redraw either way.
+    pub fn activate_resource_block(&mut self) -> TuiAction {
+        let Some(snapshot) = self.lan_snapshot.as_ref() else {
+            return TuiAction::Redraw;
+        };
+        if let Some(block) = snapshot.blocks.get(self.resource_block_index) {
+            self.resource_open_block = Some(block.class);
+        }
+        self.dirty = true;
+        TuiAction::Redraw
+    }
+
+    pub fn open_resource_block(&mut self, class: crate::net_probe::DeviceClass) {
+        self.resource_open_block = Some(class);
+        self.dirty = true;
+    }
+
+    pub fn close_resource_block(&mut self) {
+        self.resource_open_block = None;
+        self.dirty = true;
+    }
+
+    /// Publish a completed cluster projection (ZS1-160). The projection never
+    /// carries credentials; it is a read-only aggregation for the Resources
+    /// pane.
+    pub fn set_cluster_snapshot(&mut self, snapshot: crate::cluster::ClusterSnapshot) {
+        self.cluster_snapshot = Some(snapshot);
+        self.rebuild_resource_bus();
+        self.dirty = true;
+    }
+
+    pub fn cluster_snapshot(&self) -> Option<&crate::cluster::ClusterSnapshot> {
+        self.cluster_snapshot.as_ref()
+    }
+
+    /// Drop the cluster projection (e.g. after authorization is withdrawn).
+    pub fn clear_cluster_snapshot(&mut self) {
+        self.cluster_snapshot = None;
+        self.rebuild_resource_bus();
+        self.dirty = true;
+    }
+
+    /// Number of hosts currently running at least one worker.
+    pub fn cluster_active_hosts(&self) -> usize {
+        self.cluster_snapshot
+            .as_ref()
+            .map(|snapshot| {
+                snapshot
+                    .hosts
+                    .iter()
+                    .filter(|host| host.worker_count > 0)
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
+    pub fn cluster_running_workers(&self) -> usize {
+        self.cluster_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.running_workers)
+            .unwrap_or(0)
+    }
+
+    /// Rebuild the unified resource bus from the inputs the view currently
+    /// holds. Pure aggregation; no I/O and no locking. Called whenever one of
+    /// the contributing snapshots, the budget signal or a port lease changes.
+    fn rebuild_resource_bus(&mut self) {
+        let now = crate::resources::now_ms();
+        let Some(host) = self.resource_snapshot.as_ref() else {
+            self.resource_bus = None;
+            return;
+        };
+        let mut bus = crate::cluster::cluster_resource_bus(
+            host,
+            self.lan_snapshot.as_ref(),
+            self.cluster_snapshot.as_ref(),
+            now,
+        );
+        bus = bus.with_budget(self.agent_budget.clone());
+        bus = bus.with_ports(self.port_leases.snapshot(now));
+        self.resource_bus = Some(bus);
+    }
+
+    /// Last unified resource/information bus snapshot (ZS1-161).
+    pub fn resource_bus(&self) -> Option<&crate::resources::ResourceBusSnapshot> {
+        self.resource_bus.as_ref()
+    }
+
+    /// Bounded external projection of the unified bus, shared by the Resources
+    /// pane and text/JSON consumers.
+    pub fn resource_bus_projection(&self) -> Option<crate::view_model::ResourceBusProjection> {
+        self.resource_bus
+            .as_ref()
+            .map(crate::view_model::ResourceBusProjection::from_bus)
+    }
+
+    /// Publish the agent's balance/budget for the unified bus. The host owns
+    /// the governance ledger; this view only stores the read-only projection.
+    pub fn set_agent_budget(&mut self, budget: crate::resources::AgentBudgetSignal) {
+        self.agent_budget = budget;
+        self.rebuild_resource_bus();
+        self.dirty = true;
+    }
+
+    pub fn agent_budget(&self) -> &crate::resources::AgentBudgetSignal {
+        &self.agent_budget
+    }
+
+    /// Stage a local development-port lease and fold it into the bus. Fails
+    /// closed on conflict; it never overrides a live lease held by another
+    /// agent.
+    pub fn lease_dev_port(
+        &mut self,
+        port: u16,
+        owner: &str,
+        ttl_ms: u64,
+    ) -> Result<crate::resources::PortLease, crate::resources::PortLeaseError> {
+        let lease = self
+            .port_leases
+            .lease(port, owner, ttl_ms, crate::resources::now_ms())?;
+        self.rebuild_resource_bus();
+        self.dirty = true;
+        Ok(lease)
+    }
+
+    /// Release a lease held by `owner`.
+    pub fn release_dev_port(
+        &mut self,
+        port: u16,
+        owner: &str,
+    ) -> Result<crate::resources::PortLease, crate::resources::PortLeaseError> {
+        let lease = self
+            .port_leases
+            .release(port, owner, crate::resources::now_ms())?;
+        self.rebuild_resource_bus();
+        self.dirty = true;
+        Ok(lease)
+    }
+
+    /// Preempt stale leases (and optionally a cancelled owner's leases) and
+    /// fold the reclamation into the bus.
+    pub fn preempt_dev_ports(&mut self, owner: Option<&str>) -> usize {
+        let now = crate::resources::now_ms();
+        let mut preempted = self.port_leases.preempt_expired(now).len();
+        if let Some(owner) = owner {
+            preempted += self.port_leases.preempt_owner(owner, now).len();
+        }
+        if preempted > 0 {
+            self.rebuild_resource_bus();
+            self.dirty = true;
+        }
+        preempted
+    }
+
+    pub fn port_leases(&self) -> &crate::resources::PortLeaseRegistry {
+        &self.port_leases
+    }
+
+    /// Publish the active conversation's context usage so the resource monitor
+    /// can show the opencode-style `context` column. Either side may be absent
+    /// independently; the pane then reports `context unavailable`.
+    pub fn set_context_usage(&mut self, used_tokens: Option<u64>, limit_tokens: Option<u64>) {
+        self.transcript_ux.history_tokens = used_tokens;
+        self.transcript_ux.context_limit = limit_tokens;
+        self.dirty = true;
     }
 
     /// Mark a Gantt refresh as admitted by the production host.
@@ -4034,6 +4981,12 @@ impl TuiState {
     }
 
     pub fn push_message(&mut self, role: MessageRole, text: impl Into<String>) {
+        // Arch-origin commands keep their feedback out of the discussion
+        // transcript (ZS1-165); the arch console is a separate session.
+        if self.message_target == MessageTarget::Arch {
+            self.push_arch_message(role, text);
+            return;
+        }
         self.messages.push_back(TuiMessage::new(role, text));
         self.cached_transcript = None;
         while self.messages.len() > self.max_messages {
@@ -4078,6 +5031,508 @@ impl TuiState {
     /// Number of messages currently projected in the Goal hot zone.
     pub fn goal_message_count(&self) -> usize {
         self.goal_messages.len()
+    }
+
+    /// Current inline Goal label shown in the top-left conversation group.
+    pub fn goal_text(&self) -> &str {
+        &self.goal_text
+    }
+
+    /// Whether the inline Goal editor currently owns keyboard input.
+    pub fn goal_edit_active(&self) -> bool {
+        self.goal_edit.is_some()
+    }
+
+    /// Current editor contents while the inline Goal editor is open.
+    pub fn goal_edit_buffer(&self) -> Option<&str> {
+        self.goal_edit
+            .as_ref()
+            .map(crate::view_model::GoalEdit::text)
+    }
+
+    /// Enter the inline Goal editor seeded with the committed Goal.  Returns
+    /// `false` only if the retained Goal is itself out of bounds.
+    pub fn begin_goal_edit(&mut self) -> bool {
+        match crate::view_model::GoalEdit::begin(self.goal_text.clone()) {
+            Ok(edit) => {
+                self.goal_edit = Some(edit);
+                self.dirty = true;
+                true
+            }
+            Err(error) => {
+                self.set_status(format!("Goal not editable: {error}"));
+                false
+            }
+        }
+    }
+
+    /// Abandon the inline Goal editor without changing the committed Goal.
+    pub fn cancel_goal_edit(&mut self) -> bool {
+        let active = self.goal_edit.take().is_some();
+        if active {
+            self.dirty = true;
+        }
+        active
+    }
+
+    /// Commit the inline Goal editor.  On success the bounded Goal is retained
+    /// on the state and queued for the domain owner via
+    /// [`Self::take_goal_edit_intent`].  An empty Goal is rejected and the
+    /// editor stays open so the user can correct it.
+    pub fn commit_goal_edit(&mut self) -> Option<String> {
+        let edit = self.goal_edit.as_ref()?;
+        let committed = match edit.commit() {
+            Ok(text) => text,
+            Err(error) => {
+                self.set_status(format!("Goal not saved: {error}"));
+                return None;
+            }
+        };
+        self.goal_edit = None;
+        self.goal_text = committed.clone();
+        self.goal_edit_intent = Some(committed.clone());
+        self.push_message(MessageRole::System, format!("Goal updated: {committed}"));
+        self.dirty = true;
+        Some(committed)
+    }
+
+    /// Drain the last committed Goal for the host to persist through the
+    /// domain/external owner. The view layer never writes storage itself.
+    pub fn take_goal_edit_intent(&mut self) -> Option<String> {
+        self.goal_edit_intent.take()
+    }
+
+    /// Which left-column prompt currently owns keyboard focus (ZS1-148).
+    pub fn left_prompt(&self) -> LeftPrompt {
+        self.left_prompt
+    }
+
+    /// Mark the next submission as an arch master-session turn so the host
+    /// routes it to the independent arch runtime owner (ZS1-156).
+    pub fn set_arch_submit_pending(&mut self) {
+        self.arch_submit_pending = true;
+    }
+
+    pub fn take_arch_submit_pending(&mut self) -> bool {
+        std::mem::take(&mut self.arch_submit_pending)
+    }
+
+    /// Focus a left-column prompt without mutating either draft.
+    pub fn set_left_prompt(&mut self, prompt: LeftPrompt) -> bool {
+        if self.left_prompt == prompt {
+            return false;
+        }
+        self.left_prompt = prompt;
+        self.dirty = true;
+        true
+    }
+
+    /// Toggle between the top-left discussion prompt and the lower-left arch
+    /// console. Bound to Alt-M in the production key map.
+    pub fn toggle_left_prompt(&mut self) -> LeftPrompt {
+        let next = match self.left_prompt {
+            LeftPrompt::Discussion => LeftPrompt::Arch,
+            LeftPrompt::Arch => LeftPrompt::Discussion,
+        };
+        self.left_prompt = next;
+        self.dirty = true;
+        next
+    }
+
+    /// The model-selecting zone owned by the focused left prompt (ZS1-152).
+    pub fn focused_zone(&self) -> crate::view_model::Zone {
+        match self.left_prompt {
+            LeftPrompt::Discussion => crate::view_model::Zone::Discussion,
+            LeftPrompt::Arch => crate::view_model::Zone::Arch,
+        }
+    }
+
+    /// Durable per-zone model overrides held by this view (ZS1-152).
+    pub fn zone_models(&self) -> &crate::view_model::ZoneModels {
+        &self.zone_models
+    }
+
+    /// Stored model for one zone, if it owns an explicit selection. Workers
+    /// never store a model.
+    pub fn zone_model(&self, zone: crate::view_model::Zone) -> Option<&str> {
+        self.zone_models.get(zone)
+    }
+
+    /// Effective model for one zone: an explicit discussion/arch override wins,
+    /// otherwise the global model is used. Workers always use the global model.
+    pub fn effective_zone_model<'a>(
+        &'a self,
+        zone: crate::view_model::Zone,
+        global_model: Option<&'a str>,
+    ) -> Option<&'a str> {
+        self.zone_models.effective(zone, global_model)
+    }
+
+    /// Set or clear the model selection for one zone. The worker pool is
+    /// rejected: its model is the project/global model. An invalid identity
+    /// changes nothing.
+    pub fn set_zone_model(
+        &mut self,
+        zone: crate::view_model::Zone,
+        model: Option<String>,
+    ) -> Result<(), crate::view_model::ViewModelError> {
+        let mut next = self.zone_models.clone();
+        next.set(zone, model)?;
+        self.zone_models = next;
+        self.dirty = true;
+        Ok(())
+    }
+
+    /// Replace every zone override from a durable snapshot (restart/checkpoint
+    /// restore). Validation is atomic: an invalid snapshot changes nothing.
+    pub fn restore_zone_models(
+        &mut self,
+        models: crate::view_model::ZoneModels,
+    ) -> Result<bool, crate::view_model::ViewModelError> {
+        models.validate()?;
+        let changed = self.zone_models != models;
+        self.zone_models = models;
+        if changed {
+            self.dirty = true;
+        }
+        Ok(changed)
+    }
+
+    /// Concurrency quota for one zone. Discussion and arch are single
+    /// concurrency; the worker pool runs at the active project's layer-2 count.
+    pub fn zone_concurrency(&self, zone: crate::view_model::Zone) -> u32 {
+        zone.concurrency(self.worker_concurrency())
+    }
+
+    /// Project-defined background worker count for the active layer-2
+    /// workspace. Falls back to one when no explicit workspace is selected.
+    pub fn worker_concurrency(&self) -> u32 {
+        let project = self.active_project();
+        let index = self.active_subtab.get(project).copied().unwrap_or(0);
+        self.project_subtabs
+            .get(project)
+            .and_then(|tabs| tabs.get(index))
+            .map(|tab| u32::from(tab.concurrency))
+            .unwrap_or(1)
+    }
+
+    /// Arch console transcript, oldest first.
+    pub fn arch_messages(&self) -> impl Iterator<Item = &TuiMessage> {
+        self.arch_messages.iter()
+    }
+
+    pub fn arch_message_count(&self) -> usize {
+        self.arch_messages.len()
+    }
+
+    /// Append one bounded row to the arch console transcript. This records
+    /// operator intent and host results; it is not a model transcript.
+    pub fn push_arch_message(&mut self, role: MessageRole, text: impl Into<String>) {
+        let text = bound_text(text.into());
+        if text.is_empty() {
+            return;
+        }
+        self.arch_messages.push_back(TuiMessage::new(role, text));
+        while self.arch_messages.len() > self.max_messages {
+            self.arch_messages.pop_front();
+        }
+        self.pane_scroll.remove(&PaneId::Arch);
+        self.dirty = true;
+    }
+
+    pub fn arch_input(&self) -> &str {
+        &self.arch_input
+    }
+
+    /// Route host feedback to the arch transcript while a command submitted
+    /// from the arch console runs (ZS1-165). Callers reset it to
+    /// [`MessageTarget::Discussion`] when the command completes.
+    pub fn set_message_target(&mut self, target: MessageTarget) {
+        self.message_target = target;
+    }
+
+    pub fn message_target(&self) -> MessageTarget {
+        self.message_target
+    }
+
+    /// Complete a slash command name in the arch draft (ZS1-165). Mirrors the
+    /// discussion prompt so both prompts discover `/` commands independently.
+    fn arch_complete_slash(&mut self) -> bool {
+        if self.arch_cursor != self.arch_input.len() {
+            return false;
+        }
+        let trimmed = self.arch_input.trim_start_matches(char::is_whitespace);
+        if !trimmed.starts_with('/')
+            || trimmed.len() <= 1
+            || trimmed[1..].chars().any(char::is_whitespace)
+        {
+            return false;
+        }
+        let candidates = slash::complete(trimmed);
+        if candidates.is_empty() {
+            return false;
+        }
+        let body = &trimmed[1..];
+        let common = slash_common_prefix(&candidates);
+        let replacement = if candidates.len() == 1 && common.len() >= body.len() {
+            format!("/{} ", candidates[0])
+        } else if common.len() > body.len() {
+            format!("/{common}")
+        } else if let Some(exact) = candidates
+            .iter()
+            .find(|candidate| candidate.eq_ignore_ascii_case(body))
+        {
+            format!("/{exact} ")
+        } else {
+            return false;
+        };
+        if replacement.len() > crate::tool_runtime::MAX_MASTER_SESSION_INPUT_BYTES {
+            return false;
+        }
+        self.arch_input = replacement;
+        self.arch_cursor = self.arch_input.len();
+        self.dirty = true;
+        true
+    }
+
+    /// Replace the arch draft (used by hosts restoring a checkpoint and by
+    /// tests). The value is bounded by the master-session budget.
+    pub fn set_arch_input(&mut self, text: impl Into<String>) {
+        let mut text = text.into();
+        if text.len() > crate::tool_runtime::MAX_MASTER_SESSION_INPUT_BYTES {
+            let mut boundary = crate::tool_runtime::MAX_MASTER_SESSION_INPUT_BYTES;
+            while !text.is_char_boundary(boundary) {
+                boundary -= 1;
+            }
+            text.truncate(boundary);
+        }
+        self.arch_cursor = text.len();
+        self.arch_input = text;
+        self.dirty = true;
+    }
+
+    /// Whether the master session still has an active turn.
+    pub fn master_busy(&self) -> bool {
+        self.master_busy
+    }
+
+    /// Set the master-session concurrency flag. Hosts use this when a job that
+    /// was not started through [`Self::submit_arch_prompt`] reaches a terminal
+    /// boundary, so the arch console can never stay permanently busy.
+    pub fn set_master_busy(&mut self, busy: bool) {
+        self.master_busy = busy;
+    }
+
+    /// Mark the master turn finished and record its bounded outcome in the arch
+    /// transcript. Called by the owner host after a bash/steer turn terminates.
+    pub fn complete_master_turn(&mut self, role: MessageRole, text: impl Into<String>) {
+        self.master_busy = false;
+        self.push_arch_message(role, text);
+    }
+
+    /// Drain the last classified arch submission. The view layer only
+    /// classifies; the host owns execution.
+    pub fn take_arch_intent(&mut self) -> Option<MasterSessionCommand> {
+        self.arch_intent.take()
+    }
+
+    /// Classify and submit the current arch draft (ZS1-148).
+    ///
+    /// The master session is single-concurrency: a `!command` bash submission is
+    /// rejected while a master turn is active, because the shell owner requires
+    /// an idle session. A steering instruction is allowed during an active turn
+    /// and joins it rather than forking a second worker. The draft is consumed
+    /// atomically: a rejected submission keeps it intact.
+    pub fn submit_arch_prompt(&mut self) -> Result<TuiAction, MasterSessionInputError> {
+        // Both prompts accept slash commands independently (ZS1-165). A slash
+        // draft from the arch console is routed to the host with the arch
+        // transcript as its feedback target; everything else keeps the
+        // master-session bash/steer classification.
+        let trimmed = self.arch_input.trim();
+        if trimmed.starts_with('/')
+            && let Ok(InputRoute::Slash(command)) = slash::route_input(trimmed)
+        {
+            let text = trimmed.to_owned();
+            self.arch_input.clear();
+            self.arch_cursor = 0;
+            self.dirty = true;
+            return Ok(TuiAction::SubmitArchSlash { command, text });
+        }
+        let command = classify_master_session_input(&self.arch_input)?;
+        if command.is_bash() && self.master_busy {
+            return Err(MasterSessionInputError::Busy);
+        }
+        let display = command.display();
+        if !display.trim().is_empty() {
+            self.push_arch_message(MessageRole::User, display);
+        }
+        self.arch_input.clear();
+        self.arch_cursor = 0;
+        self.master_busy = true;
+        self.arch_intent = Some(command.clone());
+        self.dirty = true;
+        Ok(TuiAction::SubmitArch(command))
+    }
+
+    fn goal_edit_key(&mut self, key: KeyEvent) -> TuiAction {
+        match key.code {
+            KeyCode::Esc => {
+                self.cancel_goal_edit();
+                TuiAction::Redraw
+            }
+            KeyCode::Enter => {
+                self.commit_goal_edit();
+                TuiAction::Redraw
+            }
+            KeyCode::Backspace => {
+                if let Some(edit) = self.goal_edit.as_mut() {
+                    edit.pop_char();
+                }
+                self.dirty = true;
+                TuiAction::Redraw
+            }
+            KeyCode::Char(character)
+                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+            {
+                if let Some(edit) = self.goal_edit.as_mut() {
+                    let _ = edit.push_char(character);
+                }
+                self.dirty = true;
+                TuiAction::Redraw
+            }
+            _ => TuiAction::None,
+        }
+    }
+
+    /// Whether the arch console should consume this key. Only editing keys are
+    /// captured; Ctrl/Alt chords (interrupt, tab switching, pane focus) keep
+    /// their existing meaning so arch focus never traps the terminal.
+    fn arch_prompt_captures(&self, key: KeyEvent) -> bool {
+        if key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
+            return false;
+        }
+        // Tab completes a slash command name while the draft is a command token
+        // (ZS1-165); otherwise Tab keeps its pane-focus meaning.
+        if key.code == KeyCode::Tab {
+            let trimmed = self.arch_input.trim_start_matches(char::is_whitespace);
+            return trimmed.starts_with('/')
+                && trimmed.len() > 1
+                && !trimmed[1..].chars().any(char::is_whitespace);
+        }
+        matches!(
+            key.code,
+            KeyCode::Char(_)
+                | KeyCode::Backspace
+                | KeyCode::Delete
+                | KeyCode::Left
+                | KeyCode::Right
+                | KeyCode::Home
+                | KeyCode::End
+                | KeyCode::Enter
+                | KeyCode::Esc
+        )
+    }
+
+    /// Bounded editor for the lower-left arch console (ZS1-148). Enter submits
+    /// (Shift-Enter inserts a newline), Esc returns focus to the discussion
+    /// prompt while keeping the draft, and every edit stays within the
+    /// master-session byte budget.
+    fn arch_prompt_key(&mut self, key: KeyEvent) -> TuiAction {
+        let max = crate::tool_runtime::MAX_MASTER_SESSION_INPUT_BYTES;
+        match key.code {
+            KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                if self.arch_input.len() < max {
+                    let at = self.arch_cursor.min(self.arch_input.len());
+                    self.arch_input.insert(at, '\n');
+                    self.arch_cursor = at + 1;
+                }
+            }
+            KeyCode::Enter => match self.submit_arch_prompt() {
+                Ok(action) => return action,
+                Err(error) => {
+                    self.set_status(format!("Arch console: {error}"));
+                }
+            },
+            KeyCode::Esc => {
+                self.left_prompt = LeftPrompt::Discussion;
+                self.set_status("Arch console unfocused · Alt-M to return");
+            }
+            KeyCode::Tab => {
+                if self.arch_complete_slash() {
+                    return TuiAction::Redraw;
+                }
+            }
+            KeyCode::Char(character) => {
+                let width = character.len_utf8();
+                if self.arch_input.len().saturating_add(width) <= max {
+                    let at = self.arch_cursor.min(self.arch_input.len());
+                    if self.arch_input.is_char_boundary(at) {
+                        self.arch_input.insert(at, character);
+                        self.arch_cursor = at + width;
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                if self.arch_cursor > 0 {
+                    let mut at = self.arch_cursor.min(self.arch_input.len());
+                    while at > 0 && !self.arch_input.is_char_boundary(at) {
+                        at -= 1;
+                    }
+                    if at > 0 {
+                        let previous = self.arch_input[..at]
+                            .chars()
+                            .next_back()
+                            .map_or(0, char::len_utf8);
+                        self.arch_input.replace_range(at - previous..at, "");
+                        self.arch_cursor = at - previous;
+                    }
+                }
+            }
+            KeyCode::Delete => {
+                let at = self.arch_cursor.min(self.arch_input.len());
+                if at < self.arch_input.len() && self.arch_input.is_char_boundary(at) {
+                    let next = self.arch_input[at..]
+                        .chars()
+                        .next()
+                        .map_or(0, char::len_utf8);
+                    self.arch_input.replace_range(at..at + next, "");
+                }
+            }
+            KeyCode::Left => {
+                let mut at = self.arch_cursor.min(self.arch_input.len());
+                while at > 0 && !self.arch_input.is_char_boundary(at) {
+                    at -= 1;
+                }
+                if at > 0 {
+                    at -= self.arch_input[..at]
+                        .chars()
+                        .next_back()
+                        .map_or(0, char::len_utf8);
+                }
+                self.arch_cursor = at;
+            }
+            KeyCode::Right => {
+                let mut at = self.arch_cursor.min(self.arch_input.len());
+                while at < self.arch_input.len() && !self.arch_input.is_char_boundary(at) {
+                    at += 1;
+                }
+                if at < self.arch_input.len() {
+                    at += self.arch_input[at..]
+                        .chars()
+                        .next()
+                        .map_or(0, char::len_utf8);
+                }
+                self.arch_cursor = at;
+            }
+            KeyCode::Home => self.arch_cursor = 0,
+            KeyCode::End => self.arch_cursor = self.arch_input.len(),
+            _ => {}
+        }
+        self.dirty = true;
+        TuiAction::Redraw
     }
 
     /// Replace the Goal lane when its owner changes (for example after a
@@ -5509,7 +6964,62 @@ impl TuiState {
         if mouse.kind == MouseEventKind::Up(MouseButton::Left) {
             self.dragging_split = None;
             self.dragging_row = None;
+            self.dragging_project_tab = None;
+            self.dragging_subtab = None;
             return TuiAction::Redraw;
+        }
+        // Arm a tab drag on press. The move is applied on `Drag` so the strip
+        // reorders live under the cursor; release simply clears the arm.
+        if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+            if let Some((_, index)) = self
+                .project_hits
+                .iter()
+                .find(|(rect, _)| rect.contains(position))
+                && *index < self.project_tabs.len()
+            {
+                self.dragging_project_tab = Some(*index);
+                self.dragging_subtab = None;
+            } else if let Some((_, SubTabHit::Select(index))) = self
+                .subtab_hits
+                .iter()
+                .find(|(rect, _)| rect.contains(position))
+            {
+                self.dragging_subtab = Some(*index);
+                self.dragging_project_tab = None;
+            }
+        }
+        if matches!(mouse.kind, MouseEventKind::Drag(MouseButton::Left)) {
+            if let Some(source) = self.dragging_project_tab {
+                let target = self
+                    .project_hits
+                    .iter()
+                    .find(|(rect, _)| rect.contains(position))
+                    .map(|(_, index)| *index)
+                    .filter(|index| *index < self.project_tabs.len() && *index != source);
+                if let Some(target) = target {
+                    let name = self.project_tabs[source].clone();
+                    if self.move_project_tab(&name, target) {
+                        self.dragging_project_tab = Some(target);
+                    }
+                }
+                return TuiAction::Redraw;
+            }
+            if let Some(source) = self.dragging_subtab {
+                let target = self
+                    .subtab_hits
+                    .iter()
+                    .find(|(rect, _)| rect.contains(position))
+                    .and_then(|(_, hit)| match hit {
+                        SubTabHit::Select(index) if *index != source => Some(*index),
+                        _ => None,
+                    });
+                if let Some(target) = target
+                    && self.subtab_move(source, target)
+                {
+                    self.dragging_subtab = Some(target.max(1));
+                }
+                return TuiAction::Redraw;
+            }
         }
         // Match the familiar terminal/browser tab gesture without changing
         // the BentoBox layout: middle-clicking a project tab closes only the
@@ -5536,6 +7046,25 @@ impl TuiState {
                 return TuiAction::Redraw;
             }
         }
+        // Right-click a header card to rename it in place (ZS1-169).
+        if mouse.kind == MouseEventKind::Down(MouseButton::Right) {
+            if let Some((_, index)) = self
+                .project_hits
+                .iter()
+                .find(|(rect, index)| rect.contains(position) && *index < self.project_tabs.len())
+            {
+                self.begin_tab_rename(true, *index);
+                return TuiAction::Redraw;
+            }
+            if let Some((_, SubTabHit::Select(index))) = self
+                .subtab_hits
+                .iter()
+                .find(|(rect, _)| rect.contains(position))
+            {
+                self.begin_tab_rename(false, *index);
+                return TuiAction::Redraw;
+            }
+        }
         if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
             if self.palette_area.contains(position) {
                 let choices = self.slash_choices();
@@ -5557,15 +7086,17 @@ impl TuiState {
                 .iter()
                 .find(|(rect, _)| rect.contains(position))
             {
-                if *index == usize::MAX {
-                    self.request_project_select(
-                        (self.active_project + self.project_tabs.len() - 1)
-                            % self.project_tabs.len(),
-                    );
-                } else if *index == usize::MAX - 1 {
-                    self.request_project_select(
-                        (self.active_project + 1) % self.project_tabs.len(),
-                    );
+                if *index == usize::MAX - 2 {
+                    let name = self.active_project().to_owned();
+                    self.close_project_tab(&name);
+                } else if *index >= usize::MAX - 3 - self.project_tabs.len()
+                    && *index < usize::MAX - 2
+                {
+                    let close_index = usize::MAX - 3 - *index;
+                    if close_index < self.project_tabs.len() {
+                        let name = self.project_tabs[close_index].clone();
+                        self.close_project_tab(&name);
+                    }
                 } else if *index == self.project_tabs.len() {
                     self.open_directory_picker();
                 } else {
@@ -5574,9 +7105,58 @@ impl TuiState {
                 return TuiAction::Redraw;
             }
         }
+        if mouse.kind == MouseEventKind::Down(MouseButton::Left)
+            && let Some((_, hit)) = self
+                .subtab_hits
+                .iter()
+                .find(|(rect, _)| rect.contains(position))
+        {
+            match *hit {
+                SubTabHit::Select(index) => {
+                    self.subtab_select(index);
+                }
+                SubTabHit::AddWorktree => match self.subtab_add_worktree(None) {
+                    Ok(name) => {
+                        self.set_status(format!("worktree sub-tab: {name}"));
+                        self.push_message(MessageRole::System, format!("worktree added: {name}"));
+                    }
+                    Err(error) => {
+                        self.set_status(format!("worktree add failed: {error}"));
+                        self.push_message(
+                            MessageRole::Error,
+                            format!("worktree add failed: {error}"),
+                        );
+                    }
+                },
+                SubTabHit::ConcurrencyUp(index) => {
+                    self.subtab_concurrency(index, 1);
+                }
+                SubTabHit::ConcurrencyDown(index) => {
+                    self.subtab_concurrency(index, -1);
+                }
+                SubTabHit::Close(index) => {
+                    self.subtab_close(index);
+                }
+            }
+            return TuiAction::Redraw;
+        }
         let adapter = BentoBoxLayoutAdapter::new(&self.workspace_layout, self.workspace_area);
         let panes: Vec<_> = adapter.visible_panes().collect();
         if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+            // A press in either left-column prompt moves keyboard focus there
+            // (ZS1-148). The prompt rectangles are recorded by the frame that
+            // was actually drawn, so a collapsed group never steals focus.
+            if self
+                .arch_prompt_rect
+                .is_some_and(|rect| rect.contains(position))
+            {
+                self.set_left_prompt(LeftPrompt::Arch);
+            } else if self
+                .docked_prompt_rect
+                .is_some_and(|rect| rect.contains(position))
+            {
+                self.set_left_prompt(LeftPrompt::Discussion);
+            }
             self.dragging_row = panes.iter().find_map(|top| {
                 panes
                     .iter()
@@ -5672,6 +7252,24 @@ impl TuiState {
                     if row < self.session_browser.len().min(32) {
                         self.session_browser_cursor = row;
                         self.dirty = true;
+                        return TuiAction::Redraw;
+                    }
+                }
+                if pane.id == PaneId::Resources {
+                    // Clicking a block row enters its detail table; clicking
+                    // again closes it. Content line 0 is the LAN header, so the
+                    // first block row is two cells below the pane's top border.
+                    if self.resource_open_block.is_some() {
+                        self.close_resource_block();
+                        return TuiAction::Redraw;
+                    }
+                    let scroll =
+                        usize::from(*self.pane_scroll.get(&PaneId::Resources).unwrap_or(&0));
+                    let row = usize::from(mouse.row.saturating_sub(pane.rect.y.saturating_add(2)))
+                        + scroll;
+                    if row < self.resource_block_count() {
+                        self.resource_block_index = row;
+                        self.activate_resource_block();
                         return TuiAction::Redraw;
                     }
                 }
@@ -5829,6 +7427,28 @@ impl TuiState {
     /// Direct handle_key remains the already-classified editor/modal dispatcher.
     pub fn handle_event_at(&mut self, event: Event, now: Instant) -> TuiAction {
         self.flush_ordinary_paste(now);
+        // The inline tab rename overlay is modal (ZS1-169).
+        if self.tab_rename.is_some()
+            && let Event::Key(key) = &event
+        {
+            return self.tab_rename_key(*key);
+        }
+        // A focused Shell pane owns raw keystrokes. Forward them here, before
+        // the ordinary-paste buffer can divert ASCII characters into the
+        // prompt (ZS1-166); control chords the TUI reserves still fall through.
+        if let Event::Key(key) = &event
+            && key.kind != KeyEventKind::Release
+            && self.workspace_layout.focused == Some(PaneId::Execution)
+            && self.input.is_empty()
+            && self.directory_picker.is_none()
+            && self.transcript_browser.is_none()
+            && self.history_search.is_none()
+            && self.goal_edit.is_none()
+            && self.left_prompt != LeftPrompt::Arch
+            && self.forward_shell_key(*key)
+        {
+            return TuiAction::Redraw;
+        }
         let composing = self.directory_picker.is_none()
             && self.transcript_browser.is_none()
             && self.history_search.is_none()
@@ -5944,8 +7564,35 @@ impl TuiState {
         if key.kind == KeyEventKind::Release {
             return TuiAction::None;
         }
+        // Inline tab rename is modal for direct callers as well (ZS1-169).
+        if self.tab_rename.is_some() {
+            return self.tab_rename_key(key);
+        }
         self.touch_editor_draft();
         self.project_checkpoint_dirty = true;
+        // The inline Goal editor is modal within the conversation group so
+        // Enter saves and Esc cancels instead of reaching the prompt.
+        if self.goal_edit.is_some() {
+            return self.goal_edit_key(key);
+        }
+        // The arch console is the focused left-column prompt (ZS1-148). It only
+        // captures editing keys; every control chord still reaches its usual
+        // handler so focus can always be moved away.
+        if self.left_prompt == LeftPrompt::Arch && self.arch_prompt_captures(key) {
+            return self.arch_prompt_key(key);
+        }
+        // While the Shell pane holds focus, keystrokes drive the live PTY
+        // (ZS1-166). Chords the TUI reserves (tabs, pane cycling) return `None`
+        // from `key_bytes` and still reach their usual handler.
+        // While the Shell pane holds focus, keystrokes drive the live PTY
+        // (ZS1-166). Chords the TUI reserves (tabs, pane cycling) return `None`
+        // from `key_bytes` and still reach their usual handler.
+        if self.workspace_layout.focused == Some(PaneId::Execution)
+            && self.input.is_empty()
+            && self.forward_shell_key(key)
+        {
+            return TuiAction::Redraw;
+        }
         if let Some(action) = self.approval_key(key) {
             return action;
         }
@@ -6026,6 +7673,59 @@ impl TuiState {
                             self.set_status("No assistant answer to copy");
                             TuiAction::Redraw
                         });
+                }
+                KeyCode::Char(',') => {
+                    self.move_active_subtab(-1);
+                    return TuiAction::Redraw;
+                }
+                KeyCode::Char('.') => {
+                    self.move_active_subtab(1);
+                    return TuiAction::Redraw;
+                }
+                KeyCode::Char('n') => {
+                    match self.subtab_add_worktree(None) {
+                        Ok(name) => {
+                            self.set_status(format!("worktree sub-tab: {name}"));
+                            self.push_message(
+                                MessageRole::System,
+                                format!("worktree added: {name}"),
+                            );
+                        }
+                        Err(error) => {
+                            self.set_status(format!("worktree add failed: {error}"));
+                            self.push_message(
+                                MessageRole::Error,
+                                format!("worktree add failed: {error}"),
+                            );
+                        }
+                    }
+                    return TuiAction::Redraw;
+                }
+                KeyCode::Char('i') => {
+                    self.subtab_add_in_place(None);
+                    return TuiAction::Redraw;
+                }
+                KeyCode::Char('w') => {
+                    let index = self.active_subtab();
+                    self.subtab_close(index);
+                    return TuiAction::Redraw;
+                }
+                KeyCode::Char('g') => {
+                    self.begin_goal_edit();
+                    return TuiAction::Redraw;
+                }
+                KeyCode::Char('m') => {
+                    // ZS1-148: switch the left-column prompt focus between the
+                    // resident discussion group and the arch master console.
+                    match self.toggle_left_prompt() {
+                        LeftPrompt::Arch => self.set_status(
+                            "Arch console focused · !cmd runs bash · text steers · Esc unfocuses",
+                        ),
+                        LeftPrompt::Discussion => {
+                            self.set_status("Discussion prompt focused · Alt-M for arch console")
+                        }
+                    }
+                    return TuiAction::Redraw;
                 }
                 _ => {}
             }
@@ -6114,6 +7814,15 @@ impl TuiState {
         let modifiers = key.modifiers;
         if modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
+                // Layer-1 tab order: Ctrl-B/F move the active project tab.
+                KeyCode::Char('b') => {
+                    self.move_active_project(-1);
+                    return TuiAction::Redraw;
+                }
+                KeyCode::Char('f') => {
+                    self.move_active_project(1);
+                    return TuiAction::Redraw;
+                }
                 // Ctrl-C is an interrupt while a provider turn is active;
                 // quitting in that state would discard a usable session
                 // instead of returning the user to an idle prompt. Ctrl-D
@@ -6323,6 +8032,33 @@ impl TuiState {
                     self.visible_line_boundary(true)
                 };
                 self.preferred_column = None;
+            }
+            KeyCode::Up
+                if self.input.is_empty()
+                    && self.workspace_layout.focused == Some(PaneId::Resources) =>
+            {
+                self.move_resource_block(-1);
+                return TuiAction::Redraw;
+            }
+            KeyCode::Down
+                if self.input.is_empty()
+                    && self.workspace_layout.focused == Some(PaneId::Resources) =>
+            {
+                self.move_resource_block(1);
+                return TuiAction::Redraw;
+            }
+            KeyCode::Enter
+                if self.input.is_empty()
+                    && self.workspace_layout.focused == Some(PaneId::Resources) =>
+            {
+                return self.activate_resource_block();
+            }
+            KeyCode::Esc
+                if self.workspace_layout.focused == Some(PaneId::Resources)
+                    && self.resource_open_block.is_some() =>
+            {
+                self.close_resource_block();
+                return TuiAction::Redraw;
             }
             KeyCode::Up
                 if self.input.is_empty()
@@ -7273,6 +9009,15 @@ impl TuiState {
                         "no match"
                     }
                 )
+            } else if self.docked_prompt_rect == Some(area) {
+                if self.goal_text.is_empty() {
+                    " Prompt · Goal: — · Alt-G edit ".to_owned()
+                } else {
+                    format!(
+                        " Prompt · Goal: {} · Alt-G edit ",
+                        inline_token(&self.goal_text, 48)
+                    )
+                }
             } else if self.paste.folds.is_empty() && self.input.starts_with('/') {
                 " Prompt  • command palette active ".to_owned()
             } else {
@@ -7320,7 +9065,200 @@ impl TuiState {
                 .unwrap_or(u16::MAX)
                 .min(inner.height.saturating_sub(1)),
         );
-        frame.set_cursor_position(Position::new(x, y));
+        // Only the focused input may own the terminal cursor, so the input
+        // method (IME) anchors its preedit/candidate window to the active
+        // field instead of whichever prompt rendered last (ZS1-172).
+        if self.discussion_prompt_focused() {
+            frame.set_cursor_position(Position::new(x, y));
+        }
+    }
+
+    /// Whether the discussion prompt is the field that keys and IME belong to.
+    pub fn discussion_prompt_focused(&self) -> bool {
+        self.left_prompt == LeftPrompt::Discussion
+            && self.goal_edit.is_none()
+            && self.directory_picker.is_none()
+            && self.transcript_browser.is_none()
+            && self.history_search.is_none()
+            && self.tab_rename.is_none()
+            && self.workspace_layout.focused != Some(PaneId::Execution)
+            && !self
+                .approval_views
+                .get(self.active_project())
+                .is_some_and(|view| view.focused && !view.requests.is_empty())
+    }
+
+    /// Inline Goal editor in the top-left conversation group. Enter commits
+    /// through the bounded [`crate::view_model::GoalEdit`]; Esc cancels.
+    fn render_goal_editor(&mut self, frame: &mut Frame<'_>, area: Rect) {
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        let text = self
+            .goal_edit
+            .as_ref()
+            .map(|edit| edit.text().to_owned())
+            .unwrap_or_default();
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Yellow))
+            .title(" Goal · Enter save · Esc cancel ");
+        let inner = block.inner(area);
+        let width = usize::from(inner.width).max(1);
+        let lines = wrap_plain(&text, width)
+            .into_iter()
+            .map(Line::from)
+            .collect::<Vec<_>>();
+        let visible_height = usize::from(inner.height);
+        let (cursor_x, cursor_y) = cursor_position(
+            &projection.text,
+            projection.display_cursor(self.cursor),
+            width,
+        );
+        let max_scroll = lines.len().saturating_sub(visible_height);
+        if visible_height > 0 {
+            let mut scroll = self.input_scroll.min(max_scroll);
+            let cursor_y = usize::from(cursor_y);
+            if cursor_y < scroll {
+                scroll = cursor_y;
+            } else if cursor_y >= scroll.saturating_add(visible_height) {
+                scroll = cursor_y.saturating_add(1).saturating_sub(visible_height);
+            }
+            self.input_scroll = scroll.min(max_scroll);
+        } else {
+            self.input_scroll = 0;
+        }
+        frame.render_widget(
+            Paragraph::new(Text::from(lines))
+                .block(block)
+                .wrap(Wrap { trim: false })
+                .scroll((u16::try_from(self.input_scroll).unwrap_or(u16::MAX), 0)),
+            area,
+        );
+        if inner.width > 0 && inner.height > 0 {
+            let (cursor_x, cursor_y) = cursor_position(&text, text.len(), width);
+            let x = inner
+                .x
+                .saturating_add(cursor_x.min(inner.width.saturating_sub(1)));
+            let y = inner
+                .y
+                .saturating_add(cursor_y.min(inner.height.saturating_sub(1)));
+            frame.set_cursor_position(Position::new(x, y));
+        }
+    }
+
+    /// True when the arch pane can render its grouped transcript + prompt. The
+    /// group is offered at the same Standard/Wide breakpoints as the discussion
+    /// group; narrower viewports keep the ordinary pane and bottom strip.
+    fn arch_group_active(&self, area: Rect) -> bool {
+        matches!(
+            Breakpoint::for_size(area.width, area.height),
+            Breakpoint::Standard | Breakpoint::Wide
+        )
+    }
+
+    /// Bounded arch transcript. Arch is a conversation lane owned by the master
+    /// session, so it shows operator submissions and host results but never
+    /// mutates the discussion transcript.
+    fn render_arch_transcript(&mut self, frame: &mut Frame<'_>, area: Rect) {
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        let focused = self.left_prompt == LeftPrompt::Arch;
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(if focused {
+                Color::Cyan
+            } else {
+                Color::DarkGray
+            }))
+            .title(" Arch · master session ");
+        let inner_height = usize::from(block.inner(area).height);
+        let mut lines: Vec<Line> = self
+            .arch_messages
+            .iter()
+            .rev()
+            .take(inner_height.max(1))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .map(|message| {
+                Line::from(vec![
+                    Span::styled(
+                        format!("{}: ", message.role.label()),
+                        Style::default().fg(match message.role {
+                            MessageRole::User => Color::Cyan,
+                            MessageRole::Error => Color::Red,
+                            _ => Color::Gray,
+                        }),
+                    ),
+                    Span::raw(message.text.clone()),
+                ])
+            })
+            .collect();
+        if lines.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "arch console idle · !cmd bash · text steer",
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+        frame.render_widget(
+            Paragraph::new(Text::from(lines))
+                .block(block)
+                .wrap(Wrap { trim: true }),
+            area,
+        );
+    }
+
+    /// Resident arch prompt rendered inside the left column directly beneath the
+    /// arch transcript. It keeps the pane's exact x/width, so arch + Prompt are
+    /// one group.
+    fn render_arch_input(&mut self, frame: &mut Frame<'_>, area: Rect) {
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        let focused = self.left_prompt == LeftPrompt::Arch;
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(if focused { Color::Cyan } else { Color::Magenta }))
+            .title(if focused {
+                " Arch prompt · !cmd bash · text steer · Enter send "
+            } else {
+                " Arch prompt · Alt-M focus "
+            });
+        let inner = block.inner(area);
+        let width = usize::from(inner.width).max(1);
+        let lines = wrap_plain(&self.arch_input, width)
+            .into_iter()
+            .map(Line::from)
+            .collect::<Vec<_>>();
+        frame.render_widget(
+            Paragraph::new(Text::from(lines))
+                .block(block)
+                .wrap(Wrap { trim: false }),
+            area,
+        );
+        if focused && inner.width > 0 && inner.height > 0 {
+            let (cursor_x, cursor_y) = cursor_position(&self.arch_input, self.arch_cursor, width);
+            let x = inner
+                .x
+                .saturating_add(cursor_x.min(inner.width.saturating_sub(1)));
+            let y = inner
+                .y
+                .saturating_add(cursor_y.min(inner.height.saturating_sub(1)));
+            frame.set_cursor_position(Position::new(x, y));
+        }
+    }
+
+    fn external_editor_shortcut_available(&self) -> bool {
+        self.directory_picker.is_none()
+            && self.transcript_browser.is_none()
+            && self.history_search.is_none()
+            && !self
+                .approval_views
+                .get(self.active_project())
+                .is_some_and(|view| view.focused && !view.requests.is_empty())
+            && self.slash_choices().is_empty()
     }
 
     fn external_editor_shortcut_available(&self) -> bool {
@@ -7369,11 +9307,11 @@ impl TuiState {
             } else if self.adjacent_paste().is_some() {
                 " Alt-Enter expand paste · Left/Right move · Backspace/Delete remove · Enter send "
             } else if area.width < 100 {
-                " Enter send · Ctrl-T folder · Ctrl-Tab project · Ctrl-W close · Tab panes · Ctrl-J newline · Ctrl-R history · Ctrl-C stop · /help input "
+                " Enter send · Ctrl-T folder · Ctrl-Tab project · Ctrl-W close · Ctrl-B/F tab order · Alt-,/. subtab order · Alt-N/I/W subtab · Tab panes · Ctrl-J newline · Ctrl-R history · Ctrl-C stop · /help input "
             } else if self.external_editor_shortcut_available() {
-                " Enter send · Ctrl-T folder · Ctrl-Tab project · Ctrl-W close · Tab panes · Ctrl-G editor · Ctrl-U line kill · Ctrl-Y yank · Ctrl-C stop · Alt-R reasoning · Alt-C copy · Alt-B blocks · /help input "
+                " Enter send · Ctrl-T folder · Ctrl-Tab project · Ctrl-W close · Ctrl-B/F tab order · Alt-,/. subtab order · Alt-N/I/W subtab · Tab panes · Ctrl-G editor · Ctrl-U line kill · Ctrl-Y yank · Ctrl-C stop · Alt-R reasoning · Alt-C copy · Alt-B blocks · /help input "
             } else {
-                " Enter send · Ctrl-T folder · Ctrl-Tab project · Ctrl-W close · Tab panes · Ctrl-U line kill · Ctrl-Y yank · Ctrl-C stop · Alt-R reasoning · Alt-C copy · Alt-B blocks · /help input "
+                " Enter send · Ctrl-T folder · Ctrl-Tab project · Ctrl-W close · Ctrl-B/F tab order · Alt-,/. subtab order · Alt-N/I/W subtab · Tab panes · Ctrl-U line kill · Ctrl-Y yank · Ctrl-C stop · Alt-R reasoning · Alt-C copy · Alt-B blocks · /help input "
             },
             usize::from(area.width),
         );
@@ -7401,7 +9339,7 @@ impl TuiState {
     /// receives clipped rectangles and renders the existing transcript and
     /// prompt.  Browser and PTY panes are not enabled by default, so their
     /// adapters cannot accidentally start a child process or network view.
-    pub fn render_bentobox(&mut self, frame: &mut Frame<'_>, title: &str) {
+    pub fn render_bentobox(&mut self, frame: &mut Frame<'_>, _title: &str) {
         let area = frame.area();
         if area.width == 0 || area.height == 0 {
             return;
@@ -7414,6 +9352,23 @@ impl TuiState {
         let prompt_width = usize::from(area.width.saturating_sub(2)).max(1);
         let prompt_lines = wrap_plain(&self.projection().text, prompt_width).len();
         let desired_input_height = prompt_lines.min(MAX_INPUT_LINES).saturating_add(2);
+        // Conversation + Prompt are one resident group. At a roomy viewport on
+        // the project workspace the prompt is rendered inside the top-left
+        // conversation pane, so it is exactly as wide as the left column.
+        // Active overlays (palette, completion, history search, pickers) and
+        // narrow/compact viewports keep the full-width bottom strip so menus
+        // and long lines retain room.
+        let overlay_active = !self.slash_choices().is_empty()
+            || self.current_file_completion().is_some()
+            || self.history_search.is_some()
+            || self.directory_picker.is_some()
+            || self.transcript_browser.is_some();
+        let group_prompt = !overlay_active
+            && self.workspace_layout.tab == TabId::Project
+            && matches!(
+                Breakpoint::for_size(area.width, area.height),
+                Breakpoint::Standard | Breakpoint::Wide
+            );
         let input_height = if area.height > 4 {
             u16::try_from(desired_input_height)
                 .unwrap_or(u16::MAX)
@@ -7424,115 +9379,278 @@ impl TuiState {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(1),
-                Constraint::Length(1),
+                Constraint::Length(5),
                 Constraint::Min(1),
                 Constraint::Length(input_height),
                 Constraint::Length(1),
             ])
             .split(area);
         self.render_workspace_tabs(frame, chunks[0]);
-        self.render_header(frame, chunks[1], title);
-        self.render_workspace(frame, chunks[2]);
-        self.render_input(frame, chunks[3]);
-        self.render_footer(frame, chunks[4]);
-        self.render_slash_choices(frame, chunks[3]);
+        self.docked_prompt_rect = None;
+        self.dock_prompt = group_prompt;
+        self.render_workspace(frame, chunks[1]);
+        // When the group could not render the prompt (for example the
+        // conversation pane is collapsed) fall back to the bottom strip so the
+        // prompt is never unreachable.
+        if self.docked_prompt_rect.is_none() {
+            if self.goal_edit.is_some() {
+                self.render_goal_editor(frame, chunks[2]);
+            } else {
+                self.render_input(frame, chunks[2]);
+            }
+        }
+        self.render_footer(frame, chunks[3]);
+        let prompt_anchor = self.docked_prompt_rect.unwrap_or(chunks[2]);
+        self.render_slash_choices(frame, prompt_anchor);
         if let Some(picker) = self.directory_picker.as_mut() {
             picker.render(frame);
         }
         if let Some(browser) = self.transcript_browser.as_mut() {
             browser.render(frame);
         }
+        self.render_tab_rename(frame);
         self.render_approval(frame);
+    }
+
+    /// Draw the inline tab-rename overlay when a header card is being renamed.
+    fn render_tab_rename(&self, frame: &mut Frame<'_>) {
+        let Some(rename) = self.tab_rename.as_ref() else {
+            return;
+        };
+        let screen = frame.area();
+        let width = screen.width.saturating_sub(4).clamp(20, 64);
+        let area = Rect::new(
+            screen.x + (screen.width.saturating_sub(width)) / 2,
+            screen.y + 5,
+            width,
+            3,
+        );
+        frame.render_widget(Clear, area);
+        let layer = if rename.layer1 {
+            "workspace"
+        } else {
+            "worktree"
+        };
+        frame.render_widget(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" Rename {layer} ")),
+            area,
+        );
+        let inner = Rect::new(area.x + 1, area.y + 1, width.saturating_sub(2), 1);
+        frame.render_widget(Paragraph::new(format!("{}_", rename.buffer)), inner);
+        let column = rename
+            .buffer
+            .chars()
+            .count()
+            .min(usize::from(inner.width).saturating_sub(1));
+        frame.set_cursor_position(Position::new(
+            inner.x.saturating_add(column as u16),
+            inner.y,
+        ));
     }
 
     fn render_workspace_tabs(&mut self, frame: &mut Frame<'_>, area: Rect) {
         self.project_hits.clear();
+        self.subtab_hits.clear();
         if area.width == 0 || area.height == 0 {
             return;
         }
-        let plus_width = area.width.min(4);
-        let navigation_width = if area.width >= 16 { 8 } else { 0 };
-        let limit = area.right() - plus_width - navigation_width;
-        let prefix = if area.width > 40 {
-            truncate_to_width(" zenpi | projects: ", usize::from(limit - area.x))
+        // Left: a six-row pixel-art ZENPI banner. Right: the double-row tab
+        // block, side by side with no gap. There is no narrow-screen fallback:
+        // if the banner does not fit, it disappears entirely.
+        let banner = zenpi_banner();
+        let banner_width = banner.first().map(|line| line.chars().count()).unwrap_or(0) as u16;
+        let logo_width = if banner_width > 0 && area.width >= banner_width + 40 {
+            banner_width
         } else {
-            String::new()
+            0
         };
-        frame.render_widget(
-            Paragraph::new(prefix.clone()),
-            Rect::new(area.x, area.y, limit - area.x, 1),
+        if logo_width > 0 {
+            for (row, line) in zenpi_banner_lines().into_iter().enumerate() {
+                let y = area.y + row as u16;
+                if y >= area.bottom() {
+                    break;
+                }
+                frame.render_widget(Paragraph::new(line), Rect::new(area.x, y, banner_width, 1));
+            }
+        }
+        let info = Rect::new(
+            area.x + logo_width,
+            area.y,
+            area.width.saturating_sub(logo_width),
+            area.height,
         );
-        let mut x = area.x + UnicodeWidthStr::width(prefix.as_str()) as u16;
-        // Center the retained viewport on the selected tab; plus stays visible.
-        let start = if area.width < 90 {
+        // Layer-1 workspaces get up to three rows; layer-2 Worktrees up to two.
+        let top_height = 2u16.min(info.height);
+        let top = Rect::new(info.x, info.y, info.width, top_height);
+        let bottom = Rect::new(
+            info.x,
+            info.y + top_height,
+            info.width,
+            info.height.saturating_sub(top_height),
+        );
+        self.render_tab_layer(frame, top, true);
+        self.render_tab_layer(frame, bottom, false);
+    }
+
+    /// One layer of the header: ` zenpi | workspaces : name [-] || ... [+]` or
+    /// ` └ Worktrees: name ↑N↓ [-] || ... [+]`, wrapped into the given rows.
+    fn render_tab_layer(&mut self, frame: &mut Frame<'_>, area: Rect, layer1: bool) {
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        let header = if layer1 {
+            " zenpi | workspaces : "
+        } else {
+            " \u{2514} Worktrees: "
+        };
+        let separator = "  \u{2502}  ";
+        // (text, kind): 0 select, 1 close, 2 conc-up, 3 conc-down, 4 value
+        let mut entries: Vec<(usize, Vec<(String, u8)>)> = Vec::new();
+        if layer1 {
+            for index in 0..self.project_tabs.len() {
+                let approvals = self.project_approval_count(index);
+                let attention = if approvals > 0 {
+                    format!("!{approvals} ")
+                } else {
+                    String::new()
+                };
+                let label = format!("{attention}{}", self.project_label(index));
+                entries.push((index, vec![(label, 0), (" [-]".to_owned(), 1)]));
+            }
+        } else {
+            for (index, tab) in self.subtabs().into_iter().enumerate() {
+                entries.push((
+                    index,
+                    vec![
+                        (tab.name.clone(), 0),
+                        (" [\u{2191}]".to_owned(), 2),
+                        (format!(" {} ", tab.concurrency), 4),
+                        (" [\u{2193}]".to_owned(), 3),
+                        (" [-]".to_owned(), 1),
+                    ],
+                ));
+            }
+        }
+        let width = usize::from(area.width);
+        let max_rows = usize::from(area.height).max(1);
+        let mut row = 0usize;
+        let header_shown = truncate_chars(header, width);
+        frame.render_widget(
+            Paragraph::new(header_shown.clone()).style(Style::default().fg(Color::DarkGray)),
+            Rect::new(area.x, area.y, width as u16, 1),
+        );
+        let mut column = header_shown.chars().count();
+        if column >= width {
+            row += 1;
+            column = 0;
+        }
+        let active = if layer1 {
             self.active_project
         } else {
-            self.active_project.saturating_sub(1)
+            self.active_subtab()
         };
-        for index in start..self.project_tabs.len() {
-            if x >= limit {
-                break;
-            }
-            let label = self.project_label(index);
-            let approvals = self.project_approval_count(index);
-            let attention = if approvals > 0 {
-                format!("!{approvals} ")
-            } else {
-                String::new()
-            };
-            let text = truncate_to_width(
-                &format!(
-                    "{}{}{}{} ",
-                    if index == self.active_project {
-                        "["
-                    } else {
-                        " "
-                    },
-                    attention,
-                    label,
-                    if index == self.active_project {
-                        "]"
-                    } else {
-                        " "
-                    }
-                ),
-                usize::from(limit - x).min(32),
-            );
-            let width = UnicodeWidthStr::width(text.as_str()) as u16;
-            if width == 0 {
-                break;
-            }
-            let rect = Rect::new(x, area.y, width, 1);
-            frame.render_widget(
-                Paragraph::new(text).style(Style::default().fg(if approvals > 0 {
-                    Color::Yellow
-                } else if index == self.active_project {
+        let mut hits: Vec<(Rect, u8, usize)> = Vec::new();
+        'entries: for (index, segments) in entries.iter() {
+            for (text, kind) in segments {
+                let len = text.chars().count();
+                if column > 0 && column + len > width {
+                    row += 1;
+                    column = 0;
+                }
+                if row >= max_rows {
+                    break 'entries;
+                }
+                let available = width.saturating_sub(column).max(1);
+                let shown = truncate_chars(text, available);
+                let shown_len = shown.chars().count();
+                let colour = if *kind == 0 && *index == active {
                     Color::Cyan
-                } else {
+                } else if *kind == 1 {
+                    Color::Red
+                } else if *kind == 2 || *kind == 3 {
+                    Color::Yellow
+                } else if *kind == 4 {
                     Color::White
-                })),
-                rect,
-            );
-            self.project_hits.push((rect, index));
-            x += width;
-        }
-        if navigation_width > 0 {
-            for (offset, label, index) in [(0, " [<]", usize::MAX), (4, " [>]", usize::MAX - 1)] {
-                let rect = Rect::new(limit + offset, area.y, 4, 1);
+                } else if layer1 {
+                    self.project_style_color(*index).unwrap_or(Color::White)
+                } else {
+                    Color::Gray
+                };
+                let rect = Rect::new(
+                    area.x + column as u16,
+                    area.y + row as u16,
+                    shown_len as u16,
+                    1,
+                );
                 frame.render_widget(
-                    Paragraph::new(label).style(Style::default().fg(Color::Cyan)),
+                    Paragraph::new(shown).style(Style::default().fg(colour)),
                     rect,
                 );
-                self.project_hits.push((rect, index));
+                hits.push((rect, *kind, *index));
+                column += shown_len;
+                if shown_len < len {
+                    break 'entries;
+                }
+            }
+            let sep_len = separator.chars().count();
+            if column + sep_len <= width && row < max_rows {
+                frame.render_widget(
+                    Paragraph::new(separator).style(Style::default().fg(Color::DarkGray)),
+                    Rect::new(
+                        area.x + column as u16,
+                        area.y + row as u16,
+                        sep_len as u16,
+                        1,
+                    ),
+                );
+                column += sep_len;
             }
         }
-        let rect = Rect::new(area.right() - plus_width, area.y, plus_width, 1);
-        frame.render_widget(
-            Paragraph::new(" [+]").style(Style::default().fg(Color::Green)),
-            rect,
-        );
-        self.project_hits.push((rect, self.project_tabs.len()));
+        let plus = " [+]";
+        let plus_len = plus.chars().count();
+        if column > 0 && column + plus_len > width {
+            row += 1;
+            column = 0;
+        }
+        if row < max_rows {
+            let rect = Rect::new(
+                area.x + column as u16,
+                area.y + row as u16,
+                plus_len as u16,
+                1,
+            );
+            frame.render_widget(
+                Paragraph::new(plus).style(Style::default().fg(Color::Green)),
+                rect,
+            );
+            if layer1 {
+                self.project_hits.push((rect, self.project_tabs.len()));
+            } else {
+                self.subtab_hits.push((rect, SubTabHit::AddWorktree));
+            }
+        }
+        for (rect, kind, index) in hits {
+            if layer1 {
+                if kind == 1 {
+                    self.project_hits.push((rect, usize::MAX - 3 - index));
+                } else {
+                    self.project_hits.push((rect, index));
+                }
+            } else {
+                match kind {
+                    1 => self.subtab_hits.push((rect, SubTabHit::Close(index))),
+                    2 => self
+                        .subtab_hits
+                        .push((rect, SubTabHit::ConcurrencyUp(index))),
+                    3 => self
+                        .subtab_hits
+                        .push((rect, SubTabHit::ConcurrencyDown(index))),
+                    _ => self.subtab_hits.push((rect, SubTabHit::Select(index))),
+                }
+            }
+        }
     }
 
     fn render_workspace(&mut self, frame: &mut Frame<'_>, area: Rect) {
@@ -7542,12 +9660,98 @@ impl TuiState {
         }
         let adapter = BentoBoxLayoutAdapter::new(&self.workspace_layout, area);
         let canonical = conversation_pane_for_tab(adapter.tab());
+        self.arch_prompt_rect = None;
         for pane in adapter.visible_panes() {
             if pane.rect.width == 0 || pane.rect.height == 0 {
                 continue;
             }
+            if pane.id == PaneId::Execution {
+                // ZS1-166: the Shell pane owns a real PTY rooted at the active
+                // workspace; (re)spawn on workspace change and track the pane
+                // size so full-screen programs lay out correctly.
+                self.ensure_shell();
+                let rows = pane.rect.height.saturating_sub(2);
+                let cols = pane.rect.width.saturating_sub(2);
+                if let Some(shell) = self.pty_shell.as_mut() {
+                    shell.resize(rows, cols);
+                }
+                // Anchor the IME/preedit to the shell pane while it is focused
+                // (ZS1-172); the column follows the live prompt.
+                if self.workspace_layout.focused == Some(PaneId::Execution)
+                    && self.left_prompt == LeftPrompt::Discussion
+                    && self.directory_picker.is_none()
+                    && self.tab_rename.is_none()
+                {
+                    let (column, cursor_row) = self
+                        .pty_shell
+                        .as_ref()
+                        .map(|shell| shell.cursor())
+                        .unwrap_or((0, 0));
+                    let total = self
+                        .pty_shell
+                        .as_ref()
+                        .map(|shell| shell.line_count())
+                        .unwrap_or(1);
+                    let visible = usize::from(rows).max(1);
+                    let start = total.saturating_sub(visible);
+                    let relative = cursor_row.saturating_sub(start);
+                    let inner_x = pane.rect.x.saturating_add(1);
+                    let inner_y = pane.rect.y.saturating_add(1);
+                    let inner_w = pane.rect.width.saturating_sub(2).max(1);
+                    let inner_h = pane.rect.height.saturating_sub(2).max(1);
+                    let x = inner_x
+                        .saturating_add(u16::try_from(column).unwrap_or(u16::MAX).min(inner_w - 1));
+                    let y = inner_y.saturating_add(
+                        u16::try_from(relative).unwrap_or(u16::MAX).min(inner_h - 1),
+                    );
+                    frame.set_cursor_position(Position::new(x, y));
+                }
+            }
             if pane.id == PaneId::GoalConversation {
                 self.render_transcript_pane(frame, pane.rect, true);
+            } else if pane.id == PaneId::Arch && self.arch_group_active(area) {
+                // Arch + Prompt are one left-column group (ZS1-148): the arch
+                // transcript keeps the upper rows and the master-session
+                // console prompt is rendered directly beneath it with the exact
+                // same x/width, never spilling into the center column.
+                let source =
+                    PaneRect::new(pane.rect.x, pane.rect.y, pane.rect.width, pane.rect.height);
+                let (conversation, prompt) = arch_prompt_group(source, ARCH_PROMPT_PANE_ROWS);
+                let conversation = Rect::new(
+                    conversation.x,
+                    conversation.y,
+                    conversation.width,
+                    conversation.height,
+                );
+                let prompt = Rect::new(prompt.x, prompt.y, prompt.width, prompt.height);
+                self.render_arch_transcript(frame, conversation);
+                self.arch_prompt_rect = Some(prompt);
+                self.render_arch_input(frame, prompt);
+            } else if pane.id == canonical
+                && pane.id == PaneId::ProjectConversation
+                && self.dock_prompt
+            {
+                // Conversation + Prompt are one left-column group: the
+                // transcript keeps the upper rows and the resident prompt (or
+                // the inline Goal editor) is rendered directly beneath it with
+                // the exact same x/width.
+                let source =
+                    PaneRect::new(pane.rect.x, pane.rect.y, pane.rect.width, pane.rect.height);
+                let (transcript, prompt) = conversation_prompt_group(source, PROMPT_PANE_ROWS);
+                let transcript = Rect::new(
+                    transcript.x,
+                    transcript.y,
+                    transcript.width,
+                    transcript.height,
+                );
+                let prompt = Rect::new(prompt.x, prompt.y, prompt.width, prompt.height);
+                self.render_transcript(frame, transcript);
+                self.docked_prompt_rect = Some(prompt);
+                if self.goal_edit.is_some() {
+                    self.render_goal_editor(frame, prompt);
+                } else {
+                    self.render_input(frame, prompt);
+                }
             } else if pane.id == canonical
                 || matches!(
                     pane.id,
@@ -7576,6 +9780,8 @@ impl TuiState {
         let title = format!(" {}  ⋮ ", workspace_pane_title(id));
         let content = match id {
             PaneId::Gantt => self.gantt_pane_content(),
+            PaneId::Arch => self.arch_pane_content(),
+            PaneId::Execution => self.shell_content(area.height.saturating_sub(2) as usize),
             PaneId::Resources => self.resource_pane_content(),
             PaneId::SessionList => self.session_browser_content(),
             PaneId::ReplayControls => self.replay_pane_content(),
@@ -7612,7 +9818,12 @@ impl TuiState {
         } else {
             usize::from(*self.pane_scroll.get(&id).unwrap_or(&0))
         };
-        let paragraph = Paragraph::new(content)
+        let text = match id {
+            PaneId::Gantt => style_status_marks(&content),
+            PaneId::Resources => style_resource_pane(&content),
+            _ => ratatui::text::Text::from(content),
+        };
+        let paragraph = Paragraph::new(text)
             .style(Style::default().fg(Color::DarkGray))
             .block(block)
             .scroll((scroll.min(usize::from(u16::MAX)) as u16, 0));
@@ -7809,14 +10020,142 @@ impl TuiState {
         content
     }
 
-    fn resource_pane_content(&self) -> String {
-        let Some(snapshot) = self.resource_snapshot.as_ref() else {
-            return match &self.resource_status {
-                ResourcePaneStatus::Idle => "Waiting for workspace snapshot".into(),
-                ResourcePaneStatus::Collecting => "Collecting workspace snapshot...".into(),
-                ResourcePaneStatus::Failed(error) => format!("Snapshot failed\n{error}"),
-                ResourcePaneStatus::Ready => "Workspace snapshot unavailable".into(),
+    /// Bounded LAN section (ZS1-158/159): either the class block list or, when
+    /// a block is open, that block's per-host detail table.
+    fn resource_lan_content(&self) -> Option<String> {
+        let snapshot = self.lan_snapshot.as_ref()?;
+        let cidr = short_cidr(&snapshot.local_ip);
+        if snapshot.hosts.is_empty() {
+            return Some(format!("LAN {cidr}  无存活主机"));
+        }
+        if let Some(class) = self.resource_open_block {
+            let Some(block) = snapshot.block(class) else {
+                return Some(format!("LAN {cidr}  块已消失（Esc 返回）"));
             };
+            let mut lines = vec![
+                format!(
+                    "LAN {cidr}  {}  共 {} 台  [Esc 返回]",
+                    block.title,
+                    block.count()
+                ),
+                "  IP              MAC                厂商       主机/OS            端口                    资源".into(),
+            ];
+            for index in &block.host_indices {
+                let host = &snapshot.hosts[*index];
+                let mac = host.mac.as_deref().unwrap_or("-");
+                let vendor = host.vendor.as_deref().unwrap_or("-");
+                let name = host.hostname.as_deref().unwrap_or("-");
+                let os = host
+                    .resources
+                    .as_ref()
+                    .and_then(|resources| resources.os.clone())
+                    .unwrap_or_else(|| "-".into());
+                let ports = host
+                    .open_ports
+                    .iter()
+                    .map(u16::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let resource = format_host_resources(host.resources.as_ref());
+                lines.push(format!(
+                    "  {:<15} {:<19} {:<10} {:<16} {:<22} {resource}",
+                    host.ip,
+                    truncate_cells(mac, 19),
+                    truncate_cells(vendor, 10),
+                    truncate_cells(&format!("{name}/{os}"), 16),
+                    truncate_cells(&ports, 22),
+                ));
+            }
+            if snapshot.truncated {
+                lines.push("  (truncated)".into());
+            }
+            return Some(lines.join("\n"));
+        }
+        let mut lines = vec![format!(
+            "LAN {cidr}  共 {} 台  (↑↓ 选择, Enter 进入)",
+            snapshot.hosts.len()
+        )];
+        for (index, block) in snapshot.blocks.iter().enumerate() {
+            let marker = if index == self.resource_block_index {
+                '▶'
+            } else {
+                ' '
+            };
+            lines.push(format!("{marker} {}", block.title));
+        }
+        if snapshot.truncated {
+            lines.push("  (truncated)".into());
+        }
+        Some(lines.join("\n"))
+    }
+
+    /// Bounded cluster section (ZS1-160): aggregate worker/host counts plus one
+    /// line per admitted host. It is credential-free by construction.
+    fn cluster_pane_content(&self) -> Option<String> {
+        let snapshot = self.cluster_snapshot.as_ref()?;
+        let mut lines = vec![format!(
+            "Cluster {} host(s) authorized {}  workers {} run / {} reclaimed / {} failed",
+            snapshot.hosts.len(),
+            snapshot.authorized_hosts,
+            snapshot.running_workers,
+            snapshot.reclaimed_workers,
+            snapshot.failed_workers,
+        )];
+        const MAX_CLUSTER_ROWS: usize = 12;
+        for host in snapshot.hosts.iter().take(MAX_CLUSTER_ROWS) {
+            let name = host
+                .hostname
+                .clone()
+                .unwrap_or_else(|| host.class.label().to_owned());
+            let auth = if host.authorized { "auth" } else { "     " };
+            let cred = if host.has_credentials {
+                "cred"
+            } else {
+                "     "
+            };
+            let gpu = if host.gpus > 0 {
+                format!(" gpu{}", host.gpus)
+            } else {
+                String::new()
+            };
+            lines.push(format!(
+                "  {:<15} {:<12} {auth} {cred} cpu {:>3}/{:<3} mem {:>5}/{:<5}{gpu} w{}",
+                host.ip,
+                truncate_cells(&name, 12),
+                host.available_cpu_slots,
+                host.logical_cpus,
+                format_byte_count(host.available_memory_bytes),
+                format_byte_count(host.memory_total_bytes),
+                host.worker_count,
+            ));
+        }
+        if snapshot.hosts.len() > MAX_CLUSTER_ROWS {
+            lines.push(format!(
+                "  ... {} more host(s)",
+                snapshot.hosts.len() - MAX_CLUSTER_ROWS
+            ));
+        }
+        Some(lines.join("\n"))
+    }
+
+    fn resource_pane_content(&self) -> String {
+        let lan = self.resource_lan_content();
+        let cluster = self.cluster_pane_content();
+        let Some(snapshot) = self.resource_snapshot.as_ref() else {
+            let base = match (&self.resource_status, lan) {
+                (_, Some(lan)) => lan,
+                (ResourcePaneStatus::Idle, None) => "Waiting for workspace snapshot".into(),
+                (ResourcePaneStatus::Collecting, None) => "Collecting workspace snapshot...".into(),
+                (ResourcePaneStatus::Failed(error), None) => format!("Snapshot failed\n{error}"),
+                (ResourcePaneStatus::Ready, None) => "Workspace snapshot unavailable".into(),
+            };
+            let mut output = String::new();
+            if let Some(cluster) = cluster {
+                output.push_str(&cluster);
+                output.push_str("\n\n");
+            }
+            output.push_str(&base);
+            return output;
         };
         let workspace = &snapshot.workspace;
         let memory = snapshot
@@ -7824,30 +10163,105 @@ impl TuiState {
             .available_bytes
             .map(format_byte_count)
             .unwrap_or_else(|| "unavailable".into());
+        let memory = match snapshot.memory.total_bytes.map(format_byte_count) {
+            Some(total) => format!("{memory} / {total}"),
+            None => memory,
+        };
         let process = snapshot
             .process
             .resident_bytes
             .map(format_byte_count)
             .unwrap_or_else(|| "unavailable".into());
-        let suffix = match &self.resource_status {
-            ResourcePaneStatus::Collecting => "\nrefreshing...".into(),
-            ResourcePaneStatus::Failed(error) => format!("\nrefresh failed: {error}"),
-            ResourcePaneStatus::Idle | ResourcePaneStatus::Ready => String::new(),
+        let load = snapshot
+            .cpu
+            .load_one_minute
+            .map(|value| format!("{value:.2}"))
+            .unwrap_or_else(|| "unavailable".into());
+        let cpu_util = snapshot.cpu.load_one_minute.unwrap_or(0.0)
+            / (snapshot.cpu.logical_cpus.max(1) as f64)
+            * 100.0;
+        let memory_util = match (snapshot.memory.total_bytes, snapshot.memory.available_bytes) {
+            (Some(total), Some(available)) => {
+                crate::resources::utilization_percent(total.saturating_sub(available), total)
+            }
+            _ => 0.0,
         };
-        format!(
-            "workspace\nfiles {files}  dirs {directories}\nsize {bytes}  nodes {nodes}\ntruncated {truncated}\nhost\ncpu {cpus}  load {load}\nmem free {memory}\nprocess {process}{suffix}",
-            files = workspace.files,
-            directories = workspace.directories,
-            bytes = format_byte_count(workspace.bytes),
-            nodes = workspace.nodes,
-            truncated = workspace.truncated,
-            cpus = snapshot.cpu.logical_cpus,
-            load = snapshot
-                .cpu
-                .load_one_minute
-                .map(|value| format!("{value:.2}"))
-                .unwrap_or_else(|| "unavailable".into()),
-        )
+        let memory_bar = if snapshot.memory.total_bytes.is_some() {
+            format!(
+                "  [{}] {memory_util:.0}%",
+                crate::resources::render_bar(memory_util, 16)
+            )
+        } else {
+            String::new()
+        };
+        let mut lines = vec![
+            format!(
+                "CPU {} cores  load {load}  [{}] {cpu_util:.0}%",
+                snapshot.cpu.logical_cpus,
+                crate::resources::render_bar(cpu_util, 16)
+            ),
+            format!("Mem free {memory}{memory_bar}"),
+            format_gpu_signal(&snapshot.gpu),
+            format_disk_signal(&snapshot.disk),
+            format_network_signal(&snapshot.network),
+            format_process_summary(&snapshot.processes),
+        ];
+        for row in &snapshot.processes.rows {
+            lines.push(format!(
+                "  {:<10} {:>4}  {}",
+                row.class.label(),
+                row.count,
+                format_byte_count(row.resident_bytes)
+            ));
+        }
+        let context = self
+            .transcript_ux
+            .history_tokens
+            .zip(self.transcript_ux.context_limit)
+            .map(|(used, limit)| format!("Context history {used}/{limit} tokens"))
+            .unwrap_or_else(|| "Context unavailable".into());
+        lines.push(context);
+        lines.push(format!(
+            "LSP {} servers  MCP {} servers",
+            snapshot
+                .processes
+                .count_for(crate::resources::ProcessClass::Lsp),
+            snapshot
+                .processes
+                .count_for(crate::resources::ProcessClass::Mcp)
+        ));
+        lines.push("Workspace".into());
+        lines.push(format!(
+            "Files {}  Dirs {}",
+            workspace.files, workspace.directories
+        ));
+        lines.push(format!(
+            "Size {}  Nodes {}",
+            format_byte_count(workspace.bytes),
+            workspace.nodes
+        ));
+        lines.push(format!("Truncated {}", workspace.truncated));
+        lines.push(format!("Self {process}"));
+        match &self.resource_status {
+            ResourcePaneStatus::Collecting => lines.push("refreshing...".into()),
+            ResourcePaneStatus::Failed(error) => lines.push(format!("refresh failed: {error}")),
+            ResourcePaneStatus::Idle | ResourcePaneStatus::Ready => {}
+        }
+        let mut output = String::new();
+        if let Some(cluster) = cluster {
+            output.push_str(&cluster);
+            output.push_str("\n\n");
+        }
+        if let Some(lan) = lan {
+            output.push_str(&lan);
+            output.push_str("\n\n");
+        }
+        output.push_str(&lines.join("\n"));
+        if let Some(projection) = self.resource_bus_projection() {
+            output.push_str("\n\n");
+            output.push_str(&projection.to_text());
+        }
+        output
     }
 
     fn gantt_pane_content(&self) -> String {
@@ -7867,6 +10281,273 @@ impl TuiState {
             GanttPaneStatus::Idle | GanttPaneStatus::Ready => snapshot.content.clone(),
         };
         bound_gantt_pane_content(content)
+    }
+
+    /// Architecture projection: the active BentoBox tab and its pane/column
+    /// structure, so the layout itself is inspectable without leaving the TUI.
+    fn arch_pane_content(&self) -> String {
+        let preset = self.workspace_layout.preset();
+        let mut lines = vec![format!("tab {}", preset.tab)];
+        for spec in &preset.panes {
+            lines.push(format!(
+                "  {:<22} {:?} row{} optional={}",
+                spec.id.as_str(),
+                spec.column,
+                spec.row,
+                PaneId::is_optional(spec.id)
+            ));
+        }
+        bound_gantt_pane_content(lines.join("\n"))
+    }
+
+    /// The Execution pane is an embedded terminal: it mirrors the live local
+    /// PTY snapshot so unix-fluent users can drive commands in place.
+    fn execution_terminal_content(&self) -> String {
+        if self.terminal_snapshot.trim().is_empty() {
+            "embedded terminal (PTY): run a local `!command` to attach output here".to_owned()
+        } else {
+            self.terminal_snapshot.clone()
+        }
+    }
+
+    /// Working directory the Shell pane binds to: the active layer-2 worktree,
+    /// else the process cwd (ZS1-166).
+    fn shell_cwd(&self) -> std::path::PathBuf {
+        let tabs = self.subtabs();
+        let mut candidates = Vec::new();
+        if let Some(tab) = tabs.get(self.active_subtab())
+            && !tab.root.trim().is_empty()
+        {
+            candidates.push(std::path::PathBuf::from(&tab.root));
+        }
+        candidates.push(std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
+        crate::pty_shell::resolve_cwd(candidates)
+    }
+
+    /// (Re)spawn the Shell PTY rooted at the active workspace when it moved.
+    fn ensure_shell(&mut self) {
+        let cwd = self.shell_cwd();
+        let current = self
+            .pty_shell
+            .as_ref()
+            .map(|shell| shell.cwd() == cwd)
+            .unwrap_or(false);
+        if !current {
+            self.pty_shell = crate::pty_shell::PtyShell::spawn(cwd).ok();
+        }
+    }
+
+    /// Drain pending shell output into the bounded scrollback. Safe to call on
+    /// every loop iteration; marks the frame dirty only on real output.
+    pub fn pump_shell(&mut self) {
+        if let Some(shell) = self.pty_shell.as_mut()
+            && shell.pump()
+        {
+            self.dirty = true;
+        }
+    }
+
+    /// Whether a live Shell PTY is attached; callers shorten their poll wait so
+    /// shell output appears promptly.
+    pub fn has_shell(&self) -> bool {
+        self.pty_shell.is_some()
+    }
+
+    /// Shell pane body: live PTY scrollback, falling back to the last `!command`
+    /// snapshot when no PTY is available.
+    fn shell_content(&self, rows: usize) -> String {
+        self.pty_shell
+            .as_ref()
+            .map(|shell| shell.content(rows))
+            .filter(|text| !text.trim().is_empty())
+            .unwrap_or_else(|| self.execution_terminal_content())
+    }
+
+    /// Forward a key to the focused Shell PTY. Returns whether it was consumed.
+    fn forward_shell_key(&mut self, key: crossterm::event::KeyEvent) -> bool {
+        let Some(bytes) = crate::pty_shell::key_bytes(&key.code, key.modifiers) else {
+            return false;
+        };
+        let Some(shell) = self.pty_shell.as_mut() else {
+            return false;
+        };
+        shell.write_input(&bytes);
+        self.dirty = true;
+        true
+    }
+}
+
+/// Five-row block-glyph pixel banner for the header's left logo column.
+/// Each letter is a 5x5 bitmap joined by a single space (29 columns wide).
+const ZENPI_LETTERS: [[&str; 5]; 5] = [
+    ["█████", "    █", "  █  ", "█    ", "█████"], // Z
+    ["█████", "█    ", "████ ", "█    ", "█████"], // E
+    ["█   █", "██  █", "█ █ █", "█  ██", "█   █"], // N
+    ["████ ", "█   █", "████ ", "█    ", "█    "], // P
+    ["█████", "  █  ", "  █  ", "  █  ", "█████"], // I
+];
+
+fn zenpi_banner() -> Vec<String> {
+    (0..5)
+        .map(|row| {
+            ZENPI_LETTERS
+                .iter()
+                .map(|letter| letter[row])
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect()
+}
+
+/// The banner with a right-edge drop shadow (`▓`, dark cyan) composited inline
+/// so it stays within the five header rows. One unified cyan colour family.
+fn zenpi_banner_lines() -> Vec<ratatui::text::Line<'static>> {
+    use ratatui::text::Span;
+    let main = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
+    let shadow = Style::default().fg(Color::Rgb(0, 90, 102));
+    let mut lines = Vec::new();
+    for row in zenpi_banner() {
+        let chars: Vec<char> = row.chars().collect();
+        let mut shadow_marks = vec![false; chars.len()];
+        for index in 0..chars.len() {
+            if chars[index] == '█'
+                && index + 1 < chars.len()
+                && chars[index + 1] != '█'
+                && !shadow_marks[index]
+            {
+                shadow_marks[index + 1] = true;
+            }
+        }
+        let mut spans: Vec<Span> = Vec::new();
+        let mut index = 0;
+        while index < chars.len() {
+            if chars[index] == '█' {
+                let start = index;
+                while index < chars.len() && chars[index] == '█' {
+                    index += 1;
+                }
+                spans.push(Span::styled(
+                    chars[start..index].iter().collect::<String>(),
+                    main,
+                ));
+            } else if shadow_marks[index] {
+                let start = index;
+                while index < chars.len() && shadow_marks[index] && chars[index] != '█' {
+                    index += 1;
+                }
+                spans.push(Span::styled("▓".repeat(index - start), shadow));
+            } else {
+                spans.push(Span::raw(chars[index].to_string()));
+                index += 1;
+            }
+        }
+        lines.push(ratatui::text::Line::from(spans));
+    }
+    lines
+}
+
+/// Colour the blueprint three-state marks with a soft, low-glare red/yellow/
+/// green so status is readable at a glance without harsh terminal colours.
+fn style_status_marks(content: &str) -> ratatui::text::Text<'static> {
+    use ratatui::text::Span;
+    const MARKS: [(&str, Color); 3] = [
+        ("[ ]", Color::Rgb(178, 102, 102)),
+        ("[_]", Color::Rgb(176, 148, 74)),
+        ("[x]", Color::Rgb(96, 158, 110)),
+    ];
+    let mut lines = Vec::new();
+    for raw in content.lines() {
+        let mut spans: Vec<Span> = Vec::new();
+        let mut rest = raw;
+        loop {
+            let mut best: Option<(usize, &str, Color)> = None;
+            for (mark, color) in MARKS {
+                if let Some(position) = rest.find(mark)
+                    && best.is_none_or(|(current, _, _)| position < current)
+                {
+                    best = Some((position, mark, color));
+                }
+            }
+            match best {
+                Some((position, mark, color)) => {
+                    if position > 0 {
+                        spans.push(Span::raw(rest[..position].to_owned()));
+                    }
+                    spans.push(Span::styled(
+                        mark.to_owned(),
+                        Style::default().fg(color).add_modifier(Modifier::BOLD),
+                    ));
+                    rest = &rest[position + mark.len()..];
+                }
+                None => {
+                    if !rest.is_empty() {
+                        spans.push(Span::raw(rest.to_owned()));
+                    }
+                    break;
+                }
+            }
+        }
+        lines.push(ratatui::text::Line::from(spans));
+    }
+    ratatui::text::Text::from(lines)
+}
+
+/// Colour the compact resource monitor so CPU, memory, GPU and network read
+/// like a small `htop`/`nvidia-smi` board, while merged process classes keep a
+/// stable per-class hue.
+fn style_resource_pane(content: &str) -> ratatui::text::Text<'static> {
+    use ratatui::text::{Line, Span};
+    let mut lines = Vec::new();
+    for raw in content.lines() {
+        let (color, bold) = resource_line_style(raw.trim_start());
+        let style = if bold {
+            Style::default().fg(color).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(color)
+        };
+        lines.push(Line::from(Span::styled(raw.to_owned(), style)));
+    }
+    ratatui::text::Text::from(lines)
+}
+
+fn resource_line_style(trimmed: &str) -> (Color, bool) {
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("cpu") {
+        return (Color::Cyan, true);
+    }
+    if lower.starts_with("mem") {
+        return (Color::Green, true);
+    }
+    if lower.starts_with("disk") {
+        return (Color::LightYellow, true);
+    }
+    if lower.starts_with("gpu") {
+        return (Color::Magenta, true);
+    }
+    if lower.starts_with("net") {
+        return (Color::Blue, true);
+    }
+    if lower.starts_with("processes") {
+        return (Color::Yellow, true);
+    }
+    if lower.starts_with("context") {
+        return (Color::LightBlue, false);
+    }
+    match lower.split_whitespace().next().unwrap_or_default() {
+        "zenpi" => (Color::Green, false),
+        "opencode" => (Color::Cyan, false),
+        "agent" => (Color::Blue, false),
+        "lsp" => (Color::LightMagenta, false),
+        "mcp" => (Color::LightCyan, false),
+        "node" => (Color::Yellow, false),
+        "rust" => (Color::LightRed, false),
+        "shell" => (Color::LightGreen, false),
+        "git" => (Color::LightBlue, false),
+        "search" => (Color::Magenta, false),
+        "refresh" | "Snapshot" => (Color::Red, true),
+        _ => (Color::DarkGray, false),
     }
 }
 
@@ -8001,6 +10682,8 @@ fn workspace_pane_title(id: PaneId) -> &'static str {
         PaneId::Resources => "Resources",
         PaneId::GoalConversation => "Goal",
         PaneId::Gantt => "Gantt",
+        PaneId::Arch => "Arch",
+        PaneId::Execution => "Shell",
         PaneId::Browser => "Browser",
         PaneId::Terminal => "Terminal",
         PaneId::LearnConversation => "Conversation",
@@ -8436,6 +11119,44 @@ pub fn dispatch_slash_command(
                     ),
                 ),
                 ProjectAction::Open { name } => {
+                    // A remote folder source is read-only: probe it, record the
+                    // source on the tab, and never fabricate a local session.
+                    if let Ok(crate::folder_source::FolderSource::Remote { spec }) =
+                        crate::folder_source::FolderSource::resolve(&name)
+                    {
+                        let ok = state.open_project_tab(name.clone());
+                        if ok {
+                            if let Some(index) = state.project_index(&name) {
+                                let key = state.project_tabs[index].clone();
+                                state.project_metadata.entry(key).or_default().source =
+                                    Some(format!("ssh:{}", spec.display()));
+                            }
+                            match spec.probe(&spec.path) {
+                                Ok(entries) => state.push_message(
+                                    MessageRole::System,
+                                    format!(
+                                        "remote {} ({} entries): {}",
+                                        spec.display(),
+                                        entries.len(),
+                                        entries.join("  ")
+                                    ),
+                                ),
+                                Err(error) => state.push_message(
+                                    MessageRole::Error,
+                                    format!("remote probe failed: {error}"),
+                                ),
+                            }
+                        }
+                        state.push_message(
+                            MessageRole::System,
+                            if ok {
+                                format!("remote project: {}", spec.display())
+                            } else {
+                                format!("project already exists: {name}")
+                            },
+                        );
+                        return SlashDispatchAction::Continue;
+                    }
                     let ok = state.open_project_tab(name.clone());
                     if ok && let Some(agent) = agent.as_deref_mut() {
                         let mut slug = name
@@ -8526,6 +11247,41 @@ pub fn dispatch_slash_command(
                         )
                     }
                 }
+                ProjectAction::Move { name, index } => {
+                    let ok = state.move_project_tab(&name, index);
+                    (
+                        ok,
+                        if ok {
+                            format!("project moved: {name} -> {index}")
+                        } else {
+                            format!("cannot move project: {name}")
+                        },
+                    )
+                }
+                ProjectAction::Rename { old, new } => {
+                    let ok = !new.trim().is_empty()
+                        && !state.project_tabs().contains(&new)
+                        && state.rename_project_tab(&old, new.clone());
+                    (
+                        ok,
+                        if ok {
+                            format!("project renamed: {old} -> {new}")
+                        } else {
+                            format!("cannot rename project: {old}")
+                        },
+                    )
+                }
+                ProjectAction::Style { name, style } => {
+                    let ok = state.style_project_tab(&name, &style);
+                    (
+                        ok,
+                        if ok {
+                            format!("project style: {name} = {style}")
+                        } else {
+                            format!("unknown project or style: {name}/{style}")
+                        },
+                    )
+                }
             };
             state.push_message(
                 if ok {
@@ -8604,10 +11360,36 @@ pub fn dispatch_slash_command(
             }
         }
         SlashCommand::Model { name } => {
-            if let Some(agent) = agent.as_deref_mut() {
-                if let Some(name) = name {
+            if let Some(name) = name {
+                // `/model <name>` targets the focused left zone (ZS1-152). The
+                // discussion zone is the main conversation and therefore also
+                // updates the global model; the arch zone is a separate
+                // master-session region and must not disturb the discussion
+                // agent's active model.
+                let zone = state.focused_zone();
+                if zone == crate::view_model::Zone::Arch {
+                    match state.set_zone_model(zone, Some(name.clone())) {
+                        Ok(()) => state.push_message(
+                            MessageRole::System,
+                            format!("arch model selected: {}", inline_token(&name, 160)),
+                        ),
+                        Err(error) => state.push_message(
+                            MessageRole::Error,
+                            format!("arch model change failed: {error}"),
+                        ),
+                    }
+                    if let Some(agent) = agent.as_deref_mut()
+                        && let Err(error) = agent.set_zone_model(zone, Some(name))
+                    {
+                        state.push_message(
+                            MessageRole::Error,
+                            format!("arch model change failed: {error}"),
+                        );
+                    }
+                } else if let Some(agent) = agent.as_deref_mut() {
                     match agent.set_model(Some(name.clone())) {
                         Ok(()) => {
+                            let _ = state.set_zone_model(zone, Some(name.clone()));
                             state.refresh_transcript_status(agent);
                             // Keep the command palette's model/reasoning catalog
                             // bound to the owner we just changed.  Model
@@ -8632,16 +11414,27 @@ pub fn dispatch_slash_command(
                         ),
                     }
                 } else {
-                    match state.update_model_catalog(agent) {
-                        Ok(()) if !state.model_menu.entries.is_empty() => {
-                            state.set_input("/model ")
-                        }
+                    // No owner is bound yet: still record the discussion zone
+                    // preference so a later host can adopt it.
+                    match state.set_zone_model(zone, Some(name.clone())) {
                         Ok(()) => state.push_message(
-                            MessageRole::Error,
-                            "Model selection unavailable: this backend has no model registry",
+                            MessageRole::System,
+                            format!("model selected: {}", inline_token(&name, 160)),
                         ),
-                        Err(error) => state.push_message(MessageRole::Error, error.to_string()),
+                        Err(error) => state.push_message(
+                            MessageRole::Error,
+                            format!("model change failed: {error}"),
+                        ),
                     }
+                }
+            } else if let Some(agent) = agent.as_deref_mut() {
+                match state.update_model_catalog(agent) {
+                    Ok(()) if !state.model_menu.entries.is_empty() => state.set_input("/model "),
+                    Ok(()) => state.push_message(
+                        MessageRole::Error,
+                        "Model selection unavailable: this backend has no model registry",
+                    ),
+                    Err(error) => state.push_message(MessageRole::Error, error.to_string()),
                 }
             } else {
                 state.push_message(
@@ -9671,6 +12464,128 @@ pub fn dispatch_slash_command(
         SlashCommand::Loop { args } => {
             dispatch_runtime_intent(state, agent, crate::b3::RuntimeIntentKind::Loop, &args);
         }
+        SlashCommand::Sync { requirement } => {
+            let workspace = agent
+                .as_deref()
+                .map(|agent| std::path::PathBuf::from(agent.session().header().cwd.clone()));
+            let Some(workspace) = workspace else {
+                state.push_message(
+                    MessageRole::Error,
+                    "sync cannot run while the agent is busy".to_owned(),
+                );
+                return SlashDispatchAction::Continue;
+            };
+            match crate::sync::sync_requirement(&workspace, &requirement) {
+                Ok(receipt) => {
+                    state.push_message(
+                        MessageRole::System,
+                        format!(
+                            "sync: {} -> {} (duplicate={}, queued={})",
+                            receipt.item_id, receipt.blueprint, receipt.duplicate, receipt.queued
+                        ),
+                    );
+                    if !receipt.duplicate {
+                        let args = vec![
+                            "start".to_owned(),
+                            receipt.item_id.clone(),
+                            requirement.clone(),
+                        ];
+                        dispatch_runtime_intent(
+                            state,
+                            agent,
+                            crate::b3::RuntimeIntentKind::Loop,
+                            &args,
+                        );
+                    }
+                }
+                Err(error) => {
+                    state.push_message(MessageRole::Error, format!("sync failed: {error}"))
+                }
+            }
+        }
+        SlashCommand::Execute { args } => {
+            dispatch_runtime_intent(state, agent, crate::b3::RuntimeIntentKind::Execute, &args);
+        }
+        SlashCommand::Explore { args } => {
+            dispatch_runtime_intent(state, agent, crate::b3::RuntimeIntentKind::Explore, &args);
+        }
+        SlashCommand::Worktree { action } => {
+            use crate::slash::WorktreeAction;
+            let message = match action {
+                WorktreeAction::List => {
+                    let active = state.active_subtab();
+                    state
+                        .subtabs()
+                        .iter()
+                        .enumerate()
+                        .map(|(index, tab)| {
+                            let kind = match tab.kind {
+                                SubTabKind::Main => "main",
+                                SubTabKind::Worktree => "worktree",
+                                SubTabKind::InPlace => "in-place",
+                            };
+                            format!(
+                                "{}{} [{kind}] {}",
+                                if index == active { "*" } else { " " },
+                                tab.name,
+                                tab.root
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                }
+                WorktreeAction::Add { in_place, name } => {
+                    if in_place {
+                        if state.subtab_add_in_place(name) {
+                            "layer-2 tab added (in place)".to_owned()
+                        } else {
+                            "cannot add layer-2 tab".to_owned()
+                        }
+                    } else {
+                        match state.subtab_add_worktree(name) {
+                            Ok(name) => format!("worktree sub-tab added: {name}"),
+                            Err(error) => format!("worktree add failed: {error}"),
+                        }
+                    }
+                }
+                WorktreeAction::Select { index } => {
+                    if state.subtab_select(index) {
+                        format!("sub-tab selected: {index}")
+                    } else {
+                        format!("no such sub-tab: {index}")
+                    }
+                }
+                WorktreeAction::Close { index } => {
+                    if state.subtab_close(index) {
+                        format!("sub-tab closed: {index}")
+                    } else {
+                        format!("cannot close sub-tab: {index}")
+                    }
+                }
+                WorktreeAction::Move { index, target } => {
+                    if state.subtab_move(index, target) {
+                        format!("sub-tab moved: {index} -> {target}")
+                    } else {
+                        format!("cannot move sub-tab: {index}")
+                    }
+                }
+                WorktreeAction::Rename { index, name } => {
+                    if state.subtab_rename(index, &name) {
+                        format!("sub-tab renamed: {index} -> {name}")
+                    } else {
+                        format!("cannot rename sub-tab: {index}")
+                    }
+                }
+                WorktreeAction::Concurrency { index, delta } => {
+                    if state.subtab_concurrency(index, delta as isize) {
+                        format!("sub-tab concurrency updated: {index} {delta:+}")
+                    } else {
+                        format!("cannot update concurrency: {index}")
+                    }
+                }
+            };
+            state.push_message(MessageRole::System, message);
+        }
     }
     if !state.is_busy() {
         state.set_status("Ready");
@@ -9829,6 +12744,14 @@ impl ProjectRuntimeHost {
         self.pool
             .owner(state.active_project())
             .expect("committed project owner")
+    }
+
+    /// Independent arch master-session owner for the active project (ZS1-156).
+    pub fn active_arch(
+        &mut self,
+        state: &TuiState,
+    ) -> Result<Arc<Mutex<crate::core::Agent>>, String> {
+        self.pool.arch_agent(state.active_project())
     }
     /// Resume through the shared durable owner before changing any view state.
     /// The same path serves slash actions and the session-list control.
@@ -10477,7 +13400,7 @@ fn signal_status(status: crate::resources::SignalStatus) -> &'static str {
 
 fn format_resource_summary(snapshot: &crate::resources::ResourceSnapshot) -> String {
     format!(
-        "resources: files={} dirs={} bytes={} truncated={} cpu={} memory={} disk={}",
+        "resources: files={} dirs={} bytes={} truncated={} cpu={} memory={} disk={} gpu={} network={} processes={} lsp={} mcp={}",
         snapshot.workspace.files,
         snapshot.workspace.directories,
         snapshot.workspace.bytes,
@@ -10485,6 +13408,15 @@ fn format_resource_summary(snapshot: &crate::resources::ResourceSnapshot) -> Str
         signal_status(snapshot.cpu.status),
         signal_status(snapshot.memory.status),
         signal_status(snapshot.disk.status),
+        signal_status(snapshot.gpu.status),
+        signal_status(snapshot.network.status),
+        snapshot.processes.total,
+        snapshot
+            .processes
+            .count_for(crate::resources::ProcessClass::Lsp),
+        snapshot
+            .processes
+            .count_for(crate::resources::ProcessClass::Mcp),
     )
 }
 
@@ -10501,6 +13433,127 @@ fn format_byte_count(bytes: u64) -> String {
     } else {
         format!("{value:.1} {}", UNITS[unit])
     }
+}
+
+fn format_disk_signal(disk: &crate::resources::DiskSignal) -> String {
+    match (disk.total_bytes, disk.available_bytes) {
+        (Some(total), Some(available)) if total > 0 => {
+            let used = total.saturating_sub(available);
+            let percent = crate::resources::utilization_percent(used, total);
+            format!(
+                "Disk {} used  {} free / {}  [{}] {percent:.0}%",
+                format_byte_count(used),
+                format_byte_count(available),
+                format_byte_count(total),
+                crate::resources::render_bar(percent, 16)
+            )
+        }
+        _ => "Disk unavailable".into(),
+    }
+}
+
+fn short_cidr(ip: &str) -> String {
+    match ip.rsplit_once('.') {
+        Some((prefix, _)) => format!("{prefix}.0/24"),
+        None => ip.to_owned(),
+    }
+}
+
+fn truncate_cells(value: &str, max: usize) -> String {
+    if value.chars().count() <= max {
+        return value.to_owned();
+    }
+    if max <= 1 {
+        return value.chars().take(max).collect();
+    }
+    let mut truncated: String = value.chars().take(max - 1).collect();
+    truncated.push('…');
+    truncated
+}
+
+fn format_host_resources(resources: Option<&crate::net_probe::HostResources>) -> String {
+    let Some(resources) = resources else {
+        return "-".into();
+    };
+    let mut parts = Vec::new();
+    if let Some(cpu) = &resources.cpu {
+        parts.push(cpu.clone());
+    }
+    if let Some(cpus) = resources.logical_cpus {
+        parts.push(format!("{cpus} core"));
+    }
+    if let Some(memory) = resources.memory_total_bytes {
+        parts.push(format_byte_count(memory));
+    }
+    if let Some(free) = resources.disk_available_bytes {
+        parts.push(format!("{} free", format_byte_count(free)));
+    }
+    if !resources.gpus.is_empty() {
+        parts.push(format!("GPU {}", resources.gpus.join("+")));
+    }
+    if parts.is_empty() {
+        "-".into()
+    } else {
+        parts.join(" · ")
+    }
+}
+
+fn format_gpu_signal(gpu: &crate::resources::GpuSignal) -> String {
+    if gpu.devices.is_empty() {
+        return "GPU unavailable".into();
+    }
+    let devices: Vec<String> = gpu
+        .devices
+        .iter()
+        .map(|device| {
+            let utilization = device
+                .utilization_percent
+                .map(|value| format!("{value:.0}%"))
+                .unwrap_or_else(|| "util --".into());
+            let memory = match (device.memory_used_bytes, device.memory_total_bytes) {
+                (Some(used), Some(total)) => {
+                    format!("{}/{}", format_byte_count(used), format_byte_count(total))
+                }
+                _ => "mem --".into(),
+            };
+            let bar = device
+                .utilization_percent
+                .map(|value| format!(" [{}] {value:.0}%", crate::resources::render_bar(value, 12)))
+                .unwrap_or_default();
+            format!("{} {utilization} {memory}{bar}", device.name)
+        })
+        .collect();
+    let mut line = format!("GPU {}", devices.join("; "));
+    if gpu.truncated {
+        line.push_str(" ...");
+    }
+    line
+}
+
+fn format_network_signal(network: &crate::resources::NetworkSignal) -> String {
+    match (network.received_bytes, network.transmitted_bytes) {
+        (Some(received), Some(transmitted)) => format!(
+            "Net rx {}  tx {}",
+            format_byte_count(received),
+            format_byte_count(transmitted)
+        ),
+        _ => "Net unavailable".into(),
+    }
+}
+
+fn format_process_summary(processes: &crate::resources::ProcessSummary) -> String {
+    if processes.total == 0 {
+        return "Processes unavailable".into();
+    }
+    let mut line = format!(
+        "Processes {} total  {}",
+        processes.total,
+        format_byte_count(processes.resident_bytes)
+    );
+    if processes.truncated {
+        line.push_str("  truncated");
+    }
+    line
 }
 
 /// Run the interactive mode for zenpi's shared agent.
@@ -12001,6 +15054,43 @@ pub fn run_async_with_profile(
             poll_interval: Duration::from_millis(10),
         },
     );
+    // LAN discovery is read-only and bounded, but still touches the network,
+    // so it runs on its own single-slot worker with a slow cadence.
+    let lan_runner = BackgroundRunner::spawn(
+        |_: (), token| -> Result<crate::net_probe::LanSnapshot, String> {
+            if token.is_cancelled() {
+                return Err("lan scan cancelled".into());
+            }
+            let local =
+                crate::net_probe::local_ipv4().ok_or_else(|| "no local ipv4".to_string())?;
+            let credentials = crate::net_probe::NetCredentials::from_env();
+            // Credentialed scans use the SSH backend for resource extraction;
+            // without credentials the read-only system backend is enough.
+            let system_backend = crate::net_probe::SystemProbeBackend::new();
+            let ssh_backend = crate::net_probe::SshProbeBackend::new();
+            let backend: &dyn crate::net_probe::ProbeBackend = if credentials.is_empty() {
+                &system_backend
+            } else {
+                &ssh_backend
+            };
+            let scanner = crate::net_probe::LanScanner::new(local);
+            // The ARP table already lists recent peers; scanning it avoids a
+            // 254-address ping sweep on every automatic refresh. Hosts without
+            // an ARP entry can be probed by an explicit deep scan later.
+            let snapshot = scanner.scan(backend, &[], &credentials);
+            if token.is_cancelled() {
+                return Err("lan scan cancelled".into());
+            }
+            token.mark_completed();
+            Ok(snapshot)
+        },
+        RuntimeConfig {
+            command_capacity: 1,
+            event_capacity: 4,
+            max_pending: 1,
+            poll_interval: Duration::from_millis(25),
+        },
+    );
     let mut state = TuiState {
         async_session_browser: true,
         ..TuiState::default()
@@ -12046,6 +15136,8 @@ pub fn run_async_with_profile(
     };
     let mut active_resource_project = state.active_project().to_owned();
     let mut last_resource_refresh = Instant::now();
+    let mut active_lan_job = lan_runner.try_submit(()).ok();
+    let mut last_lan_refresh = Instant::now();
     let mut active_gantt_generation = Some(gantt_tracker.generation);
     let mut active_gantt_job = match gantt_runner.try_submit(gantt_tracker.request()) {
         Ok(id) => {
@@ -12073,6 +15165,7 @@ pub fn run_async_with_profile(
             let _ = resource_runner.shutdown_and_join();
             let _ = completion_runner.shutdown_and_join();
             let _ = gantt_runner.shutdown_and_join();
+            let _ = lan_runner.shutdown_and_join();
             return Err(crate::error::ZenpiError::Message(error.to_string()));
         }
     };
@@ -12085,6 +15178,7 @@ pub fn run_async_with_profile(
             let _ = resource_runner.shutdown_and_join();
             let _ = completion_runner.shutdown_and_join();
             let _ = gantt_runner.shutdown_and_join();
+            let _ = lan_runner.shutdown_and_join();
             guard.leave();
             return Err(crate::error::ZenpiError::Message(error.to_string()));
         }
@@ -12100,6 +15194,7 @@ pub fn run_async_with_profile(
     let mut active_job_kind = None;
     let mut active_job_project: Option<String> = None;
     let mut active_job_owner: Option<Arc<Mutex<crate::core::Agent>>> = None;
+    let mut active_job_is_arch = false;
     let mut pending_inputs = TuiPendingInputs::default();
     let mut input_controls = TuiInputControls::default();
     if let Ok(agent) = shared.try_lock() {
@@ -12154,10 +15249,10 @@ pub fn run_async_with_profile(
                         JobOutcome::Succeeded((query, entries)) => {
                             state.apply_file_completion(query, entries);
                         }
-                        JobOutcome::Failed(error) => {
-                            if state.file_completion_query() == last_file_query {
-                                state.set_status(format!("File completion: {error}"));
-                            }
+                        JobOutcome::Failed(error)
+                            if state.file_completion_query() == last_file_query =>
+                        {
+                            state.set_status(format!("File completion: {error}"));
                         }
                         _ => {}
                     }
@@ -12269,7 +15364,45 @@ pub fn run_async_with_profile(
                     _ => {}
                 }
             }
+            while let Ok(event) = lan_runner.try_next_event() {
+                match event {
+                    RuntimeEvent::Completed { id, outcome } => {
+                        if Some(id) != active_lan_job {
+                            continue;
+                        }
+                        active_lan_job = None;
+                        match outcome {
+                            JobOutcome::Succeeded(snapshot) => state.set_lan_snapshot(snapshot),
+                            JobOutcome::Failed(error) => state.resource_refresh_failed(error),
+                            JobOutcome::Cancelled => {}
+                            JobOutcome::Panicked => {
+                                state.resource_refresh_failed("lan worker panicked")
+                            }
+                        }
+                        last_lan_refresh = Instant::now();
+                        scheduler.request();
+                    }
+                    RuntimeEvent::Rejected { id, reason } => {
+                        if Some(id) != active_lan_job {
+                            continue;
+                        }
+                        active_lan_job = None;
+                        last_lan_refresh = Instant::now();
+                        state.resource_refresh_failed(reason.to_string());
+                    }
+                    RuntimeEvent::Closed => {}
+                    _ => {}
+                }
+            }
             let now = Instant::now();
+            if active_lan_job.is_none()
+                && now.saturating_duration_since(last_lan_refresh) >= LAN_REFRESH_INTERVAL
+                && let Ok(id) = lan_runner.try_submit(())
+            {
+                active_lan_job = Some(id);
+                last_lan_refresh = now;
+                scheduler.request();
+            }
             if active_resource_job.is_none()
                 && now.saturating_duration_since(last_resource_refresh) >= RESOURCE_REFRESH_INTERVAL
             {
@@ -12455,7 +15588,8 @@ pub fn run_async_with_profile(
                         // A final provider delta can race the runtime
                         // completion notification. Drain this job's buffer
                         // once more before replacing its provisional line.
-                        if let Some(events) = events
+                        if !active_job_is_arch
+                            && let Some(events) = events
                             && drain_tui_provider_events(&mut state, id.get(), &events)
                         {
                             scheduler.request();
@@ -12477,12 +15611,22 @@ pub fn run_async_with_profile(
                         match outcome {
                             JobOutcome::Succeeded(TuiJobResult::Model(result)) => {
                                 if let Some(assistant) = result.assistant {
-                                    finish_turn_reasoning(&mut state, id.get(), &assistant);
-                                    state.finish_stream_for_job(
-                                        id.get(),
-                                        MessageRole::Assistant,
-                                        assistant.content,
-                                    );
+                                    if active_job_is_arch {
+                                        // Independent arch lane: the reply
+                                        // belongs to the arch transcript, not
+                                        // the discussion lane (ZS1-156).
+                                        state.push_arch_message(
+                                            MessageRole::Assistant,
+                                            assistant.content,
+                                        );
+                                    } else {
+                                        finish_turn_reasoning(&mut state, id.get(), &assistant);
+                                        state.finish_stream_for_job(
+                                            id.get(),
+                                            MessageRole::Assistant,
+                                            assistant.content,
+                                        );
+                                    }
                                 } else {
                                     state.discard_stream();
                                 }
@@ -12542,6 +15686,17 @@ pub fn run_async_with_profile(
                             JobOutcome::Succeeded(TuiJobResult::UserShell(result)) => {
                                 state.discard_stream();
                                 render_user_shell_result(&mut state, &result);
+                                // ZS1-148: record the bounded result in the arch
+                                // master-session lane and release its single
+                                // concurrency slot.
+                                if state.master_busy() {
+                                    let summary = result
+                                        .get("exit_code")
+                                        .and_then(serde_json::Value::as_i64)
+                                        .map(|code| format!("arch bash finished (exit {code})"))
+                                        .unwrap_or_else(|| "arch bash finished".to_owned());
+                                    state.complete_master_turn(MessageRole::System, summary);
+                                }
                             }
                             JobOutcome::Failed(error) => {
                                 if let Some(text) = rejected_input {
@@ -12564,6 +15719,12 @@ pub fn run_async_with_profile(
                                 state.set_status("Request failed");
                             }
                         }
+                        // Any terminal job boundary releases the arch master
+                        // session's single concurrency slot (ZS1-148). The arm
+                        // above may already have recorded a richer arch result.
+                        if state.master_busy() {
+                            state.set_master_busy(false);
+                        }
                         scheduler.request();
                     }
                     RuntimeEvent::Rejected { id, reason } => {
@@ -12581,6 +15742,9 @@ pub fn run_async_with_profile(
                         active_job_kind = None;
                         state.discard_stream();
                         state.set_busy(false);
+                        if state.master_busy() {
+                            state.set_master_busy(false);
+                        }
                         state.push_message(MessageRole::Error, reason.to_string());
                         state.set_status("Request rejected");
                         if let Some(text) = rejected_input {
@@ -12608,6 +15772,7 @@ pub fn run_async_with_profile(
             if active_job.is_none() {
                 active_job_project = None;
                 active_job_owner = None;
+                active_job_is_arch = false;
             }
             // Admit exactly one queued input after the previous job has crossed
             // its terminal boundary. FIFO admission prevents a later prompt
@@ -12745,10 +15910,21 @@ pub fn run_async_with_profile(
             } else {
                 poll_interval
             };
+            // A live shell can produce output without a terminal event, so keep
+            // the loop responsive while still respecting the paste guard.
+            let wait = if state.has_shell() {
+                wait.min(Duration::from_millis(16))
+            } else {
+                wait
+            };
             let wait = state.ordinary_paste_wait(Instant::now(), wait);
+            state.pump_shell();
             if !event::poll(wait)
                 .map_err(|error| crate::error::ZenpiError::Message(error.to_string()))?
             {
+                // Idle tick: keep the embedded Shell pane's scrollback live
+                // even when no terminal event arrives (ZS1-166).
+                state.pump_shell();
                 continue;
             }
             let mut processed = 0usize;
@@ -12758,7 +15934,38 @@ pub fn run_async_with_profile(
                 if matches!(event, Event::Resize(_, _)) {
                     resize_pending = true;
                 }
-                match state.handle_event(event) {
+                // ZS1-148: an arch master-session submission is normalized onto
+                // the standard submit route. `display()` keeps the leading `!`
+                // for bash so the shared parser selects the user-shell owner,
+                // while steering text reaches the existing Steer/Prompt path.
+                let action = match state.handle_event(event) {
+                    TuiAction::SubmitArch(command) => {
+                        // Route this turn to the independent arch runtime owner
+                        // instead of the discussion owner (ZS1-156).
+                        state.set_arch_submit_pending();
+                        TuiAction::Submit(command.display())
+                    }
+                    TuiAction::SubmitArchSlash { command, text } => {
+                        // The arch console owns slash commands independently
+                        // (ZS1-165): run here and report into the arch
+                        // transcript, never the discussion one.
+                        state.set_message_target(MessageTarget::Arch);
+                        state.push_arch_message(MessageRole::User, &text);
+                        let result = dispatch_slash_command(command, &mut state, None);
+                        state.set_message_target(MessageTarget::Discussion);
+                        match result {
+                            SlashDispatchAction::Quit => TuiAction::Quit,
+                            SlashDispatchAction::Interrupt => {
+                                state.set_busy(false);
+                                state.set_status("Interrupted");
+                                TuiAction::Redraw
+                            }
+                            SlashDispatchAction::Continue => TuiAction::Redraw,
+                        }
+                    }
+                    other => other,
+                };
+                match action {
                     TuiAction::RespondApproval {
                         project,
                         request_id,
@@ -12860,6 +16067,8 @@ pub fn run_async_with_profile(
                         }
                     }
                     TuiAction::Submit(text) => {
+                        // Consumed exactly once: true only for an arch lane turn.
+                        let arch_submit = state.take_arch_submit_pending();
                         if new_sessions.owns(state.active_project())
                             && !text.trim_start().starts_with('/')
                         {
@@ -13103,8 +16312,56 @@ pub fn run_async_with_profile(
                                             );
                                             None
                                         }
+                                        ProjectAction::Move { name, index } => {
+                                            let ok = state.move_project_tab(name, *index);
+                                            state.push_message(
+                                                MessageRole::System,
+                                                if ok {
+                                                    format!("project moved: {name} -> {index}")
+                                                } else {
+                                                    format!("cannot move project: {name}")
+                                                },
+                                            );
+                                            None
+                                        }
+                                        ProjectAction::Rename { old, new } => {
+                                            let ok = !new.trim().is_empty()
+                                                && !state.project_tabs.contains(new)
+                                                && state.rename_project_tab(old, new.clone());
+                                            state.push_message(
+                                                MessageRole::System,
+                                                if ok {
+                                                    format!("project renamed: {old} -> {new}")
+                                                } else {
+                                                    format!("cannot rename project: {old}")
+                                                },
+                                            );
+                                            None
+                                        }
+                                        ProjectAction::Style { name, style } => {
+                                            let ok = state.style_project_tab(name, style);
+                                            state.push_message(
+                                                MessageRole::System,
+                                                if ok {
+                                                    format!("project style: {name} = {style}")
+                                                } else {
+                                                    format!(
+                                                        "unknown project or style: {name}/{style}"
+                                                    )
+                                                },
+                                            );
+                                            None
+                                        }
                                     };
-                                    if intent.is_none() && !matches!(action, ProjectAction::List) {
+                                    if intent.is_none()
+                                        && !matches!(
+                                            action,
+                                            ProjectAction::List
+                                                | ProjectAction::Move { .. }
+                                                | ProjectAction::Rename { .. }
+                                                | ProjectAction::Style { .. }
+                                        )
+                                    {
                                         state.push_message(MessageRole::Error, "Project not found");
                                     }
                                     state.pending_project = intent;
@@ -13321,17 +16578,24 @@ pub fn run_async_with_profile(
                                         &mut state,
                                     );
                                 } else {
+                                    let owner = if arch_submit {
+                                        project_host
+                                            .active_arch(&state)
+                                            .unwrap_or_else(|_| Arc::clone(&shared))
+                                    } else {
+                                        Arc::clone(&shared)
+                                    };
                                     let (request, events) = TuiRequest::with_kind(
                                         format!("!{command}"),
                                         TuiRequestKind::UserShell,
                                     );
                                     let mut request = request;
-                                    request.owner = Some(Arc::clone(&shared));
-                                    if let Ok(agent) = shared.try_lock() {
+                                    request.owner = Some(Arc::clone(&owner));
+                                    if let Ok(agent) = owner.try_lock() {
                                         input_controls
                                             .remember_owner(state.active_project(), &agent);
                                     }
-                                    approval = shared
+                                    approval = owner
                                         .try_lock()
                                         .ok()
                                         .and_then(|agent| agent.approval_coordinator())
@@ -13351,8 +16615,9 @@ pub fn run_async_with_profile(
                                             active_job = Some(id);
                                             active_job_project =
                                                 Some(state.active_project().to_owned());
-                                            active_job_owner = Some(Arc::clone(&shared));
+                                            active_job_owner = Some(Arc::clone(&owner));
                                             active_job_kind = Some(TuiRequestKind::UserShell);
+                                            active_job_is_arch = arch_submit;
                                         }
                                         Err(error) => {
                                             state.push_message(
@@ -13402,14 +16667,21 @@ pub fn run_async_with_profile(
                                         input_controls.submit(&mut state, &shared, action, text);
                                     }
                                 } else {
+                                    let owner = if arch_submit {
+                                        project_host
+                                            .active_arch(&state)
+                                            .unwrap_or_else(|_| Arc::clone(&shared))
+                                    } else {
+                                        Arc::clone(&shared)
+                                    };
                                     let (request, events) = TuiRequest::new(text);
                                     let mut request = request;
-                                    request.owner = Some(Arc::clone(&shared));
-                                    if let Ok(agent) = shared.try_lock() {
+                                    request.owner = Some(Arc::clone(&owner));
+                                    if let Ok(agent) = owner.try_lock() {
                                         input_controls
                                             .remember_owner(state.active_project(), &agent);
                                     }
-                                    approval = shared
+                                    approval = owner
                                         .try_lock()
                                         .ok()
                                         .and_then(|agent| agent.approval_coordinator())
@@ -13420,12 +16692,15 @@ pub fn run_async_with_profile(
                                         Ok(id) => {
                                             submitted_inputs.insert(id, submitted_text);
                                             stream_buffers.insert(id, events);
-                                            state.begin_stream_for_job(id.get());
+                                            if !arch_submit {
+                                                state.begin_stream_for_job(id.get());
+                                            }
                                             active_job = Some(id);
                                             active_job_project =
                                                 Some(state.active_project().to_owned());
-                                            active_job_owner = Some(Arc::clone(&shared));
+                                            active_job_owner = Some(Arc::clone(&owner));
                                             active_job_kind = Some(TuiRequestKind::Model);
+                                            active_job_is_arch = arch_submit;
                                             state.set_busy(true);
                                             state.set_status("Working");
                                         }
@@ -13477,6 +16752,25 @@ pub fn run_async_with_profile(
                         }
                     }
                     TuiAction::Quit => break 'outer,
+                    // ZS1-148: arch submissions are normalized to `Submit`
+                    // before this match, so this arm is a defensive no-op.
+                    TuiAction::SubmitArch(_) => {}
+                    TuiAction::SubmitArchSlash { command, text } => {
+                        // Synchronous host: still honor an arch slash command so
+                        // both prompts behave alike (ZS1-165).
+                        state.set_message_target(MessageTarget::Arch);
+                        state.push_arch_message(MessageRole::User, &text);
+                        let result = dispatch_slash_command(command, &mut state, None);
+                        state.set_message_target(MessageTarget::Discussion);
+                        match result {
+                            SlashDispatchAction::Quit => break 'outer,
+                            SlashDispatchAction::Interrupt => {
+                                state.set_busy(false);
+                                state.set_status("Interrupted");
+                            }
+                            SlashDispatchAction::Continue => {}
+                        }
+                    }
                     TuiAction::Redraw | TuiAction::None => {}
                 }
                 processed += 1;
@@ -13528,6 +16822,7 @@ pub fn run_async_with_profile(
     let resource_join_result = resource_runner.shutdown_and_join();
     let completion_join_result = completion_runner.shutdown_and_join();
     let gantt_join_result = gantt_runner.shutdown_and_join();
+    let lan_join_result = lan_runner.shutdown_and_join();
     project_host.pool.close_all();
     match loop_result {
         Err(error) => {
@@ -13539,6 +16834,7 @@ pub fn run_async_with_profile(
             .and(resource_join_result)
             .and(completion_join_result)
             .and(gantt_join_result)
+            .and(lan_join_result)
             .map_err(|_| crate::error::ZenpiError::Message("runtime worker panicked".into())),
     }
 }
@@ -13631,7 +16927,13 @@ where
             } else {
                 poll_interval
             };
+            let wait = if state.has_shell() {
+                wait.min(Duration::from_millis(16))
+            } else {
+                wait
+            };
             let wait = state.ordinary_paste_wait(Instant::now(), wait);
+            state.pump_shell();
             if !event::poll(wait)? {
                 continue;
             }
@@ -13682,6 +16984,47 @@ where
                         if let Err(error) = on_submit(text, &mut state) {
                             state.push_message(MessageRole::Error, error.to_string());
                             state.set_status("Input control failed");
+                        }
+                    }
+                    // ZS1-148: the arch console belongs to the master session.
+                    // The synchronous host has no shell owner, but it can still
+                    // forward a steering instruction through `on_submit` and it
+                    // must report a bash rejection instead of faking success.
+                    TuiAction::SubmitArch(command) => match command {
+                        MasterSessionCommand::Bash(_) => {
+                            state.complete_master_turn(
+                                MessageRole::Error,
+                                "local shell unavailable in the synchronous TUI host",
+                            );
+                            state.set_status("Arch bash unavailable");
+                        }
+                        MasterSessionCommand::Steer(prompt) => {
+                            state.set_busy(true);
+                            state.set_status("Working");
+                            let result = on_submit(prompt.clone(), &mut state);
+                            match result {
+                                Ok(()) => state.complete_master_turn(
+                                    MessageRole::System,
+                                    format!("arch steer applied: {prompt}"),
+                                ),
+                                Err(error) => state
+                                    .complete_master_turn(MessageRole::Error, error.to_string()),
+                            }
+                            state.set_busy(false);
+                        }
+                    },
+                    TuiAction::SubmitArchSlash { command, text } => {
+                        state.set_message_target(MessageTarget::Arch);
+                        state.push_arch_message(MessageRole::User, &text);
+                        let result = dispatch_slash_command(command, &mut state, None);
+                        state.set_message_target(MessageTarget::Discussion);
+                        match result {
+                            SlashDispatchAction::Quit => break 'outer,
+                            SlashDispatchAction::Interrupt => {
+                                state.set_busy(false);
+                                state.set_status("Interrupted");
+                            }
+                            SlashDispatchAction::Continue => {}
                         }
                     }
                     TuiAction::Submit(text) => match slash::route_input(&text) {
@@ -14457,6 +17800,14 @@ fn menu_prefix(text: &str, width: usize) -> String {
         result.push_str(grapheme);
     }
     result
+}
+
+fn looks_like_hash(value: &str) -> bool {
+    value.len() >= 16 && value.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    text.chars().take(max_chars).collect()
 }
 
 fn truncate_to_width(text: &str, width: usize) -> String {
@@ -16433,6 +19784,7 @@ mod local_diff_host_tests {
             cwd: "/tmp/selected-B".into(),
             session_path: Some("/tmp/B.jsonl".into()),
             approval_mode: Default::default(),
+            ..Default::default()
         });
         state.set_project_session_cursor(state.active_project().to_owned(), "session-B", 1);
         state.set_busy(true);
@@ -16471,6 +19823,7 @@ mod local_diff_host_tests {
             cwd: "/tmp/A".into(),
             session_path: Some("/tmp/A.jsonl".into()),
             approval_mode: Default::default(),
+            ..Default::default()
         });
         state.set_input("new A draft");
         let layout_a = state.active_project_workspace().clone();

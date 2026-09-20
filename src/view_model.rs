@@ -139,6 +139,158 @@ pub enum ViewModelError {
     StreamClosed,
 }
 
+/// Maximum bytes accepted for one zone-scoped model identity.
+pub const MAX_ZONE_MODEL_BYTES: usize = 256;
+
+/// A TUI region that owns a model choice and a concurrency quota (ZS1-152).
+///
+/// The top-left discussion conversation and the lower-left arch master-session
+/// console may each select independent models, but both are single-concurrency:
+/// the discussion lane is a resident conversation and the arch lane multiplexes
+/// one master turn (a steering instruction joins the active turn instead of
+/// forking a second worker). The real parallel work is done by the project's
+/// background worker pool, whose size is defined by the active project and its
+/// layer-2 workspace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Zone {
+    /// The top-left resident discussion conversation (ZS1-147).
+    Discussion,
+    /// The lower-left master-session arch console (ZS1-148).
+    Arch,
+    /// The project-defined background worker pool.
+    Worker,
+}
+
+impl Zone {
+    pub const ALL: [Zone; 3] = [Zone::Discussion, Zone::Arch, Zone::Worker];
+
+    /// Stable storage and wire key.
+    pub const fn key(self) -> &'static str {
+        match self {
+            Zone::Discussion => "discussion",
+            Zone::Arch => "arch",
+            Zone::Worker => "worker",
+        }
+    }
+
+    /// Zones that expose an independent model selection. Workers run the
+    /// project's model; they do not select their own.
+    pub const fn selects_model(self) -> bool {
+        matches!(self, Zone::Discussion | Zone::Arch)
+    }
+
+    /// Concurrency quota for this zone. Discussion and arch are always single
+    /// concurrency; the worker pool runs at the project-defined count, which is
+    /// clamped to at least one so a zero value can never disable all work.
+    pub const fn concurrency(self, project_workers: u32) -> u32 {
+        match self {
+            Zone::Discussion | Zone::Arch => 1,
+            Zone::Worker => {
+                if project_workers == 0 {
+                    1
+                } else {
+                    project_workers
+                }
+            }
+        }
+    }
+}
+
+/// Durable per-zone model selections. Discussion and arch may override the
+/// global model; the worker pool always uses the global fallback (ZS1-152).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ZoneModels {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discussion: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arch: Option<String>,
+}
+
+impl ZoneModels {
+    /// Stored model for a zone. `Worker` never stores a model.
+    pub fn get(&self, zone: Zone) -> Option<&str> {
+        match zone {
+            Zone::Discussion => self.discussion.as_deref(),
+            Zone::Arch => self.arch.as_deref(),
+            Zone::Worker => None,
+        }
+    }
+
+    /// Replace the stored model for a model-selecting zone. Passing `None`
+    /// clears the override so the zone falls back to the global model. Worker is
+    /// rejected because workers do not own a model choice.
+    pub fn set(&mut self, zone: Zone, model: Option<String>) -> Result<(), ViewModelError> {
+        if !zone.selects_model() {
+            return Err(ViewModelError::Invalid {
+                field: "zone model owner",
+            });
+        }
+        if let Some(model) = model {
+            validate_zone_model(&model)?;
+            match zone {
+                Zone::Discussion => self.discussion = Some(model),
+                Zone::Arch => self.arch = Some(model),
+                Zone::Worker => unreachable!("worker model rejected above"),
+            }
+        } else {
+            match zone {
+                Zone::Discussion => self.discussion = None,
+                Zone::Arch => self.arch = None,
+                Zone::Worker => unreachable!("worker model rejected above"),
+            }
+        }
+        Ok(())
+    }
+
+    /// Effective model for a zone: an explicit zone choice wins, otherwise the
+    /// global model is used. Workers always resolve to the global model.
+    pub fn effective<'a>(&'a self, zone: Zone, global: Option<&'a str>) -> Option<&'a str> {
+        if zone.selects_model() {
+            self.get(zone).or(global)
+        } else {
+            global
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.discussion.is_none() && self.arch.is_none()
+    }
+
+    /// Validate every stored override. Control characters, blank identities and
+    /// oversized identities fail closed instead of being truncated.
+    pub fn validate(&self) -> Result<(), ViewModelError> {
+        if let Some(model) = self.discussion.as_deref() {
+            validate_zone_model(model)?;
+        }
+        if let Some(model) = self.arch.as_deref() {
+            validate_zone_model(model)?;
+        }
+        Ok(())
+    }
+}
+
+fn validate_zone_model(model: &str) -> Result<(), ViewModelError> {
+    if model.trim().is_empty() {
+        return Err(ViewModelError::Empty {
+            field: "zone model",
+        });
+    }
+    if model.len() > MAX_ZONE_MODEL_BYTES {
+        return Err(ViewModelError::TooLarge {
+            field: "zone model",
+            max: MAX_ZONE_MODEL_BYTES,
+        });
+    }
+    if model.chars().any(char::is_control) {
+        return Err(ViewModelError::ControlCharacter {
+            field: "zone model",
+        });
+    }
+    Ok(())
+}
+
 /// The conversation role associated with a group of blocks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -493,6 +645,88 @@ impl ViewMessage {
             block.validate()?;
         }
         Ok(())
+    }
+}
+
+/// Maximum bytes accepted for the inline, editable Goal field shown in the
+/// left-hand discussion group.  A Goal is a single label, not a document, so
+/// the bound is intentionally much smaller than a message body.
+pub const MAX_GOAL_EDIT_BYTES: usize = 4 * 1024;
+
+/// Bounded editing buffer for the inline Goal field of the discussion group.
+///
+/// The Goal lives beside the conversation and prompt, but it is still user
+/// input: it must be validated and bounded before it can be persisted by a
+/// domain owner.  Keeping the buffer here (rather than in the renderer) lets
+/// the TUI and a future headless host share exactly the same admission rules.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GoalEdit {
+    text: String,
+}
+
+impl GoalEdit {
+    /// Begin editing an existing Goal value.  The seed may be empty.
+    pub fn begin(initial: impl Into<String>) -> Result<Self, ViewModelError> {
+        let mut edit = Self {
+            text: String::new(),
+        };
+        edit.replace(initial.into())?;
+        Ok(edit)
+    }
+
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.text.trim().is_empty()
+    }
+
+    /// Replace the whole buffer with validated, single-line text.
+    pub fn replace(&mut self, next: impl Into<String>) -> Result<(), ViewModelError> {
+        let next = next.into();
+        if next.len() > MAX_GOAL_EDIT_BYTES {
+            return Err(ViewModelError::TooLarge {
+                field: "goal text",
+                max: MAX_GOAL_EDIT_BYTES,
+            });
+        }
+        if next.chars().any(char::is_control) {
+            return Err(ViewModelError::ControlCharacter { field: "goal text" });
+        }
+        self.text.clear();
+        self.text.push_str(&next);
+        Ok(())
+    }
+
+    /// Append one printable character while preserving the byte bound.
+    pub fn push_char(&mut self, character: char) -> Result<(), ViewModelError> {
+        if character.is_control() {
+            return Err(ViewModelError::ControlCharacter { field: "goal text" });
+        }
+        if self.text.len().saturating_add(character.len_utf8()) > MAX_GOAL_EDIT_BYTES {
+            return Err(ViewModelError::TooLarge {
+                field: "goal text",
+                max: MAX_GOAL_EDIT_BYTES,
+            });
+        }
+        self.text.push(character);
+        Ok(())
+    }
+
+    /// Remove the final character.  Returns whether anything changed.
+    pub fn pop_char(&mut self) -> bool {
+        self.text.pop().is_some()
+    }
+
+    /// Trim and return the committed Goal, rejecting an empty value.
+    pub fn commit(&self) -> Result<String, ViewModelError> {
+        let trimmed = self.text.trim();
+        if trimmed.is_empty() {
+            return Err(ViewModelError::Empty { field: "goal text" });
+        }
+        Ok(trimmed.to_owned())
     }
 }
 
@@ -1252,4 +1486,238 @@ fn validate_text(value: &str, field: &'static str) -> Result<(), ViewModelError>
         return Err(ViewModelError::ControlCharacter { field });
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// ZS1-161: external projection of the unified resource and information bus.
+//
+// The TUI renders this projection inside the Resources pane and the same value
+// serializes to JSON for external consumers, so both transports describe the
+// host, budget, port leases, LAN and cluster with one bounded shape. Rendering
+// never adds data; it only formats the already-aggregated bus.
+// ---------------------------------------------------------------------------
+
+/// Upper bound on lines in one projected bus.
+pub const MAX_RESOURCE_BUS_LINES: usize = 64;
+/// Upper bound on bytes in one projected line, so a hostile label cannot grow
+/// the projection without bound.
+pub const MAX_RESOURCE_BUS_LINE_BYTES: usize = 256;
+/// Upper bound on rows inside one projected section.
+pub const MAX_RESOURCE_BUS_ROWS: usize = 32;
+
+/// One bounded section of the projected bus.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ResourceBusSectionView {
+    pub key: String,
+    pub title: String,
+    pub summary: String,
+    pub rows: Vec<String>,
+}
+
+/// Bounded external projection of [`crate::resources::ResourceBusSnapshot`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourceBusProjection {
+    pub version: u16,
+    pub generated_ms: u64,
+    pub sections: Vec<ResourceBusSectionView>,
+}
+
+impl ResourceBusProjection {
+    pub fn from_bus(bus: &crate::resources::ResourceBusSnapshot) -> Self {
+        use crate::resources::BudgetKind;
+
+        let host = &bus.host;
+        let host_summary = truncate_bus_line(&format!(
+            "CPU {} cores load {} {:.0}%  Mem {} / {} {:.0}%  GPU {} {}  Net rx {} tx {}  headless {}",
+            host.logical_cpus,
+            optional_number(host.load_one_minute),
+            host.cpu_percent,
+            optional_bytes(host.memory_available_bytes),
+            optional_bytes(host.memory_total_bytes),
+            host.memory_percent,
+            host.gpu_devices,
+            host.gpu_utilization_percent
+                .map(|value| format!("{value:.0}%"))
+                .unwrap_or_else(|| "n/a".into()),
+            optional_bytes(host.network_received_bytes),
+            optional_bytes(host.network_transmitted_bytes),
+            host.headless_workers,
+        ));
+        let mut host_rows = Vec::new();
+        if host.headless_exceeded {
+            host_rows.push("headless footprint budget exceeded".to_owned());
+        }
+
+        let budget_summary = if bus.budget.status == crate::resources::SignalStatus::Unavailable {
+            "budget unavailable".to_owned()
+        } else {
+            let dimension = bus.budget.dimension(BudgetKind::InputTokens);
+            format!(
+                "input {}/{} ({}%)  exhausted={}",
+                dimension.used,
+                dimension.limit,
+                dimension.percent_used().round(),
+                bus.budget.exhausted()
+            )
+        };
+        let mut budget_rows = Vec::with_capacity(BudgetKind::ALL.len());
+        for kind in BudgetKind::ALL {
+            let dimension = bus.budget.dimension(kind);
+            if dimension.limit == 0 {
+                continue;
+            }
+            budget_rows.push(format!(
+                "{} used {} / {}  remaining {}  {}%",
+                kind.label(),
+                dimension.used,
+                dimension.limit,
+                dimension.remaining(),
+                dimension.percent_used().round(),
+            ));
+        }
+
+        let ports = &bus.ports;
+        let ports_summary = format!("{} active / {} total lease(s)", ports.active, ports.total);
+        let ports_rows: Vec<String> = ports
+            .rows
+            .iter()
+            .take(MAX_RESOURCE_BUS_ROWS)
+            .map(|lease| {
+                format!(
+                    "port {} {} owner {} remaining {}",
+                    lease.port,
+                    lease.state.label(),
+                    lease.owner,
+                    lease.remaining_ms(bus.generated_ms),
+                )
+            })
+            .collect();
+
+        let mut sections = vec![
+            ResourceBusSectionView {
+                key: "host".into(),
+                title: "Host".into(),
+                summary: host_summary,
+                rows: host_rows,
+            },
+            ResourceBusSectionView {
+                key: "budget".into(),
+                title: "Budget".into(),
+                summary: truncate_bus_line(&budget_summary),
+                rows: budget_rows
+                    .into_iter()
+                    .take(MAX_RESOURCE_BUS_ROWS)
+                    .map(|row| truncate_bus_line(row.as_str()))
+                    .collect(),
+            },
+            ResourceBusSectionView {
+                key: "ports".into(),
+                title: "Ports".into(),
+                summary: truncate_bus_line(&ports_summary),
+                rows: ports_rows
+                    .into_iter()
+                    .map(|row| truncate_bus_line(row.as_str()))
+                    .collect(),
+            },
+        ];
+        if let Some(lan) = &bus.lan {
+            sections.push(ResourceBusSectionView {
+                key: "lan".into(),
+                title: "LAN".into(),
+                summary: truncate_bus_line(&format!(
+                    "{} host(s) across {} block(s)  local {}  gateway {}",
+                    lan.host_count,
+                    lan.block_count,
+                    lan.local_ip,
+                    lan.gateway_ip.as_deref().unwrap_or("-"),
+                )),
+                rows: Vec::new(),
+            });
+        }
+        if let Some(cluster) = &bus.cluster {
+            sections.push(ResourceBusSectionView {
+                key: "cluster".into(),
+                title: "Cluster".into(),
+                summary: truncate_bus_line(&format!(
+                    "{} host(s) authorized {}  workers {} run / {} reclaimed / {} failed",
+                    cluster.host_count,
+                    cluster.authorized_hosts,
+                    cluster.running_workers,
+                    cluster.reclaimed_workers,
+                    cluster.failed_workers,
+                )),
+                rows: cluster
+                    .host_ips
+                    .iter()
+                    .take(MAX_RESOURCE_BUS_ROWS)
+                    .map(|ip| truncate_bus_line(ip))
+                    .collect(),
+            });
+        }
+        Self {
+            version: VIEW_MODEL_VERSION,
+            generated_ms: bus.generated_ms,
+            sections,
+        }
+    }
+
+    pub fn section(&self, key: &str) -> Option<&ResourceBusSectionView> {
+        self.sections.iter().find(|section| section.key == key)
+    }
+
+    /// Deterministic line rendering shared by the TUI and text consumers. The
+    /// total line count is bounded by [`MAX_RESOURCE_BUS_LINES`].
+    pub fn lines(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        for section in &self.sections {
+            lines.push(format!("{}  {}", section.title, section.summary));
+            for row in &section.rows {
+                lines.push(format!("  {row}"));
+                if lines.len() >= MAX_RESOURCE_BUS_LINES {
+                    break;
+                }
+            }
+            if lines.len() >= MAX_RESOURCE_BUS_LINES {
+                break;
+            }
+        }
+        lines.truncate(MAX_RESOURCE_BUS_LINES);
+        lines
+    }
+
+    pub fn to_text(&self) -> String {
+        self.lines().join("\n")
+    }
+}
+
+fn truncate_bus_line(value: &str) -> String {
+    if value.chars().count() <= MAX_RESOURCE_BUS_LINE_BYTES {
+        return value.to_owned();
+    }
+    value.chars().take(MAX_RESOURCE_BUS_LINE_BYTES).collect()
+}
+
+fn optional_number(value: Option<f64>) -> String {
+    value
+        .map(|value| format!("{value:.2}"))
+        .unwrap_or_else(|| "n/a".into())
+}
+
+fn optional_bytes(value: Option<u64>) -> String {
+    value.map(format_bus_bytes).unwrap_or_else(|| "n/a".into())
+}
+
+fn format_bus_bytes(bytes: u64) -> String {
+    const UNITS: [(&str, u64); 4] = [
+        ("GiB", 1024 * 1024 * 1024),
+        ("MiB", 1024 * 1024),
+        ("KiB", 1024),
+        ("B", 1),
+    ];
+    for (label, scale) in UNITS {
+        if bytes >= scale {
+            return format!("{:.1} {label}", bytes as f64 / scale as f64);
+        }
+    }
+    "0 B".to_owned()
 }

@@ -152,6 +152,29 @@ struct ReplayState {
     acknowledged: u64,
 }
 
+/// Open the transport WAL, retrying the transient `EWOULDBLOCK` that a forked
+/// child can leave behind when it briefly inherits the owning descriptor
+/// across `exec`. A genuine second owner still fails after the bounded budget.
+fn open_reconnect_journal(
+    session: &SessionStore,
+) -> Result<(ReconnectJournal, Vec<serde_json::Value>), HeadlessError> {
+    const MAX_ATTEMPTS: usize = 64;
+    let mut delay = Duration::from_millis(1);
+    for attempt in 0..MAX_ATTEMPTS {
+        match ReconnectJournal::open(session) {
+            Ok(opened) => return Ok(opened),
+            Err(crate::session::SessionError::Io(error))
+                if error.kind() == io::ErrorKind::WouldBlock && attempt + 1 < MAX_ATTEMPTS =>
+            {
+                thread::sleep(delay);
+                delay = (delay * 2).min(Duration::from_millis(8));
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    unreachable!("bounded retry loop always returns on its final attempt")
+}
+
 impl ReplayState {
     fn project_response(&self, mut response: StdioResponse) -> StdioResponse {
         if response.schema_version == 2 {
@@ -196,7 +219,7 @@ impl ReplayState {
     }
 
     fn open_unseeded(session: &SessionStore) -> Result<Self, HeadlessError> {
-        let (journal, entries) = ReconnectJournal::open(session)?;
+        let (journal, entries) = open_reconnect_journal(session)?;
         let mut state = Self::default();
         for entry in entries {
             match serde_json::from_value::<ReconnectEntry>(entry)? {
@@ -1100,6 +1123,28 @@ pub fn collect_resource_snapshot_at(
     };
     crate::resources::ResourceCollector::new(root)?.collect()
 }
+
+/// Score every `--mode headless` process (including the current one) against a
+/// per-process CPU/RSS budget. This is the headless-facing entry point for the
+/// resource gate: a denied verdict means at least one worker exceeded a ceiling
+/// or the host could not measure it.
+pub fn footprint_gate(
+    budget: crate::resources::HeadlessFootprintBudget,
+) -> Result<crate::resources::HeadlessFootprintSummary, crate::resources::ResourceError> {
+    budget.validate()?;
+    Ok(crate::resources::headless_gate(budget))
+}
+
+/// Measure the running process once against a fresh CPU/RSS baseline. Hosts
+/// that collect repeatedly should prefer [`collect_resource_snapshot`], which
+/// reuses the process-wide baseline so CPU is averaged over the process
+/// lifetime rather than reset to zero on every sample.
+pub fn own_footprint(
+    phase: crate::resources::FootprintPhase,
+) -> crate::resources::HeadlessProcessFootprint {
+    crate::resources::HeadlessFootprintSampler::new().sample(phase)
+}
+
 fn owner_workspace(agent: Option<&Agent>) -> Result<PathBuf, SlashDispatchError> {
     let agent = agent.ok_or_else(|| SlashDispatchError {
         code: "agent_busy",
@@ -1506,6 +1551,36 @@ pub fn session_search_view_in(
             "snippets": hit.snippets,
         })).collect::<Vec<_>>(),
     }))
+}
+
+/// Translate a lower-left Arch master-session console submission (ZS1-148)
+/// into the bounded command route the headless owner already understands.
+///
+/// The arch console is a conversation owned by the master session: a
+/// `!command` becomes a [`crate::protocol::Command::UserShell`] request that the
+/// existing host approval/shell owner executes, while any other text becomes a
+/// [`crate::protocol::Command::Steer`] that joins the active master turn. This
+/// helper never executes anything and therefore shares the exact bounded,
+/// typed classification used by the TUI.
+pub fn master_session_command(
+    text: &str,
+    expected_turn_id: Option<String>,
+) -> Result<crate::protocol::Command, String> {
+    match crate::tool_runtime::classify_master_session_input(text)
+        .map_err(|error| error.to_string())?
+    {
+        crate::tool_runtime::MasterSessionCommand::Bash(command) => Ok(
+            crate::protocol::Command::UserShell(crate::protocol::UserShellRequest {
+                input: format!("!{command}"),
+            }),
+        ),
+        crate::tool_runtime::MasterSessionCommand::Steer(text) => {
+            Ok(crate::protocol::Command::Steer {
+                text,
+                expected_turn_id,
+            })
+        }
+    }
 }
 
 /// Open an existing session for an idle agent. Unlike `Agent::resume_session`
@@ -8013,6 +8088,92 @@ fn execute_headless_slash(
                 message: error.to_string(),
             })
         }
+        SlashCommand::Sync { requirement } => {
+            let Some(agent) = agent else {
+                return Err(SlashDispatchError {
+                    code: "agent_busy",
+                    message: "sync cannot run while the agent is busy".into(),
+                });
+            };
+            let workspace = owner_workspace(Some(agent))?;
+            let receipt =
+                crate::sync::sync_requirement(&workspace, &requirement).map_err(|error| {
+                    SlashDispatchError {
+                        code: "sync_failed",
+                        message: error.to_string(),
+                    }
+                })?;
+            let queued = if receipt.duplicate {
+                false
+            } else {
+                let args = vec![
+                    "start".to_owned(),
+                    receipt.item_id.clone(),
+                    requirement.clone(),
+                ];
+                crate::runtime_intent::runtime_intent_value_with_source(
+                    agent,
+                    crate::b3::RuntimeIntentKind::Loop,
+                    &args,
+                    runtime_source,
+                )
+                .is_ok()
+            };
+            Ok(SlashExecution::Response(json!({
+                "command": "sync",
+                "route": "local",
+                "accepted": true,
+                "item_id": receipt.item_id,
+                "blueprint": receipt.blueprint,
+                "digest": receipt.digest,
+                "duplicate": receipt.duplicate,
+                "queued": queued,
+            })))
+        }
+        SlashCommand::Execute { args } => {
+            let Some(agent) = agent else {
+                return Err(SlashDispatchError {
+                    code: "agent_busy",
+                    message: "execute intent cannot be persisted while the agent is busy".into(),
+                });
+            };
+            crate::runtime_intent::runtime_intent_value_with_source(
+                agent,
+                crate::b3::RuntimeIntentKind::Execute,
+                &args,
+                runtime_source,
+            )
+            .map(SlashExecution::Response)
+            .map_err(|error| SlashDispatchError {
+                code: error.code(),
+                message: error.to_string(),
+            })
+        }
+        SlashCommand::Explore { args } => {
+            let Some(agent) = agent else {
+                return Err(SlashDispatchError {
+                    code: "agent_busy",
+                    message: "explore intent cannot be persisted while the agent is busy".into(),
+                });
+            };
+            crate::runtime_intent::runtime_intent_value_with_source(
+                agent,
+                crate::b3::RuntimeIntentKind::Explore,
+                &args,
+                runtime_source,
+            )
+            .map(SlashExecution::Response)
+            .map_err(|error| SlashDispatchError {
+                code: error.code(),
+                message: error.to_string(),
+            })
+        }
+        SlashCommand::Worktree { action } => Ok(SlashExecution::Response(json!({
+            "command": "worktree",
+            "route": "local",
+            "action": action,
+            "message": "layer-2 worktree sub-tabs are owned by the interactive TUI host",
+        }))),
     }
 }
 
@@ -8029,6 +8190,12 @@ fn slash_runtime_fingerprint(
             Some(json!({"kind": "compete", "args": args}))
         }
         crate::slash::SlashCommand::Loop { args } => Some(json!({"kind": "loop", "args": args})),
+        crate::slash::SlashCommand::Execute { args } => {
+            Some(json!({"kind": "execute", "args": args}))
+        }
+        crate::slash::SlashCommand::Explore { args } => {
+            Some(json!({"kind": "explore", "args": args}))
+        }
         _ => None,
     };
     let Some(value) = value else {

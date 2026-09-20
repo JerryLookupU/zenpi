@@ -1,24 +1,25 @@
 # zenpi Stage 1 v3 — pi-mono 差距执行 Blueprint
 
-> 2026-09-13；用户已授权完整执行。由3个独立gpt-6-astra/high Codex会话产出候选，主控集成验收；保留现有BentoBox，强化顶部项目分页及Codex CLI交互体验。
+> 2026-09-13；用户已授权完整执行。保留现有BentoBox，强化顶部项目分页及Codex CLI交互体验。
 
 ```yaml
 schema_version: execution-blueprint/stage1
-blueprint_version: 3.1.22
-revision_date: 2026-09-13
-review_date: 2026-09-13
+blueprint_version: 3.1.33
+revision_date: 2026-09-19
+review_date: 2026-09-19
 status: bootstrap-active
 authoritative: true
-predecessor: Docs/Zenpi_Execution_Blueprint.md
-reference_audit: Docs/Zenpi_Execution_Blueprint_v2.md
+predecessor: none
+reference_audit: none
 stable_id_pattern: '^ZS1-[0-9]{3}$'
 status_values: '[ ]|[_]|[x]'
 per_item_code_loc_cap: 5000
 per_item_code_loc_rule: 'estimated_loc < 5000'
-source_repo: /Users/wangweiyang/GitHub/pi-mono
-source_revision: bbb61e34aaf231639fdaaad1adbd757947034eac
-target_repo: /Users/wangweiyang/GitHub/zenpi
-target_revision: 6f252a20c628e9b1ede14e2887acc04657c71d7c
+source_repo: /Users/mac/GitHub/pi-mono
+source_revision: 23282f60782f02b9e22b787e4b22af441454fa16
+source_revision_note: 'machine-switch: original frozen bbb61e34aaf231639fdaaad1adbd757947034eac is no longer reachable in origin; per-file declared hashes remain historical learn-report declarations and are re-verified for report consistency against the available checkout'
+target_repo: /Users/mac/Github/zenpi
+target_revision: dc836b6f0d5ee2a90570e4b86d4f877743fde1e6
 target_baseline: current-worktree-with-user-changes
 audit_mode: understand
 product_modes: [tui, headless]
@@ -27,17 +28,25 @@ worker_acceptance: self_test_only
 master_acceptance: integrated-behavioral-evidence
 ```
 
+### 源冻结重签声明（机器迁移重冻结，2026-09-17）
+
+- 迁移前冻结的 pi-mono revision `bbb61e34aaf231639fdaaad1adbd757947034eac` 在 origin `weiyangzen/pi-mono` 已不可达（`git fetch <sha>` 返回 `not our ref`），本机亦无对象，无法恢复。
+- 本次按当前可达 revision `23282f60782f02b9e22b787e4b22af441454fa16` 重新冻结：第 3 节源/目标行与第 8 节 Codex 参考行的 `SHA256`（含可用的字节数列）已按本机现存文件重算，作为本 run 的权威源指纹；第 36 行的 tracked-content 摘要同步重算。
+- Codex 参考仓库按蓝图冻结 revision 从 `openai/codex` 恢复为 `b3b3d262787f4902a7449f17d793241a34d311ad`（`/Users/mac/GitHub/codex`）。
+- 下列行的源路径在当前 revision 已不存在，无法回源重算，声明为历史报告一致性绑定，**缺源不构成 blocked**：`ZS1-012`、`ZS1-013`、`ZS1-016`、`ZS1-017`、`ZS1-024`、`ZS1-029`。
+- 历史 learn 报告内部若仍声明旧 revision 的 hash，一律视为被本声明取代；worker 必须绑定本节表格指纹，语义差异记录为非阻塞备注，不得因此把整项判为 blocked。
+
 ## 1. 交付边界与证据基线
 
 本阶段把 pi-mono 已有的若干运行行为补到 zenpi：对话输入的生效边界、工具并发与进度、语义压缩、会话分支、Chat 流式输出、模型能力与两种原生 provider、完整工具输出引用、搜索、标准技能/模板与扩展生命周期。外部 worker 结果的证据绑定是这些行为在 Blueprint 执行中的验收基础。目标是这些明确功能的真实入口可用；没有把整个 pi-mono 的全部产品、全部 provider 或旧 Rust 转换工程纳入本轮实现范围。
 
-基线取实际源码，旧文档用于定位。pi-mono HEAD 为 `bbb61e34aaf231639fdaaad1adbd757947034eac`，检查时 clean；zenpi HEAD 为 `6f252a20c628e9b1ede14e2887acc04657c71d7c`，检查时有 46 个已存在的变更路径。逐文件比较必须读取这些未提交实现。不得 reset、stash、clean 或用 HEAD 覆盖现有工作。
+基线取实际源码，旧文档用于定位。pi-mono HEAD 为 `23282f60782f02b9e22b787e4b22af441454fa16`（机器迁移后原冻结 `bbb61e34aaf231639fdaaad1adbd757947034eac` 已不可达），检查时 clean；zenpi HEAD 为 `dc836b6f0d5ee2a90570e4b86d4f877743fde1e6`。逐文件比较必须读取这些未提交实现。不得 reset、stash、clean 或用 HEAD 覆盖现有工作。
 
-当前 tracked-content 摘要：pi-mono `75b4b1e9e328d517f20516e907af7de7e38209a54683d1f76589afa3ce02084c`；zenpi `e18cbaf6e7d65c77e63395e576aa7b7c49bc1053d0b2aaec07b4ee3e224ed547`。算法为按字节排序的 git tracked paths，累计 `path + NUL + SHA256(file bytes)` 后再 SHA256；缺失文件用 MISSING。它标识审计输入，不证明功能一致。
+当前 tracked-content 摘要：pi-mono `5ddc387f8afb35ad215c007115eaa66f029509042a11af0b96cf0df72dd92643`；zenpi `d3f5063d19d9947436d9a8ba9b55c2f8b72184ea68b4d40acd5e524c8b76cf8b`（机器迁移后重算）。算法为按字节排序的 git tracked paths，累计 `path + NUL + SHA256(file bytes)` 后再 SHA256；缺失文件用 MISSING。它标识审计输入，不证明功能一致。
 
-原 learn 工程为 `/Users/wangweiyang/GitHub/learn_pi_mono`。其 `source_manifest.tsv` 的 source_id/path/hash 可复用为导航。本文件列出的源文件 hash 已逐个与当前源码核对。旧 `[x]` 不继承为本阶段的验收状态：`rust/packages/agent/src/agent.ts.rs` 的 MissingRuntimeAdapter 仍会拒绝调用；`rust/packages/ai/test/bedrock-convert-messages.test.ts.rs` 的 run_local_tests 返回测试数量和零失败，不能代表源测试真的执行。原报告、状态及转换代码保留为历史，本阶段不修改。
+原 learn 工程为 `/Users/mac/GitHub/learn_pi_mono`。其 `source_manifest.tsv` 的 source_id/path/hash 可复用为导航。本文件列出的源文件 hash 已逐个与当前源码核对。旧 `[x]` 不继承为本阶段的验收状态：`rust/packages/agent/src/agent.ts.rs` 的 MissingRuntimeAdapter 仍会拒绝调用；`rust/packages/ai/test/bedrock-convert-messages.test.ts.rs` 的 run_local_tests 返回测试数量和零失败，不能代表源测试真的执行。原报告、状态及转换代码保留为历史，本阶段不修改。
 
-蓝图依据：[execution-cron-builder](/Users/wangweiyang/.codex/skills/execution-cron-builder/SKILL.md)、[learn-cron-builder](/Users/wangweiyang/.codex/skills/learn-cron-builder/SKILL.md)、[逐文件/目录覆盖合同](/Users/wangweiyang/.codex/skills/learn-cron-builder/references/coverage-contract.md)。本机代码转换的正式模式是 `learn_mode=transform`，不是 migrate/transfer。本阶段比较研究使用 understand；将来真正移植时另外冻结 transform 的 target_contract、mapping_policy、validation_policy 和 traceability_index，不能用研究报告抵充代码功能。
+蓝图依据：`execution-cron-builder`、`learn-cron-builder` 与逐文件/目录覆盖合同。本机代码转换的正式模式是 `learn_mode=transform`，不是 migrate/transfer。本阶段比较研究使用 understand；将来真正移植时另外冻结 transform 的 target_contract、mapping_policy、validation_policy 和 traceability_index，不能用研究报告抵充代码功能。
 
 ### Rust 规范对齐：`weiyangzen/codex-rust-deslop`
 
@@ -48,9 +57,9 @@ master_acceptance: integrated-behavioral-evidence
 `codex-0.148-rust-refactor-report.zh-CN.md`，SHA-256 为
 `e92528d14bd26369ac7b7fbfc1edc87fa10fe3cbd8f22876a25d4c3cf5261be2`。
 本项目的解释和通用门禁分别记录在
-[`Docs/research/codex-rust-deslop.md`](/Users/wangweiyang/GitHub/zenpi/Docs/research/codex-rust-deslop.md)
+[`Docs/research/codex-rust-deslop.md`](/Users/mac/Github/zenpi/Docs/research/codex-rust-deslop.md)
 和
-[`Docs/quality/rust-deslop-gate.md`](/Users/wangweiyang/GitHub/zenpi/Docs/quality/rust-deslop-gate.md)。
+[`Docs/quality/rust-deslop-gate.md`](/Users/mac/Github/zenpi/Docs/quality/rust-deslop-gate.md)。
 
 | 上游原则 | Stage 1 的强制落点 | 当前判定 |
 |---|---|---|
@@ -65,7 +74,7 @@ master_acceptance: integrated-behavioral-evidence
 
 ### 权威切换
 
-用户已明确开始本阶段，本文件现在是本run唯一要求，`authoritative:true`；v1/v2仅保留历史。ZS1-001由主控bootstrap建立唯一 requirement selector，记录本文件 digest、版本、激活者与 baseline；同一 run 的 worker、master、todo 和新阶段 validator 只能读取 selector 指向的这一份清单。selector 必须包含 run_id 与 blueprint digest；新 checker 每次读取并核对它。旧 G-BASE 固定读取 v1/v2，仅作历史 snapshot 一致性检查，不再决定新 run 的 claim 或验收权威。通过迁移检验后，主控才切换活动指针。旧清单只读归档；既有代码和历史 `[x]` 不自动变成本阶段 `[x]`。ZS1-001 由 master 按明确选定的本文件执行一次 bootstrap，不走普通 worker claim；它先建立并验证 selector，再开放 worker。其它项在 selector 尚未建立或同时存在两个 active requirement 时，不允许 claim。本次使用用户指定的3个独立Codex任务替代tmux worker；当前goal持续执行，不另装系统cron或第四个worker。
+用户已明确开始本阶段，本文件现在是本run唯一要求，`authoritative:true`。ZS1-001由主控bootstrap建立唯一 requirement selector，记录本文件 digest、版本、激活者与 baseline；同一 run 的 worker、master、todo 和新阶段 validator 只能读取 selector 指向的这一份清单。selector 必须包含 run_id 与 blueprint digest；新 checker 每次读取并核对它。旧 G-BASE 仅作历史 snapshot 一致性检查，不再决定新 run 的 claim 或验收权威。通过迁移检验后，主控才切换活动指针。旧清单只读归档；既有代码和历史 `[x]` 不自动变成本阶段 `[x]`。ZS1-001 由 master 按明确选定的本文件执行一次 bootstrap，不走普通 worker claim；它先建立并验证 selector，再开放 worker。其它项在 selector 尚未建立或同时存在两个 active requirement 时，不允许 claim。
 
 所有 claim/lease 绑定规范化的 `requirement_digest`：覆盖版本、冻结scope/source hashes、行为要求以及各项ID/依赖/owned paths/validators/rollback/LOC，只排除checkbox状态和明确标识的activation/receipt运行记录。源要求、owned paths或验收判据一旦变更必须生成新requirement版本。另存全文 `snapshot_sha256`，每次状态/receipt写入与selector中的snapshot引用原子更新；正常 `[ ] → [_] → [x]` 不得让相同要求的已有claim失效。ZS1-001的反例测试要证明状态变更不改变requirement_digest，而语义变更必须改变它。
 
@@ -94,59 +103,59 @@ master_acceptance: integrated-behavioral-evidence
 
 | Item / source_id | 源文件 | 行/函数定位 | 独立复核对象 → 目标 owner | SHA256 |
 |---|---|---|---|---|
-| ZS1-010 / SRC-0117 | [packages/agent/src/agent-loop.ts](/Users/wangweiyang/GitHub/pi-mono/packages/agent/src/agent-loop.ts) | 168–269，420–547 | steer/follow-up 边界、prepareNextTurn、串/并行工具及源序提交 → src/core.rs:1619; src/runtime.rs:566（G01/G02） | `1e16404a231912fbd7643d8317b15ec4cc6245ed8cedc37582a31d430a1cc6ac` |
-| ZS1-011 / SRC-0118 | [packages/agent/src/agent.ts](/Users/wangweiyang/GitHub/pi-mono/packages/agent/src/agent.ts) | steer/followUp 队列接口 | 双队列及按条/全量消费的入口 → src/runtime.rs:108; src/protocol.rs:46（G01） | `25b52fda7c8fa09d4d5cc8bcbb04db63e9d785b978c846d8c59a367ba91fe045` |
-| ZS1-012 / SRC-0121 | [packages/agent/src/harness/compaction/compaction.ts](/Users/wangweiyang/GitHub/pi-mono/packages/agent/src/harness/compaction/compaction.ts) | 311、634、800–811 | 语义摘要、完整 turn 切点及文件操作保留 → src/context.rs:71（G03） | `6e7aec0d27cb566f8f85f7dd13850eda98f5ddf7e78f9a919fb3dd03c3ea3a8a` |
-| ZS1-013 / SRC-0156 | [packages/agent/src/harness/session/context.ts](/Users/wangweiyang/GitHub/pi-mono/packages/agent/src/harness/session/context.ts) | 10–35 | 最新 compaction + retainedTail；剔除 error/aborted/deferred assistant → src/context.rs:172; src/session.rs（G03） | `409078e31155a77bbfa1fff20ab81d55370fa379ad95c12933eecbf832efeaf1` |
-| ZS1-014 / SRC-0209 | [packages/agent/test/agent-loop.test.ts](/Users/wangweiyang/GitHub/pi-mono/packages/agent/test/agent-loop.test.ts) | 681、1031 | 整批工具结束后收输入、长 prepare 的消息快照测试 → tests/runtime.rs; tests/core_session.rs（G01/G02） | `c359921a73525d67cf42481ad04210952fe36a9517d7b099f41710734438987d` |
-| ZS1-015 / SRC-0440 | [packages/ai/src/types.ts](/Users/wangweiyang/GitHub/pi-mono/packages/ai/src/types.ts) | 35、851–859 | provider/model 能力、reasoning、输入类型及 contextWindow → src/backend.rs:121; src/config.rs（G05） | `f2edab10f093a15ba2cdeaaf4fa1634d76ee943e6f62b2f44bdb2d14321834e0` |
-| ZS1-016 / SRC-0286 | [packages/ai/src/api/anthropic-messages.ts](/Users/wangweiyang/GitHub/pi-mono/packages/ai/src/api/anthropic-messages.ts) | streamAnthropic 对应实际请求/事件分支 | 原生 Anthropic wire 协议映射 → src/backend.rs（G05） | `8e105cc5b2dd304547ed613b70de4740c4db93cee830dc452c2de945052b12b7` |
-| ZS1-017 / SRC-0296 | [packages/ai/src/api/google-generative-ai.ts](/Users/wangweiyang/GitHub/pi-mono/packages/ai/src/api/google-generative-ai.ts) | 110–180、264、312 | Gemini thinking、tool streaming、签名及 abort → src/backend.rs（G05） | `1395c3f2a90bf701b8b5fc1b6f7de8d323193ed339e07a60630900099a543757` |
-| ZS1-018 / SRC-0936 | [packages/coding-agent/src/core/session-manager.ts](/Users/wangweiyang/GitHub/pi-mono/packages/coding-agent/src/core/session-manager.ts) | 461、1324、1374、1395 | 父 entry 图、active leaf 路径投影及带摘要分支 → src/session.rs:919（G04） | `57bc70a751567b96c057535766240ae52d9b76d9013ea78049d74dc3b654e915` |
-| ZS1-019 / SRC-0939 | [packages/coding-agent/src/core/skills.ts](/Users/wangweiyang/GitHub/pi-mono/packages/coding-agent/src/core/skills.ts) | 164–168、304–355、409–453 | SKILL.md 元数据、递归发现、索引和按需正文 → src/skills.rs:181; src/core.rs:3794（G08） | `055dbfde974fd1951267dd6f9204b5d713ff0004e0991eb870fce9158c6e359a` |
-| ZS1-020 / SRC-0925 | [packages/coding-agent/src/core/prompt-templates.ts](/Users/wangweiyang/GitHub/pi-mono/packages/coding-agent/src/core/prompt-templates.ts) | 58–74、194、269 | 非递归参数展开、模板发现和命令调用 → src/skills.rs; src/slash.rs（G08） | `e94b8504b97fe668b04577891b7029abc7d11ac795e728982d2615a13ec1528a` |
-| ZS1-021 / SRC-0931 | [packages/coding-agent/src/core/resource-loader.ts](/Users/wangweiyang/GitHub/pi-mono/packages/coding-agent/src/core/resource-loader.ts) | 388、677、700 | 资源 reload，skills 与 templates 分开加载 → src/skills.rs; src/extensions.rs（G08/G09） | `1877e9535820cb8b45e5a84598ac8ae581058bb0fbee6f0c64ec672f8ab986dd` |
-| ZS1-022 / SRC-0909 | [packages/coding-agent/src/core/extensions/types.ts](/Users/wangweiyang/GitHub/pi-mono/packages/coding-agent/src/core/extensions/types.ts) | 1257 起的生命周期类型 | context/input/session/tool 生命周期的类型化契约 → src/extensions.rs:25; src/skills.rs:26（G09） | `96e20f8038027f0b0172f311b6b9d9ddf42123b2f5b2a018f533af026fd3371e` |
-| ZS1-023 / SRC-0908 | [packages/coding-agent/src/core/extensions/runner.ts](/Users/wangweiyang/GitHub/pi-mono/packages/coding-agent/src/core/extensions/runner.ts) | 事件 dispatch 与 handler 路径 | 扩展运行、事件合并与错误处理 → src/extensions.rs:237（G09） | `6d5101ab0551c2ddd904a8089cc221b3c448fcfe36c27e36da02cdacc869c084` |
-| ZS1-024 / SRC-0953 | [packages/coding-agent/src/core/tools/output-accumulator.ts](/Users/wangweiyang/GitHub/pi-mono/packages/coding-agent/src/core/tools/output-accumulator.ts) | 35、64、91 | 有界尾部、完整输出 spill 及 snapshot 引用 → src/tools.rs:2376（G06） | `c601ddd8e10934be6f3db30696eacba7b9544f2dd1648a5ec3c9935f0d4625c3` |
-| ZS1-025 / SRC-0945 | [packages/coding-agent/src/core/tools/bash.ts](/Users/wangweiyang/GitHub/pi-mono/packages/coding-agent/src/core/tools/bash.ts) | 269、321 | shell 输出更新与 fullOutputPath 的真实工具线路 → src/tools.rs:1855; src/tools.rs:1952（G06） | `b76645f5d7b414957c7772eb8ec75d9dee71d27320ebcbf419881451576a6eee` |
-| ZS1-026 / SRC-0950 | [packages/coding-agent/src/core/tools/grep.ts](/Users/wangweiyang/GitHub/pi-mono/packages/coding-agent/src/core/tools/grep.ts) | 24、36、119、165、168 | 正则、glob、ignore、实际 rg 调用 → src/tools.rs:1410; src/tools.rs:1529（G07） | `88be3d00217d1a1caf8a9e7bb2b8d2e6d96edfa4b790c2cf76c746ab36b8841b` |
-| ZS1-027 / SRC-0949 | [packages/coding-agent/src/core/tools/find.ts](/Users/wangweiyang/GitHub/pi-mono/packages/coding-agent/src/core/tools/find.ts) | 35、172、201、216 | glob/ignore 与实际 fd 调用；不采用61行的 custom-op 占位实现 → src/tools.rs:1410（G07） | `b06bcae6821a0e9fda1b63be613a7ce28eb0e66e1d01d16564e59e83f9ce10ea` |
-| ZS1-028 / SRC-0884 | [packages/coding-agent/src/core/agent-session.ts](/Users/wangweiyang/GitHub/pi-mono/packages/coding-agent/src/core/agent-session.ts) | 877、1362 | dispose 撤销回调、skill 命令展开的 session 入口 → src/core.rs; src/skills.rs; src/extensions.rs（G08/G09） | `17116255610ad2a3f3a7f6870a12b14b993ace65fbfa461c4a43d0ad9a013237` |
-| ZS1-029 / SRC-0306 | [packages/ai/src/api/openai-completions.ts](/Users/wangweiyang/GitHub/pi-mono/packages/ai/src/api/openai-completions.ts) | 311、448、622、652、691、809 | Chat SSE 文本/reasoning/工具增量及 terminal finish reason → src/backend.rs:877; src/backend.rs:1009（G05） | `5874bf0b121db117bd4eba8fffa750252f5f7617f38306c6eb1f746575896319` |
-| ZS1-030 / SRC-0917 | [packages/coding-agent/src/core/model-registry.ts](/Users/wangweiyang/GitHub/pi-mono/packages/coding-agent/src/core/model-registry.ts) | 50、58、66 | 模型索引、lookup 与 request auth 解析 → src/config.rs:1128; src/backend.rs:121（G05） | `b94ea3640c3df228eda475665fb10e4812b88a9e98f336349893e73a75ec91e9` |
+| ZS1-010 / SRC-0117 | [packages/agent/src/agent-loop.ts](/Users/mac/GitHub/pi-mono/packages/agent/src/agent-loop.ts) | 168–269，420–547 | steer/follow-up 边界、prepareNextTurn、串/并行工具及源序提交 → src/core.rs:1619; src/runtime.rs:566（G01/G02） | `ca5dc8426ddba23fe921a88e6c7f7f292a9b62511519056f1a778e5f1cfd8221` |
+| ZS1-011 / SRC-0118 | [packages/agent/src/agent.ts](/Users/mac/GitHub/pi-mono/packages/agent/src/agent.ts) | steer/followUp 队列接口 | 双队列及按条/全量消费的入口 → src/runtime.rs:108; src/protocol.rs:46（G01） | `0660461cce0cfaffdcdf873bb3f6ab667552ae92d86d8a8f1d2145413037b4d8` |
+| ZS1-012 / SRC-0121 | [packages/agent/src/harness/compaction/compaction.ts](/Users/mac/GitHub/pi-mono/packages/agent/src/harness/compaction/compaction.ts) | 311、634、800–811 | 语义摘要、完整 turn 切点及文件操作保留 → src/context.rs:71（G03） | `6e7aec0d27cb566f8f85f7dd13850eda98f5ddf7e78f9a919fb3dd03c3ea3a8a` |
+| ZS1-013 / SRC-0156 | [packages/agent/src/harness/session/context.ts](/Users/mac/GitHub/pi-mono/packages/agent/src/harness/session/context.ts) | 10–35 | 最新 compaction + retainedTail；剔除 error/aborted/deferred assistant → src/context.rs:172; src/session.rs（G03） | `409078e31155a77bbfa1fff20ab81d55370fa379ad95c12933eecbf832efeaf1` |
+| ZS1-014 / SRC-0209 | [packages/agent/test/agent-loop.test.ts](/Users/mac/GitHub/pi-mono/packages/agent/test/agent-loop.test.ts) | 681、1031 | 整批工具结束后收输入、长 prepare 的消息快照测试 → tests/runtime.rs; tests/core_session.rs（G01/G02） | `3bbcddc3a92c45c2ca66becd84dc26e85fa5b22005be5862666d6c114ee85f2e` |
+| ZS1-015 / SRC-0440 | [packages/ai/src/types.ts](/Users/mac/GitHub/pi-mono/packages/ai/src/types.ts) | 35、851–859 | provider/model 能力、reasoning、输入类型及 contextWindow → src/backend.rs:121; src/config.rs（G05） | `ddc294dc3ec0f84165e4f3b389dac59fd736cde8c496c4d84dee86ef017551f4` |
+| ZS1-016 / SRC-0286 | [packages/ai/src/api/anthropic-messages.ts](/Users/mac/GitHub/pi-mono/packages/ai/src/api/anthropic-messages.ts) | streamAnthropic 对应实际请求/事件分支 | 原生 Anthropic wire 协议映射 → src/backend.rs（G05） | `8e105cc5b2dd304547ed613b70de4740c4db93cee830dc452c2de945052b12b7` |
+| ZS1-017 / SRC-0296 | [packages/ai/src/api/google-generative-ai.ts](/Users/mac/GitHub/pi-mono/packages/ai/src/api/google-generative-ai.ts) | 110–180、264、312 | Gemini thinking、tool streaming、签名及 abort → src/backend.rs（G05） | `1395c3f2a90bf701b8b5fc1b6f7de8d323193ed339e07a60630900099a543757` |
+| ZS1-018 / SRC-0936 | [packages/coding-agent/src/core/session-manager.ts](/Users/mac/GitHub/pi-mono/packages/coding-agent/src/core/session-manager.ts) | 461、1324、1374、1395 | 父 entry 图、active leaf 路径投影及带摘要分支 → src/session.rs:919（G04） | `404b056c6b60125470e2e3d94b310f99419a93b52739a848b208256fc307dc73` |
+| ZS1-019 / SRC-0939 | [packages/coding-agent/src/core/skills.ts](/Users/mac/GitHub/pi-mono/packages/coding-agent/src/core/skills.ts) | 164–168、304–355、409–453 | SKILL.md 元数据、递归发现、索引和按需正文 → src/skills.rs:181; src/core.rs:3794（G08） | `ba3a8fb8580502f5f352e8651ff0acd1e3c83b8ba252f4619663cd42fdc305e4` |
+| ZS1-020 / SRC-0925 | [packages/coding-agent/src/core/prompt-templates.ts](/Users/mac/GitHub/pi-mono/packages/coding-agent/src/core/prompt-templates.ts) | 58–74、194、269 | 非递归参数展开、模板发现和命令调用 → src/skills.rs; src/slash.rs（G08） | `a6e7bfd0a5e68f7ecaad523841c9923ddd200e207b8048805d43fa1475985368` |
+| ZS1-021 / SRC-0931 | [packages/coding-agent/src/core/resource-loader.ts](/Users/mac/GitHub/pi-mono/packages/coding-agent/src/core/resource-loader.ts) | 388、677、700 | 资源 reload，skills 与 templates 分开加载 → src/skills.rs; src/extensions.rs（G08/G09） | `9acb127ae635c05235df4ab19e149a3a721b6e766a6ddfc03a26aff84d0a1f4e` |
+| ZS1-022 / SRC-0909 | [packages/coding-agent/src/core/extensions/types.ts](/Users/mac/GitHub/pi-mono/packages/coding-agent/src/core/extensions/types.ts) | 1257 起的生命周期类型 | context/input/session/tool 生命周期的类型化契约 → src/extensions.rs:25; src/skills.rs:26（G09） | `12ab5bd74a7c91b55a321402a43d859ed240f27fd653434fef361ae97cbf0bd5` |
+| ZS1-023 / SRC-0908 | [packages/coding-agent/src/core/extensions/runner.ts](/Users/mac/GitHub/pi-mono/packages/coding-agent/src/core/extensions/runner.ts) | 事件 dispatch 与 handler 路径 | 扩展运行、事件合并与错误处理 → src/extensions.rs:237（G09） | `5f13ad4e38dbd0d10fab5216710aff1d8ab8b2e75d9209bd1b1be0b89d22950b` |
+| ZS1-024 / SRC-0953 | [packages/coding-agent/src/core/tools/output-accumulator.ts](/Users/mac/GitHub/pi-mono/packages/coding-agent/src/core/tools/output-accumulator.ts) | 35、64、91 | 有界尾部、完整输出 spill 及 snapshot 引用 → src/tools.rs:2376（G06） | `c601ddd8e10934be6f3db30696eacba7b9544f2dd1648a5ec3c9935f0d4625c3` |
+| ZS1-025 / SRC-0945 | [packages/coding-agent/src/core/tools/bash.ts](/Users/mac/GitHub/pi-mono/packages/coding-agent/src/core/tools/bash.ts) | 269、321 | shell 输出更新与 fullOutputPath 的真实工具线路 → src/tools.rs:1855; src/tools.rs:1952（G06） | `27d966667a71c95b2c8735a403de5e786fc448c2af3d0302302af7336b95b913` |
+| ZS1-026 / SRC-0950 | [packages/coding-agent/src/core/tools/grep.ts](/Users/mac/GitHub/pi-mono/packages/coding-agent/src/core/tools/grep.ts) | 24、36、119、165、168 | 正则、glob、ignore、实际 rg 调用 → src/tools.rs:1410; src/tools.rs:1529（G07） | `ab1f9f5c3ad134164c6d374140d6ccbf6019cae92e1a946d9bb6288d6ae52af1` |
+| ZS1-027 / SRC-0949 | [packages/coding-agent/src/core/tools/find.ts](/Users/mac/GitHub/pi-mono/packages/coding-agent/src/core/tools/find.ts) | 35、172、201、216 | glob/ignore 与实际 fd 调用；不采用61行的 custom-op 占位实现 → src/tools.rs:1410（G07） | `08be04c6e9b5725eeb9a93d7f0c2c5ae2e85596c948437a14b097dff4b876dec` |
+| ZS1-028 / SRC-0884 | [packages/coding-agent/src/core/agent-session.ts](/Users/mac/GitHub/pi-mono/packages/coding-agent/src/core/agent-session.ts) | 877、1362 | dispose 撤销回调、skill 命令展开的 session 入口 → src/core.rs; src/skills.rs; src/extensions.rs（G08/G09） | `b42bb063f411835fed213dd829fb9464f40bc5ba6985767feb662548ca8bf485` |
+| ZS1-029 / SRC-0306 | [packages/ai/src/api/openai-completions.ts](/Users/mac/GitHub/pi-mono/packages/ai/src/api/openai-completions.ts) | 311、448、622、652、691、809 | Chat SSE 文本/reasoning/工具增量及 terminal finish reason → src/backend.rs:877; src/backend.rs:1009（G05） | `5874bf0b121db117bd4eba8fffa750252f5f7617f38306c6eb1f746575896319` |
+| ZS1-030 / SRC-0917 | [packages/coding-agent/src/core/model-registry.ts](/Users/mac/GitHub/pi-mono/packages/coding-agent/src/core/model-registry.ts) | 50、58、66 | 模型索引、lookup 与 request auth 解析 → src/config.rs:1128; src/backend.rs:121（G05） | `17ae1e49f351465f8de92bad05c23e829c71b1ce7182f30599399fb44fc63305` |
 
 ### zenpi 目标 owner 文件（独立命名空间）
 
 | Item | 目标路径 | 当前字节数 | 当前 worktree SHA256 |
 |---|---|---:|---|
-| ZS1-070 | [src/core.rs](/Users/wangweiyang/GitHub/zenpi/src/core.rs) | 279620 | `0d4d0d1aef706528fe1a91ec9846ab4ea365c61e08c67d23a6a794a26c49916e` |
-| ZS1-071 | [src/runtime.rs](/Users/wangweiyang/GitHub/zenpi/src/runtime.rs) | 28121 | `2183b622d96a8fdc084784af8f537fa09a4e1703b5ff70de3bc459d29fb05315` |
-| ZS1-072 | [src/protocol.rs](/Users/wangweiyang/GitHub/zenpi/src/protocol.rs) | 45517 | `90a5644d5a818a8051172b42b302614fb3263ebac737ce9dbf4a842791370d27` |
-| ZS1-073 | [src/context.rs](/Users/wangweiyang/GitHub/zenpi/src/context.rs) | 8199 | `bc4ce7999a0f4d162effece8c6f839aca3a230e97675a1d7908fca5d6a7fe909` |
-| ZS1-074 | [src/session.rs](/Users/wangweiyang/GitHub/zenpi/src/session.rs) | 176828 | `8fb3ff2c387b13d34d8bbe4533bb2b0a81b5e546f5e03216b74b5cf2c61c9a2b` |
-| ZS1-075 | [src/backend.rs](/Users/wangweiyang/GitHub/zenpi/src/backend.rs) | 98741 | `d11105597a7e4260c67c9ce7796394687b4219617a6ebfdfeca637ae469c3357` |
-| ZS1-076 | [src/config.rs](/Users/wangweiyang/GitHub/zenpi/src/config.rs) | 77782 | `f5691bd3818dcaf1481a88b63cc4f3874bc6b007234059e26124b74046325d12` |
-| ZS1-077 | [src/tools.rs](/Users/wangweiyang/GitHub/zenpi/src/tools.rs) | 119778 | `c3149b926933e5800cd41a2e8d3fcf6f109f8a455f2ef6ed8e2d48d696dbe33c` |
-| ZS1-078 | [src/skills.rs](/Users/wangweiyang/GitHub/zenpi/src/skills.rs) | 40533 | `a6d0a2f671febdef2e631ca53d2788ab869ab7b86db6c0cb1feaf24d128f83e8` |
-| ZS1-079 | [src/slash.rs](/Users/wangweiyang/GitHub/zenpi/src/slash.rs) | 81726 | `d0702d86e3cf8087dbc09a3fe68c9067dd6bed9f37f499abcdb7e0131927a1c9` |
-| ZS1-080 | [src/extensions.rs](/Users/wangweiyang/GitHub/zenpi/src/extensions.rs) | 20742 | `38a242eff3ec911f4560e3dea3868b742d511205ff0ccab1b622962b41e420ed` |
-| ZS1-081 | [src/domain_execution.rs](/Users/wangweiyang/GitHub/zenpi/src/domain_execution.rs) | 112548 | `2f5ee732fdf80b99af0ab973eb4594b2369786ae4acc6a86768fc3ba49be890f` |
-| ZS1-082 | [src/domains.rs](/Users/wangweiyang/GitHub/zenpi/src/domains.rs) | 24622 | `c11e10d02a21ed3412e731acd269080053b18f649935bb1f9486b128ee7c79ac` |
-| ZS1-083 | [src/governance.rs](/Users/wangweiyang/GitHub/zenpi/src/governance.rs) | 44516 | `4d80ffb9f29bb987e488bad93bc35546a6994065e793bd645fc3d73802930552` |
-| ZS1-084 | [src/headless.rs](/Users/wangweiyang/GitHub/zenpi/src/headless.rs) | 370207 | `bf252fec95a859b26f9aea402c918e9efbf6c2c55d3e24b403831f86d80ec06e` |
-| ZS1-085 | [src/tui.rs](/Users/wangweiyang/GitHub/zenpi/src/tui.rs) | 681440 | `83f5aa5b91f83cdcde80cc43936baafe8c681eb3f885b4fe9b213affa0217681` |
-| ZS1-086 | [src/view_model.rs](/Users/wangweiyang/GitHub/zenpi/src/view_model.rs) | 42009 | `094833f051ab66d30ce3f6cc74fcc0334ed938e79f5fd8e9269341b62bed08fe` |
-| ZS1-087 | [src/slash_actions.rs](/Users/wangweiyang/GitHub/zenpi/src/slash_actions.rs) | 76441 | `413a1ddba252ef2d435459af257cefa0cf45ef4c0b6ff9007b0b1454d69a8e9d` |
-| ZS1-088 | [src/lib.rs](/Users/wangweiyang/GitHub/zenpi/src/lib.rs) | 592 | `2b429ff43bfba672fea949a9fb51ee6eda41a2975589dbc852a50bef2e13d575` |
-| ZS1-089 | [.github/workflows/ci.yml](/Users/wangweiyang/GitHub/zenpi/.github/workflows/ci.yml) | 2480 | `5d7173fa20a0de949e53525018dad07718a9e4a9d24a5fcd137b056af31792d6` |
-| ZS1-094 | [src/layout.rs](/Users/wangweiyang/GitHub/zenpi/src/layout.rs) | 54632 | `218c1b1cb7853da8f5c03b51e09d552f0634efb82284e029cbcfaeb434dac05a` |
-| ZS1-095 | [src/approval.rs](/Users/wangweiyang/GitHub/zenpi/src/approval.rs) | 27606 | `c592686334a95047f749d7c61c793abc03ce93d5312b22aadeefa5aed9c85844` |
-| ZS1-096 | [src/render.rs](/Users/wangweiyang/GitHub/zenpi/src/render.rs) | 30217 | `6eaaa712745659ae48f429217c5eb8961dd12e71789f8a2bc70867ee71ba25a7` |
-| ZS1-097 | [Cargo.toml](/Users/wangweiyang/GitHub/zenpi/Cargo.toml) | 1001 | `94c25405859cbec9d1a02e7c1a0a4e0dbbfd96e5c6bc476c23b9dc8be7229a65` |
-| ZS1-098 | [Cargo.lock](/Users/wangweiyang/GitHub/zenpi/Cargo.lock) | 42724 | `f822e2d73d49727fdb4898180d26ff75bf95a4f81b638b613cb457e3171a30e1` |
-| ZS1-099 | [vendor/crossterm/src/event/source/unix/mio.rs](/Users/wangweiyang/GitHub/zenpi/vendor/crossterm/src/event/source/unix/mio.rs) | 9026 | `57f4a90b828444fcc6dd7199a73907bbbccf2df4b7808f9e8a0a4b0771e12e39` |
-| ZS1-133 | [tests/headless_project_workspace.rs](/Users/wangweiyang/GitHub/zenpi/tests/headless_project_workspace.rs) | 23349 | `6e87b7649b0e61c8fded9ec1b7bab953a479d6442020868a3e76d408d411248d` |
+| ZS1-070 | [src/core.rs](/Users/mac/Github/zenpi/src/core.rs) | 279620 | `0d4d0d1aef706528fe1a91ec9846ab4ea365c61e08c67d23a6a794a26c49916e` |
+| ZS1-071 | [src/runtime.rs](/Users/mac/Github/zenpi/src/runtime.rs) | 33333 | `7a42c428083f8f3edb0019311296b479004ff562b548d7cdc504729f7cbd1f21` |
+| ZS1-072 | [src/protocol.rs](/Users/mac/Github/zenpi/src/protocol.rs) | 45517 | `90a5644d5a818a8051172b42b302614fb3263ebac737ce9dbf4a842791370d27` |
+| ZS1-073 | [src/context.rs](/Users/mac/Github/zenpi/src/context.rs) | 30066 | `fc1138b9d5b3696a10135e70210c9aeb01ecea942dc8c0f19d6885607a835997` |
+| ZS1-074 | [src/session.rs](/Users/mac/Github/zenpi/src/session.rs) | 176828 | `8fb3ff2c387b13d34d8bbe4533bb2b0a81b5e546f5e03216b74b5cf2c61c9a2b` |
+| ZS1-075 | [src/backend.rs](/Users/mac/Github/zenpi/src/backend.rs) | 99056 | `0eae8058d36ef3507b2e1567f5d663843831a72ed73e506f33ec9ea18b034a43` |
+| ZS1-076 | [src/config.rs](/Users/mac/Github/zenpi/src/config.rs) | 77782 | `f5691bd3818dcaf1481a88b63cc4f3874bc6b007234059e26124b74046325d12` |
+| ZS1-077 | [src/tools.rs](/Users/mac/Github/zenpi/src/tools.rs) | 119778 | `c3149b926933e5800cd41a2e8d3fcf6f109f8a455f2ef6ed8e2d48d696dbe33c` |
+| ZS1-078 | [src/skills.rs](/Users/mac/Github/zenpi/src/skills.rs) | 40533 | `a6d0a2f671febdef2e631ca53d2788ab869ab7b86db6c0cb1feaf24d128f83e8` |
+| ZS1-079 | [src/slash.rs](/Users/mac/Github/zenpi/src/slash.rs) | 81726 | `d0702d86e3cf8087dbc09a3fe68c9067dd6bed9f37f499abcdb7e0131927a1c9` |
+| ZS1-080 | [src/extensions.rs](/Users/mac/Github/zenpi/src/extensions.rs) | 20742 | `38a242eff3ec911f4560e3dea3868b742d511205ff0ccab1b622962b41e420ed` |
+| ZS1-081 | [src/domain_execution.rs](/Users/mac/Github/zenpi/src/domain_execution.rs) | 112548 | `2f5ee732fdf80b99af0ab973eb4594b2369786ae4acc6a86768fc3ba49be890f` |
+| ZS1-082 | [src/domains.rs](/Users/mac/Github/zenpi/src/domains.rs) | 24622 | `c11e10d02a21ed3412e731acd269080053b18f649935bb1f9486b128ee7c79ac` |
+| ZS1-083 | [src/governance.rs](/Users/mac/Github/zenpi/src/governance.rs) | 44516 | `4d80ffb9f29bb987e488bad93bc35546a6994065e793bd645fc3d73802930552` |
+| ZS1-084 | [src/headless.rs](/Users/mac/Github/zenpi/src/headless.rs) | 371210 | `c2aefb53e5bc342af94eab463445373a83fbca172aa235246bb0cd9aa64f65bb` |
+| ZS1-085 | [src/tui.rs](/Users/mac/Github/zenpi/src/tui.rs) | 681440 | `83f5aa5b91f83cdcde80cc43936baafe8c681eb3f885b4fe9b213affa0217681` |
+| ZS1-086 | [src/view_model.rs](/Users/mac/Github/zenpi/src/view_model.rs) | 42009 | `094833f051ab66d30ce3f6cc74fcc0334ed938e79f5fd8e9269341b62bed08fe` |
+| ZS1-087 | [src/slash_actions.rs](/Users/mac/Github/zenpi/src/slash_actions.rs) | 76441 | `413a1ddba252ef2d435459af257cefa0cf45ef4c0b6ff9007b0b1454d69a8e9d` |
+| ZS1-088 | [src/lib.rs](/Users/mac/Github/zenpi/src/lib.rs) | 879 | `d93926734119ba3a5a0af16a3bd032548dcfecaaa5aeb36dca69f57065dbbc82` |
+| ZS1-089 | [.github/workflows/ci.yml](/Users/mac/Github/zenpi/.github/workflows/ci.yml) | 3973 | `44c1d0964cd0c3504f028f3fa2dbcac89c8063ca895d039eba729dd64bc263c9` |
+| ZS1-094 | [src/layout.rs](/Users/mac/Github/zenpi/src/layout.rs) | 54724 | `f2f6883b429e012d017bb208b03ecd35a02f9ddb186989d73037c56c07d94af8` |
+| ZS1-095 | [src/approval.rs](/Users/mac/Github/zenpi/src/approval.rs) | 29396 | `5488ad365670e515eba5e7d82a91dbf935be854b848c20fd99725f102e1f185f` |
+| ZS1-096 | [src/render.rs](/Users/mac/Github/zenpi/src/render.rs) | 61553 | `b98356df9020c5e6c8ec712e9c2c673265c1392cc0cee0c7d5576fc11a8d5a3a` |
+| ZS1-097 | [Cargo.toml](/Users/mac/Github/zenpi/Cargo.toml) | 1228 | `d5fafd029ef77454e178222c2b62530d28859374f72a2ce6bd972a465bed5884` |
+| ZS1-098 | [Cargo.lock](/Users/mac/Github/zenpi/Cargo.lock) | 46021 | `7311d1133e06e428707d9aa10c95c6a0c1efa983865472f6b5e24b640f4b1348` |
+| ZS1-099 | [vendor/crossterm/src/event/source/unix/mio.rs](/Users/mac/Github/zenpi/vendor/crossterm/src/event/source/unix/mio.rs) | 25801 | `41321e242e21fa85533dbae42314bcf80ab916e1d55e065d5ce98076002ac93f` |
+| ZS1-133 | [tests/headless_project_workspace.rs](/Users/mac/Github/zenpi/tests/headless_project_workspace.rs) | 39333 | `8375f8bab5042cd3a49a177fb5d933d03eb3eb3a615d40c22be45c28f023d313` |
 
 源树最终产物：`Docs/learn/stage1_pi_mono/files/<source_path>_learn.md` 及 `Docs/learn/stage1_pi_mono/<source_dir>/current_folder_learn.md`。目标树最终产物：`Docs/learn/stage1_pi_mono/targets/zenpi/files/<target_path>_learn.md` 及 `Docs/learn/stage1_pi_mono/targets/zenpi/<target_dir>/current_folder_learn.md`。两个根目录独立验收，不能混树或复用同一个目录报告。
 
@@ -156,7 +165,7 @@ master_acceptance: integrated-behavioral-evidence
 
 ## 4. 执行与验收协议
 
-状态仅 `[ ] → [_] → [x]`：worker 逐项 claim、完整执行本项、保存证据后只能写 `[_]`；master 在 integration frontier 复查源码与行为、集成并重跑验收后写 `[x]`。用户要求最大利用3个独立session：worker按DAG顺序在各自worktree准备候选，依赖未集成的产物保持provisional；master仍只在依赖全 `[x]` 且冲突解决后接受；`[_]` 永远算未完成。claim frontier 与 integration frontier 分开记录。每日 `todos_YYYYMMDD.md` 由本清单生成，只选可领取项，不建立第二份状态真相。
+状态仅 `[ ] → [_] → [x]`：worker 逐项 claim、完整执行本项、保存证据后只能写 `[_]`；master 在 integration frontier 复查源码与行为、集成并重跑验收后写 `[x]`。worker按DAG顺序在各自worktree准备候选，依赖未集成的产物保持provisional；master仍只在依赖全 `[x]` 且冲突解决后接受；`[_]` 永远算未完成。claim frontier 与 integration frontier 分开记录。每日 `todos_YYYYMMDD.md` 由本清单生成，只选可领取项，不建立第二份状态真相。
 
 worker上限固定为3，不含主控，不得创建subagent或更多任务。共享文件可在隔离worktree准备provisional差异；主控集成按路径lease串行，禁止多个worker直接覆盖主checkout。src/core.rs、src/backend.rs、src/tools.rs、src/session.rs 等共享文件按路径 lease 集成串行。每 worker 在保留脏基线的隔离工作树工作，记录输入 hash；主控按项集成。`Estimated LOC < 5000` 为每项实现+测试增量预测，文档项为 0；接近上限时先拆项更新 DAG。资源上限来自 operator/ResourceLease；不得通过新线程、嵌套代理或后台服务绕过预算。送审 diff 默认不超过 256 KiB。
 
@@ -248,16 +257,16 @@ proposed 文件/脚本当前不存在：ZS1-001 创建 validator；产品项创�
 - [x] **ZS1-053** — 逐目录整合 pi-mono packages/coding-agent/src/core/tools；layer `L2` | Depends: ZS1-024,ZS1-025,ZS1-026,ZS1-027 | Owner scope: 直属文件及直接子目录的集成 | Owned paths: `Docs/learn/stage1_pi_mono/packages/coding-agent/src/core/tools/current_folder_learn.md` | Validators: G-DIR；G-STAGE --item ZS1-053 | Rollback: 仅撤回此目录报告，不递归改子项 | Estimate: 逐个验证调用、数据与异常边界 | Estimated LOC: 0
 - [x] **ZS1-054** — 逐目录整合 pi-mono packages/agent/src/harness；layer `L2` | Depends: ZS1-050,ZS1-051 | Owner scope: 直属文件及直接子目录的集成 | Owned paths: `Docs/learn/stage1_pi_mono/packages/agent/src/harness/current_folder_learn.md` | Validators: G-DIR；G-STAGE --item ZS1-054 | Rollback: 仅撤回此目录报告，不递归改子项 | Estimate: 逐个验证调用、数据与异常边界 | Estimated LOC: 0
 - [x] **ZS1-055** — 逐目录整合 pi-mono packages/ai/src/api；layer `L2` | Depends: ZS1-016,ZS1-017,ZS1-029 | Owner scope: 直属文件及直接子目录的集成 | Owned paths: `Docs/learn/stage1_pi_mono/packages/ai/src/api/current_folder_learn.md` | Validators: G-DIR；G-STAGE --item ZS1-055 | Rollback: 仅撤回此目录报告，不递归改子项 | Estimate: 逐个验证调用、数据与异常边界 | Estimated LOC: 0
-- [ ] **ZS1-056** — 逐目录整合 pi-mono packages/coding-agent/src/core；layer `L2` | Depends: ZS1-018,ZS1-019,ZS1-020,ZS1-021,ZS1-028,ZS1-030,ZS1-052,ZS1-053 | Owner scope: 直属文件及直接子目录的集成 | Owned paths: `Docs/learn/stage1_pi_mono/packages/coding-agent/src/core/current_folder_learn.md` | Validators: G-DIR；G-STAGE --item ZS1-056 | Rollback: 仅撤回此目录报告，不递归改子项 | Estimate: 逐个验证调用、数据与异常边界 | Estimated LOC: 0
+- [x] **ZS1-056** — 逐目录整合 pi-mono packages/coding-agent/src/core；layer `L2` | Depends: ZS1-018,ZS1-019,ZS1-020,ZS1-021,ZS1-028,ZS1-030,ZS1-052,ZS1-053 | Owner scope: 直属文件及直接子目录的集成 | Owned paths: `Docs/learn/stage1_pi_mono/packages/coding-agent/src/core/current_folder_learn.md` | Validators: G-DIR；G-STAGE --item ZS1-056 | Rollback: 仅撤回此目录报告，不递归改子项 | Estimate: 逐个验证调用、数据与异常边界 | Estimated LOC: 0
 - [x] **ZS1-057** — 逐目录整合 pi-mono packages/agent/src；layer `L2` | Depends: ZS1-010,ZS1-011,ZS1-054 | Owner scope: 直属文件及直接子目录的集成 | Owned paths: `Docs/learn/stage1_pi_mono/packages/agent/src/current_folder_learn.md` | Validators: G-DIR；G-STAGE --item ZS1-057 | Rollback: 仅撤回此目录报告，不递归改子项 | Estimate: 逐个验证调用、数据与异常边界 | Estimated LOC: 0
 - [x] **ZS1-058** — 逐目录整合 pi-mono packages/agent/test；layer `L2` | Depends: ZS1-014 | Owner scope: 直属文件及直接子目录的集成 | Owned paths: `Docs/learn/stage1_pi_mono/packages/agent/test/current_folder_learn.md` | Validators: G-DIR；G-STAGE --item ZS1-058 | Rollback: 仅撤回此目录报告，不递归改子项 | Estimate: 逐个验证调用、数据与异常边界 | Estimated LOC: 0
 - [x] **ZS1-059** — 逐目录整合 pi-mono packages/ai/src；layer `L2` | Depends: ZS1-015,ZS1-055 | Owner scope: 直属文件及直接子目录的集成 | Owned paths: `Docs/learn/stage1_pi_mono/packages/ai/src/current_folder_learn.md` | Validators: G-DIR；G-STAGE --item ZS1-059 | Rollback: 仅撤回此目录报告，不递归改子项 | Estimate: 逐个验证调用、数据与异常边界 | Estimated LOC: 0
-- [ ] **ZS1-060** — 逐目录整合 pi-mono packages/coding-agent/src；layer `L2` | Depends: ZS1-056 | Owner scope: 直属文件及直接子目录的集成 | Owned paths: `Docs/learn/stage1_pi_mono/packages/coding-agent/src/current_folder_learn.md` | Validators: G-DIR；G-STAGE --item ZS1-060 | Rollback: 仅撤回此目录报告，不递归改子项 | Estimate: 逐个验证调用、数据与异常边界 | Estimated LOC: 0
+- [x] **ZS1-060** — 逐目录整合 pi-mono packages/coding-agent/src；layer `L2` | Depends: ZS1-056 | Owner scope: 直属文件及直接子目录的集成 | Owned paths: `Docs/learn/stage1_pi_mono/packages/coding-agent/src/current_folder_learn.md` | Validators: G-DIR；G-STAGE --item ZS1-060 | Rollback: 仅撤回此目录报告，不递归改子项 | Estimate: 逐个验证调用、数据与异常边界 | Estimated LOC: 0
 - [x] **ZS1-061** — 逐目录整合 pi-mono packages/agent；layer `L2` | Depends: ZS1-057,ZS1-058 | Owner scope: 直属文件及直接子目录的集成 | Owned paths: `Docs/learn/stage1_pi_mono/packages/agent/current_folder_learn.md` | Validators: G-DIR；G-STAGE --item ZS1-061 | Rollback: 仅撤回此目录报告，不递归改子项 | Estimate: 逐个验证调用、数据与异常边界 | Estimated LOC: 0
-- [ ] **ZS1-062** — 逐目录整合 pi-mono packages/ai；layer `L2` | Depends: ZS1-059 | Owner scope: 直属文件及直接子目录的集成 | Owned paths: `Docs/learn/stage1_pi_mono/packages/ai/current_folder_learn.md` | Validators: G-DIR；G-STAGE --item ZS1-062 | Rollback: 仅撤回此目录报告，不递归改子项 | Estimate: 逐个验证调用、数据与异常边界 | Estimated LOC: 0
-- [ ] **ZS1-063** — 逐目录整合 pi-mono packages/coding-agent；layer `L2` | Depends: ZS1-060 | Owner scope: 直属文件及直接子目录的集成 | Owned paths: `Docs/learn/stage1_pi_mono/packages/coding-agent/current_folder_learn.md` | Validators: G-DIR；G-STAGE --item ZS1-063 | Rollback: 仅撤回此目录报告，不递归改子项 | Estimate: 逐个验证调用、数据与异常边界 | Estimated LOC: 0
-- [ ] **ZS1-064** — 逐目录整合 pi-mono packages；layer `L2` | Depends: ZS1-061,ZS1-062,ZS1-063 | Owner scope: 直属文件及直接子目录的集成 | Owned paths: `Docs/learn/stage1_pi_mono/packages/current_folder_learn.md` | Validators: G-DIR；G-STAGE --item ZS1-064 | Rollback: 仅撤回此目录报告，不递归改子项 | Estimate: 逐个验证调用、数据与异常边界 | Estimated LOC: 0
-- [ ] **ZS1-065** — 逐目录整合 pi-mono .；layer `L2` | Depends: ZS1-064 | Owner scope: 直属文件及直接子目录的集成 | Owned paths: `Docs/learn/stage1_pi_mono/current_folder_learn.md` | Validators: G-DIR；G-STAGE --item ZS1-065 | Rollback: 仅撤回此目录报告，不递归改子项 | Estimate: 逐个验证调用、数据与异常边界 | Estimated LOC: 0
+- [x] **ZS1-062** — 逐目录整合 pi-mono packages/ai；layer `L2` | Depends: ZS1-059 | Owner scope: 直属文件及直接子目录的集成 | Owned paths: `Docs/learn/stage1_pi_mono/packages/ai/current_folder_learn.md` | Validators: G-DIR；G-STAGE --item ZS1-062 | Rollback: 仅撤回此目录报告，不递归改子项 | Estimate: 逐个验证调用、数据与异常边界 | Estimated LOC: 0
+- [x] **ZS1-063** — 逐目录整合 pi-mono packages/coding-agent；layer `L2` | Depends: ZS1-060 | Owner scope: 直属文件及直接子目录的集成 | Owned paths: `Docs/learn/stage1_pi_mono/packages/coding-agent/current_folder_learn.md` | Validators: G-DIR；G-STAGE --item ZS1-063 | Rollback: 仅撤回此目录报告，不递归改子项 | Estimate: 逐个验证调用、数据与异常边界 | Estimated LOC: 0
+- [x] **ZS1-064** — 逐目录整合 pi-mono packages；layer `L2` | Depends: ZS1-061,ZS1-062,ZS1-063 | Owner scope: 直属文件及直接子目录的集成 | Owned paths: `Docs/learn/stage1_pi_mono/packages/current_folder_learn.md` | Validators: G-DIR；G-STAGE --item ZS1-064 | Rollback: 仅撤回此目录报告，不递归改子项 | Estimate: 逐个验证调用、数据与异常边界 | Estimated LOC: 0
+- [x] **ZS1-065** — 逐目录整合 pi-mono .；layer `L2` | Depends: ZS1-064 | Owner scope: 直属文件及直接子目录的集成 | Owned paths: `Docs/learn/stage1_pi_mono/current_folder_learn.md` | Validators: G-DIR；G-STAGE --item ZS1-065 | Rollback: 仅撤回此目录报告，不递归改子项 | Estimate: 逐个验证调用、数据与异常边界 | Estimated LOC: 0
 
 ### L2 — 目标目录，每行一个目录
 
@@ -277,24 +286,60 @@ proposed 文件/脚本当前不存在：ZS1-001 创建 validator；产品项创�
 
 ### L3–L5 — 由逐文件/目录审计驱动的产品实现
 
-- [ ] **ZS1-101** — 对话 steer / follow-up 输入合同；layer `L3` | Depends: ZS1-057,ZS1-058,ZS1-091 | Owner scope: G01的实现与本项行为测试 | Owned paths: `src/input_queue.rs`, `src/protocol.rs`, `src/runtime.rs`, `src/core.rs`, `src/slash.rs`, `src/slash_actions.rs`, `src/headless.rs`, `src/tui.rs`, `src/lib.rs`, `tests/stage1_input_queue.rs`, `tests/stage1_input_host.rs`, `tests/headless_protocol.rs` | Validators: G-CODE；cargo test --locked --test stage1_input_queue --test runtime --test core_session --test headless_protocol | Rollback: 禁用新增输入模式，保留旧StartOrSteer协议；迁移项保留可读记录 | Estimate: 约2–4天，含正负/取消/恢复验收 | Estimated LOC: 1700
-- [ ] **ZS1-102** — 有界工具批次与 sequential barrier；layer `L3` | Depends: ZS1-101,ZS1-057,ZS1-091 | Owner scope: G02的实现与本项行为测试 | Owned paths: `src/tool_runtime.rs`, `src/tools.rs`, `src/core.rs`, `src/lib.rs`, `tests/stage1_tool_batch.rs` | Validators: G-CODE；cargo test --locked --test stage1_tool_batch --test tools --test approval_owner --test core_session | Rollback: 切回串行执行器，保留结果事件/未知结果标记 | Estimate: 约2–4天，含正负/取消/恢复验收 | Estimated LOC: 2300
-- [ ] **ZS1-103** — 版本化语义 checkpoint 与完整 turn 切点；layer `L3` | Depends: ZS1-050,ZS1-051,ZS1-091 | Owner scope: G03的实现与本项行为测试 | Owned paths: `src/context.rs`, `src/session.rs`, `tests/stage1_context_checkpoint.rs` | Validators: G-CODE；cargo test --locked --test stage1_context_checkpoint --test context --test session_recovery | Rollback: 写入迁移前保留备份/版本标识；停用新写入但不删除已写历史 | Estimate: 约2–4天，含正负/取消/恢复验收 | Estimated LOC: 1700
-- [ ] **ZS1-104** — 通过真实 backend 生成并使用语义摘要；layer `L3` | Depends: ZS1-103,ZS1-101 | Owner scope: G03的实现与本项行为测试 | Owned paths: `src/context.rs`, `src/core.rs`, `src/backend.rs`, `src/governance.rs`, `tests/stage1_semantic_compaction.rs`, `src/session.rs`, `src/headless.rs`, `src/slash_actions.rs`, `tests/resume_compact_owner.rs`, `tests/stage1_input_host.rs`, `src/tui.rs` | Validators: G-CODE；cargo test --locked --test stage1_semantic_compaction --test resume_compact_owner --test session_recovery | Rollback: 关闭自动语义压缩，沿用完整历史或明确context-overflow错误；不伪造fallback语义 | Estimate: 约2–4天，含正负/取消/恢复验收 | Estimated LOC: 2400
-- [ ] **ZS1-105** — append-only 分支树与 active leaf 持久化；layer `L3` | Depends: ZS1-103,ZS1-056,ZS1-091 | Owner scope: G04的实现与本项行为测试 | Owned paths: `src/session_tree.rs`, `src/session.rs`, `src/lib.rs`, `tests/stage1_session_tree.rs` | Validators: G-CODE；cargo test --locked --test stage1_session_tree --test session_cli --test session_maintenance_owner | Rollback: 关闭branch新写入并保留备份；树journal不降级破坏性重写 | Estimate: 约2–4天，含正负/取消/恢复验收 | Estimated LOC: 2200
-- [ ] **ZS1-106** — 分支上下文及 TUI/JSONL 导航入口；layer `L3` | Depends: ZS1-105,ZS1-104 | Owner scope: G04的实现与本项行为测试 | Owned paths: `src/context.rs`, `src/core.rs`, `src/slash.rs`, `src/slash_actions.rs`, `src/protocol.rs`, `src/headless.rs`, `src/tui.rs`, `tests/stage1_branch_owner.rs`, `src/session.rs` | Validators: G-CODE；cargo test --locked --test stage1_branch_owner --test core_session --test headless_protocol --test session_recovery | Rollback: 隐藏新导航入口，保留tree owner读取及旧会话路由 | Estimate: 约2–4天，含正负/取消/恢复验收 | Estimated LOC: 2200
-- [ ] **ZS1-107** — 模型能力 registry 与 backend 能力协商；layer `L3` | Depends: ZS1-059,ZS1-056,ZS1-091 | Owner scope: G05的实现与本项行为测试 | Owned paths: `src/providers/mod.rs`, `src/providers/registry.rs`, `src/backend.rs`, `src/config.rs`, `src/core.rs`, `src/slash_actions.rs`, `src/lib.rs`, `tests/stage1_model_registry.rs`, `src/headless.rs`, `tests/config.rs` | Validators: G-CODE；cargo test --locked --test stage1_model_registry --test backend --test config --test slash_actions | Rollback: 回到显式旧profile能力配置；保存新字段而不误读为支持 | Estimate: 约2–4天，含正负/取消/恢复验收 | Estimated LOC: 2100
-- [ ] **ZS1-108** — Chat Completions SSE 流式路径；layer `L3` | Depends: ZS1-107 | Owner scope: G05的实现与本项行为测试 | Owned paths: `src/backend/chat_stream.rs`, `src/backend.rs`, `src/view_model.rs`, `tests/stage1_chat_stream.rs`, `tests/backend.rs` | Validators: G-CODE；cargo test --locked --test stage1_chat_stream --test backend --test headless_event_budget | Rollback: 按显式配置退回旧Chat非流式路径，保留真实能力标志 | Estimate: 约2–4天，含正负/取消/恢复验收 | Estimated LOC: 2100
-- [ ] **ZS1-109** — Anthropic Messages 原生 adapter；layer `L3` | Depends: ZS1-107,ZS1-055 | Owner scope: G05的实现与本项行为测试 | Owned paths: `src/providers/anthropic.rs`, `src/providers/mod.rs`, `src/backend.rs`, `src/config.rs`, `tests/stage1_anthropic.rs`, `src/providers/registry.rs`, `src/core.rs`, `tests/backend.rs`, `src/backend/transport.rs`, `tests/stage1_transport.rs` | Validators: G-CODE；cargo test --locked --test stage1_anthropic --test backend --test config --test security | Rollback: 禁用该provider选择，保留用户配置且明确unsupported | Estimate: 约3–5天，含正负/取消/恢复验收 | Estimated LOC: 2900
-- [ ] **ZS1-110** — Gemini 原生 adapter；layer `L3` | Depends: ZS1-107,ZS1-055 | Owner scope: G05的实现与本项行为测试 | Owned paths: `src/providers/google.rs`, `src/providers/mod.rs`, `src/backend.rs`, `src/config.rs`, `tests/stage1_gemini.rs`, `src/providers/registry.rs`, `src/core.rs`, `tests/backend.rs`, `src/backend/transport.rs`, `tests/stage1_transport.rs` | Validators: G-CODE；cargo test --locked --test stage1_gemini --test backend --test config --test security | Rollback: 禁用该provider选择，保留配置及旧provider支持 | Estimate: 约3–5天，含正负/取消/恢复验收 | Estimated LOC: 2900
-- [ ] **ZS1-111** — 工具原始输出 artifact 与增量进度；layer `L3` | Depends: ZS1-102,ZS1-053,ZS1-091 | Owner scope: G06/G02的实现与本项行为测试 | Owned paths: `src/tool_output.rs`, `src/tools.rs`, `src/tool_runtime.rs`, `src/core.rs`, `src/view_model.rs`, `src/headless.rs`, `src/tui.rs`, `src/lib.rs`, `tests/stage1_tool_output.rs`, `tests/tools.rs`, `src/tool_output/redaction.rs`, `src/security.rs`, `src/protocol.rs`, `src/slash.rs`, `src/slash_actions.rs`, `src/search.rs` | Validators: G-CODE；cargo test --locked --test stage1_tool_output --test tools --test tui_logs --test headless_event_budget | Rollback: 停用新增artifact写入/读取，保留有界输出及明确截断；只清理本lease产物 | Estimate: 约3–5天，含正负/取消/恢复验收 | Estimated LOC: 2800
-- [ ] **ZS1-112** — 显式 regex/glob/ignore/context 搜索；layer `L3` | Depends: ZS1-053,ZS1-091 | Owner scope: G07的实现与本项行为测试 | Owned paths: `src/tools.rs`, `src/search.rs`, `src/lib.rs`, `tests/stage1_search.rs`, `src/core.rs`, `tests/tools.rs` | Validators: G-CODE；cargo test --locked --test stage1_search --test tools --test security | Rollback: 回到旧literal工具schema并保留现有搜索功能 | Estimate: 约2–4天，含正负/取消/恢复验收 | Estimated LOC: 1800
-- [ ] **ZS1-113** — SKILL.md 发现与按需调用；layer `L3` | Depends: ZS1-056,ZS1-091 | Owner scope: G08的实现与本项行为测试 | Owned paths: `src/skills.rs`, `src/core.rs`, `src/headless.rs`, `src/resource_loader.rs`, `src/slash.rs`, `src/slash_actions.rs`, `Cargo.toml`, `Cargo.lock`, `tests/stage1_skill_md.rs`, `tests/stage1_resource_host.rs` | Validators: G-CODE；cargo test --locked --test stage1_resource_host --test stage1_skill_md --test skills --test slash --test slash_actions | Rollback: 禁用新SKILL.md reader，保留TOML兼容路径及原配置 | Estimate: 约2–4天，含正负/取消/恢复验收 | Estimated LOC: 3500
-- [ ] **ZS1-114** — 参数模板与资源原子 reload；layer `L3` | Depends: ZS1-113 | Owner scope: G08的实现与本项行为测试 | Owned paths: `src/prompt_templates.rs`, `src/resource_loader.rs`, `src/core.rs`, `src/headless.rs`, `src/config.rs`, `src/skills.rs`, `src/slash.rs`, `src/slash_actions.rs`, `src/lib.rs`, `tests/stage1_prompt_resources.rs`, `tests/stage1_resource_host.rs` | Validators: G-CODE；cargo test --locked --test stage1_resource_host --test stage1_prompt_resources --test skills --test core_session --test slash_actions | Rollback: 移除新template/reload入口，回到旧静态resource读取 | Estimate: 约2–4天，含正负/取消/恢复验收 | Estimated LOC: 2800
-- [ ] **ZS1-115** — 类型化 subprocess hooks 与生命周期撤销；layer `L3` | Depends: ZS1-114,ZS1-102,ZS1-052 | Owner scope: G09的实现与本项行为测试 | Owned paths: `src/extensions.rs`, `src/extension_runtime.rs`, `src/core.rs`, `src/tools.rs`, `src/lib.rs`, `tests/stage1_extension_hooks.rs` | Validators: G-CODE；cargo test --locked --test stage1_extension_hooks --test extensions --test approval_owner --test tools | Rollback: 回退到tools/call-only协议，停用hooks并撤销全部新generation | Estimate: 约3–5天，含正负/取消/恢复验收 | Estimated LOC: 2800
-- [ ] **ZS1-116** — 外部执行结果的可验证产物与主控验收；layer `L3` | Depends: ZS1-111,ZS1-091 | Owner scope: G10的实现与本项行为测试 | Owned paths: `src/domain_execution.rs`, `src/domains.rs`, `src/governance.rs`, `src/session.rs`, `src/headless.rs`, `src/tui.rs`, `tests/stage1_external_evidence.rs`, `src/slash.rs`, `tests/domain_execution_owner.rs`, `src/core.rs` | Validators: G-CODE；cargo test --locked --test stage1_external_evidence --test domain_execution_owner --test domain_execution_host --test governance | Rollback: 停用新接受通道；旧manifest仅保留已导入候选/历史，不补记master完成 | Estimate: 约2–4天，含正负/取消/恢复验收 | Estimated LOC: 2400
-- [ ] **ZS1-117** — 生产入口、边界故障与轻量预算验收；layer `L5` | Depends: ZS1-106,ZS1-108,ZS1-109,ZS1-110,ZS1-111,ZS1-112,ZS1-115,ZS1-116 | Owner scope: G01～G10的实现与本项行为测试 | Owned paths: `tools/stage1_host_smoke.py`, `tests/stage1_host.rs`, `.github/workflows/ci.yml`, `Docs/quality/stage1/ZS1-117`, `tools/bench_runtime.py`, `Cargo.toml` | Validators: G-CODE；G-RUST；cargo test --locked --test stage1_host；G-PROD；既有budget工具按仓库help契约运行并保存receipt | Rollback: 撤回本项新增CI job与smoke资产；产品回归按产生问题的原item回滚 | Estimate: 约2–4天，含正负/取消/恢复验收 | Estimated LOC: 2300
-- [ ] **ZS1-199** — Master 集成验收与阶段交付；layer `L6` | Depends: ZS1-065,ZS1-091,ZS1-117,ZS1-350,ZS1-128 | Owner scope: 仅整合本阶段证据与最终交付 | Owned paths: `Docs/stage_1_v3_pi_mono_blueprint.md`, `Docs/quality/stage1/acceptance.md`, `Docs/execution/active_requirement.json`, `README.md` | Validators: G-STAGE、G-RUST、G-PROD；所有依赖[x]且逐文件/目录覆盖闭包，零缺失或虚假行为证据 | Rollback: 撤回本阶段接受记录与活动指针切换，不删除用户或worker原始证据 | Estimate: 约1天独立主控复验与交付 | Estimated LOC: 0
+- [x] **ZS1-101** — 对话 steer / follow-up 输入合同；layer `L3` | Depends: ZS1-057,ZS1-058,ZS1-091 | Owner scope: G01的实现与本项行为测试 | Owned paths: `src/input_queue.rs`, `src/protocol.rs`, `src/runtime.rs`, `src/core.rs`, `src/slash.rs`, `src/slash_actions.rs`, `src/headless.rs`, `src/tui.rs`, `src/lib.rs`, `tests/stage1_input_queue.rs`, `tests/stage1_input_host.rs`, `tests/headless_protocol.rs` | Validators: G-CODE；cargo test --locked --test stage1_input_queue --test runtime --test core_session --test headless_protocol | Rollback: 禁用新增输入模式，保留旧StartOrSteer协议；迁移项保留可读记录 | Estimate: 约2–4天，含正负/取消/恢复验收 | Estimated LOC: 1700
+- [x] **ZS1-102** — 有界工具批次与 sequential barrier；layer `L3` | Depends: ZS1-101,ZS1-057,ZS1-091 | Owner scope: G02的实现与本项行为测试 | Owned paths: `src/tool_runtime.rs`, `src/tools.rs`, `src/core.rs`, `src/lib.rs`, `tests/stage1_tool_batch.rs` | Validators: G-CODE；cargo test --locked --test stage1_tool_batch --test tools --test approval_owner --test core_session | Rollback: 切回串行执行器，保留结果事件/未知结果标记 | Estimate: 约2–4天，含正负/取消/恢复验收 | Estimated LOC: 2300
+- [x] **ZS1-103** — 版本化语义 checkpoint 与完整 turn 切点；layer `L3` | Depends: ZS1-050,ZS1-051,ZS1-091 | Owner scope: G03的实现与本项行为测试 | Owned paths: `src/context.rs`, `src/session.rs`, `tests/stage1_context_checkpoint.rs` | Validators: G-CODE；cargo test --locked --test stage1_context_checkpoint --test context --test session_recovery | Rollback: 写入迁移前保留备份/版本标识；停用新写入但不删除已写历史 | Estimate: 约2–4天，含正负/取消/恢复验收 | Estimated LOC: 1700
+- [x] **ZS1-104** — 通过真实 backend 生成并使用语义摘要；layer `L3` | Depends: ZS1-103,ZS1-101 | Owner scope: G03的实现与本项行为测试 | Owned paths: `src/context.rs`, `src/core.rs`, `src/backend.rs`, `src/governance.rs`, `tests/stage1_semantic_compaction.rs`, `src/session.rs`, `src/headless.rs`, `src/slash_actions.rs`, `tests/resume_compact_owner.rs`, `tests/stage1_input_host.rs`, `src/tui.rs` | Validators: G-CODE；cargo test --locked --test stage1_semantic_compaction --test resume_compact_owner --test session_recovery | Rollback: 关闭自动语义压缩，沿用完整历史或明确context-overflow错误；不伪造fallback语义 | Estimate: 约2–4天，含正负/取消/恢复验收 | Estimated LOC: 2400
+- [x] **ZS1-105** — append-only 分支树与 active leaf 持久化；layer `L3` | Depends: ZS1-103,ZS1-056,ZS1-091 | Owner scope: G04的实现与本项行为测试 | Owned paths: `src/session_tree.rs`, `src/session.rs`, `src/lib.rs`, `tests/stage1_session_tree.rs` | Validators: G-CODE；cargo test --locked --test stage1_session_tree --test session_cli --test session_maintenance_owner | Rollback: 关闭branch新写入并保留备份；树journal不降级破坏性重写 | Estimate: 约2–4天，含正负/取消/恢复验收 | Estimated LOC: 2200
+- [x] **ZS1-106** — 分支上下文及 TUI/JSONL 导航入口；layer `L3` | Depends: ZS1-105,ZS1-104 | Owner scope: G04的实现与本项行为测试 | Owned paths: `src/context.rs`, `src/core.rs`, `src/slash.rs`, `src/slash_actions.rs`, `src/protocol.rs`, `src/headless.rs`, `src/tui.rs`, `tests/stage1_branch_owner.rs`, `src/session.rs` | Validators: G-CODE；cargo test --locked --test stage1_branch_owner --test core_session --test headless_protocol --test session_recovery | Rollback: 隐藏新导航入口，保留tree owner读取及旧会话路由 | Estimate: 约2–4天，含正负/取消/恢复验收 | Estimated LOC: 2200
+- [x] **ZS1-107** — 模型能力 registry 与 backend 能力协商；layer `L3` | Depends: ZS1-059,ZS1-056,ZS1-091 | Owner scope: G05的实现与本项行为测试 | Owned paths: `src/providers/mod.rs`, `src/providers/registry.rs`, `src/backend.rs`, `src/config.rs`, `src/core.rs`, `src/slash_actions.rs`, `src/lib.rs`, `tests/stage1_model_registry.rs`, `src/headless.rs`, `tests/config.rs` | Validators: G-CODE；cargo test --locked --test stage1_model_registry --test backend --test config --test slash_actions | Rollback: 回到显式旧profile能力配置；保存新字段而不误读为支持 | Estimate: 约2–4天，含正负/取消/恢复验收 | Estimated LOC: 2100
+- [x] **ZS1-108** — Chat Completions SSE 流式路径；layer `L3` | Depends: ZS1-107 | Owner scope: G05的实现与本项行为测试 | Owned paths: `src/backend/chat_stream.rs`, `src/backend.rs`, `src/view_model.rs`, `tests/stage1_chat_stream.rs`, `tests/backend.rs` | Validators: G-CODE；cargo test --locked --test stage1_chat_stream --test backend --test headless_event_budget | Rollback: 按显式配置退回旧Chat非流式路径，保留真实能力标志 | Estimate: 约2–4天，含正负/取消/恢复验收 | Estimated LOC: 2100
+- [x] **ZS1-109** — Anthropic Messages 原生 adapter；layer `L3` | Depends: ZS1-107,ZS1-055 | Owner scope: G05的实现与本项行为测试 | Owned paths: `src/providers/anthropic.rs`, `src/providers/mod.rs`, `src/backend.rs`, `src/config.rs`, `tests/stage1_anthropic.rs`, `src/providers/registry.rs`, `src/core.rs`, `tests/backend.rs`, `src/backend/transport.rs`, `tests/stage1_transport.rs` | Validators: G-CODE；cargo test --locked --test stage1_anthropic --test backend --test config --test security | Rollback: 禁用该provider选择，保留用户配置且明确unsupported | Estimate: 约3–5天，含正负/取消/恢复验收 | Estimated LOC: 2900
+- [x] **ZS1-110** — Gemini 原生 adapter；layer `L3` | Depends: ZS1-107,ZS1-055 | Owner scope: G05的实现与本项行为测试 | Owned paths: `src/providers/google.rs`, `src/providers/mod.rs`, `src/backend.rs`, `src/config.rs`, `tests/stage1_gemini.rs`, `src/providers/registry.rs`, `src/core.rs`, `tests/backend.rs`, `src/backend/transport.rs`, `tests/stage1_transport.rs` | Validators: G-CODE；cargo test --locked --test stage1_gemini --test backend --test config --test security | Rollback: 禁用该provider选择，保留配置及旧provider支持 | Estimate: 约3–5天，含正负/取消/恢复验收 | Estimated LOC: 2900
+- [x] **ZS1-111** — 工具原始输出 artifact 与增量进度；layer `L3` | Depends: ZS1-102,ZS1-053,ZS1-091 | Owner scope: G06/G02的实现与本项行为测试 | Owned paths: `src/tool_output.rs`, `src/tools.rs`, `src/tool_runtime.rs`, `src/core.rs`, `src/view_model.rs`, `src/headless.rs`, `src/tui.rs`, `src/lib.rs`, `tests/stage1_tool_output.rs`, `tests/tools.rs`, `src/tool_output/redaction.rs`, `src/security.rs`, `src/protocol.rs`, `src/slash.rs`, `src/slash_actions.rs`, `src/search.rs` | Validators: G-CODE；cargo test --locked --test stage1_tool_output --test tools --test tui_logs --test headless_event_budget | Rollback: 停用新增artifact写入/读取，保留有界输出及明确截断；只清理本lease产物 | Estimate: 约3–5天，含正负/取消/恢复验收 | Estimated LOC: 2800
+- [x] **ZS1-112** — 显式 regex/glob/ignore/context 搜索；layer `L3` | Depends: ZS1-053,ZS1-091 | Owner scope: G07的实现与本项行为测试 | Owned paths: `src/tools.rs`, `src/search.rs`, `src/lib.rs`, `tests/stage1_search.rs`, `src/core.rs`, `tests/tools.rs` | Validators: G-CODE；cargo test --locked --test stage1_search --test tools --test security | Rollback: 回到旧literal工具schema并保留现有搜索功能 | Estimate: 约2–4天，含正负/取消/恢复验收 | Estimated LOC: 1800
+- [x] **ZS1-113** — SKILL.md 发现与按需调用；layer `L3` | Depends: ZS1-056,ZS1-091 | Owner scope: G08的实现与本项行为测试 | Owned paths: `src/skills.rs`, `src/core.rs`, `src/headless.rs`, `src/resource_loader.rs`, `src/slash.rs`, `src/slash_actions.rs`, `Cargo.toml`, `Cargo.lock`, `tests/stage1_skill_md.rs`, `tests/stage1_resource_host.rs` | Validators: G-CODE；cargo test --locked --test stage1_resource_host --test stage1_skill_md --test skills --test slash --test slash_actions | Rollback: 禁用新SKILL.md reader，保留TOML兼容路径及原配置 | Estimate: 约2–4天，含正负/取消/恢复验收 | Estimated LOC: 3500
+- [x] **ZS1-114** — 参数模板与资源原子 reload；layer `L3` | Depends: ZS1-113 | Owner scope: G08的实现与本项行为测试 | Owned paths: `src/prompt_templates.rs`, `src/resource_loader.rs`, `src/core.rs`, `src/headless.rs`, `src/config.rs`, `src/skills.rs`, `src/slash.rs`, `src/slash_actions.rs`, `src/lib.rs`, `tests/stage1_prompt_resources.rs`, `tests/stage1_resource_host.rs` | Validators: G-CODE；cargo test --locked --test stage1_resource_host --test stage1_prompt_resources --test skills --test core_session --test slash_actions | Rollback: 移除新template/reload入口，回到旧静态resource读取 | Estimate: 约2–4天，含正负/取消/恢复验收 | Estimated LOC: 2800
+- [x] **ZS1-115** — 类型化 subprocess hooks 与生命周期撤销；layer `L3` | Depends: ZS1-114,ZS1-102,ZS1-052 | Owner scope: G09的实现与本项行为测试 | Owned paths: `src/extensions.rs`, `src/extension_runtime.rs`, `src/core.rs`, `src/tools.rs`, `src/lib.rs`, `tests/stage1_extension_hooks.rs` | Validators: G-CODE；cargo test --locked --test stage1_extension_hooks --test extensions --test approval_owner --test tools | Rollback: 回退到tools/call-only协议，停用hooks并撤销全部新generation | Estimate: 约3–5天，含正负/取消/恢复验收 | Estimated LOC: 2800
+- [x] **ZS1-116** — 外部执行结果的可验证产物与主控验收；layer `L3` | Depends: ZS1-111,ZS1-091 | Owner scope: G10的实现与本项行为测试 | Owned paths: `src/domain_execution.rs`, `src/domains.rs`, `src/governance.rs`, `src/session.rs`, `src/headless.rs`, `src/tui.rs`, `tests/stage1_external_evidence.rs`, `src/slash.rs`, `tests/domain_execution_owner.rs`, `src/core.rs` | Validators: G-CODE；cargo test --locked --test stage1_external_evidence --test domain_execution_owner --test domain_execution_host --test governance | Rollback: 停用新接受通道；旧manifest仅保留已导入候选/历史，不补记master完成 | Estimate: 约2–4天，含正负/取消/恢复验收 | Estimated LOC: 2400
+- [x] **ZS1-117** — 生产入口、边界故障与轻量预算验收；layer `L5` | Depends: ZS1-106,ZS1-108,ZS1-109,ZS1-110,ZS1-111,ZS1-112,ZS1-115,ZS1-116 | Owner scope: G01～G10的实现与本项行为测试 | Owned paths: `tools/stage1_host_smoke.py`, `tests/stage1_host.rs`, `.github/workflows/ci.yml`, `Docs/quality/stage1/ZS1-117`, `tools/bench_runtime.py`, `Cargo.toml` | Validators: G-CODE；G-RUST；cargo test --locked --test stage1_host；G-PROD；既有budget工具按仓库help契约运行并保存receipt | Rollback: 撤回本项新增CI job与smoke资产；产品回归按产生问题的原item回滚 | Estimate: 约2–4天，含正负/取消/恢复验收 | Estimated LOC: 2300
+- [x] **ZS1-118** — Provider 开放与官方/第三方供应商对齐；layer `L3` | Depends: ZS1-107,ZS1-091 | Owner scope: 模型能力默认开放与 provider 格式对齐的实现与本项行为测试 | Owned paths: `src/providers/registry.rs`, `src/backend.rs`, `src/config.rs`, `tests/stage1_model_registry.rs`, `tests/stage1_anthropic.rs`, `tests/stage1_gemini.rs` | Validators: G-CODE；cargo test --locked --test stage1_model_registry --test stage1_anthropic --test stage1_gemini --test backend | Rollback: 撤回未知模型默认开放，恢复显式覆盖；不改变官方目录项 | Estimate: 依赖现有多wire实现的能力协商扩展 | Estimated LOC: 300
+- [x] **ZS1-119** — `/sync` 用户要求同步到 single-authority blueprint 并触发执行；layer `L3` | Depends: ZS1-118 | Owner scope: `/sync` 解析、blueprint 单一权威更新与执行派发的实现与本项行为测试 | Owned paths: `src/slash.rs`, `src/slash_actions.rs`, `src/headless.rs`, `src/tui.rs`, `Docs/stage_1_v3_pi_mono_blueprint.md`, `tests/stage1_sync.rs` | Validators: G-CODE；cargo test --locked --test stage1_sync --test slash --test slash_actions | Rollback: 撤回 /sync 命令与本次追加项，保留既有清单项 | Estimate: 解析+幂等追加+触发，含冲突与去重 | Estimated LOC: 700
+- [x] **ZS1-140** — TUI 顶部双排 tab 的交互式增/减/调换顺序（一层 project + 二层 sub-tab）+重命名/每项目风格；layer `L3` | Depends: ZS1-121 | Owner scope: 双排 tab 的交互、顺序与持久化 owner | Owned paths: `src/tui.rs`, `src/project_workspace.rs`, `src/layout.rs`, `tests/tui_project_workspace.rs`, `tools/tui_project_workspace_smoke.py` | Validators: G-CODE、G-HOST；cargo test --locked --test tui_project_workspace --test layout_persistence | Rollback: 撤回 tab 操作，恢复既有项目/布局，不删会话 | Estimate: 一层 Ctrl-B/F、二层 Alt-,/. 调顺序；键盘+鼠标 增删 | Estimated LOC: 1600
+- [x] **ZS1-141** — 一层 tab 增加工作文件夹支持本地与 SSH 远端；layer `L3` | Depends: ZS1-140 | Owner scope: 目录选择与远端只读探测 owner | Owned paths: `src/directory_picker.rs`, `src/tui.rs`, `src/project_workspace.rs`, `tests/tui_directory_picker.rs`, `tools/tui_project_workspace_smoke.py` | Validators: G-CODE、G-HOST；cargo test --locked --test tui_directory_picker --test tui_project_workspace | Rollback: 撤回远端路径，保留本地选择 | Estimate: 本地 + ssh config 别名 + 显式 host/user/port/key 两种方式 | Estimated LOC: 1600
+- [x] **ZS1-142** — TUI 第二层 tab：每项目内嵌 worktree tab（默认复用一层；加号单击新建、长按双 logo）；layer `L3` | Depends: ZS1-140 | Owner scope: 二层 tab 状态与 worktree 生命周期 owner | Owned paths: `src/tui.rs`, `src/project_workspace.rs`, `src/layout.rs`, `tests/tui_project_workspace.rs`, `tools/tui_project_workspace_smoke.py` | Validators: G-CODE、G-HOST；cargo test --locked --test tui_project_workspace --test layout_persistence | Rollback: 撤回二层 tab 与 worktree 新建，恢复单层项目视图 | Estimate: 二层 tab 增删/调位 + worktree 新建/原地模式 | Estimated LOC: 2000
+- [x] **ZS1-143** — Runtime 3 用例验收：/blueprint /execute /learn /explore /addloop 与 TUI 区域(pm/arch/resources/execution/terminal/gantt)+BentoBox；layer `L5` | Depends: ZS1-117,ZS1-140,ZS1-142,ZS1-144,ZS1-145 | Owner scope: 端到端 runtime 验收与证据 | Owned paths: `tests/stage1_runtime_modes.rs`, `tools/stage1_host_smoke.py`, `Docs/quality/stage1/ZS1-143` | Validators: G-CODE、G-HOST、G-PROD | Rollback: 撤回验收记录，不删功能 | Estimate: 3 用例真实 TUI→headless + 区域与 BentoBox 断言 | Estimated LOC: 600
+- [x] **ZS1-144** — 命令补齐：/execute /explore /addloop 的语义与实现；layer `L3` | Depends: ZS1-119 | Owner scope: 三个命令的解析/动作/路由与测试 | Owned paths: `src/slash.rs`, `src/slash_actions.rs`, `src/headless.rs`, `tests/stage1_sync.rs`, `tests/slash.rs` | Validators: G-CODE；cargo test --locked --test slash --test stage1_sync | Rollback: 撤回三个命令，保留 /loop /plan | Estimate: /execute=蓝图执行派发；/explore=research 循环；/addloop=/loop 别名或独立 | Estimated LOC: 1200
+- [x] **ZS1-145** — TUI 区域补齐：arch 架构区与 execution 执行区（BentoBox 可调）；layer `L3` | Depends: ZS1-140 | Owner scope: 新 pane 的数据与渲染 owner | Owned paths: `src/layout.rs`, `src/tui.rs`, `src/view_model.rs`, `tests/layout.rs`, `tests/tui_bentobox.rs` | Validators: G-CODE；cargo test --locked --test layout --test tui_bentobox | Rollback: 撤回新 pane，恢复原 BentoBox 预设 | Estimate: 新 pane 接入 + 断点/折叠 | Estimated LOC: 1200
+- [x] **ZS1-146** — TUI 双排 tab 行为修正：新开落在上一层、+ 左对齐、- 跟随活动工作区、鼠标拖拽换序、一二层均隔离 workspace/worktree；第二层每个 worktree 可重命名，并有上下箭头夹一个数字调整默认 harness 多开并发数；layer `L3` | Depends: ZS1-140,ZS1-142 | Owner scope: 双排 tab 的打开位置、增删控件与拖拽换序 owner | Owned paths: `src/tui.rs`, `src/project_workspace.rs`, `src/layout.rs`, `tests/tui_project_workspace.rs`, `tools/tui_project_workspace_smoke.py` | Validators: G-CODE、G-HOST；cargo test --locked --test tui_project_workspace --test layout_persistence | Rollback: 撤回 tab 行为/拖拽改动，恢复命令式操作 | Estimate: 上一层层级派生新 tab + 左对齐 + 跟随关闭 + 鼠标拖拽 + 隔离 workspace/worktree + worktree 重命名 + 并发数字 | Estimated LOC: 2000
+- [x] **ZS1-147** — 左上 Conversation+Prompt 成组：可编辑 Goal、prompt 与左栏等宽、常驻讨论；layer `L3` | Depends: ZS1-121 | Owner scope: 左栏会话组布局与 Goal 编辑 owner | Owned paths: `src/tui.rs`, `src/layout.rs`, `src/view_model.rs`, `tests/tui_bentobox.rs`, `tests/layout.rs` | Validators: G-CODE；cargo test --locked --test layout --test tui_bentobox | Rollback: 撤回左栏编组，恢复原预设 | Estimate: 会话+输入合并为左栏单元，prompt 等宽，Goal 可改 | Estimated LOC: 1500
+- [x] **ZS1-148** — 左下 arch+Prompt 成组：arch 为 master session 会话，可执行 bash/steering；layer `L3` | Depends: ZS1-147,ZS1-117 | Owner scope: master-session 会话单元与 bash/steering owner | Owned paths: `src/tui.rs`, `src/layout.rs`, `src/tool_runtime.rs`, `src/headless.rs`, `tests/tui_bentobox.rs`, `tests/tui_interaction.rs` | Validators: G-CODE、G-HOST；cargo test --locked --test tui_interaction --test tui_bentobox | Rollback: 撤回 arch 会话与 bash/steering，保留普通 pane | Estimate: arch 作为 master session，可发 bash 命令与 steering | Estimated LOC: 2200
+- [x] **ZS1-149** — 资源池精简监控：htop/nvidia-smi 风格、5s 刷新、彩色、进程同类合并、含 context/lsp/mcp；layer `L3` | Depends: ZS1-091 | Owner scope: 资源采样与渲染 owner | Owned paths: `src/resources.rs`, `src/tui.rs`, `src/view_model.rs`, `tests/resources.rs`, `tests/tui_bentobox.rs` | Validators: G-CODE；cargo test --locked --test resources --test tui_bentobox | Rollback: 撤回新采样与渲染，恢复原资源快照 | Estimate: CPU/内存/GPU/网络+分类计数+context/lsp/mcp，5s 周期 | Estimated LOC: 2600
+- [x] **ZS1-150** — Goal 并入 Gantt；Gantt 以红黄绿渲染三态；layer `L3` | Depends: ZS1-091 | Owner scope: Gantt 投影与配色 owner | Owned paths: `src/tui.rs`, `src/view_model.rs`, `src/layout.rs`, `tests/tui_bentobox.rs`, `tests/layout.rs` | Validators: G-CODE；cargo test --locked --test tui_bentobox --test layout | Rollback: 撤回配色与 Goal 合并，恢复原 Gantt/Goal | Estimate: [ ][_][x] → 柔和红黄绿；Plan 信息并入 Gantt | Estimated LOC: 900
+- [x] **ZS1-151** — 右下 Execution 区域改为内嵌终端；layer `L3` | Depends: ZS1-130,ZS1-129 | Owner scope: 内嵌 PTY 终端 owner | Owned paths: `src/tui.rs`, `src/layout.rs`, `src/tool_runtime.rs`, `tests/tui_bentobox.rs`, `tools/tui_user_shell_smoke.py` | Validators: G-CODE、G-HOST；cargo test --locked --test tui_bentobox；python3 tools/tui_user_shell_smoke.py --binary target/release/zenpi | Rollback: 撤回内嵌终端，恢复 Execution 只读投影 | Estimate: Execution pane 承载真实 PTY 终端 | Estimated LOC: 2000
+- [x] **ZS1-152** — 区域级 model 与并发语义：讨论区/arch 区各自可选模型且单并发，worker 并发=项目定义数；layer `L3` | Depends: ZS1-147,ZS1-148 | Owner scope: 区域模型选择与并发配额 owner | Owned paths: `src/tui.rs`, `src/config.rs`, `src/core.rs`, `src/view_model.rs`, `tests/tui_interaction.rs`, `tests/config.rs` | Validators: G-CODE；cargo test --locked --test tui_interaction --test config | Rollback: 撤回区域级配置，恢复全局 model | Estimate: 讨论=单并发、arch=单并发、worker=项目定义数；每区可独立选模型 | Estimated LOC: 1800
+- [x] **ZS1-153** — 顶部 6 行信息头：左上竖排 ZENPI logo；右侧一层 workspaces（` zenpi [-] ｜ name [-] ｜ … ｜ [+]`，名字=文件夹名，≤20 字符，自动换行最多 3 行，过多则按宽度均分截断）与二层 Worktrees（`└ Worktrees: name ↑N↓ [-] ｜ … ｜ [+]`，默认名=当前分支或 main，可编辑）；移除含糊的 Ready/model/token 状态行；layer `L3` | Depends: ZS1-146 | Owner scope: 头部信息区布局、命名与渲染 owner | Owned paths: `src/tui.rs`, `src/layout.rs`, `src/view_model.rs`, `tests/tui_bentobox.rs`, `tests/tui_project_workspace.rs` | Validators: G-CODE；cargo test --locked --test tui_bentobox --test tui_project_workspace | Rollback: 撤回头部重排，恢复两行 tab+状态行 | Estimate: 6 行 header、双层换行与均分、命名对齐文件夹/分支 | Estimated LOC: 2200
+- [x] **ZS1-154** — 资源区 htop/nvidia-smi 化：缺 htop/nvidia-smi 时启动请求权限自动安装并抽取；彩色利用率条；修复 CPU/GPU 不显示；大小写美观；layer `L3` | Depends: ZS1-149 | Owner scope: 外部监控工具与资源渲染 owner | Owned paths: `src/resources.rs`, `src/tui.rs`, `tools/install_monitors.sh`, `tests/resources.rs` | Validators: G-CODE；cargo test --locked --test resources | Rollback: 撤回外部工具依赖，恢复纯内建采样 | Estimate: 安装/探测 htop+nvidia-smi，彩色 CPU/GPU/内存/网络 | Estimated LOC: 2200
+- [x] **ZS1-155** — 右下 Shell（替换 Execution）：默认对齐当前项目 workspace/worktree 的交互式 shell；layer `L3` | Depends: ZS1-151 | Owner scope: 内嵌 shell 生命周期 owner | Owned paths: `src/tui.rs`, `src/layout.rs`, `src/tool_runtime.rs`, `tests/tui_bentobox.rs` | Validators: G-CODE、G-HOST；cargo test --locked --test tui_bentobox | Rollback: 撤回 shell 改造，恢复只读投影 | Estimate: pane 更名 Shell 并默认起交互 shell | Estimated LOC: 1600
+- [x] **ZS1-156** — 左上 Conversation 与左下 Arch 各自独立 agent runtime session 与独立 model、独立 Prompt：两个逻辑会话同时打开，绝对独立；layer `L5` | Depends: ZS1-147,ZS1-148,ZS1-152 | Owner scope: 双独立会话 owner 与输入端口 owner | Owned paths: `src/tui.rs`, `src/core.rs`, `src/project_workspace.rs`, `src/view_model.rs`, `tests/tui_interaction.rs`, `tests/config.rs` | Validators: G-CODE、G-HOST；cargo test --locked --test tui_interaction --test config | Rollback: 撤回双会话，恢复单会话共享 | Estimate: 两个 runtime session 与各自 model/输入/审批 | Estimated LOC: 3000
+- [x] **ZS1-157** — 退出重进持久化：进程中断/重启只影响一层 [+] 的默认 workspaces 添加逻辑，不丢失既有 workspaces/worktrees 及其顺序/命名/并发；layer `L3` | Depends: ZS1-146,ZS1-153 | Owner scope: 项目/子 tab 持久化与恢复 owner | Owned paths: `src/project_workspace.rs`, `src/tui.rs`, `src/session.rs`, `tests/tui_project_workspace.rs`, `tests/session_recovery.rs` | Validators: G-CODE；cargo test --locked --test tui_project_workspace --test session_recovery | Rollback: 撤回持久化扩展，保留内存态 | Estimate: workspaces/worktrees 顺序/命名/并发持久化与重启恢复 | Estimated LOC: 1400
+- [x] **ZS1-158** — 局域网资源网络感知：Resources 分区（本机/网关/各组主机/存储）+ 点进明细；无凭据时最大化感知（ARP/ICMP/端口指纹/mDNS/SSH banner），有凭据时用本地 secrets 抽取 CPU/内存/磁盘/GPU/服务；C 段扫描有界、只读、凭据不落库不打日志；layer `L3` | Depends: ZS1-149 | Owner scope: 局域网发现、凭据探测与渲染 owner | Owned paths: `src/resources.rs`, `src/tui.rs`, `src/net_probe.rs`, `tools/net_probe.sh`, `tests/net_probe.rs` | Validators: G-CODE；cargo test --locked --test resources --test net_probe | Rollback: 撤回网络探测，恢复本机资源快照 | Estimate: 分区+明细、无凭据指纹、凭据抽取资源表 | Estimated LOC: 3200
+- [x] **ZS1-163** — Resources 网络分区块与点进明细：资源区先划分为「本机 / 网关 / 各组主机（mac / linux / 存储 / 其它）/ 存储」等可折叠块，每块只给汇总计数与最高层信息；键盘（Enter/方向键/Esc）与鼠标点击块进入该块明细表并返回；明细列含 IP、MAC、厂商、主机名/OS、开放端口/服务指纹，凭据可用时追加 CPU/内存/磁盘/GPU 列；layer `L3` | Depends: ZS1-158 | Owner scope: 区块投影、焦点导航与明细表渲染 owner | Owned paths: `src/resources.rs`, `src/tui.rs`, `src/layout.rs`, `src/view_model.rs`, `tests/net_probe.rs`, `tests/resources.rs`, `tests/tui_bentobox.rs` | Validators: G-CODE；cargo test --locked --test net_probe --test resources --test tui_bentobox | Rollback: 撤回分区块与明细导航，恢复 ZS1-158 的平铺列表 | Estimate: 块化渲染+块内焦点/返回+明细表（键盘+鼠标） | Estimated LOC: 1800
+- [x] **ZS1-164** — 无凭据局域网最大化感知与真实拓扑验收：无任何用户名/密码时在有界只读 /24 内做 ARP 表、ICMP 探测、常用端口指纹、mDNS/NetBIOS 名称、SSH banner 版本、HTTP title/Server 头与设备类型归类（thor / mac / linux / nas / printer / router / IoT / GPU 节点）；存在本地 secrets 时经 SSH 只读抽取 CPU 型号与核数、内存、磁盘总量/可用、GPU（nvidia-smi / rocm-smi / lspci）、发行版与内核、监听服务；凭据仅从本地 secrets 读取，不落库、不打日志、不外传；以真实 10.20.30.0/24 拓扑为验收夹具，须给出与 10.20.30.38 同组机器的列表、全段清单（1 thor + 若干 mac + 若干 linux + 2 NAS）及 CPU/内存/磁盘/GPU 表；layer `L3` | Depends: ZS1-158 | Owner scope: 无凭据指纹、凭据抽取与真实拓扑验收 owner | Owned paths: `src/net_probe.rs`, `src/resources.rs`, `src/tui.rs`, `tools/net_probe.sh`, `tests/net_probe.rs` | Validators: G-CODE；cargo test --locked --test net_probe | Rollback: 撤回指纹与凭据抽取，保留 ARP/ICMP 基本发现 | Estimate: 无凭据指纹+本地 secrets 抽取+真实拓扑验收 | Estimated LOC: 2200
+- [x] **ZS1-165** — 双 Prompt 绝对独立与独立斜杠命令：左上 Conversation+Prompt 与左下 arch+Prompt 的输入缓冲、光标、编辑历史、`/` 命令补全与执行、提交目标各自独立；任一侧输入与 `/` 展开互不串写、互不抢焦点，可同时各自进入命令态；layer `L3` | Depends: ZS1-156,ZS1-147,ZS1-148 | Owner scope: 双输入端口与各自斜杠命令路由 owner | Owned paths: `src/tui.rs`, `src/slash.rs`, `src/slash_actions.rs`, `src/view_model.rs`, `tests/tui_interaction.rs`, `tests/slash.rs` | Validators: G-CODE；cargo test --locked --test tui_interaction --test slash | Rollback: 撤回双输入独立化，恢复共享输入缓冲 | Estimate: 双缓冲/双历史/双命令路由隔离 | Estimated LOC: 1200
+- [x] **ZS1-166** — Shell 面板绑定当前工作区真实交互式 shell：右下 Shell 起真实 `$SHELL` 登录交互式 PTY（非只读投影），cwd 恒等于当前一层 workspace / 二层 worktree 工作目录；切换工作区或 worktree 时同步到新目录，用户可直接敲任何命令；layer `L3` | Depends: ZS1-155,ZS1-157 | Owner scope: 内嵌 shell 生命周期与 cwd 绑定 owner | Owned paths: `src/tui.rs`, `src/layout.rs`, `src/tool_runtime.rs`, `tests/tui_bentobox.rs` | Validators: G-CODE、G-HOST；cargo test --locked --test tui_bentobox | Rollback: 撤回 cwd 绑定，恢复默认 shell | Estimate: 真实 PTY + workspace/worktree cwd 同步 | Estimated LOC: 1400
+- [x] **ZS1-167** — 二层并发上下控件加宽可见：每个 worktree 的 `↑ N ↓` 并发控件把上下点击热区加宽为独立按钮块（不再挤在单列），视觉上明确可点，鼠标与键盘都能调整该 worktree 最大并发数，当前值醒目；layer `L3` | Depends: ZS1-146,ZS1-152 | Owner scope: 二层并发控件渲染与命中区 owner | Owned paths: `src/tui.rs`, `src/layout.rs`, `tests/tui_bentobox.rs`, `tests/tui_project_workspace.rs` | Validators: G-CODE；cargo test --locked --test tui_bentobox --test tui_project_workspace | Rollback: 撤回加宽，恢复单列上下箭头 | Estimate: 加宽命中区+独立按钮块+值可视化 | Estimated LOC: 600
+- [x] **ZS1-168** — 二层 `[+]` 新增 worktree（可命名 + 失败可见）：点击二层 worktree 条的 `[+]` 在 active project 内新建隔离 git worktree 子 tab 并切换过去；默认名 `wt-N`；非 git 仓库、重名分支、超限等失败必须在会话可见区给出原因，而不是静默无效果；layer `L3` | Depends: ZS1-146 | Owner scope: 二层新增 worktree 的创建与错误可见性 owner | Owned paths: `src/tui.rs`, `src/project_workspace.rs`, `tests/tui_project_workspace.rs` | Validators: G-CODE；cargo test --locked --test tui_project_workspace | Rollback: 撤回 `[+]` 新增逻辑与错误提示 | Estimate: 创建+切换+失败可见 | Estimated LOC: 700
+- [x] **ZS1-169** — 一二层分页卡右键重命名：对一层 workspace 卡或二层 worktree 卡右键弹出内联重命名输入，沿用既有校验（非空、去重、长度上限），Enter 提交、Esc 取消；鼠标右键与键盘入口行为一致；layer `L3` | Depends: ZS1-146,ZS1-157 | Owner scope: 分页卡重命名交互 owner | Owned paths: `src/tui.rs`, `tests/tui_project_workspace.rs`, `tests/tui_bentobox.rs` | Validators: G-CODE；cargo test --locked --test tui_project_workspace --test tui_bentobox | Rollback: 撤回右键重命名，保留现有 `/project rename`、`/worktree rename` | Estimate: 右键->内联编辑->校验提交 | Estimated LOC: 900
+- [x] **ZS1-170** — 一层 `[+]` 新增 workspace 聚焦目录选择器 + 前缀跳转：点击一层 `[+]` 打开目录选择框后键盘焦点自动进入其中；键入字母前缀即时过滤/跳转到匹配目录（大小写不敏感）；Enter/右箭头进入所选目录，Esc 取消；layer `L3` | Depends: ZS1-146 | Owner scope: 新增 workspace 的目录选择体验 owner | Owned paths: `src/tui.rs`, `src/directory_picker.rs`, `tests/tui_directory_picker.rs` | Validators: G-CODE；cargo test --locked --test tui_directory_picker | Rollback: 撤回前缀跳转与自动聚焦 | Estimate: 自动聚焦+类型前缀过滤/跳转 | Estimated LOC: 800
+- [x] **ZS1-171** — Shell 原生按键对齐（ZS1-166 修复）：Shell 面板聚焦后，逐字符键入（含 ASCII 普通字符）必须直接进入 PTY，不得被普通粘贴缓冲改道进 prompt；任意按键经 PTY 执行命令并在面板回显结果；layer `L3` | Depends: ZS1-166 | Owner scope: Shell 输入路由与按键对齐 owner | Owned paths: `src/tui.rs`, `tests/tui_interaction.rs` | Validators: G-CODE、G-HOST；cargo test --locked --test tui_interaction | Rollback: 撤回 shell 按键前置转发 | Estimate: 按键在粘贴缓冲前转发+回显验证 | Estimated LOC: 500
+- [x] **ZS1-172** — 输入法（IME）热区锁定到聚焦输入框：终端光标只有当前聚焦的输入框可以设置——Conversation prompt、Arch prompt、Shell 面板各自在聚焦时才 `set_cursor_position`，未聚焦者不得覆盖，从而让中文输入法的预编辑/候选窗锚定在正在输入的区域而不是最后渲染的那一个；目录选择框与分页改名浮层同样拥有光标；layer `L3` | Depends: ZS1-165,ZS1-166,ZS1-170,ZS1-171 | Owner scope: 终端光标所有权与 IME 锚点 owner | Owned paths: `src/tui.rs`, `src/directory_picker.rs`, `src/pty_shell.rs`, `tests/tui_interaction.rs` | Validators: G-CODE；cargo test --locked --test tui_interaction --test tui_directory_picker | Rollback: 撤回光标门控，恢复最后渲染者设置光标 | Estimate: 单一光标所有者 + Shell/选择框/改名浮层锚点 | Estimated LOC: 600
+- [x] **ZS1-173** — Shell 终端屏幕模型与 CJK 编辑正确性：Shell 面板不再用“剥离转义 + 删字符”的伪渲染，改为有界字符网格 + 最小 VT 解析：`\b` 只左移一格（不删字符，宽字符由 shell 连发两个 `\b` 跨越）、支持 CSI 光标移动（A/B/C/D/E/F/G/H/f/d）与擦除（J/K，0/1/2）、CJK 宽字符占两格且光标按显示列计数；修复“删中文每次都多删/重影”；layer `L3` | Depends: ZS1-166,ZS1-172 | Owner scope: Shell 屏幕网格与 VT 解析 owner | Owned paths: `src/pty_shell.rs`, `src/tui.rs`, `tests/tui_interaction.rs` | Validators: G-CODE、G-HOST；cargo test --locked --lib pty_shell --test tui_interaction | Rollback: 撤回网格模型，恢复文本快照 | Estimate: 网格+VT 光标/擦除+宽字符 | Estimated LOC: 1200
+- [x] **ZS1-159** — Headless stdio runtime：稳定的 stdin/stdout JSONL 协议、session 持久化与 context 维护（恢复/压缩/预算）；可作为被远程宿主拉起的无界面 agent；layer `L3` | Depends: ZS1-117 | Owner scope: headless 协议/session/context owner | Owned paths: `src/headless.rs`, `src/protocol.rs`, `src/session.rs`, `src/context.rs`, `tests/headless_protocol.rs`, `tests/session_recovery.rs` | Validators: G-CODE；cargo test --locked --test headless_protocol --test session_recovery | Rollback: 撤回 stdio 强化，保留既有 JSONL | Estimate: stdio 稳定性、session/context 维护、远程可托管 | Estimated LOC: 2200
+- [x] **ZS1-160** — 局域网 headless 集群 + 本机 control plane：把 LAN 上其他机器的 CPU/内存当宿主，按凭据/容量把 headless worker 派到远端并回收；本机做调度/聚合；只读探测 + 显式授权；layer `L5` | Depends: ZS1-158,ZS1-159 | Owner scope: 集群调度与远端生命周期 owner | Owned paths: `src/net_probe.rs`, `src/cluster.rs`, `src/tui.rs`, `tools/cluster_dispatch.sh`, `tests/cluster.rs` | Validators: G-CODE、G-HOST；cargo test --locked --test cluster --test net_probe | Rollback: 撤回远端派发，恢复纯本机 | Estimate: 远端宿主发现/容量/派发/回收 + 本机控制面 | Estimated LOC: 3600
+- [x] **ZS1-161** — 统一资源与信息总线：CPU/内存/GPU/网络 + 局域网集群 + agent 余额/budget + 本机 devport 抢占/租约，统一进 Resources 分区与对外投影；layer `L3` | Depends: ZS1-149,ZS1-158,ZS1-160 | Owner scope: 资源/预算/端口信息 owner | Owned paths: `src/resources.rs`, `src/cluster.rs`, `src/tui.rs`, `src/view_model.rs`, `tests/resources.rs`, `tests/cluster.rs` | Validators: G-CODE；cargo test --locked --test resources --test cluster | Rollback: 撤回信息总线，保留各项独立 | Estimate: budget/devport/cluster 打通到统一快照 | Estimated LOC: 2600
+- [x] **ZS1-162** — Headless footprint 预算与实测：每 headless 进程 CPU/RSS 上限与逐进程统计，纳入资源门禁；layer `L3` | Depends: ZS1-159 | Owner scope: footprint 采样与门禁 owner | Owned paths: `src/resources.rs`, `src/headless.rs`, `tools/bench_runtime.py`, `tests/resources.rs` | Validators: G-CODE；cargo test --locked --test resources | Rollback: 撤回预算，保留统计 | Estimate: idle/busy RSS·CPU 上限与回归 | Estimated LOC: 1200
+- [x] **ZS1-199** — Master 集成验收与阶段交付；layer `L6` | Depends: ZS1-065,ZS1-091,ZS1-117,ZS1-350,ZS1-128 | Owner scope: 仅整合本阶段证据与最终交付 | Owned paths: `Docs/stage_1_v3_pi_mono_blueprint.md`, `Docs/quality/stage1/acceptance.md`, `Docs/execution/active_requirement.json`, `README.md` | Validators: G-STAGE、G-RUST、G-PROD；所有依赖[x]且逐文件/目录覆盖闭包，零缺失或虚假行为证据 | Rollback: 撤回本阶段接受记录与活动指针切换，不删除用户或worker原始证据 | Estimate: 约1天独立主控复验与交付 | Estimated LOC: 0
 
 ## 6. 各产品项的完成定义
 
@@ -362,6 +407,12 @@ proposed 文件/脚本当前不存在：ZS1-001 创建 validator；产品项创�
 
 正：本地native fixture验证请求和tool/think/text流，切换同兼容family仍能继续。负：签名缺失、结构不合法、unsupported类型、缺终态均返回明确错误；禁止静默丢失工具历史。取消：取消请求并给定终态；重启按未完成operation恢复提示。依赖门禁同ZS1-109。
 
+### ZS1-118 — Provider 开放与官方/第三方供应商对齐
+
+保证 provider 默认开放，对齐 opencode 的供应商集合（models.dev 目录，官方与第三方并存）：主要格式为 OpenAI（Chat Completions 与 Responses）与 Anthropic Messages，并保留既有 Google Generative AI。未编目模型（任何 provider/id）默认继承 wire 能力（text/images/files/tools/structured_output/streaming），不再默认 text-only；未知字段仍可保守。任意的 OpenAI 兼容或 Anthropic 兼容 base_url 无需手写 override 即可使用工具与流式。显式 `model_override` 仍可逐字段收紧或放开，官方目录项的已知能力不被覆盖。未知模型的 context/output 预算仍取保守有限值，不假设无限。
+
+正：未编目模型在 chat/responses/anthropic 三 wire 上默认带 tools 且 stream；官方目录项能力不变。负：显式 `tools=false` 仍拒绝未声明工具调用并失败可见；缺凭据、坏流仍 fail closed。取消/重启：沿用各 adapter 既有边界。对齐范围只要求格式与默认能力，不要求逐一集成 models.dev 的每家 SDK；第三方 OpenAI/Anthropic 兼容端点必须保留可用。
+
 ### ZS1-111 — 工具原始输出 artifact 与增量进度
 
 以现有output cap为内存视图上限；原始stdout/stderr写入host管理的受限临时artifact，记录bytes/hash、display range、truncated/complete、call ID。配额覆盖单文件/总量/TTL/会话清理；完整性只有写盘结束并验证后才成立。提供有界范围读取入口，路径不可逃逸或读取凭据。进度共用canonical事件，terminal后关闭updates。
@@ -408,7 +459,7 @@ search_text保持literal默认；新增显式regex、glob过滤、gitignore选�
 
 ZS1-199 只能在源文件、目标owner文件、每个源/目标目录及全部产品项分别完成后接受。主控先检查除 ZS1-199 自身以外清单零 `[ ]` / `[_]`、唯一活动requirement、双树manifest/index一致、每个产品判据在已集成revision上有真实证据。上述复验通过后，主控将 ZS1-199 一次提升到 `[x]`，再确认全清单零 `[ ]` / `[_]`。结构通过、完整阅读、单元测试、集成测试、生产入口和实测预算分别记录，不合并成含糊的“1:1完成”。源库不在scope的功能不计入分母，选定功能未通过的项也不能从分母删除。
 
-b3ehive 的审阅件是 `/Users/wangweiyang/Downloads/b3ehive_stage_1_pi_mono_harness_blueprint.md`，负责通用 turn signal、checkpoint、replay、tool evidence、capability lifetime 和验收方法。zenpi 负责具体Rust/HTTP/子进程/PTY实现，保留自身policy与budget。两个DAG只在各自repo闭合；zenpi采用本文件明确的本地协议即可执行，不能把“等待另一份草案通过”伪装为实现完成或无限期阻塞。若将来采用b3ehive已接受的contract版本，记录版本映射并复验，不直接复制其状态。
+b3ehive 的审阅件是 `/Users/mac/Downloads/b3ehive_stage_1_pi_mono_harness_blueprint.md`，负责通用 turn signal、checkpoint、replay、tool evidence、capability lifetime 和验收方法。zenpi 负责具体Rust/HTTP/子进程/PTY实现，保留自身policy与budget。两个DAG只在各自repo闭合；zenpi采用本文件明确的本地协议即可执行，不能把“等待另一份草案通过”伪装为实现完成或无限期阻塞。若将来采用b3ehive已接受的contract版本，记录版本映射并复验，不直接复制其状态。
 
 上一阶段只交付蓝图并完成结构检查；本run已经开始执行。所有产品接受仍须真实证据，不继承旧learn的[x]。
 
@@ -420,40 +471,40 @@ b3ehive 的审阅件是 `/Users/wangweiyang/Downloads/b3ehive_stage_1_pi_mono_ha
 
 目录picker至少在终端中可靠可用：键盘/鼠标浏览、路径输入和补全、当前/父目录、确认/Esc取消、无效路径/权限/空目录反馈。native适配可追加，但不能成为缺失时不可用的唯一路径。相同路径激活既有tab；不同路径同basename可区分。切换保存输入草稿、历史滚动、会话及原BentoBox状态；关闭非活动tab不能清空当前会话，最后tab保持可用。运行任务和未决审批归原project，late events不得污染新项目；禁止进程全局chdir造成项目串目录。
 
-Codex交互参考为本机 `/Users/wangweiyang/GitHub/codex`，HEAD `b3b3d262787f4902a7449f17d793241a34d311ad`。逐文件覆盖输入编辑/粘贴、历史检索、排队消息编辑、slash/技能/文件补全、模型/思考等级选择、审批权限、状态/用量/取消、滚动/复制/恢复。源中每个命令均需在ux-reference映射到zenpi行为，区分provider专属服务、调试命令和通用交互；已支持操作必须有真实入口，不能用固定成功、空菜单、未接线按钮抵充。
+Codex交互参考为本机 `/Users/mac/GitHub/codex`，HEAD `b3b3d262787f4902a7449f17d793241a34d311ad`。逐文件覆盖输入编辑/粘贴、历史检索、排队消息编辑、slash/技能/文件补全、模型/思考等级选择、审批权限、状态/用量/取消、滚动/复制/恢复。源中每个命令均需在ux-reference映射到zenpi行为，区分provider专属服务、调试命令和通用交互；已支持操作必须有真实入口，不能用固定成功、空菜单、未接线按钮抵充。
 
 ### Codex参考文件，独立manifest与逐项状态
 
 | Item | 源文件 | Bytes | SHA256 |
 |---|---|---:|---|
-| ZS1-300 | [codex-rs/tui/src/bottom_pane/chat_composer.rs](/Users/wangweiyang/GitHub/codex/codex-rs/tui/src/bottom_pane/chat_composer.rs) | 374943 | `234189c66f50c8654ef72e86ad5463eea5dd1e0c09c98f8d64c898449161b6da` |
-| ZS1-301 | [codex-rs/tui/src/bottom_pane/textarea.rs](/Users/wangweiyang/GitHub/codex/codex-rs/tui/src/bottom_pane/textarea.rs) | 91601 | `8cb5241c9e818210bfff63975e703f45a25a3da91bdb395667893903f7cb4b45` |
-| ZS1-302 | [codex-rs/tui/src/bottom_pane/paste_burst.rs](/Users/wangweiyang/GitHub/codex/codex-rs/tui/src/bottom_pane/paste_burst.rs) | 24594 | `c80558dfd3cbde437f2fec9a855b01a3180542a53bb135dc92ce7c81299f1ee7` |
-| ZS1-303 | [codex-rs/tui/src/bottom_pane/approval_overlay.rs](/Users/wangweiyang/GitHub/codex/codex-rs/tui/src/bottom_pane/approval_overlay.rs) | 57262 | `c924923b402b198f8f77b249f0d37892896c0b84002c0f6e48330917da80cecc` |
-| ZS1-304 | [codex-rs/tui/src/bottom_pane/pending_thread_approvals.rs](/Users/wangweiyang/GitHub/codex/codex-rs/tui/src/bottom_pane/pending_thread_approvals.rs) | 4105 | `a401d7c6ba3051fcf2c20152a9e86a3f4f8751a87470cbc7f518001326618a2f` |
-| ZS1-305 | [codex-rs/tui/src/bottom_pane/mod.rs](/Users/wangweiyang/GitHub/codex/codex-rs/tui/src/bottom_pane/mod.rs) | 72998 | `97af02eed39dbfdf69d1ec3e14dc13b9a91f4b33f5e4b985cc1f2cbae4105823` |
-| ZS1-306 | [codex-rs/tui/src/slash_command.rs](/Users/wangweiyang/GitHub/codex/codex-rs/tui/src/slash_command.rs) | 8020 | `9e53ca5bff5a5e7b86aa97731da985082db5d130c453e2d363edb9c5758ebc5a` |
-| ZS1-307 | [codex-rs/tui/src/file_search.rs](/Users/wangweiyang/GitHub/codex/codex-rs/tui/src/file_search.rs) | 4009 | `7aaa33ac7fd28cbe5fa3405cd3490b30e614272122bb572c9c352acc418b71d9` |
-| ZS1-308 | [codex-rs/tui/src/key_hint.rs](/Users/wangweiyang/GitHub/codex/codex-rs/tui/src/key_hint.rs) | 3306 | `07f34aab630b2658560d2d4e73719481ec8638e33eb38401d7a23643689f13c8` |
-| ZS1-309 | [codex-rs/tui/src/status_indicator_widget.rs](/Users/wangweiyang/GitHub/codex/codex-rs/tui/src/status_indicator_widget.rs) | 15810 | `e35e3efbd18784b55343366b2001bda08dfc1543f7e4a88700a715562d519cc5` |
+| ZS1-300 | [codex-rs/tui/src/bottom_pane/chat_composer.rs](/Users/mac/GitHub/codex/codex-rs/tui/src/bottom_pane/chat_composer.rs) | 374943 | `234189c66f50c8654ef72e86ad5463eea5dd1e0c09c98f8d64c898449161b6da` |
+| ZS1-301 | [codex-rs/tui/src/bottom_pane/textarea.rs](/Users/mac/GitHub/codex/codex-rs/tui/src/bottom_pane/textarea.rs) | 91601 | `8cb5241c9e818210bfff63975e703f45a25a3da91bdb395667893903f7cb4b45` |
+| ZS1-302 | [codex-rs/tui/src/bottom_pane/paste_burst.rs](/Users/mac/GitHub/codex/codex-rs/tui/src/bottom_pane/paste_burst.rs) | 24594 | `c80558dfd3cbde437f2fec9a855b01a3180542a53bb135dc92ce7c81299f1ee7` |
+| ZS1-303 | [codex-rs/tui/src/bottom_pane/approval_overlay.rs](/Users/mac/GitHub/codex/codex-rs/tui/src/bottom_pane/approval_overlay.rs) | 57262 | `c924923b402b198f8f77b249f0d37892896c0b84002c0f6e48330917da80cecc` |
+| ZS1-304 | [codex-rs/tui/src/bottom_pane/pending_thread_approvals.rs](/Users/mac/GitHub/codex/codex-rs/tui/src/bottom_pane/pending_thread_approvals.rs) | 4105 | `a401d7c6ba3051fcf2c20152a9e86a3f4f8751a87470cbc7f518001326618a2f` |
+| ZS1-305 | [codex-rs/tui/src/bottom_pane/mod.rs](/Users/mac/GitHub/codex/codex-rs/tui/src/bottom_pane/mod.rs) | 72998 | `97af02eed39dbfdf69d1ec3e14dc13b9a91f4b33f5e4b985cc1f2cbae4105823` |
+| ZS1-306 | [codex-rs/tui/src/slash_command.rs](/Users/mac/GitHub/codex/codex-rs/tui/src/slash_command.rs) | 8020 | `9e53ca5bff5a5e7b86aa97731da985082db5d130c453e2d363edb9c5758ebc5a` |
+| ZS1-307 | [codex-rs/tui/src/file_search.rs](/Users/mac/GitHub/codex/codex-rs/tui/src/file_search.rs) | 4009 | `7aaa33ac7fd28cbe5fa3405cd3490b30e614272122bb572c9c352acc418b71d9` |
+| ZS1-308 | [codex-rs/tui/src/key_hint.rs](/Users/mac/GitHub/codex/codex-rs/tui/src/key_hint.rs) | 3306 | `07f34aab630b2658560d2d4e73719481ec8638e33eb38401d7a23643689f13c8` |
+| ZS1-309 | [codex-rs/tui/src/status_indicator_widget.rs](/Users/mac/GitHub/codex/codex-rs/tui/src/status_indicator_widget.rs) | 15810 | `e35e3efbd18784b55343366b2001bda08dfc1543f7e4a88700a715562d519cc5` |
 
 参考manifest为 `Docs/learn/stage1_pi_mono/references/codex/source_manifest.tsv`，同根file_learn_index/folder_learn_index；每文件唯一 `Docs/learn/stage1_pi_mono/references/codex/files/<source_path>_learn.md`，每目录 `Docs/learn/stage1_pi_mono/references/codex/<dir>/current_folder_learn.md`。包括所有祖先/root；超256KiB按连续chunks逐个读后合成一文件。这棵树不混入pi source_id或其计数。
 
 - [x] **ZS1-300** — 逐文件复核Codex codex-rs/tui/src/bottom_pane/chat_composer.rs；layer `L1` | Depends: ZS1-001 | Owner scope: 本文件完整交互语义与zenpi映射 | Owned paths: `Docs/learn/stage1_pi_mono/references/codex/files/codex-rs/tui/src/bottom_pane/chat_composer.rs_learn.md` | Validators: G-FILE；hash/chunks/源测试/操作映射 | Rollback: 仅撤回本文件报告 | Estimate: 374943 B逐文件读，超256KiB分块 | Estimated LOC: 0
-- [ ] **ZS1-301** — 逐文件复核Codex codex-rs/tui/src/bottom_pane/textarea.rs；layer `L1` | Depends: ZS1-001 | Owner scope: 本文件完整交互语义与zenpi映射 | Owned paths: `Docs/learn/stage1_pi_mono/references/codex/files/codex-rs/tui/src/bottom_pane/textarea.rs_learn.md` | Validators: G-FILE；hash/chunks/源测试/操作映射 | Rollback: 仅撤回本文件报告 | Estimate: 91601 B逐文件读，超256KiB分块 | Estimated LOC: 0
-- [ ] **ZS1-302** — 逐文件复核Codex codex-rs/tui/src/bottom_pane/paste_burst.rs；layer `L1` | Depends: ZS1-001 | Owner scope: 本文件完整交互语义与zenpi映射 | Owned paths: `Docs/learn/stage1_pi_mono/references/codex/files/codex-rs/tui/src/bottom_pane/paste_burst.rs_learn.md` | Validators: G-FILE；hash/chunks/源测试/操作映射 | Rollback: 仅撤回本文件报告 | Estimate: 24594 B逐文件读，超256KiB分块 | Estimated LOC: 0
-- [ ] **ZS1-303** — 逐文件复核Codex codex-rs/tui/src/bottom_pane/approval_overlay.rs；layer `L1` | Depends: ZS1-001 | Owner scope: 本文件完整交互语义与zenpi映射 | Owned paths: `Docs/learn/stage1_pi_mono/references/codex/files/codex-rs/tui/src/bottom_pane/approval_overlay.rs_learn.md` | Validators: G-FILE；hash/chunks/源测试/操作映射 | Rollback: 仅撤回本文件报告 | Estimate: 57262 B逐文件读，超256KiB分块 | Estimated LOC: 0
+- [x] **ZS1-301** — 逐文件复核Codex codex-rs/tui/src/bottom_pane/textarea.rs；layer `L1` | Depends: ZS1-001 | Owner scope: 本文件完整交互语义与zenpi映射 | Owned paths: `Docs/learn/stage1_pi_mono/references/codex/files/codex-rs/tui/src/bottom_pane/textarea.rs_learn.md` | Validators: G-FILE；hash/chunks/源测试/操作映射 | Rollback: 仅撤回本文件报告 | Estimate: 91601 B逐文件读，超256KiB分块 | Estimated LOC: 0
+- [x] **ZS1-302** — 逐文件复核Codex codex-rs/tui/src/bottom_pane/paste_burst.rs；layer `L1` | Depends: ZS1-001 | Owner scope: 本文件完整交互语义与zenpi映射 | Owned paths: `Docs/learn/stage1_pi_mono/references/codex/files/codex-rs/tui/src/bottom_pane/paste_burst.rs_learn.md` | Validators: G-FILE；hash/chunks/源测试/操作映射 | Rollback: 仅撤回本文件报告 | Estimate: 24594 B逐文件读，超256KiB分块 | Estimated LOC: 0
+- [x] **ZS1-303** — 逐文件复核Codex codex-rs/tui/src/bottom_pane/approval_overlay.rs；layer `L1` | Depends: ZS1-001 | Owner scope: 本文件完整交互语义与zenpi映射 | Owned paths: `Docs/learn/stage1_pi_mono/references/codex/files/codex-rs/tui/src/bottom_pane/approval_overlay.rs_learn.md` | Validators: G-FILE；hash/chunks/源测试/操作映射 | Rollback: 仅撤回本文件报告 | Estimate: 57262 B逐文件读，超256KiB分块 | Estimated LOC: 0
 - [x] **ZS1-304** — 逐文件复核Codex codex-rs/tui/src/bottom_pane/pending_thread_approvals.rs；layer `L1` | Depends: ZS1-001 | Owner scope: 本文件完整交互语义与zenpi映射 | Owned paths: `Docs/learn/stage1_pi_mono/references/codex/files/codex-rs/tui/src/bottom_pane/pending_thread_approvals.rs_learn.md` | Validators: G-FILE；hash/chunks/源测试/操作映射 | Rollback: 仅撤回本文件报告 | Estimate: 4105 B逐文件读，超256KiB分块 | Estimated LOC: 0
-- [ ] **ZS1-305** — 逐文件复核Codex codex-rs/tui/src/bottom_pane/mod.rs；layer `L1` | Depends: ZS1-001 | Owner scope: 本文件完整交互语义与zenpi映射 | Owned paths: `Docs/learn/stage1_pi_mono/references/codex/files/codex-rs/tui/src/bottom_pane/mod.rs_learn.md` | Validators: G-FILE；hash/chunks/源测试/操作映射 | Rollback: 仅撤回本文件报告 | Estimate: 72998 B逐文件读，超256KiB分块 | Estimated LOC: 0
-- [ ] **ZS1-306** — 逐文件复核Codex codex-rs/tui/src/slash_command.rs；layer `L1` | Depends: ZS1-001 | Owner scope: 本文件完整交互语义与zenpi映射 | Owned paths: `Docs/learn/stage1_pi_mono/references/codex/files/codex-rs/tui/src/slash_command.rs_learn.md` | Validators: G-FILE；hash/chunks/源测试/操作映射 | Rollback: 仅撤回本文件报告 | Estimate: 8020 B逐文件读，超256KiB分块 | Estimated LOC: 0
+- [x] **ZS1-305** — 逐文件复核Codex codex-rs/tui/src/bottom_pane/mod.rs；layer `L1` | Depends: ZS1-001 | Owner scope: 本文件完整交互语义与zenpi映射 | Owned paths: `Docs/learn/stage1_pi_mono/references/codex/files/codex-rs/tui/src/bottom_pane/mod.rs_learn.md` | Validators: G-FILE；hash/chunks/源测试/操作映射 | Rollback: 仅撤回本文件报告 | Estimate: 72998 B逐文件读，超256KiB分块 | Estimated LOC: 0
+- [x] **ZS1-306** — 逐文件复核Codex codex-rs/tui/src/slash_command.rs；layer `L1` | Depends: ZS1-001 | Owner scope: 本文件完整交互语义与zenpi映射 | Owned paths: `Docs/learn/stage1_pi_mono/references/codex/files/codex-rs/tui/src/slash_command.rs_learn.md` | Validators: G-FILE；hash/chunks/源测试/操作映射 | Rollback: 仅撤回本文件报告 | Estimate: 8020 B逐文件读，超256KiB分块 | Estimated LOC: 0
 - [x] **ZS1-307** — 逐文件复核Codex codex-rs/tui/src/file_search.rs；layer `L1` | Depends: ZS1-001 | Owner scope: 本文件完整交互语义与zenpi映射 | Owned paths: `Docs/learn/stage1_pi_mono/references/codex/files/codex-rs/tui/src/file_search.rs_learn.md` | Validators: G-FILE；hash/chunks/源测试/操作映射 | Rollback: 仅撤回本文件报告 | Estimate: 4009 B逐文件读，超256KiB分块 | Estimated LOC: 0
 - [x] **ZS1-308** — 逐文件复核Codex codex-rs/tui/src/key_hint.rs；layer `L1` | Depends: ZS1-001 | Owner scope: 本文件完整交互语义与zenpi映射 | Owned paths: `Docs/learn/stage1_pi_mono/references/codex/files/codex-rs/tui/src/key_hint.rs_learn.md` | Validators: G-FILE；hash/chunks/源测试/操作映射 | Rollback: 仅撤回本文件报告 | Estimate: 3306 B逐文件读，超256KiB分块 | Estimated LOC: 0
 - [x] **ZS1-309** — 逐文件复核Codex codex-rs/tui/src/status_indicator_widget.rs；layer `L1` | Depends: ZS1-001 | Owner scope: 本文件完整交互语义与zenpi映射 | Owned paths: `Docs/learn/stage1_pi_mono/references/codex/files/codex-rs/tui/src/status_indicator_widget.rs_learn.md` | Validators: G-FILE；hash/chunks/源测试/操作映射 | Rollback: 仅撤回本文件报告 | Estimate: 15810 B逐文件读，超256KiB分块 | Estimated LOC: 0
-- [ ] **ZS1-350** — 逐目录整合Codex .；layer `L2` | Depends: ZS1-351 | Owner scope: 冻结子集直属文件与直接子目录 | Owned paths: `Docs/learn/stage1_pi_mono/references/codex/current_folder_learn.md` | Validators: G-DIR；依赖[x]后独立审阅 | Rollback: 只撤回本目录报告 | Estimate: 逐个整合输入/焦点/取消边界 | Estimated LOC: 0
-- [ ] **ZS1-351** — 逐目录整合Codex codex-rs；layer `L2` | Depends: ZS1-352 | Owner scope: 冻结子集直属文件与直接子目录 | Owned paths: `Docs/learn/stage1_pi_mono/references/codex/codex-rs/current_folder_learn.md` | Validators: G-DIR；依赖[x]后独立审阅 | Rollback: 只撤回本目录报告 | Estimate: 逐个整合输入/焦点/取消边界 | Estimated LOC: 0
-- [ ] **ZS1-352** — 逐目录整合Codex codex-rs/tui；layer `L2` | Depends: ZS1-353 | Owner scope: 冻结子集直属文件与直接子目录 | Owned paths: `Docs/learn/stage1_pi_mono/references/codex/codex-rs/tui/current_folder_learn.md` | Validators: G-DIR；依赖[x]后独立审阅 | Rollback: 只撤回本目录报告 | Estimate: 逐个整合输入/焦点/取消边界 | Estimated LOC: 0
-- [ ] **ZS1-353** — 逐目录整合Codex codex-rs/tui/src；layer `L2` | Depends: ZS1-306,ZS1-307,ZS1-308,ZS1-309,ZS1-354 | Owner scope: 冻结子集直属文件与直接子目录 | Owned paths: `Docs/learn/stage1_pi_mono/references/codex/codex-rs/tui/src/current_folder_learn.md` | Validators: G-DIR；依赖[x]后独立审阅 | Rollback: 只撤回本目录报告 | Estimate: 逐个整合输入/焦点/取消边界 | Estimated LOC: 0
-- [ ] **ZS1-354** — 逐目录整合Codex codex-rs/tui/src/bottom_pane；layer `L2` | Depends: ZS1-300,ZS1-301,ZS1-302,ZS1-303,ZS1-304,ZS1-305 | Owner scope: 冻结子集直属文件与直接子目录 | Owned paths: `Docs/learn/stage1_pi_mono/references/codex/codex-rs/tui/src/bottom_pane/current_folder_learn.md` | Validators: G-DIR；依赖[x]后独立审阅 | Rollback: 只撤回本目录报告 | Estimate: 逐个整合输入/焦点/取消边界 | Estimated LOC: 0
+- [x] **ZS1-350** — 逐目录整合Codex .；layer `L2` | Depends: ZS1-351 | Owner scope: 冻结子集直属文件与直接子目录 | Owned paths: `Docs/learn/stage1_pi_mono/references/codex/current_folder_learn.md` | Validators: G-DIR；依赖[x]后独立审阅 | Rollback: 只撤回本目录报告 | Estimate: 逐个整合输入/焦点/取消边界 | Estimated LOC: 0
+- [x] **ZS1-351** — 逐目录整合Codex codex-rs；layer `L2` | Depends: ZS1-352 | Owner scope: 冻结子集直属文件与直接子目录 | Owned paths: `Docs/learn/stage1_pi_mono/references/codex/codex-rs/current_folder_learn.md` | Validators: G-DIR；依赖[x]后独立审阅 | Rollback: 只撤回本目录报告 | Estimate: 逐个整合输入/焦点/取消边界 | Estimated LOC: 0
+- [x] **ZS1-352** — 逐目录整合Codex codex-rs/tui；layer `L2` | Depends: ZS1-353 | Owner scope: 冻结子集直属文件与直接子目录 | Owned paths: `Docs/learn/stage1_pi_mono/references/codex/codex-rs/tui/current_folder_learn.md` | Validators: G-DIR；依赖[x]后独立审阅 | Rollback: 只撤回本目录报告 | Estimate: 逐个整合输入/焦点/取消边界 | Estimated LOC: 0
+- [x] **ZS1-353** — 逐目录整合Codex codex-rs/tui/src；layer `L2` | Depends: ZS1-306,ZS1-307,ZS1-308,ZS1-309,ZS1-354 | Owner scope: 冻结子集直属文件与直接子目录 | Owned paths: `Docs/learn/stage1_pi_mono/references/codex/codex-rs/tui/src/current_folder_learn.md` | Validators: G-DIR；依赖[x]后独立审阅 | Rollback: 只撤回本目录报告 | Estimate: 逐个整合输入/焦点/取消边界 | Estimated LOC: 0
+- [x] **ZS1-354** — 逐目录整合Codex codex-rs/tui/src/bottom_pane；layer `L2` | Depends: ZS1-300,ZS1-301,ZS1-302,ZS1-303,ZS1-304,ZS1-305 | Owner scope: 冻结子集直属文件与直接子目录 | Owned paths: `Docs/learn/stage1_pi_mono/references/codex/codex-rs/tui/src/bottom_pane/current_folder_learn.md` | Validators: G-DIR；依赖[x]后独立审阅 | Rollback: 只撤回本目录报告 | Estimate: 逐个整合输入/焦点/取消边界 | Estimated LOC: 0
 
 ### UX实现项与真实入口验收
 
@@ -465,7 +516,7 @@ ZS1-120完成判据：稳定ID和规范cwd分离显示名；同路径重用、�
 
 ZS1-121完成判据：鼠标点击+立即picker，一次确认同时绑定label/cwd/session/tool root；键盘完成同一路径，Esc不留空tab。真实PTY在两个目录分别写文件，验证绝不串写；关闭/切换不丢草稿或布局。 负例覆盖无效输入、资源上限和权限失败；取消保留旧有效状态，独立进程重启验证持久化或明确未完成。单元测试不能替代真实入口。
 
-- [ ] **ZS1-122** — 输入编辑、历史、粘贴和可编辑排队消息；layer `L3` | Depends: ZS1-101,ZS1-300,ZS1-301,ZS1-302 | Owner scope: 本项真实交互与共享owner | Owned paths: `src/tui.rs`, `src/input_queue.rs`, `tests/tui_composer.rs`, `tools/tui_composer_smoke.py`, `Cargo.toml`, `Cargo.lock`, `tools/tui_project_workspace_smoke.py` | Validators: G-CODE、G-HOST；cargo test --locked --test tui_composer；python3 tools/tui_composer_smoke.py --binary target/release/zenpi；python3 tools/tui_composer_smoke.py --binary target/release/zenpi --large-paste-only | Rollback: 撤回本项差异并恢复有效项目/布局，不删用户会话 | Estimate: 约2–4天，含正负/取消/重启/PTY | Estimated LOC: 4400
+- [x] **ZS1-122** — 输入编辑、历史、粘贴和可编辑排队消息；layer `L3` | Depends: ZS1-101,ZS1-300,ZS1-301,ZS1-302 | Owner scope: 本项真实交互与共享owner | Owned paths: `src/tui.rs`, `src/input_queue.rs`, `tests/tui_composer.rs`, `tools/tui_composer_smoke.py`, `Cargo.toml`, `Cargo.lock`, `tools/tui_project_workspace_smoke.py` | Validators: G-CODE、G-HOST；cargo test --locked --test tui_composer；python3 tools/tui_composer_smoke.py --binary target/release/zenpi；python3 tools/tui_composer_smoke.py --binary target/release/zenpi --large-paste-only | Rollback: 撤回本项差异并恢复有效项目/布局，不删用户会话 | Estimate: 约2–4天，含正负/取消/重启/PTY | Estimated LOC: 4400
 
 ZS1-122完成判据：多行光标/词级移动删除、UTF8宽字、bracketed paste不误提交、历史检索与草稿恢复；运行时队列可查看编辑撤回；输入焦点和快捷键可发现，不吞键或把粘贴当快捷指令。 负例覆盖无效输入、资源上限和权限失败；取消保留旧有效状态，独立进程重启验证持久化或明确未完成。单元测试不能替代真实入口。
 
@@ -508,23 +559,23 @@ ZS1-122完成判据：多行光标/词级移动删除、UTF8宽字、bracketed p
 
 实现复用现有122三个路径src/tui.rs、tests/tui_composer.rs、tools/tui_composer_smoke.py；128总回放另行接入。估算原122及本次增量合计4400行，仍严格小于5000；实际预测超过上限时扩版拆项，不能缩减上述行为。
 
-- [ ] **ZS1-123** — 命令技能文件补全与模型选择；layer `L3` | Depends: ZS1-107,ZS1-113,ZS1-306,ZS1-307,ZS1-084,ZS1-133 | Owner scope: 本项真实交互与共享owner | Owned paths: `src/tui.rs`, `src/slash.rs`, `src/slash_actions.rs`, `src/core.rs`, `tests/tui_command_palette.rs`, `tools/tui_command_palette_smoke.py`, `src/backend.rs`, `src/headless.rs`, `tests/headless_project_workspace.rs`, `tests/stage1_model_registry.rs`, `tests/stage1_reasoning_owner.rs` | Validators: G-CODE、G-HOST；cargo test --locked --test tui_command_palette --test stage1_reasoning_owner --test stage1_model_registry --test headless_project_workspace；python3 tools/tui_command_palette_smoke.py --binary target/release/zenpi | Rollback: 撤回本项差异并恢复有效项目/布局，不删用户会话 | Estimate: 约2–4天，含正负/取消/重启/PTY | Estimated LOC: 2500
+- [x] **ZS1-123** — 命令技能文件补全与模型选择；layer `L3` | Depends: ZS1-107,ZS1-113,ZS1-306,ZS1-307,ZS1-084,ZS1-133 | Owner scope: 本项真实交互与共享owner | Owned paths: `src/tui.rs`, `src/slash.rs`, `src/slash_actions.rs`, `src/core.rs`, `tests/tui_command_palette.rs`, `tools/tui_command_palette_smoke.py`, `src/backend.rs`, `src/headless.rs`, `tests/headless_project_workspace.rs`, `tests/stage1_model_registry.rs`, `tests/stage1_reasoning_owner.rs` | Validators: G-CODE、G-HOST；cargo test --locked --test tui_command_palette --test stage1_reasoning_owner --test stage1_model_registry --test headless_project_workspace；python3 tools/tui_command_palette_smoke.py --binary target/release/zenpi | Rollback: 撤回本项差异并恢复有效项目/布局，不删用户会话 | Estimate: 约2–4天，含正负/取消/重启/PTY | Estimated LOC: 2500
 
 ZS1-123完成判据：slash可筛选菜单、上下/Tab/Enter/Esc和忙闲可用性真实；技能/文件引用保留来源与路径补全，模型/reasoning picker只展示真实能力；错误不丢输入，不使用伪选项。 负例覆盖无效输入、资源上限和权限失败；取消保留旧有效状态，独立进程重启验证持久化或明确未完成。单元测试不能替代真实入口。
 
-- [ ] **ZS1-124** — 审批焦点、权限说明与取消体验；layer `L3` | Depends: ZS1-095,ZS1-070,ZS1-303,ZS1-304,ZS1-305 | Owner scope: 本项真实交互与共享owner | Owned paths: `src/tui.rs`, `src/approval.rs`, `src/core.rs`, `tests/tui_approval_focus.rs`, `tools/tui_approval_smoke.py`, `src/headless.rs` | Validators: G-CODE、G-HOST；cargo test --locked --test tui_approval_focus --test approval_owner；python3 tools/tui_approval_smoke.py --binary target/release/zenpi | Rollback: 撤回本项差异并恢复有效项目/布局，不删用户会话 | Estimate: 约2–4天，含正负/取消/重启/PTY | Estimated LOC: 1900
+- [x] **ZS1-124** — 审批焦点、权限说明与取消体验；layer `L3` | Depends: ZS1-095,ZS1-070,ZS1-303,ZS1-304,ZS1-305 | Owner scope: 本项真实交互与共享owner | Owned paths: `src/tui.rs`, `src/approval.rs`, `src/core.rs`, `tests/tui_approval_focus.rs`, `tools/tui_approval_smoke.py`, `src/headless.rs` | Validators: G-CODE、G-HOST；cargo test --locked --test tui_approval_focus --test approval_owner；python3 tools/tui_approval_smoke.py --binary target/release/zenpi | Rollback: 撤回本项差异并恢复有效项目/布局，不删用户会话 | Estimate: 约2–4天，含正负/取消/重启/PTY | Estimated LOC: 1900
 
 ZS1-124完成判据：审批关联project/call；diff可读且不被fold遮挡，多请求逐一查看；允许/拒绝/取消/超时明确，切项目不能误批其它项目；焦点恢复，审批前无副作用，deny/policy保持有效。 负例覆盖无效输入、资源上限和权限失败；取消保留旧有效状态，独立进程重启验证持久化或明确未完成。单元测试不能替代真实入口。
 
-- [ ] **ZS1-125** — 滚动复制状态与终端恢复；layer `L3` | Depends: ZS1-111,ZS1-096,ZS1-308,ZS1-309 | Owner scope: 本项真实交互与共享owner | Owned paths: `src/tui.rs`, `src/render.rs`, `src/view_model.rs`, `tests/tui_transcript_ux.rs`, `tools/tui_transcript_ux_smoke.py` | Validators: G-CODE、G-HOST；cargo test --locked --test tui_transcript_ux；python3 tools/tui_transcript_ux_smoke.py --binary target/release/zenpi | Rollback: 撤回本项差异并恢复有效项目/布局，不删用户会话 | Estimate: 约2–4天，含正负/取消/重启/PTY | Estimated LOC: 2200
+- [x] **ZS1-125** — 滚动复制状态与终端恢复；layer `L3` | Depends: ZS1-111,ZS1-096,ZS1-308,ZS1-309 | Owner scope: 本项真实交互与共享owner | Owned paths: `src/tui.rs`, `src/render.rs`, `src/view_model.rs`, `tests/tui_transcript_ux.rs`, `tools/tui_transcript_ux_smoke.py` | Validators: G-CODE、G-HOST；cargo test --locked --test tui_transcript_ux；python3 tools/tui_transcript_ux_smoke.py --binary target/release/zenpi | Rollback: 撤回本项差异并恢复有效项目/布局，不删用户会话 | Estimate: 约2–4天，含正负/取消/重启/PTY | Estimated LOC: 2200
 
 ZS1-125完成判据：历史scroll与跟随最新可切换、回到底部可发现；复制答复/选定块，错误和工具细节可展开，context/token/模型/cwd可见；长输出/窄屏/resize无重叠，退出/错误/中断恢复terminal，不改BentoBox结构。 负例覆盖无效输入、资源上限和权限失败；取消保留旧有效状态，独立进程重启验证持久化或明确未完成。单元测试不能替代真实入口。
 
-- [ ] **ZS1-126** — headless与TUI共享项目上下文；layer `L3` | Depends: ZS1-120,ZS1-084,ZS1-072,ZS1-070 | Owner scope: 本项真实交互与共享owner | Owned paths: `src/project_workspace.rs`, `src/protocol.rs`, `src/headless.rs`, `src/core.rs`, `tests/headless_project_workspace.rs`, `src/tui.rs`, `tests/tui_project_workspace.rs`, `tools/tui_project_workspace_smoke.py` | Validators: G-CODE、G-HOST；cargo test --locked --test headless_project_workspace --test headless_protocol | Rollback: 撤回本项差异并恢复有效项目/布局，不删用户会话 | Estimate: 约2–4天，含正负/取消/重启/PTY | Estimated LOC: 1800
+- [x] **ZS1-126** — headless与TUI共享项目上下文；layer `L3` | Depends: ZS1-120,ZS1-084,ZS1-072,ZS1-070 | Owner scope: 本项真实交互与共享owner | Owned paths: `src/project_workspace.rs`, `src/protocol.rs`, `src/headless.rs`, `src/core.rs`, `tests/headless_project_workspace.rs`, `src/tui.rs`, `tests/tui_project_workspace.rs`, `tools/tui_project_workspace_smoke.py` | Validators: G-CODE、G-HOST；cargo test --locked --test headless_project_workspace --test headless_protocol | Rollback: 撤回本项差异并恢复有效项目/布局，不删用户会话 | Estimate: 约2–4天，含正负/取消/重启/PTY | Estimated LOC: 1800
 
 ZS1-126完成判据：JSONL open/select/list/close与TUI调用同一owner，显式cwd/ID、幂等请求、迟到事件归属、跨项目工具边界、重启恢复；无隐藏daemon，不让显示label成为workspace authority。 负例覆盖无效输入、资源上限和权限失败；取消保留旧有效状态，独立进程重启验证持久化或明确未完成。单元测试不能替代真实入口。
 
-- [ ] **ZS1-129** — 项目内删除缓冲、Ctrl-Y恢复与逻辑行编辑；layer `L3` | Depends: ZS1-122,ZS1-300,ZS1-301,ZS1-302,ZS1-099 | Owner scope: 本项真实输入编辑及共享PTY清空适配 | Owned paths: `src/tui.rs`, `tests/tui_composer.rs`, `tools/tui_composer_smoke.py`, `tools/tui_project_workspace_smoke.py`, `tools/tui_command_palette_smoke.py`, `tools/tui_approval_smoke.py`, `vendor/crossterm/src/event/source/unix/mio.rs` | Validators: G-CODE、G-HOST；cargo test --locked --test tui_composer --test tui_bentobox --test layout_persistence；python3 tools/tui_composer_smoke.py --binary target/release/zenpi --kill-yank-only；python3 tools/tui_composer_smoke.py --binary target/release/zenpi --queued-shell-paste-only | Rollback: 仅撤回本项差异，恢复既有输入操作；不删除项目草稿或会话 | Estimate: 约1–2天，逐路径实现并真实PTY/HTTP验收 | Estimated LOC: 1000
+- [x] **ZS1-129** — 项目内删除缓冲、Ctrl-Y恢复与逻辑行编辑；layer `L3` | Depends: ZS1-122,ZS1-300,ZS1-301,ZS1-302,ZS1-099 | Owner scope: 本项真实输入编辑及共享PTY清空适配 | Owned paths: `src/tui.rs`, `tests/tui_composer.rs`, `tools/tui_composer_smoke.py`, `tools/tui_project_workspace_smoke.py`, `tools/tui_command_palette_smoke.py`, `tools/tui_approval_smoke.py`, `vendor/crossterm/src/event/source/unix/mio.rs` | Validators: G-CODE、G-HOST；cargo test --locked --test tui_composer --test tui_bentobox --test layout_persistence；python3 tools/tui_composer_smoke.py --binary target/release/zenpi --kill-yank-only；python3 tools/tui_composer_smoke.py --binary target/release/zenpi --queued-shell-paste-only | Rollback: 仅撤回本项差异，恢复既有输入操作；不删除项目草稿或会话 | Estimate: 约1–2天，逐路径实现并真实PTY/HTTP验收 | Estimated LOC: 1000
 
 本版本将已识别的Codex编辑差距独立登记，避免把122新增预测推过每项5000行上限。122全部要求继续有效。下列行为与真实验证是交付义务；源300/301/302仍须各自完整接受，不能用此产品项代替。
 
@@ -550,7 +601,7 @@ ZS1-126完成判据：JSONL open/select/list/close与TUI调用同一owner，显�
 - 256KiB和预计4MiB拒绝，未写入时旧有效草稿/kill buffer不损坏；2独立TUI验证ephemeral buffer为空但已yankdraft持久化；按键操作不访问系统clipboard、不绕过approval/picker焦点。
 
 
-- [ ] **ZS1-131** — 固定终端依赖与可验证的输入读取器重置；layer `L3` | Depends: ZS1-097,ZS1-098,ZS1-099 | Owner scope: crossterm固定原版逐文件库存、reader reset API、mio就绪消费修复和独立真实PTY验证 | Owned paths: `Cargo.toml`, `Cargo.lock`, `vendor/crossterm`, `tools/stage1_reader_reset_probe.py` | Validators: G-CODE、G-PROD；cargo check --locked；python3 tools/stage1_reader_reset_probe.py --report-dir PRIVATE_NEW_DIR；vendor内部WouldBlock测试；现有生产依赖数量/feature/体积/启动/RSS门禁 | Rollback: 撤回本项Cargo patch及vendor/helper新增文件；依赖此API的130调用同时回退，保留草稿和会话 | Estimate: 固定库存后逐文件核对，reset补丁和真实PTY独立复验 | Estimated LOC: 1100
+- [x] **ZS1-131** — 固定终端依赖与可验证的输入读取器重置；layer `L3` | Depends: ZS1-097,ZS1-098,ZS1-099 | Owner scope: crossterm固定原版逐文件库存、reader reset API、mio就绪消费修复和独立真实PTY验证 | Owned paths: `Cargo.toml`, `Cargo.lock`, `vendor/crossterm`, `tools/stage1_reader_reset_probe.py` | Validators: G-CODE、G-PROD；cargo check --locked；python3 tools/stage1_reader_reset_probe.py --report-dir PRIVATE_NEW_DIR；vendor内部WouldBlock测试；现有生产依赖数量/feature/体积/启动/RSS门禁 | Rollback: 撤回本项Cargo patch及vendor/helper新增文件；依赖此API的130调用同时回退，保留草稿和会话 | Estimate: 固定库存后逐文件核对，reset补丁和真实PTY独立复验 | Estimated LOC: 1100
 
 131固定行为要求：
 
@@ -560,7 +611,7 @@ ZS1-126完成判据：JSONL open/select/list/close与TUI调用同一owner，显�
 4. 独立helper创建私有隔离构建和真实PTY，以相同初始/后续输入对比原版与候选：已解码CR、半截bracketed paste、CSI和UTF8；证明reset后不会跨交接拼接，额外不drain清CR。另至少100次reset/reinit核对FD基线/峰值/末值、每次SIGWINCH的Resize及独立SIGTERM处理器保持。锁已持有时的WouldBlock与释放后成功通过实际内部测试。原失败、实际argv/cwd、输出/二进制/依赖hash、退出码和时间保留；夹具输入或路径修正单列，不重写历史。
 5. 131依赖实验不替代130产品验收；Ctrl-G真正编辑器、原草稿/项目身份、无意外Submit、前台PGID、termios/信号/后台owner和BentoBox恢复仍按130逐项验证。主控当前实际平台macOS ARM，Linux代码/测试保留且未运行须明示；不宣称Windows支持。最终同一生产构建重跑原有预算和交互回归，不增加第三个产品模式或运行时依赖。
 
-- [ ] **ZS1-130** — 外部编辑器完整草稿往返与终端交接；layer `L3` | Depends: ZS1-122,ZS1-129,ZS1-123,ZS1-124,ZS1-126,ZS1-300,ZS1-305,ZS1-131 | Owner scope: 单个Unix前台编辑器、完整输入往返及现有两种TUI host | Owned paths: `src/config.rs`, `src/external_editor.rs`, `src/lib.rs`, `src/tui.rs`, `tests/config.rs`, `tests/tui_composer.rs`, `tools/tui_external_editor_smoke.py` | Validators: G-CODE、G-HOST、G-PROD；cargo test --locked --lib --test config --test tui_composer --test tui_bentobox --test layout_persistence；python3 tools/tui_external_editor_smoke.py --binary target/release/zenpi | Rollback: 仅撤回本项代码差异，恢复原输入/终端逻辑，保留已有会话和有效草稿 | Estimate: 约3–5天，逐路径实现、前台PGID与真实PTY/HTTP/恢复验收 | Estimated LOC: 3300
+- [x] **ZS1-130** — 外部编辑器完整草稿往返与终端交接；layer `L3` | Depends: ZS1-122,ZS1-129,ZS1-123,ZS1-124,ZS1-126,ZS1-300,ZS1-305,ZS1-131 | Owner scope: 单个Unix前台编辑器、完整输入往返及现有两种TUI host | Owned paths: `src/config.rs`, `src/external_editor.rs`, `src/lib.rs`, `src/tui.rs`, `tests/config.rs`, `tests/tui_composer.rs`, `tools/tui_external_editor_smoke.py` | Validators: G-CODE、G-HOST、G-PROD；cargo test --locked --lib --test config --test tui_composer --test tui_bentobox --test layout_persistence；python3 tools/tui_external_editor_smoke.py --binary target/release/zenpi | Rollback: 仅撤回本项代码差异，恢复原输入/终端逻辑，保留已有会话和有效草稿 | Estimate: 约3–5天，逐路径实现、前台PGID与真实PTY/HTTP/恢复验收 | Estimated LOC: 3300
 
 本版本登记已识别的外部编辑器通用UX差距。下列条款是行为要求，不是可选建议；主控采用的明确选择覆盖候选包中的待定措辞。其它通用UX差距、122/129要求、BentoBox结构和既有资源门禁均保留。新增私有模块与PTY工具是本产品owned paths；不增加第3节独立源文件/目录的冻结覆盖数字。实现+测试接近4500 LOC时先拆项，严禁压缩或删断言伪装低于5000。
 
@@ -609,7 +660,7 @@ ZS1-126完成判据：JSONL open/select/list/close与TUI调用同一owner，显�
 
 先用当前冻结129生产release记录真实Ctrl-G未启动反例，再以相同fixture验证新实现。
 
-- [ ] **ZS1-132** — 同项目 /new 新会话及原子切换恢复；layer `L3` | Depends: ZS1-070,ZS1-074,ZS1-079,ZS1-084,ZS1-085,ZS1-121,ZS1-123,ZS1-133 | Owner scope: 同项目新journal创建、共享owner提交、草稿及请求身份恢复 | Owned paths: `src/slash.rs`, `src/session.rs`, `src/core.rs`, `src/project_workspace.rs`, `src/headless.rs`, `src/tui.rs`, `tests/session_new.rs`, `tests/headless_project_workspace.rs`, `tools/tui_session_new_smoke.py`, `Docs/quality/stage1/ux-reference.md`, `Docs/quality/stage1/ux-acceptance.md` | Validators: G-CODE、G-HOST；cargo test --locked --test session_new --test headless_project_workspace；python3 tools/tui_session_new_smoke.py --binary target/release/zenpi；既有session resume/owner/layout直接回归及全局预算 | Rollback: 撤回本项代码与命令注册，保留已创建journal、旧会话及项目草稿；必要时通过已有session open恢复有效映射 | Estimate: 逐文件复用已有prepare/commit/replace owner，增量接近4500行先拆项 | Estimated LOC: 3900
+- [x] **ZS1-132** — 同项目 /new 新会话及原子切换恢复；layer `L3` | Depends: ZS1-070,ZS1-074,ZS1-079,ZS1-084,ZS1-085,ZS1-121,ZS1-123,ZS1-133 | Owner scope: 同项目新journal创建、共享owner提交、草稿及请求身份恢复 | Owned paths: `src/slash.rs`, `src/session.rs`, `src/core.rs`, `src/project_workspace.rs`, `src/headless.rs`, `src/tui.rs`, `tests/session_new.rs`, `tests/headless_project_workspace.rs`, `tools/tui_session_new_smoke.py`, `Docs/quality/stage1/ux-reference.md`, `Docs/quality/stage1/ux-acceptance.md` | Validators: G-CODE、G-HOST；cargo test --locked --test session_new --test headless_project_workspace；python3 tools/tui_session_new_smoke.py --binary target/release/zenpi；既有session resume/owner/layout直接回归及全局预算 | Rollback: 撤回本项代码与命令注册，保留已创建journal、旧会话及项目草稿；必要时通过已有session open恢复有效映射 | Estimate: 逐文件复用已有prepare/commit/replace owner，增量接近4500行先拆项 | Estimated LOC: 3900
 
 132固定行为合同（现有通用Codex UX缺口的明确实施项，不豁免其它generic gaps）：
 
@@ -636,7 +687,7 @@ ZS1-126完成判据：JSONL open/select/list/close与TUI调用同一owner，显�
 | 直接回归 | 既有session resume/owner/layout与本项直接触达套件通过，顶部+、BentoBox契约保留；不为本项新增项目tab或放宽现有预算，未实测平台明确列为未验证 |
 
 
-- [ ] **ZS1-128** — Codex交互矩阵与BentoBox完整回归；layer `L3` | Depends: ZS1-117,ZS1-121,ZS1-122,ZS1-123,ZS1-124,ZS1-125,ZS1-126,ZS1-350,ZS1-129,ZS1-130,ZS1-132 | Owner scope: 本项真实交互与共享owner | Owned paths: `Docs/quality/stage1/ux-reference.md`, `Docs/quality/stage1/ux-acceptance.md`, `tools/stage1_host_smoke.py`, `tests/tui_bentobox.rs`, `tests/layout_persistence.rs` | Validators: G-CODE、G-HOST；G-PROD；cargo test --locked --test tui_bentobox --test layout_persistence | Rollback: 撤回本项差异并恢复有效项目/布局，不删用户会话 | Estimate: 约2–4天，含正负/取消/重启/PTY | Estimated LOC: 900
+- [x] **ZS1-128** — Codex交互矩阵与BentoBox完整回归；layer `L3` | Depends: ZS1-117,ZS1-121,ZS1-122,ZS1-123,ZS1-124,ZS1-125,ZS1-126,ZS1-350,ZS1-129,ZS1-130,ZS1-132 | Owner scope: 本项真实交互与共享owner | Owned paths: `Docs/quality/stage1/ux-reference.md`, `Docs/quality/stage1/ux-acceptance.md`, `tools/stage1_host_smoke.py`, `tests/tui_bentobox.rs`, `tests/layout_persistence.rs` | Validators: G-CODE、G-HOST；G-PROD；cargo test --locked --test tui_bentobox --test layout_persistence | Rollback: 撤回本项差异并恢复有效项目/布局，不删用户会话 | Estimate: 约2–4天，含正负/取消/重启/PTY | Estimated LOC: 900
 
 ZS1-128完成判据：逐个Codex交互条目映射实际操作与证据；每实现项先做自己的PTY/JSONL，再此综合验收。实测+到有效项目最短路径及原BentoBox resize/focus/collapse/persistence全部回归；零mock button和未接线成功。 负例覆盖无效输入、资源上限和权限失败；取消保留旧有效状态，独立进程重启验证持久化或明确未完成。单元测试不能替代真实入口。
 
@@ -644,7 +695,7 @@ ZS1-128完成判据：逐个Codex交互条目映射实际操作与证据；每�
 
 当前默认Rust toolchain架构配置不适用，使用已安装 `cargo +stable-aarch64-apple-darwin ...` 等价替换文中cargo前缀，不修改用户全局默认。
 
-3会话路由为执行控制/验收、TUI项目/交互、技能/provider，模型均gpt-6-astra/high。此主控负责基线、唯一要求、manifest、冲突集成和master接受。用户明确保留当前dirty功能，通用skill的force-sync/stash/push模板由包含working-tree的隔离worktree及基线hash差异集成替代；不自动推送远端或修改现有技能安装。
+主控负责基线、唯一要求、manifest、冲突集成和master接受。用户明确保留当前dirty功能，通用skill的force-sync/stash/push模板由包含working-tree的隔离worktree及基线hash差异集成替代；不自动推送远端或修改现有技能安装。
 
 
 ### 3.1.21 输入交付与项目检查补充
@@ -656,3 +707,133 @@ ZS1-128完成判据：逐个Codex交互条目映射实际操作与证据；每�
 123/132的实际本地diff及异步响应必须绑定请求准入时的项目cwd、session与稳定ID。已有busy/diff私有反例须进入tests/headless_project_workspace.rs长期回归：process cwd A、选B且provider首delta后仍门控时读取B内容，切换或/new后身份不串位，cached旧响应仍属于原项目，foreign guard/路径拒绝/取消和正常关闭保留。Runtime QueueFull与Resume摘要等v2响应也不得省略或改写所属项目；历史事件保留历史项目身份。以上新增测试由完整逐文件理解和实际before/after证据支持，不修改队列、路径、取消、重放预算来取绿。
 
 新文件099、133及新目录400–406保持未接受；129、131、123、132及根091仍逐项验收。当前112项中的任何未完成内容不删除、不降级；最终生产release预算、实际交互矩阵和BentoBox合同继续有效。
+
+
+### 3.1.23 Provider 开放契约（新增 ZS1-118，清单 122 项）
+
+- 对齐目标：opencode 使用 models.dev 目录（220 家，官方与第三方并存）。zenpi 不逐家实现 SDK，只保证**格式与默认能力**对齐：OpenAI Chat Completions、OpenAI Responses、Anthropic Messages，保留 Google Generative AI。任何 OpenAI/Anthropic 兼容 base_url 均可用。
+- 默认开放：未编目模型不再默认 text-only，`ProviderCapabilities` 默认 `text/images/files/tools/structured_output/streaming = true`，再由 wire 求交；`reasoning` 仍保守（需显式等级）。未知模型 context/output 预算仍有限。
+- 显式收紧仍有效：`[[model_overrides]]`（含 profile 内）可逐字段 `false/true`；官方目录项能力不被覆盖。文本模型拒绝未声明工具调用的 fail-closed 路径保留。
+- 覆盖：`src/providers/registry.rs`；验证 `cargo test --locked --test stage1_model_registry --test stage1_anthropic --test stage1_gemini --test backend`。
+- 平台：macOS/Linux 走同一 Unix 传输与 `run_command` 路径（`#[cfg(unix)]`）；Windows 适配推迟。macOS 特有 DNS（`DNSServiceGetAddrInfo`，无 AAAA 主机不再挂起到全局超时）与本契约一同生效。
+
+
+### 3.1.24 用户要求同步（新增 ZS1-119、140–145，清单 129 项）
+
+本轮用户要求全部登记为本阶段执行义务，`/sync` 是今后把用户新要求写入本单一权威蓝图并立即派发执行的入口。
+
+- **ZS1-119 `/sync`**：`/sync <requirement...>` 把用户要求幂等追加进本文件（新稳定 ID + 验收义务）并写入 durable sync ledger，随后“直接开始做”（派发到现有 loop/compete/domain-execution owner，或标记为待 worker 领取）。去重按规范化文本 hash；已存在同义要求不重复追加；冲突要显式报错而不是静默覆盖。不得改写既有项目/历史项。
+- **ZS1-140 顶部双排 tab（一层 project + 二层 sub-tab）交互式增/减/调换顺序**：一层支持增（Ctrl-T/`+` 指定文件夹）、减（Ctrl-W/中键）、**调换顺序**（Ctrl-B 左移 / Ctrl-F 右移，环绕）、重命名、每项目基本风格；二层为每项目内嵌 sub-tab，默认复用一层信息，支持增（Alt-N 新建 worktree / Alt-I 原地 / 点击 `[+]` `[~]`）、减（Alt-W/点击）、**调换顺序**（Alt-, 左移 / Alt-. 右移）。鼠标：点击切换，命令兜底 `/project move|rename|style`、`/worktree add|close|move|select`。绑定 cwd/会话/工具根/权限与顺序/风格，持久化到 BentoBox/项目元数据，重启恢复；关闭非活动 tab 不清空当前会话。排列以“按名字保持 active”为准，移动不得改变当前项目/子 tab 的对象身份。
+- **ZS1-141 文件夹来源**：一层 tab 增加工作文件夹时同时支持**本地**与 **SSH 远端**，远端两种方式都支持：①复用 `~/.ssh/config` 的 Host 别名；②显式 host/user/port/私钥路径。远端只做有界枚举与只读探测，不在本机持久化私钥。
+- **ZS1-142 二层 tab**：每个一层 tab 内嵌自己的二层 tab；默认复用一层信息（不强制新建）。二层加号交互：**单击 = 新建 worktree**；**长按 = 横排两个 logo**——左 logo 默认新建 worktree，右 logo 不新建、在当前工作区直接干。二层 tab 可增、减、调位置。
+- **ZS1-143 运行时 3 用例验收**：以真实 TUI→headless 跑 3 组用例覆盖 `/blueprint`、`/execute`、`/learn`（3 个 mode 调研）、`/explore`（auto research）、`/addloop`，并断言 TUI 区域 `pm/arch/resources/execution/terminal/gantt` 均正常且可用 BentoBox 调整（resize/fold/focus/持久化）。
+- **ZS1-144 命令补齐**：`/execute`（蓝图/域执行派发）、`/explore`（自动 research 循环）、`/addloop`（loop 入口，别名或独立）落地为真实命令，缺一即失败可见，不得用空菜单/固定成功冒充。
+- **ZS1-145 区域补齐**：新增 `arch`（架构）与 `execution`（执行）pane，接入 BentoBox 断点/折叠/焦点与持久化；`Browser`/`Terminal` 既有可选 pane 保持。
+
+验收基线：以上各项各自实现+测试后由主控集成；`/sync` 自身必须可被本文件中的后续要求反复使用。3.1.24 追加不改变 3.1.23 及之前已接受项的字节与义务。
+
+
+
+
+### 3.1.25 TUI 格局重排（新增 ZS1-146…151，清单 135 项）
+
+用户对当前 TUI 格局不满意，登记为执行义务，按“先补蓝图、再实现、再 build 到 zenpi-dev”推进。
+
+- **双排 tab 行为（ZS1-146）**：开新项目默认落在当前项目的“上一层”（按层级/父子关系），`+` 固定左对齐，`-` 关闭并跟随当前活动工作区；左右换序改为**鼠标拖拽**（不再只用 `> <` 按钮）。第二层同样逻辑。**一层与二层每次新开都必须是隔离的 workspace 与 worktree**（当前未隔离，必须修）。
+- **左上会话组（ZS1-147）**：`Conversation + Prompt` 视为一组，可在此修改 Goal；prompt 与左栏等宽；作为常驻讨论区（讨论、btw 等）。
+- **左下 arch 组（ZS1-148）**：`arch + Prompt` 成组、prompt 与左栏等宽；arch 本质是一个 conversation，但属于 **master session**，能执行 bash 命令并做 steering。
+- **资源池（ZS1-149）**：精简版 htop + nvidia-smi；**5s** 刷新；彩色 CPU/内存/GPU/网络；对进程做**同类项合并统计**（不是明细）；并纳入 opencode 右侧信息列的 **context / lsp / mcp** 信息。
+- **Goal 并入 Gantt（ZS1-150）**：左侧 Goal 区实际对应 opencode 右侧信息列的 Plan，应由 **Gantt** 承载；Gantt 渲染 blueprint 三态 `[ ] [_] [x]` 时用**护眼的柔和红/黄/绿**提示。
+- **Execution 内嵌终端（ZS1-151）**：右下 Execution 区改为**内嵌真实 PTY 终端**，方便熟悉 unix 的用户直接敲命令。
+
+验收：按项实现+测试（含真实 PTY/TUI 证据），主控集成后 build 到 `zenpi-dev` 交付。3.1.25 追加不改变 3.1.24 及之前已接受项的字节与义务。
+
+### 3.1.26 区域并发与模型语义补充（ZS1-146/147/148/152 细化）
+
+- 第二层每个 worktree：可**重命名**；每个 worktree 有 **↑ 数字 ↓** 控件调整该 worktree 的默认 **harness 多开并发数**（省去每次指定）。
+- 讨论区（左上 Conversation+Prompt）与 arch 区（左下 arch+Prompt）：各自可**独立调整 model**；两者都是**单并发**（讨论区常驻讨论、arch 是 master session 可 bash/steering）。
+- 真正干活的并发由**一层项目内定义的后台 workers 数目**决定（与第二层 worktree 的并发数字对应），不是讨论/arch 区的并发。
+- 一层/第二层新开都必须落在隔离的 workspace / worktree，不得共享当前工作区。
+
+### 3.1.27 顶部信息头与 Shell/双会话（新增 ZS1-153…156，清单 140 项）
+
+- 顶部信息头（ZS1-153）：左上竖排 `ZENPI`（高 6 行、宽度合理）；右侧为双层信息：一层 `workspaces` 与二层 `Worktrees`，均左到右、每项后跟 `[-]` 关闭、末尾 `[+]`；二层前置 `└`。名字一层取文件夹名、二层取当前分支（无则 `main`）并可编辑，单项 ≤20 字符；一层/二层各最多 3 行自动换行，过多则按可用宽度均分截断。**移除现有含糊的 `Ready | model … | in/out | cwd` 状态行**。
+- 资源区（ZS1-154）：以 htop/nvidia-smi 为数据源（缺失则在启动时请求权限自动安装再抽取），彩色利用率条；修 CPU/GPU 缺失；统一美观大小写。
+- Shell（ZS1-155）：右下角由只读 Execution 改为默认对齐当前项目 workspace/worktree 的**交互式 shell**，标题改为 `Shell`。
+- 双独立会话（ZS1-156）：左上 Conversation 与左下 Arch 是两个**独立 agent runtime session**，各自独立 model、独立 Prompt、独立审批，绝对不共享输入/上下文。
+
+验收：逐项实现+测试，主控集成后 build 到 `zenpi-dev`。3.1.27 追加不改动此前已接受项。
+
+### 3.1.28 持久化与布局补充（ZS1-157）
+- 退出/中断/重启只影响一层 `[+]` 的“默认加 workspaces”逻辑；既有的 workspaces、worktrees 及其顺序、命名、并发数必须持久化并在重启后恢复，不能因 zenpi 进程中断导致工作中断。
+- 顶部 header 采用 logo（左，竖排 ZENPI，高 6 行）+ 双层 tab（右）**左右布局、无空隙**：一层 `workspaces` 最多 3 行换行，二层 `Worktrees` 最多 3 行换行；单项名字 ≤20 字符，过多时按宽度均分截断；二层默认名取当前分支（无则 `main`）且可编辑。
+
+### 3.1.29 局域网资源网络感知细化（新增 ZS1-159、ZS1-160，清单 144 项）
+
+用户要求（2026-09-18）：Resources 渲染**先划分成几个块，点进去看明细**；在没有用户名/密码时**最大化感知** C 段里自己能触达什么资源；下列真实拓扑同时作为验收夹具。3.1.29 只细化 ZS1-158 并新增 ZS1-159/ZS1-160，不改动此前已接受项的字节与义务。
+
+- **感知分层（无凭据优先）**：无任何凭据时，按有界只读顺序做 ARP 表读取、ICMP 存活探测、常用端口指纹、mDNS/NetBIOS 名称、SSH banner/版本、HTTP `title`/`Server` 头、TLS 证书 CN/SAN，并据 OUI 与端口归类设备类型（thor / mac / linux / nas / printer / router / IoT / GPU 节点）。任何一步失败都降级为该项 `Unavailable`，不得伪造或中止整轮扫描。
+- **有凭据增强**：仅当本地 secrets 中存在可用凭据时才经 SSH 只读抽取 CPU 型号与逻辑核数、内存总量、磁盘总量/可用、GPU（依次 `nvidia-smi`、`rocm-smi`、`lspci`）、发行版与内核、监听服务。凭据只从本地 secrets 读取，**不落库、不打日志、不写入结果文件、不外传**；在结果里只记“已用凭据/未用凭据”。
+- **区块与明细（ZS1-159）**：Resources 先渲染「本机 / 网关 / 各组主机（mac / linux / 存储 / 其它）/ 存储」等可折叠块，每块只显示汇总计数与最高层信息；键盘（Enter/方向键/Esc）与鼠标点击块进入该块明细表并返回上级；明细列含 IP、MAC、厂商、主机名/OS、开放端口/服务指纹，凭据可用时追加 CPU/内存/磁盘/GPU 列。
+- **边界**：/24 扫描有界（上限网段数、每主机端口数、并发数、每步超时、总时长），只读，不写入对端，不发起凭据猜测，不对公网地址扫描；所有输出走既有 `ResourceSnapshot`/渲染边界，截断必须显式标记。
+
+真实拓扑夹具（2026-09-18 从 `10.20.30.14` 观测；网关 `10.20.30.1` 为 MikroTik RouterBoard，全部同一二层 /24）：
+
+| 类别 | IP（观测） | 证据 |
+|---|---|---|
+| 网关 | `10.20.30.1` | RouterOS，22/80 |
+| thor（NVIDIA） | `10.20.30.167` | MAC `3c:6d:66`（NVIDIA）、OpenSSH Ubuntu、仅 22 |
+| mac | `.14`、`.15`、`.16`、`.182` | `<mac-user>/<redacted>` 可连；M1 Ultra / M2 Max，macOS 26.x；另有 `.123` 等 AirPlay 端点 |
+| linux | `.21`、`.38`、`.55`、`.56`、`.155`、`.165`、`.168`、`.220`、`.228`、`.249` | `<linux-user>/<redacted>` 可连，Ubuntu 22.04/24.04/26.04 |
+| NAS | `.177`（`nas-a`）、`.185` | Synology DiskStation，5000/5001/445/548 |
+| GPU 计算节点 | `.55`（EPYC 7B12、4×RTX3080）、`.56`（RTX4090D）、`.228`（RTX4090）、`.249`（9950X3D、2×RTX3090） | `lspci`+`nvidia-smi` |
+| `.38` 同型 7945HX 组 | `.21`、`.38`、`.155`、`.165`、`.168`、`.220` | 同批 AMD Ryzen 9 7945HX、32 逻辑核、约 92–96 GB 内存、约 3.6–3.7 TB 盘 |
+| 其它 | `.13` 得力 M2000DW 打印机、`.2/.3/.4` ASUS、`.19/.20` Mercury、`.254` Ruijie(MQTT)、若干随机 MAC 手机/IoT | 端口与 OUI |
+
+验收：在无凭据路径下也能给出上表的分类与 IP 清单；在提供上述凭据的夹具 run 中，须输出与 `10.20.30.38` 同组机器列表、全 50 网段清单（1 thor + 若干 mac + 若干 linux + 2 NAS）及每台 CPU/内存/磁盘/GPU 表格。夹具凭据只用于验收观测，不得进入产品代码、结果文件或日志。
+
+### 3.1.29 Headless 集群与统一资源总线（ZS1-159…162）
+- headless 提供稳定 stdio JSONL、维护 session 与 context，可被远端宿主以无界面方式拉起；实测 idle ≈ 2 MB RSS / 0% CPU，busy 受 context 预算约束。
+- 以本机为 **control plane**，把 LAN 其他机器的 CPU/内存当宿主执行 headless worker（按 ZZ1-158 的探测与凭据、只读+显式授权），并回收。
+- 统一信息总线：本机 + 局域网集群 + agent 余额/budget + devport 抢占/租约，全部进 Resources 分区并可点进明细。
+- footprint：每 headless 进程 CPU/RSS 上限与逐进程统计进资源门禁。
+
+### 3.1.30 TUI 输入独立性 / Shell 绑定 / 二层并发控件补充（新增 ZS1-165…167，清单 151 项）
+
+用户要求（2026-09-19，先补蓝图再改代码，以保证 blueprint 与代码一致）：
+
+- **双 Prompt 绝对独立（ZS1-165）**：左上 `Conversation + Prompt` 与左下 `arch + Prompt` 是两个独立输入端口。各自的文本缓冲、光标、编辑历史、`/` 命令补全与执行、提交目标必须完全独立；任一侧输入或 `/` 展开不得串写另一侧，也不得抢占另一侧焦点；两侧应能各自独立进入命令态。对应并细化 ZS1-156「双独立会话」的输入侧。
+- **Shell 绑定当前工作区（ZS1-166）**：右下 `Shell` 必须是**真实交互式 shell**（登录式 `$SHELL` PTY），不是只读投影；其 cwd 恒等于当前一层 workspace / 二层 worktree 的工作目录；切换一层/二层时同步到新目录，用户能直接在其中敲任意命令。对应并细化 ZS1-155。
+- **二层并发控件加宽可见（ZS1-167）**：二层每个 worktree 的 `↑ N ↓` 并发控件，把上下点击热区加宽为独立按钮块（不再挤在单列窄箭头），视觉上明确可点，鼠标与键盘都能调整该 worktree 的最大并发数，当前值醒目。对应并细化 ZS1-146/ZS1-152。
+
+验收：逐项实现并补测试（含真实 PTY/TUI 证据），主控集成后 build 到 `zenpi-dev`。3.1.30 追加不改动此前已接受项的字节与义务。
+
+### 3.1.31 分页交互与 Shell 输入对齐（新增 ZS1-168…171，清单 155 项）
+
+用户要求（2026-09-19）：
+
+- **二层 `[+]` = 新增 worktree（ZS1-168）**：二层 worktree 条的 `[+]` 必须真的新建一个隔离 worktree 子 tab 并切换；失败（非 git 仓库、分支重名、超限）必须在可见区说明原因，不能“点了没反应”。
+- **分页卡右键改名（ZS1-169）**：一层 workspace 卡与二层 worktree 卡都可以右键改名，内联编辑、Enter 提交、Esc 取消，校验与现有重命名一致。
+- **一层 `[+]` 目录选择体验（ZS1-170）**：点一层 `[+]` 打开目录选择框后键盘焦点进入其中，直接键入字母前缀即可快速跳到匹配目录。
+- **Shell 原生按键对齐（ZS1-171）**：聚焦 Shell 面板后逐字符键入必须直接进 PTY 执行并回显，不能被 prompt 的普通粘贴缓冲截走。
+- 说明：Conversation 下方 prompt 与 Arch 下方 prompt 各自独立（ZS1-165 已实现，本次一并回归验证）。
+
+验收：逐项实现并补测试，主控集成后 build 到 `zenpi-dev`。3.1.31 追加不改动此前已接受项的字节与义务。
+
+### 3.1.32 输入法热区锁定（新增 ZS1-172，清单 156 项）
+
+用户要求（2026-09-19）：Conversation prompt / Arch prompt / Shell 区域输入中文时，输入法热区（预编辑与候选窗）没有锁定到当时聚焦的区域，但提交后的文字又落到了正确区域。
+
+- **根因**：`render_input` 无条件调用 `frame.set_cursor_position`，而终端光标位置决定 IME 预编辑/候选窗锚点，于是锚点总是停在“最后渲染”的讨论 prompt，与真正聚焦的区域不一致；Shell 面板完全不设置光标。
+- **要求（ZS1-172）**：终端光标同一时刻只能由当前聚焦的输入框设置。讨论 prompt 仅在 `left_prompt==Discussion` 且无浮层、Shell 未聚焦、审批未聚焦时设置；Arch prompt 仅在 arch 聚焦时设置；Shell 面板聚焦时按实时提示符列锚定；目录选择框与分页改名浮层各自拥有光标。未被聚焦者一律不得覆盖光标。
+
+验收：逐项实现并补测试，主控集成后 build 到 `zenpi-dev`。3.1.32 追加不改动此前已接受项的字节与义务。
+
+### 3.1.33 Shell CJK 编辑修正（新增 ZS1-173，清单 157 项）
+
+用户要求（2026-09-19）：Shell 区输入 CJK 再删除时光标计数不对，每次都多删。
+
+- **根因**：Shell 渲染原先把 PTY 输出做“剥离 ANSI + 遇 `` 删字符”的处理。终端里 `` 只是左移光标，不删除；宽字符由 shell 连发两个 `` 跨越。原实现把 `` 当删除并额外跳过续格，导致每次删除多删一格、显示重影。
+- **要求（ZS1-173）**：改为有界字符网格 + 最小 VT 解析：`` 只左移一格；支持 CSI 光标移动与擦除；CJK 宽字符占两格、续格不参与计数；光标列即显示列数，供 IME 锚点使用。
+
+验收：逐项实现并补测试，主控集成后 build 到 `zenpi-dev`。3.1.33 追加不改动此前已接受项的字节与义务。

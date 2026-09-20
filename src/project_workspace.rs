@@ -405,6 +405,11 @@ pub struct ProjectOwnerPool {
     workspace: ProjectWorkspace,
     owners:
         std::collections::BTreeMap<String, std::sync::Arc<std::sync::Mutex<crate::core::Agent>>>,
+    /// Independent arch master-session owners (ZS1-156). They are created
+    /// lazily, use a distinct journal, and are never part of the durable
+    /// project checkpoint, so the discussion lane cannot adopt their history.
+    arch_owners:
+        std::collections::BTreeMap<String, std::sync::Arc<std::sync::Mutex<crate::core::Agent>>>,
     sessions: std::collections::BTreeMap<String, PathBuf>,
     overrides: crate::config::ConfigOverrides,
     echo_fixture: bool,
@@ -442,6 +447,7 @@ impl ProjectOwnerPool {
         Ok(Self {
             workspace,
             owners: [(id.clone(), std::sync::Arc::clone(&agent))].into(),
+            arch_owners: std::collections::BTreeMap::new(),
             initial_session: (id.clone(), session.clone()),
             contexts: [(id.clone(), ProjectContext::from_agent(&id, &owner))].into(),
             checkpoint: None,
@@ -471,19 +477,16 @@ impl ProjectOwnerPool {
         self.contexts
             .insert(id.to_owned(), ProjectContext::from_agent(id, agent));
         let session_path = agent.session().path();
-        let session_path = session_path
-            .canonicalize()
-            .unwrap_or_else(|_| {
-                if session_path.is_absolute() {
-                    session_path.to_path_buf()
-                } else {
-                    std::env::current_dir()
-                        .map(|cwd| cwd.join(session_path))
-                        .unwrap_or_else(|_| session_path.to_path_buf())
-                }
-            });
-        self.sessions
-            .insert(id.to_owned(), session_path);
+        let session_path = session_path.canonicalize().unwrap_or_else(|_| {
+            if session_path.is_absolute() {
+                session_path.to_path_buf()
+            } else {
+                std::env::current_dir()
+                    .map(|cwd| cwd.join(session_path))
+                    .unwrap_or_else(|_| session_path.to_path_buf())
+            }
+        });
+        self.sessions.insert(id.to_owned(), session_path);
     }
     /// A worker owns only a checkpoint proposal, never another Agent. The
     /// existing compare-and-replace writer rejects concurrent host changes.
@@ -603,8 +606,57 @@ impl ProjectOwnerPool {
     pub fn owner(&self, id: &str) -> Option<std::sync::Arc<std::sync::Mutex<crate::core::Agent>>> {
         self.owners.get(id).cloned()
     }
+
+    /// Lazily prepare the independent arch master-session owner for a project
+    /// (ZS1-156). It opens `<session dir>/arch.jsonl`, so it has its own
+    /// journal, model, and approval coordinator distinct from the discussion
+    /// owner.
+    pub fn arch_agent(
+        &mut self,
+        id: &str,
+    ) -> Result<std::sync::Arc<std::sync::Mutex<crate::core::Agent>>, String> {
+        if let Some(existing) = self.arch_owners.get(id) {
+            return Ok(existing.clone());
+        }
+        let active = self
+            .owners
+            .get(id)
+            .cloned()
+            .ok_or("project owner not found")?;
+        let (arch_session, cwd, overrides, echo_fixture) = {
+            let agent = active.lock().map_err(|_| "project owner lock poisoned")?;
+            let session = agent.session().path().to_path_buf();
+            let arch_session = session.with_file_name("arch.jsonl");
+            let cwd = agent
+                .attachment_workspace_root()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from(agent.session().header().cwd.clone()));
+            (
+                arch_session,
+                cwd,
+                agent.project_overrides(),
+                agent.backend_name() == "echo",
+            )
+        };
+        let agent = crate::core::Agent::prepare_project_with_options(
+            &arch_session,
+            &cwd,
+            overrides,
+            echo_fixture,
+        )
+        .map_err(|error| error.to_string())?;
+        let handle = std::sync::Arc::new(std::sync::Mutex::new(agent));
+        self.arch_owners.insert(id.to_owned(), handle.clone());
+        Ok(handle)
+    }
+
     pub fn close_all(&self) {
         for owner in self.owners.values() {
+            if let Ok(mut agent) = owner.lock() {
+                agent.close();
+            }
+        }
+        for owner in self.arch_owners.values() {
             if let Ok(mut agent) = owner.lock() {
                 agent.close();
             }
@@ -696,6 +748,13 @@ impl ProjectOwnerPool {
             keep
         });
         self.contexts.retain(|id, _| self.owners.contains_key(id));
+        self.arch_owners.retain(|key, owner| {
+            let keep = self.owners.contains_key(key);
+            if !keep && let Ok(mut agent) = owner.try_lock() {
+                agent.close();
+            }
+            keep
+        });
         if let Some(agent) = prepared {
             self.contexts
                 .insert(id.clone(), ProjectContext::from_agent(&id, &agent));
@@ -839,4 +898,79 @@ fn write_owner_checkpoint(
         let _ = std::fs::remove_file(&temporary);
     }
     result.map_err(|e| e.to_string())
+}
+
+/// Maximum number of layer-2 sub-tabs retained per project.
+pub const MAX_PROJECT_SUBTABS: usize = 32;
+const MAX_WORKTREE_OUTPUT_BYTES: usize = 256 * 1024;
+
+/// One git worktree discovered for a project.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorktreeEntry {
+    pub path: std::path::PathBuf,
+    pub branch: Option<String>,
+    pub detached: bool,
+}
+
+fn run_git(project: &Path, args: &[&str]) -> Result<String, String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(project)
+        .args(args)
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
+    }
+    if output.stdout.len() > MAX_WORKTREE_OUTPUT_BYTES {
+        return Err("git output exceeded the bound".to_owned());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Read-only `git worktree list` for one project.
+pub fn list_worktrees(project: &Path) -> Result<Vec<WorktreeEntry>, String> {
+    let text = run_git(project, &["worktree", "list", "--porcelain"])?;
+    let mut entries = Vec::new();
+    let mut path: Option<std::path::PathBuf> = None;
+    let mut detached = false;
+    let mut branch: Option<String> = None;
+    let flush = |path: &mut Option<std::path::PathBuf>,
+                 detached: &mut bool,
+                 branch: &mut Option<String>,
+                 entries: &mut Vec<WorktreeEntry>| {
+        if let Some(path) = path.take() {
+            entries.push(WorktreeEntry {
+                path,
+                branch: branch.take(),
+                detached: std::mem::take(detached),
+            });
+        }
+    };
+    for line in text.lines().chain(std::iter::once("")) {
+        if let Some(value) = line.strip_prefix("worktree ") {
+            flush(&mut path, &mut detached, &mut branch, &mut entries);
+            path = Some(std::path::PathBuf::from(value));
+        } else if line.strip_prefix("branch ").is_some() {
+            branch = line
+                .strip_prefix("branch ")
+                .map(|value| value.trim_start_matches("refs/heads/").to_owned());
+        } else if line == "detached" {
+            detached = true;
+        }
+    }
+    flush(&mut path, &mut detached, &mut branch, &mut entries);
+    Ok(entries)
+}
+
+/// Create a new worktree at `path` on a fresh branch `branch`.
+pub fn add_worktree(project: &Path, path: &Path, branch: &str) -> Result<(), String> {
+    let path = path.to_str().ok_or("worktree path is not utf-8")?;
+    run_git(project, &["worktree", "add", "-b", branch, path]).map(|_| ())
+}
+
+/// Remove a worktree (forced, as execution workers may leave it dirty).
+pub fn remove_worktree(project: &Path, path: &Path) -> Result<(), String> {
+    let path = path.to_str().ok_or("worktree path is not utf-8")?;
+    run_git(project, &["worktree", "remove", "--force", path]).map(|_| ())
 }

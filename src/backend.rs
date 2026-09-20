@@ -1269,12 +1269,11 @@ impl OpenAiCompatibleBackend {
                 // compression, so keep cancellation polling on raw bytes.
                 .header("accept-encoding", "identity")
                 .config()
-                // Keep a generous receive slice: very short socket deadlines
-                // can make ureq tear down an otherwise healthy SSE stream at
-                // the same moment a provider flushes its next frame. The
-                // cancellation predicate is still checked between reads;
-                // transport robustness takes precedence over a 100ms poll.
-                .timeout_recv_body(Some(Duration::from_secs(2).min(self.request_timeout)))
+                // Bound each receive slice to the cancellation poll interval:
+                // the body readers treat a RecvBody timeout as a poll and resume
+                // the same response, so host cancellation is observed within this
+                // deadline instead of waiting for the provider to finish.
+                .timeout_recv_body(Some(Duration::from_millis(100).min(self.request_timeout)))
                 .build();
         }
         let mut response = transport::send_json(request_builder, &body, cancelled, cancellation)?;
@@ -2666,7 +2665,7 @@ mod tests {
         assert!("wat".parse::<OpenAiWireApi>().is_err());
 
         let codex_proxy = OpenAiCompatibleBackend::new_with_wire_api(
-            "http://192.168.50.168:18080",
+            "http://10.20.30.168:18080",
             Some("secret".into()),
             "gpt-5",
             OpenAiWireApi::Responses,
@@ -2674,7 +2673,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             codex_proxy.endpoint(),
-            "http://192.168.50.168:18080/responses"
+            "http://10.20.30.168:18080/responses"
         );
 
         let missing_key = OpenAiCompatibleBackend::from_values_with_wire_api(

@@ -9,12 +9,13 @@ use zenpi::domain_store::{DomainStore, path_for_session};
 use zenpi::domains::{Blueprint, BlueprintItem, Goal, GoalStatus, MAX_BLUEPRINT_ITEMS};
 use zenpi::layout::{FocusDirection, LayoutModel, PaneCapabilities, PaneId, TabId, Visibility};
 use zenpi::resources::{
-    CpuSignal, DiskSignal, MemorySignal, ProcessSignal, ResourceSnapshot, SignalStatus,
+    CpuSignal, DiskSignal, GpuDevice, GpuSignal, MemorySignal, NetworkSignal, ProcessClass,
+    ProcessClassRow, ProcessSignal, ProcessSummary, ResourceSnapshot, SignalStatus,
     WorkspaceSummary,
 };
 use zenpi::tui::{
-    BentoBoxLayoutAdapter, MAX_GANTT_PANE_BYTES, MessageRole, TuiAction, TuiState,
-    collect_gantt_snapshot,
+    ARCH_PROMPT_PANE_ROWS, BentoBoxLayoutAdapter, MAX_GANTT_PANE_BYTES, MessageRole,
+    RESOURCE_REFRESH_INTERVAL, TuiAction, TuiState, collect_gantt_snapshot,
 };
 
 fn rendered(terminal: &Terminal<TestBackend>) -> String {
@@ -83,6 +84,45 @@ fn resource_snapshot() -> ResourceSnapshot {
             resident_bytes: Some(12 * 1024 * 1024),
             status: SignalStatus::Available,
         },
+        network: NetworkSignal {
+            received_bytes: Some(2 * 1024 * 1024 * 1024),
+            transmitted_bytes: Some(512 * 1024 * 1024),
+            status: SignalStatus::Available,
+        },
+        gpu: GpuSignal {
+            devices: vec![GpuDevice {
+                name: "RTX 4090".into(),
+                utilization_percent: Some(45.0),
+                memory_total_bytes: Some(24 * 1024 * 1024 * 1024),
+                memory_used_bytes: Some(3 * 1024 * 1024 * 1024),
+            }],
+            truncated: false,
+            status: SignalStatus::Available,
+        },
+        processes: ProcessSummary {
+            total: 128,
+            resident_bytes: 1_300 * 1024 * 1024,
+            rows: vec![
+                ProcessClassRow {
+                    class: ProcessClass::Zenpi,
+                    count: 2,
+                    resident_bytes: 300 * 1024 * 1024,
+                },
+                ProcessClassRow {
+                    class: ProcessClass::Lsp,
+                    count: 5,
+                    resident_bytes: 900 * 1024 * 1024,
+                },
+                ProcessClassRow {
+                    class: ProcessClass::Mcp,
+                    count: 3,
+                    resident_bytes: 100 * 1024 * 1024,
+                },
+            ],
+            truncated: false,
+            status: SignalStatus::Available,
+        },
+        headless: Default::default(),
     }
 }
 
@@ -136,7 +176,7 @@ fn production_workspace_renders_tabs_and_existing_transcript_prompt() {
     assert!(output.contains("project"));
     // Goal is an in-workspace command/pane, not a peer top-level tab.
     assert!(!output.contains("1:project"));
-    assert!(output.contains("projects:"));
+    assert!(output.contains("workspaces"));
     assert!(!output.contains("/goal"));
     assert!(!output.contains("/learn"));
     assert!(!output.contains("/review"));
@@ -150,22 +190,161 @@ fn production_workspace_renders_tabs_and_existing_transcript_prompt() {
 
 #[test]
 fn production_resources_pane_renders_completed_snapshot() {
-    let mut terminal = Terminal::new(TestBackend::new(160, 44)).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(160, 60)).unwrap();
     let mut state = TuiState::default();
     state.set_resource_snapshot(resource_snapshot());
+    state.set_context_usage(Some(12_000), Some(200_000));
 
     terminal
         .draw(|frame| state.render_bentobox(frame, "zenpi"))
         .unwrap();
 
     let output = rendered(&terminal);
-    assert!(output.contains("files 23"));
-    assert!(output.contains("dirs 7"));
+    // Existing workspace/host contract is preserved.
+    assert!(output.contains("Files 23"));
+    assert!(output.contains("Dirs 7"));
     assert!(output.contains("3.0 MiB"));
-    assert!(output.contains("cpu 8"));
+    assert!(output.contains("CPU 8"));
     assert!(output.contains("load 1.25"));
     assert!(output.contains("6.0 GiB"));
     assert!(output.contains("12.0 MiB"));
+    // New htop/nvidia-smi style signals: GPU, network, merged processes, and
+    // the opencode-style context/lsp/mcp column.
+    assert!(output.contains("GPU RTX 4090 45% 3.0 GiB/24.0 GiB"));
+    assert!(output.contains("Net rx 2.0 GiB  tx 512.0 MiB"));
+    assert!(output.contains("Processes 128 total"));
+    assert!(output.contains("LSP 5 servers  MCP 3 servers"));
+    assert!(output.contains("Context history 12000/200000 tokens"));
+    assert!(output.contains("zenpi"));
+}
+
+#[test]
+fn resource_monitor_colours_cpu_memory_gpu_and_network_sections() {
+    // Taller viewport: the six-row header leaves less room for the resource
+    // pane, and the network (blue) line must remain visible.
+    let mut terminal = Terminal::new(TestBackend::new(200, 80)).unwrap();
+    let mut state = TuiState::default();
+    state.set_resource_snapshot(resource_snapshot());
+    terminal
+        .draw(|frame| state.render_bentobox(frame, "zenpi"))
+        .unwrap();
+
+    let colors: Vec<ratatui::style::Color> = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.fg)
+        .collect();
+    for expected in [
+        ratatui::style::Color::Cyan,
+        ratatui::style::Color::Green,
+        ratatui::style::Color::Magenta,
+        ratatui::style::Color::Blue,
+        ratatui::style::Color::Yellow,
+    ] {
+        assert!(colors.contains(&expected), "missing colour {expected:?}");
+    }
+}
+
+#[test]
+fn resource_monitor_merges_process_classes_without_detail_rows() {
+    let mut terminal = Terminal::new(TestBackend::new(160, 60)).unwrap();
+    let mut state = TuiState::default();
+    state.set_resource_snapshot(resource_snapshot());
+    terminal
+        .draw(|frame| state.render_bentobox(frame, "zenpi"))
+        .unwrap();
+
+    let output = rendered(&terminal);
+    assert!(output.contains("Processes 128 total"));
+    assert!(output.contains("lsp"));
+    assert!(output.contains("mcp"));
+    // Merged statistics keep one row per class instead of per-process detail.
+    assert!(!output.contains("pid 123"));
+}
+
+#[test]
+fn resource_refresh_interval_is_five_seconds() {
+    assert_eq!(RESOURCE_REFRESH_INTERVAL, std::time::Duration::from_secs(5));
+}
+
+fn lan_fixture_snapshot() -> zenpi::net_probe::LanSnapshot {
+    use zenpi::net_probe::{DeviceClass, LanBlock, LanHost, LanSnapshot};
+    let mut local = LanHost::new("10.20.30.14");
+    local.mac = Some("9c:76:0e:7d:3c:27".into());
+    local.vendor = Some("Apple".into());
+    local.class = DeviceClass::Local;
+    local.open_ports = vec![22, 5900];
+    let mut gateway = LanHost::new("10.20.30.1");
+    gateway.class = DeviceClass::Gateway;
+    gateway.open_ports = vec![80];
+    let mut nas = LanHost::new("10.20.30.177");
+    nas.class = DeviceClass::Nas;
+    nas.vendor = Some("Synology".into());
+    nas.open_ports = vec![445, 5000, 5001];
+    let hosts = vec![local, gateway, nas];
+    let blocks = vec![
+        LanBlock {
+            class: DeviceClass::Local,
+            title: "本机 (1)".into(),
+            host_indices: vec![0],
+        },
+        LanBlock {
+            class: DeviceClass::Gateway,
+            title: "网关 (1)".into(),
+            host_indices: vec![1],
+        },
+        LanBlock {
+            class: DeviceClass::Nas,
+            title: "存储(NAS) (1)".into(),
+            host_indices: vec![2],
+        },
+    ];
+    LanSnapshot {
+        local_ip: "10.20.30.14".into(),
+        gateway_ip: Some("10.20.30.1".into()),
+        hosts,
+        blocks,
+        scanned_at_ms: 1,
+        truncated: false,
+    }
+}
+
+#[test]
+fn resources_pane_groups_lan_hosts_into_blocks_with_drilldown() {
+    let mut terminal = Terminal::new(TestBackend::new(180, 70)).unwrap();
+    let mut state = TuiState::default();
+    state.set_lan_snapshot(lan_fixture_snapshot());
+    terminal
+        .draw(|frame| state.render_bentobox(frame, "zenpi"))
+        .unwrap();
+
+    let output: String = rendered(&terminal)
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    assert!(output.contains("LAN10.20.30.0/24"), "{output}");
+    assert!(output.contains("本机(1)"), "{output}");
+    assert!(output.contains("网关(1)"), "{output}");
+    assert!(output.contains("存储(NAS)(1)"), "{output}");
+
+    // Drill into the storage block and verify the detail table columns.
+    state.move_resource_block(2);
+    state.activate_resource_block();
+    terminal
+        .draw(|frame| state.render_bentobox(frame, "zenpi"))
+        .unwrap();
+    let detail = rendered(&terminal);
+    assert!(detail.contains("10.20.30.177"));
+    assert!(detail.contains("Synology"));
+    assert!(detail.contains("5000,5001"), "{detail}");
+
+    state.close_resource_block();
+    terminal
+        .draw(|frame| state.render_bentobox(frame, "zenpi"))
+        .unwrap();
+    assert!(rendered(&terminal).contains("LAN 10.20.30.0/24"));
 }
 
 #[test]
@@ -508,6 +687,53 @@ fn restoring_tab_models_preserves_each_tab_and_clears_dirty_state() {
 }
 
 #[test]
+fn bentobox_focus_resize_collapse_persist_across_independent_restore() {
+    let mut state = TuiState::default();
+    assert!(state.focus_workspace_pane(PaneId::ProjectConversation));
+    assert!(state.adjust_workspace_split(FocusDirection::Right));
+    let resized = state.workspace_layout().ratios;
+    assert_eq!(state.toggle_workspace_pane(PaneId::Resources), Some(true));
+    assert!(state.focus_workspace_pane(PaneId::Gantt));
+    let checkpoint = state.project_checkpoint();
+
+    let mut restored = TuiState::new(32);
+    assert!(restored.restore_project_checkpoint(&checkpoint));
+    assert_eq!(restored.workspace_layout().ratios, resized);
+    assert!(
+        restored
+            .workspace_layout()
+            .collapsed
+            .contains(&PaneId::Resources)
+    );
+    assert_eq!(restored.workspace_layout().focused, Some(PaneId::Gantt));
+
+    assert_eq!(
+        restored.toggle_workspace_pane(PaneId::Resources),
+        Some(false)
+    );
+    restored.reset_workspace_layout();
+    assert_eq!(
+        restored.workspace_layout().ratios,
+        LayoutModel::new(TabId::Project).ratios
+    );
+    assert!(restored.workspace_layout().collapsed.is_empty());
+    assert_eq!(restored.workspace_layout().focused, None);
+
+    let mut reopened = TuiState::new(32);
+    assert!(reopened.restore_project_checkpoint(&restored.project_checkpoint()));
+    assert_eq!(reopened.workspace_layout(), restored.workspace_layout());
+}
+
+#[test]
+fn unavailable_pane_toggle_is_rejected_without_layout_mutation() {
+    let mut state = TuiState::default();
+    let before = state.workspace_layout().clone();
+    assert_eq!(state.toggle_workspace_pane(PaneId::Browser), None);
+    assert_eq!(state.toggle_workspace_pane(PaneId::Terminal), None);
+    assert_eq!(state.workspace_layout(), &before);
+}
+
+#[test]
 fn short_workspace_tab_cycle_skips_panes_that_have_no_screen_rows() {
     let mut terminal = Terminal::new(TestBackend::new(180, 7)).unwrap();
     let mut state = TuiState::default();
@@ -581,4 +807,232 @@ fn short_workspace_narrow_cycle_reveals_each_selected_pane() {
         Some(PaneId::ProjectConversation)
     );
     assert!(rendered(&terminal).contains("Conversation"));
+}
+
+#[test]
+fn discussion_prompt_is_grouped_with_the_left_column_conversation() {
+    let mut terminal = Terminal::new(TestBackend::new(140, 40)).unwrap();
+    let mut state = TuiState::default();
+    state.set_input("draft");
+    terminal
+        .draw(|frame| state.render_bentobox(frame, "zenpi"))
+        .unwrap();
+    let output = rendered(&terminal);
+    assert!(output.contains("Conversation"));
+    assert!(output.contains("Prompt"));
+    assert!(output.contains("Alt-G edit"));
+    assert!(output.contains("draft"));
+    // The prompt is rendered inside the conversation pane, so it keeps the
+    // left column width and never spills into the center/right columns.
+    let adapter = BentoBoxLayoutAdapter::new(state.workspace_layout(), Rect::new(0, 5, 140, 29));
+    let conversation = adapter.pane(PaneId::ProjectConversation).unwrap();
+    let (_, prompt) = zenpi::layout::conversation_prompt_group(
+        zenpi::layout::PaneRect::new(
+            conversation.rect.x,
+            conversation.rect.y,
+            conversation.rect.width,
+            conversation.rect.height,
+        ),
+        zenpi::tui::PROMPT_PANE_ROWS,
+    );
+    assert_eq!(prompt.x, conversation.rect.x);
+    assert_eq!(prompt.width, conversation.rect.width);
+}
+
+#[test]
+fn inline_goal_edit_is_bounded_and_emits_a_persist_intent() {
+    let mut state = TuiState::default();
+    assert!(!state.goal_edit_active());
+    assert!(state.begin_goal_edit());
+    assert!(state.goal_edit_active());
+    for character in "ship release".chars() {
+        state.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+    }
+    assert_eq!(state.goal_edit_buffer(), Some("ship release"));
+    assert_eq!(state.commit_goal_edit().as_deref(), Some("ship release"));
+    assert!(!state.goal_edit_active());
+    assert_eq!(state.goal_text(), "ship release");
+    assert_eq!(
+        state.take_goal_edit_intent().as_deref(),
+        Some("ship release")
+    );
+    assert!(state.take_goal_edit_intent().is_none());
+}
+
+#[test]
+fn inline_goal_edit_rejects_empty_and_escape_restores_the_previous_goal() {
+    let mut state = TuiState::default();
+    assert!(state.begin_goal_edit());
+    assert!(state.commit_goal_edit().is_none());
+    assert!(state.goal_edit_active());
+    assert!(state.cancel_goal_edit());
+    assert!(!state.goal_edit_active());
+    assert!(state.goal_text().is_empty());
+    assert!(state.take_goal_edit_intent().is_none());
+}
+
+#[test]
+fn open_goal_editor_replaces_the_docked_prompt_in_place() {
+    let mut terminal = Terminal::new(TestBackend::new(140, 40)).unwrap();
+    let mut state = TuiState::default();
+    state.set_input("hidden draft");
+    assert!(state.begin_goal_edit());
+    for character in "bounded".chars() {
+        state.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+    }
+    terminal
+        .draw(|frame| state.render_bentobox(frame, "zenpi"))
+        .unwrap();
+    let output = rendered(&terminal);
+    assert!(output.contains("Goal · Enter save"));
+    assert!(output.contains("bounded"));
+    assert!(!output.contains("hidden draft"));
+}
+
+#[test]
+fn narrow_viewport_falls_back_to_the_bottom_prompt_strip() {
+    let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+    let mut state = TuiState::default();
+    state.set_input("kept");
+    terminal
+        .draw(|frame| state.render_bentobox(frame, "zenpi"))
+        .unwrap();
+    let output = rendered(&terminal);
+    assert!(output.contains("Prompt"));
+    assert!(output.contains("kept"));
+}
+
+#[test]
+fn arch_prompt_group_tiles_the_pane_at_left_column_width() {
+    use zenpi::layout::{PaneRect, arch_prompt_group};
+
+    let pane = PaneRect::new(5, 10, 30, 12);
+    let (conversation, prompt) = arch_prompt_group(pane, ARCH_PROMPT_PANE_ROWS);
+    // Arch + Prompt are one group: the prompt keeps the pane's x/width and sits
+    // directly beneath the transcript, so arch never spills into the center
+    // column.
+    assert_eq!(prompt.x, pane.x);
+    assert_eq!(prompt.width, pane.width);
+    assert_eq!(prompt.y, conversation.bottom());
+    assert_eq!(conversation.height + prompt.height, pane.height);
+    assert!(!conversation.intersects(prompt));
+
+    // Degenerate panes never overlap and always keep one transcript row.
+    let (conversation, prompt) =
+        arch_prompt_group(PaneRect::new(0, 0, 10, 1), ARCH_PROMPT_PANE_ROWS);
+    assert_eq!(prompt.height, 0);
+    assert_eq!(conversation.height, 1);
+
+    let (conversation, prompt) =
+        arch_prompt_group(PaneRect::new(0, 0, 10, 4), ARCH_PROMPT_PANE_ROWS);
+    assert_eq!(prompt.height, 3);
+    assert_eq!(conversation.height, 1);
+}
+
+#[test]
+fn arch_master_prompt_is_grouped_in_the_left_column() {
+    let mut terminal = Terminal::new(TestBackend::new(140, 40)).unwrap();
+    let mut state = TuiState::default();
+    state.push_arch_message(MessageRole::User, "!echo hi");
+    terminal
+        .draw(|frame| state.render_bentobox(frame, "zenpi"))
+        .unwrap();
+    let output = rendered(&terminal);
+    assert!(output.contains("Arch · master session"));
+    assert!(output.contains("Arch prompt"));
+    assert!(output.contains("!echo hi"));
+
+    // The rendered prompt shares the arch pane's exact left-column width.
+    let adapter = BentoBoxLayoutAdapter::new(state.workspace_layout(), Rect::new(0, 5, 140, 29));
+    let arch = adapter.pane(PaneId::Arch).unwrap().rect;
+    let (_, prompt) = zenpi::layout::arch_prompt_group(
+        zenpi::layout::PaneRect::new(arch.x, arch.y, arch.width, arch.height),
+        ARCH_PROMPT_PANE_ROWS,
+    );
+    assert_eq!(prompt.x, arch.x);
+    assert_eq!(prompt.width, arch.width);
+}
+
+#[test]
+fn arch_console_classifies_bash_and_steering_boundedly() {
+    use zenpi::tool_runtime::{
+        MAX_MASTER_SESSION_INPUT_BYTES, MasterSessionCommand, classify_master_session_input,
+    };
+
+    assert_eq!(
+        classify_master_session_input("!echo hi").unwrap(),
+        MasterSessionCommand::Bash("echo hi".into())
+    );
+    assert_eq!(
+        classify_master_session_input("  pause the workers  ").unwrap(),
+        MasterSessionCommand::Steer("pause the workers".into())
+    );
+    assert!(classify_master_session_input("   ").is_err());
+    assert!(classify_master_session_input("!   ").is_err());
+    assert!(classify_master_session_input("bad\u{7}escape").is_err());
+    let oversized = "x".repeat(MAX_MASTER_SESSION_INPUT_BYTES + 1);
+    assert!(classify_master_session_input(&oversized).is_err());
+}
+
+#[test]
+fn arch_master_console_serializes_bash_but_lets_steering_join() {
+    use zenpi::tool_runtime::{MasterSessionCommand, MasterSessionInputError};
+
+    let mut state = TuiState::default();
+    state.set_arch_input("!echo one");
+    assert_eq!(
+        state.submit_arch_prompt().unwrap(),
+        TuiAction::SubmitArch(MasterSessionCommand::Bash("echo one".into()))
+    );
+    assert!(state.master_busy());
+    assert_eq!(state.arch_message_count(), 1);
+
+    // A second bash submission is rejected while the master turn is active,
+    // and the operator's draft is preserved.
+    state.set_arch_input("!echo two");
+    assert_eq!(
+        state.submit_arch_prompt().unwrap_err(),
+        MasterSessionInputError::Busy
+    );
+    assert_eq!(state.arch_input(), "!echo two");
+
+    // Steering is single-concurrency too: it joins the active turn rather than
+    // forking a second master worker.
+    state.set_arch_input("keep going");
+    assert_eq!(
+        state.submit_arch_prompt().unwrap(),
+        TuiAction::SubmitArch(MasterSessionCommand::Steer("keep going".into()))
+    );
+    assert!(state.master_busy());
+    state.complete_master_turn(MessageRole::System, "done");
+    assert!(!state.master_busy());
+    assert_eq!(
+        state.take_arch_intent(),
+        Some(MasterSessionCommand::Steer("keep going".into()))
+    );
+    assert_eq!(state.take_arch_intent(), None);
+}
+
+#[test]
+fn headless_arch_route_maps_bash_and_steer_to_bounded_commands() {
+    use zenpi::protocol::Command;
+
+    match zenpi::headless::master_session_command("!echo hi", None).unwrap() {
+        Command::UserShell(request) => assert_eq!(request.input, "!echo hi"),
+        other => panic!("expected a user-shell command, got {other:?}"),
+    }
+    match zenpi::headless::master_session_command("pause the workers", Some("turn-7".into()))
+        .unwrap()
+    {
+        Command::Steer {
+            text,
+            expected_turn_id,
+        } => {
+            assert_eq!(text, "pause the workers");
+            assert_eq!(expected_turn_id.as_deref(), Some("turn-7"));
+        }
+        other => panic!("expected a steer command, got {other:?}"),
+    }
+    assert!(zenpi::headless::master_session_command("   ", None).is_err());
+    assert!(zenpi::headless::master_session_command("!  ", None).is_err());
 }

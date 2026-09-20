@@ -190,3 +190,124 @@ fn last_tab_and_removed_directory_cannot_be_selected_or_restored() {
     assert!(ProjectWorkspace::from_json_bytes(&bytes).is_err());
     assert_eq!(current.to_json_bytes().unwrap(), bytes);
 }
+
+#[cfg(unix)]
+#[test]
+fn permission_denied_selection_is_an_io_error_and_leaves_state_unchanged() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempdir().unwrap();
+    let (current, _) = ProjectWorkspace::default()
+        .with_directory(Some(root.path()), root.path())
+        .unwrap();
+    let before = current.to_json_bytes().unwrap();
+    let locked = root.path().join("locked");
+    fs::create_dir_all(locked.join("child")).unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    // Privileged or permission-bit-bypassing hosts cannot exercise this path.
+    if fs::read_dir(&locked).is_ok() {
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        return;
+    }
+    let outcome = current.with_directory(Some(Path::new("locked/child")), root.path());
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(matches!(outcome, Err(ProjectWorkspaceError::Io(_))));
+    assert_eq!(current.to_json_bytes().unwrap(), before);
+    // Restoring access lets the same selection succeed without touching prior state.
+    let (recovered, outcome) = current
+        .with_directory(Some(Path::new("locked/child")), root.path())
+        .unwrap();
+    assert_eq!(
+        outcome,
+        OpenOutcome::Opened(recovered.active().unwrap().id().clone())
+    );
+    assert_eq!(recovered.tabs().len(), current.tabs().len() + 1);
+    assert_eq!(current.to_json_bytes().unwrap(), before);
+}
+
+#[test]
+fn checkpoint_restores_in_an_independent_process() {
+    let root = tempdir().unwrap();
+    let one = root.path().join("one");
+    let two = root.path().join("two");
+    fs::create_dir_all(&one).unwrap();
+    fs::create_dir_all(&two).unwrap();
+    let (current, _) = ProjectWorkspace::default()
+        .with_directory(Some(&one), root.path())
+        .unwrap();
+    let first = current.active().unwrap().id().clone();
+    let (current, _) = current.with_directory(Some(&two), root.path()).unwrap();
+    let current = current.with_active(&first).unwrap();
+    let bytes = current.to_json_bytes().unwrap();
+    let path = root.path().join("project-workspace.json");
+    fs::write(&path, &bytes).unwrap();
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--ignored", "--exact", "project_workspace_restart_child"])
+        .env("ZENPI_PROJECT_WORKSPACE_CHECKPOINT", &path)
+        .env("ZENPI_PROJECT_WORKSPACE_ACTIVE", first.as_str())
+        .output()
+        .unwrap();
+    assert!(
+        child.status.success(),
+        "{}",
+        String::from_utf8_lossy(&child.stderr)
+    );
+    assert!(String::from_utf8_lossy(&child.stdout).contains("1 passed"));
+}
+
+#[test]
+#[ignore = "invoked in a fresh process by checkpoint_restores_in_an_independent_process"]
+fn project_workspace_restart_child() {
+    let path = std::env::var_os("ZENPI_PROJECT_WORKSPACE_CHECKPOINT").unwrap();
+    let bytes = fs::read(path).unwrap();
+    let restored = ProjectWorkspace::from_json_bytes(&bytes).unwrap();
+    assert_eq!(restored.tabs().len(), 2);
+    assert_eq!(
+        restored.active().unwrap().id().as_str(),
+        std::env::var("ZENPI_PROJECT_WORKSPACE_ACTIVE").unwrap()
+    );
+    assert!(restored.active().unwrap().cwd().is_dir());
+    // A fresh process reserializes byte-identically and re-validates deterministically.
+    assert_eq!(restored.to_json_bytes().unwrap(), bytes);
+    assert_eq!(
+        ProjectWorkspace::from_json_bytes(&restored.to_json_bytes().unwrap()).unwrap(),
+        restored
+    );
+}
+
+#[test]
+fn arch_owner_uses_an_independent_journal() {
+    use std::sync::{Arc, Mutex};
+
+    let root = tempdir().unwrap();
+    let cwd = root.path().canonicalize().unwrap();
+    let session = root.path().join("session.jsonl");
+    let agent = zenpi::core::Agent::prepare_project_with_options(
+        &session,
+        &cwd,
+        zenpi::config::ConfigOverrides::default(),
+        true,
+    )
+    .unwrap();
+    let discussion_path = agent.session().path().to_path_buf();
+    let mut pool =
+        zenpi::project_workspace::ProjectOwnerPool::new(Arc::new(Mutex::new(agent))).unwrap();
+    let id = pool.workspace().active().unwrap().id().as_str().to_owned();
+
+    let arch = pool.arch_agent(&id).unwrap();
+    let arch_path = arch.lock().unwrap().session().path().to_path_buf();
+    assert_ne!(
+        arch_path, discussion_path,
+        "arch must not share the discussion journal"
+    );
+    assert_eq!(arch_path.file_name().unwrap(), "arch.jsonl");
+
+    // Preparing arch never rewrites the discussion owner's session path.
+    let discussion = pool.owner(&id).unwrap();
+    assert_eq!(
+        discussion.lock().unwrap().session().path(),
+        discussion_path.as_path()
+    );
+    // Repeated calls reuse the same independent owner handle.
+    let again = pool.arch_agent(&id).unwrap();
+    assert!(Arc::ptr_eq(&arch, &again));
+}

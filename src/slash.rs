@@ -184,15 +184,89 @@ pub enum SlashCommand {
     Loop {
         args: Vec<String>,
     },
+    /// Sync one user requirement into the single-authority blueprint and queue
+    /// its execution. This is a host control-plane action; parsing only keeps
+    /// the raw requirement text.
+    Sync {
+        requirement: String,
+    },
+    /// Operate on the active project's layer-2 worktree sub-tabs.
+    Worktree {
+        action: WorktreeAction,
+    },
+    /// Dispatch one bounded Blueprint/domain execution target to the external
+    /// execution owner.
+    Execute {
+        args: Vec<String>,
+    },
+    /// Dispatch an automatic research loop to the external owner.
+    Explore {
+        args: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProjectAction {
     List,
-    Open { name: String },
-    Select { name: String },
-    Close { name: String },
+    Open {
+        name: String,
+    },
+    Select {
+        name: String,
+    },
+    Close {
+        name: String,
+    },
+    /// Move a project tab to a zero-based position.
+    Move {
+        name: String,
+        index: usize,
+    },
+    /// Rename a project tab.
+    Rename {
+        old: String,
+        new: String,
+    },
+    /// Set a project tab's display style from a small named palette.
+    Style {
+        name: String,
+        style: String,
+    },
+}
+
+/// Layer-2 worktree sub-tab operations for the active project.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum WorktreeAction {
+    List,
+    /// Create a new sub-tab: a fresh worktree, or "in place" (no worktree).
+    Add {
+        #[serde(default)]
+        in_place: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
+    Select {
+        index: usize,
+    },
+    Close {
+        index: usize,
+    },
+    Move {
+        index: usize,
+        target: usize,
+    },
+    /// Rename one layer-2 tab.
+    Rename {
+        index: usize,
+        name: String,
+    },
+    /// Adjust one layer-2 tab's default harness concurrency by `delta`.
+    Concurrency {
+        index: usize,
+        delta: i32,
+    },
 }
 
 /// Recovery decisions require explicit host confirmation and never dispatch work.
@@ -379,7 +453,11 @@ impl SlashCommand {
     /// Return the routing boundary for this command.
     pub const fn route(&self) -> SlashRoute {
         match self {
-            Self::Compete { .. } | Self::Loop { .. } => SlashRoute::Runtime,
+            Self::Compete { .. }
+            | Self::Loop { .. }
+            | Self::Sync { .. }
+            | Self::Execute { .. }
+            | Self::Explore { .. } => SlashRoute::Runtime,
             _ => SlashRoute::Local,
         }
     }
@@ -425,6 +503,10 @@ impl SlashCommand {
             Self::Exit => "exit",
             Self::Compete { .. } => "compete",
             Self::Loop { .. } => "loop",
+            Self::Sync { .. } => "sync",
+            Self::Execute { .. } => "execute",
+            Self::Explore { .. } => "explore",
+            Self::Worktree { .. } => "worktree",
         }
     }
 
@@ -453,6 +535,10 @@ impl SlashCommand {
                 | Self::Session { .. }
                 | Self::Mailbox { .. }
                 | Self::Recovery { .. }
+                | Self::Sync { .. }
+                | Self::Execute { .. }
+                | Self::Explore { .. }
+                | Self::Worktree { .. }
                 | Self::Project { .. }
         )
     }
@@ -703,10 +789,38 @@ pub const COMMAND_SPECS: &[SlashCommandSpec] = &[
     },
     SlashCommandSpec {
         name: "loop",
+        aliases: &["addloop"],
+        route: SlashRoute::Runtime,
+        usage: "/loop (/addloop) [start] <task...> | /loop status",
+        summary: "persist a bounded request for an external loop owner",
+    },
+    SlashCommandSpec {
+        name: "sync",
         aliases: NO_ALIASES,
         route: SlashRoute::Runtime,
-        usage: "/loop [start] <task...> | /loop status",
-        summary: "persist a bounded request for an external loop owner",
+        usage: "/sync <requirement...>",
+        summary: "sync a requirement into the single-authority blueprint and queue its execution",
+    },
+    SlashCommandSpec {
+        name: "execute",
+        aliases: NO_ALIASES,
+        route: SlashRoute::Runtime,
+        usage: "/execute [start] <blueprint-target...> | /execute status",
+        summary: "dispatch a bounded Blueprint/domain execution target to an external owner",
+    },
+    SlashCommandSpec {
+        name: "explore",
+        aliases: NO_ALIASES,
+        route: SlashRoute::Runtime,
+        usage: "/explore [start] <research-question...> | /explore status",
+        summary: "dispatch an automatic research loop to an external owner",
+    },
+    SlashCommandSpec {
+        name: "worktree",
+        aliases: &["wt", "subtab"],
+        route: SlashRoute::Local,
+        usage: "/worktree [list] | add [--in-place] [name] | select N | close N | move N M",
+        summary: "manage the active project layer-2 worktree sub-tabs",
     },
 ];
 
@@ -875,6 +989,56 @@ pub fn route_input(input: &str) -> Result<InputRoute, SlashError> {
 /// distinguish ordinary model text from an explicit user-shell request. A
 /// leading slash after optional whitespace is always a control command;
 /// malformed or unknown commands never silently reach the model.
+fn parse_worktree(args: &[String]) -> Result<WorktreeAction, SlashError> {
+    use WorktreeAction as W;
+    let bad = || SlashError::UnexpectedArgument {
+        command: "worktree",
+    };
+    let index = |value: &str| value.parse::<usize>().map_err(|_| bad());
+    let in_place = |value: &str| {
+        value.eq_ignore_ascii_case("--in-place")
+            || value.eq_ignore_ascii_case("inplace")
+            || value.eq_ignore_ascii_case("in_place")
+    };
+    match args {
+        [] => Ok(W::List),
+        [a] if a.eq_ignore_ascii_case("list") => Ok(W::List),
+        [a] if a.eq_ignore_ascii_case("add") => Ok(W::Add {
+            in_place: false,
+            name: None,
+        }),
+        [a, b] if a.eq_ignore_ascii_case("add") && in_place(b) => Ok(W::Add {
+            in_place: true,
+            name: None,
+        }),
+        [a, n] if a.eq_ignore_ascii_case("add") => Ok(W::Add {
+            in_place: false,
+            name: Some(n.trim().to_owned()),
+        }),
+        [a, b, n] if a.eq_ignore_ascii_case("add") && in_place(b) => Ok(W::Add {
+            in_place: true,
+            name: Some(n.trim().to_owned()),
+        }),
+        [a, n] if a.eq_ignore_ascii_case("select") => Ok(W::Select { index: index(n)? }),
+        [a, n] if a.eq_ignore_ascii_case("close") => Ok(W::Close { index: index(n)? }),
+        [a, n, m] if a.eq_ignore_ascii_case("move") => Ok(W::Move {
+            index: index(n)?,
+            target: index(m)?,
+        }),
+        [a, n, name] if a.eq_ignore_ascii_case("rename") => Ok(W::Rename {
+            index: index(n)?,
+            name: name.trim().to_owned(),
+        }),
+        [a, n, d] if a.eq_ignore_ascii_case("concurrency") || a.eq_ignore_ascii_case("conc") => {
+            Ok(W::Concurrency {
+                index: index(n)?,
+                delta: d.parse::<i32>().map_err(|_| bad())?,
+            })
+        }
+        _ => Err(bad()),
+    }
+}
+
 pub fn parse(input: &str) -> Result<Option<SlashCommand>, SlashError> {
     if input.trim().is_empty() {
         return Ok(None);
@@ -1049,6 +1213,29 @@ pub fn parse(input: &str) -> Result<Option<SlashCommand>, SlashError> {
                     name: name.trim().to_owned(),
                 },
             },
+            [action, name, value] if action.eq_ignore_ascii_case("move") => SlashCommand::Project {
+                action: ProjectAction::Move {
+                    name: name.trim().to_owned(),
+                    index: value
+                        .trim()
+                        .parse::<usize>()
+                        .map_err(|_| SlashError::UnexpectedArgument { command: "project" })?,
+                },
+            },
+            [action, old, new] if action.eq_ignore_ascii_case("rename") => SlashCommand::Project {
+                action: ProjectAction::Rename {
+                    old: old.trim().to_owned(),
+                    new: new.trim().to_owned(),
+                },
+            },
+            [action, name, style] if action.eq_ignore_ascii_case("style") => {
+                SlashCommand::Project {
+                    action: ProjectAction::Style {
+                        name: name.trim().to_owned(),
+                        style: style.trim().to_owned(),
+                    },
+                }
+            }
             _ => return Err(SlashError::UnexpectedArgument { command: "project" }),
         },
         "yolo" => {
@@ -1134,9 +1321,25 @@ pub fn parse(input: &str) -> Result<Option<SlashCommand>, SlashError> {
         "compete" => SlashCommand::Compete {
             args: args.to_vec(),
         },
-        "loop" => SlashCommand::Loop {
+        "loop" | "addloop" => SlashCommand::Loop {
             args: args.to_vec(),
         },
+        "execute" => SlashCommand::Execute {
+            args: args.to_vec(),
+        },
+        "explore" => SlashCommand::Explore {
+            args: args.to_vec(),
+        },
+        "worktree" | "wt" | "subtab" => SlashCommand::Worktree {
+            action: parse_worktree(args)?,
+        },
+        "sync" => {
+            let requirement = args.join(" ");
+            if requirement.trim().is_empty() {
+                return Err(SlashError::MissingArgument { command: "sync" });
+            }
+            SlashCommand::Sync { requirement }
+        }
         other => return Err(SlashError::UnknownCommand(other.to_owned())),
     };
     Ok(Some(parsed))
@@ -1336,6 +1539,8 @@ fn parse_pane_name(value: &str) -> Result<PaneId, SlashError> {
         "resources" | "resource" => PaneId::Resources,
         "goal_conversation" | "goal" => PaneId::GoalConversation,
         "gantt" | "board" => PaneId::Gantt,
+        "arch" | "architecture" => PaneId::Arch,
+        "execution" | "exec" => PaneId::Execution,
         "browser" | "web" => PaneId::Browser,
         "terminal" | "pty" => PaneId::Terminal,
         "learn_conversation" | "learn" => PaneId::LearnConversation,

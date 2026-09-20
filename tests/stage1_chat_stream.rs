@@ -1345,11 +1345,18 @@ fn production_json_cancel_closes_partial_body_and_next_request_is_clean() {
         first
             .set_read_timeout(Some(Duration::from_secs(3)))
             .unwrap();
-        assert_eq!(
-            first.read(&mut [0u8]).unwrap(),
-            0,
-            "cancel must close JSON body socket"
-        );
+        // The client must tear the JSON body socket down on cancel. Accept
+        // either a clean EOF (read returns 0) or a reset (read errors with
+        // ECONNRESET); both prove the connection was closed rather than left
+        // half-open. The platform decides which one surfaces.
+        match first.read(&mut [0u8]) {
+            Ok(read) => assert_eq!(read, 0, "cancel must close JSON body socket"),
+            Err(error) => assert_eq!(
+                error.kind(),
+                std::io::ErrorKind::ConnectionReset,
+                "cancel must close the JSON body socket: {error}"
+            ),
+        }
         let (mut next, _) = listener.accept().unwrap();
         let request = request_body(&mut next);
         assert!(!request.to_string().contains("never-persist-json-partial"));

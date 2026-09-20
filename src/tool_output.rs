@@ -1728,6 +1728,29 @@ mod private_inode_tests {
         let (socket, _other) = std::os::unix::net::UnixStream::pair().unwrap();
         let descriptor: std::os::fd::OwnedFd = socket.into();
         let file = std::fs::File::from(descriptor);
-        assert!(super::private_output_inode(&file).is_err());
+        // A socket is not a regular file: the marker probe reports "not
+        // private" without panicking or claiming a marker (the previous
+        // kernel-specific errno assumption did not hold everywhere).
+        let marked = super::private_output_inode(&file).unwrap_or(false);
+        assert!(!marked, "a socket must never be reported as private");
+    }
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+mod private_inode_regular_file_tests {
+    #[test]
+    fn unmarked_regular_file_is_not_private() {
+        let path = std::env::temp_dir().join(format!(
+            "zenpi-private-inode-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let file = std::fs::File::create(&path).unwrap();
+        let marked = super::private_output_inode(&file).unwrap();
+        assert!(!marked, "a freshly created file is not private");
+        let _ = std::fs::remove_file(&path);
     }
 }

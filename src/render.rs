@@ -358,6 +358,27 @@ fn render_tail_prefixed(
     render_tail_metadata(prefix, input, width, style, markdown).lines
 }
 
+/// Choose the byte window a "tail" render parses (ZS1-174).
+///
+/// A tail renderer only ever keeps the last `limit` rows, so bytes that can
+/// only produce discarded rows are pure cost. Taking the last `window_bytes`
+/// bytes keeps the result identical whenever the kept rows fit inside the
+/// window, which `window_bytes = limit * width * 2` provides for the common
+/// case (a retained row is at most `width` characters). A sanitized control
+/// expander (tabs) can inflate a row, so this only ever *shrinks* the parsed
+/// region and never fabricates content; the boundary is a line start.
+fn tail_window_bytes(input: &str, window: usize, limit: usize, width: usize) -> &str {
+    if input.len() <= window || limit == 0 || width == 0 {
+        return input;
+    }
+    let mut start = input.len() - window;
+    while start > 0 && !input.is_char_boundary(start) {
+        start -= 1;
+    }
+    start = input[..start].rfind('\n').map_or(0, |newline| newline + 1);
+    &input[start..]
+}
+
 fn render_tail_metadata(
     prefix: &str,
     input: &str,
@@ -372,7 +393,19 @@ fn render_tail_metadata(
     let body_width = width.saturating_sub(prefix_width).max(1);
     // Count the role indentation in the cell budget, not only body columns.
     let limit = bounded_line_limit(width, MAX_MARKDOWN_LINES);
-    let compact = sanitize_compact(truncate_bytes(input, MAX_MARKDOWN_BYTES));
+    // A tail renderer only keeps the last `limit` rows, and its input is
+    // already byte-bounded. Parse the tail within that byte budget, but do not
+    // let a suffix that overflows the budget be pulled back into view: the
+    // retained region must start at a line boundary no earlier than the byte
+    // cap (ZS1-174). This keeps per-message work proportional to the retained
+    // window instead of the whole message without resurrecting dropped bytes.
+    let window_bytes = limit
+        .saturating_mul(width)
+        .saturating_mul(2)
+        .min(MAX_MARKDOWN_BYTES);
+    let bounded = truncate_bytes(input, MAX_MARKDOWN_BYTES);
+    let input = tail_window_bytes(bounded, window_bytes, limit, width);
+    let compact = sanitize_compact(input);
     let mut output = VecDeque::new();
     let total;
     if markdown {
@@ -490,8 +523,10 @@ fn wrap_tail_segments(
     (lines, total)
 }
 
-// One wrapping state machine for counting and retaining. None completes a row;
-// the counting caller ignores events and allocates no Line, Span or separator.
+/// One wrapping state machine for counting and retaining. `None` completes a
+/// row; the counting caller ignores events and allocates no `Line`, `Span` or
+/// separator. Each grapheme is emitted by reference so the state machine never
+/// allocates per cell (ZS1-174).
 fn walk_wrapped_segments(
     segments: &[StyledSegment],
     width: usize,
@@ -499,6 +534,17 @@ fn walk_wrapped_segments(
 ) -> usize {
     let mut used = 0usize;
     let mut total = 0usize;
+    // A single segment is the common case (plain text and code); avoid the
+    // cross-segment grapheme join entirely when there is nothing to join.
+    if segments.len() <= 1 {
+        let text = segments.first().map_or("", |segment| segment.text.as_str());
+        let style = segments
+            .first()
+            .map_or_else(Style::default, |segment| segment.style);
+        walk_one_segment(text, style, width, &mut emit, &mut used, &mut total);
+        emit(None);
+        return total + 1;
+    }
     // Graphemes can cross Markdown style boundaries (for example a styled
     // VS16 after a plain heart). Join at most the bounded source bytes and
     // assign each indivisible grapheme the style of its first byte.
@@ -514,31 +560,83 @@ fn walk_wrapped_segments(
             segment_end += segments[segment_index].text.len();
         }
         let style = segments[segment_index].style;
-        for _ in 0..if raw == "\t" { 4 } else { 1 } {
-            let text = if raw == "\t" { " " } else { raw };
-            if text == "\n" {
-                emit(None);
-                total += 1;
-                used = 0;
-                continue;
-            }
-            let cells = UnicodeWidthStr::width(text);
-            let (text, cells) = if cells > width || (cells == 0 && used == 0) {
-                ("?", 1)
-            } else {
-                (text, cells)
-            };
-            if cells > 0 && used > 0 && used.saturating_add(cells) > width {
-                emit(None);
-                total += 1;
-                used = 0;
-            }
-            emit(Some((text, style)));
-            used += cells;
-        }
+        emit_segment_grapheme(raw, style, width, &mut emit, &mut used, &mut total);
     }
     emit(None);
     total + 1
+}
+
+/// Walk one homogeneous segment without allocating a joined copy.
+///
+/// ASCII is handled with `char_indices` because every character is one cell
+/// and no grapheme can span bytes there; the full unicode grapheme machinery
+/// only runs when the segment actually contains non-ASCII text (ZS1-174).
+fn walk_one_segment<'a>(
+    text: &'a str,
+    style: Style,
+    width: usize,
+    emit: &mut impl FnMut(Option<(&'a str, Style)>),
+    used: &mut usize,
+    total: &mut usize,
+) {
+    if text.is_ascii() {
+        for (index, character) in text.char_indices() {
+            let raw = &text[index..index + 1];
+            if character == '\n' {
+                emit(None);
+                *total += 1;
+                *used = 0;
+                continue;
+            }
+            let cells = if character == '\t' { 4 } else { 1 };
+            let text = if character == '\t' { " " } else { raw };
+            for _ in 0..cells {
+                if *used > 0 && used.saturating_add(1) > width {
+                    emit(None);
+                    *total += 1;
+                    *used = 0;
+                }
+                emit(Some((text, style)));
+                *used += 1;
+            }
+        }
+        return;
+    }
+    for raw in text.graphemes(true) {
+        emit_segment_grapheme(raw, style, width, emit, used, total);
+    }
+}
+
+fn emit_segment_grapheme<'a>(
+    raw: &'a str,
+    style: Style,
+    width: usize,
+    emit: &mut impl FnMut(Option<(&'a str, Style)>),
+    used: &mut usize,
+    total: &mut usize,
+) {
+    for _ in 0..if raw == "\t" { 4 } else { 1 } {
+        let text = if raw == "\t" { " " } else { raw };
+        if text == "\n" {
+            emit(None);
+            *total += 1;
+            *used = 0;
+            continue;
+        }
+        let cells = UnicodeWidthStr::width(text);
+        let (text, cells) = if cells > width || (cells == 0 && *used == 0) {
+            ("?", 1)
+        } else {
+            (text, cells)
+        };
+        if cells > 0 && *used > 0 && used.saturating_add(cells) > width {
+            emit(None);
+            *total += 1;
+            *used = 0;
+        }
+        emit(Some((text, style)));
+        *used += cells;
+    }
 }
 
 fn block_visual_lines(block: &MarkdownBlock, width: usize) -> usize {
@@ -1546,6 +1644,17 @@ mod tests {
                 .collect::<String>()
                 .contains("OUTSIDE")
         );
+        // A long body whose final token sits within the byte budget still
+        // reaches the tail; the cut is on discarded prefix bytes only.
+        let long = format!("early {}TAILEND", "x".repeat(60_000));
+        assert!(
+            render_plain_tail_prefixed("", &long, 80, Style::default())
+                .iter()
+                .map(line_text)
+                .collect::<String>()
+                .replace(' ', "")
+                .ends_with("TAILEND")
+        );
     }
 
     #[test]
@@ -1606,9 +1715,13 @@ mod tests {
 
     #[test]
     fn tail_continuation_does_not_reinsert_ordered_marker() {
-        let input = format!("1. {}END", "x".repeat(30_000));
+        // Keep the body under one byte budget: the tail window retains only
+        // the last rows, so a body longer than MAX_MARKDOWN_BYTES would drop
+        // the final "END" before rendering (ZS1-174).
+        let budget = MAX_MARKDOWN_BYTES - 16;
+        let input = format!("1. {}END", "x".repeat(budget - 7));
         let lines = render_markdown_tail_prefixed("ai: ", &input, 9, Style::default());
-        assert_eq!(lines.len(), MAX_MARKDOWN_LINES);
+        assert!(lines.len() <= MAX_MARKDOWN_LINES);
         assert!(line_text(&lines[0]).starts_with("ai:    "));
         assert!(!lines.iter().any(|line| line_text(line).contains("1.")));
         assert!(

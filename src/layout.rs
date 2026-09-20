@@ -68,6 +68,10 @@ pub enum PaneId {
     Resources,
     GoalConversation,
     Gantt,
+    /// Architecture / blueprint structure projection.
+    Arch,
+    /// Runtime execution projection (intents, workers, validators, handoffs).
+    Execution,
     Browser,
     Terminal,
     LearnConversation,
@@ -92,6 +96,8 @@ impl PaneId {
             Self::Resources => "resources",
             Self::GoalConversation => "goal_conversation",
             Self::Gantt => "gantt",
+            Self::Arch => "arch",
+            Self::Execution => "execution",
             Self::Browser => "browser",
             Self::Terminal => "terminal",
             Self::LearnConversation => "learn_conversation",
@@ -787,14 +793,15 @@ impl LayoutPreset {
                     PaneId::ProjectConversation,
                     Column::Left,
                     0,
-                    45,
+                    55,
                     24,
                     4,
                     false,
                 ),
-                pane(PaneId::Resources, Column::Left, 1, 30, 22, 3, false),
-                pane(PaneId::GoalConversation, Column::Left, 2, 25, 24, 4, false),
+                pane(PaneId::Resources, Column::Left, 1, 45, 22, 3, false),
+                pane(PaneId::Arch, Column::Left, 2, 40, 24, 4, false),
                 pane(PaneId::Gantt, Column::Center, 0, 100, 36, 6, false),
+                pane(PaneId::Execution, Column::Center, 1, 30, 36, 4, false),
                 pane(PaneId::Browser, Column::Right, 0, 55, 32, 6, true),
                 pane(PaneId::Terminal, Column::Right, 1, 45, 32, 6, true),
             ],
@@ -810,8 +817,10 @@ impl LayoutPreset {
                     4,
                     false,
                 ),
+                pane(PaneId::Arch, Column::Left, 3, 20, 24, 4, false),
                 pane(PaneId::Gantt, Column::Center, 0, 70, 36, 6, false),
-                pane(PaneId::EventTimeline, Column::Center, 1, 30, 36, 4, false),
+                pane(PaneId::Execution, Column::Center, 1, 30, 36, 4, false),
+                pane(PaneId::EventTimeline, Column::Center, 2, 30, 36, 4, false),
                 pane(PaneId::Browser, Column::Right, 0, 55, 32, 6, true),
                 pane(PaneId::Terminal, Column::Right, 1, 45, 32, 6, true),
             ],
@@ -1423,6 +1432,45 @@ impl LayoutSnapshot {
                 .all(|other| !pane.rect.intersects(other.rect))
         })
     }
+}
+
+/// Split a conversation pane into its transcript region and the resident
+/// discussion prompt (ZS1-147).
+///
+/// `Conversation + Prompt` are one left-column group: the prompt keeps the
+/// pane's `x` and `width` (so it is exactly as wide as the left column) and
+/// occupies the bottom `prompt_height` rows.  At least one row is always left
+/// for the transcript when the pane has more than one row; a degenerate pane
+/// yields an empty prompt.  The two returned rectangles never overlap and
+/// always tile the original pane.
+pub fn conversation_prompt_group(pane: PaneRect, prompt_height: u16) -> (PaneRect, PaneRect) {
+    if pane.height <= 1 {
+        return (pane, PaneRect::new(pane.x, pane.y, pane.width, 0));
+    }
+    let prompt_height = prompt_height.min(pane.height.saturating_sub(1));
+    let transcript_height = pane.height - prompt_height;
+    (
+        PaneRect::new(pane.x, pane.y, pane.width, transcript_height),
+        PaneRect::new(
+            pane.x,
+            pane.y.saturating_add(transcript_height),
+            pane.width,
+            prompt_height,
+        ),
+    )
+}
+
+/// Split the lower-left Arch pane into its master-session conversation region
+/// and the resident arch prompt (ZS1-148).
+///
+/// `arch + Prompt` are one left-column group, mirroring the top-left
+/// Conversation group: the prompt keeps the pane's `x` and `width` (so it is
+/// exactly as wide as the left column) and occupies the bottom `prompt_height`
+/// rows.  The helper is intentionally the same tiling rule as
+/// [`conversation_prompt_group`] so both hot zones share one geometry contract;
+/// the two returned rectangles never overlap and always tile the pane.
+pub fn arch_prompt_group(pane: PaneRect, prompt_height: u16) -> (PaneRect, PaneRect) {
+    conversation_prompt_group(pane, prompt_height)
 }
 
 fn collapse_optional_for_width(

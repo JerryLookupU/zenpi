@@ -139,16 +139,20 @@ fn topmost_plus_opens_picker_and_cancel_never_creates_a_tab_or_changes_draft() {
     terminal
         .draw(|frame| state.render_bentobox(frame, "zenpi"))
         .unwrap();
-    let row: String = (0..100)
-        .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
+    let screen: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|c| c.symbol())
         .collect();
-    assert!(row.contains("[+]"));
-    state.handle_mouse(MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: 98,
-        row: 0,
-        modifiers: KeyModifiers::NONE,
-    });
+    assert!(screen.contains("[+]"));
+    let (plus_col, plus_row) = find_pos(&terminal, "[+]");
+    state.handle_mouse(mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        plus_col,
+        plus_row,
+    ));
     assert!(state.directory_picker_open());
     assert_eq!(state.project_tab_count(), 1);
     key(&mut state, KeyCode::Esc, KeyModifiers::NONE);
@@ -180,8 +184,9 @@ fn picker_confirmation_and_real_tools_bind_two_equal_basename_directories() {
         let label = state.project_label(state.active_project_index());
         assert!(label.starts_with("工作 folder"));
         if state.project_tab_count() > 2 {
+            // Equal basenames disambiguate by parent folder name, never a hash.
             assert!(label.contains("one") || label.contains("two"));
-            assert!(label.contains('#'));
+            assert!(!label.contains('#'));
         }
         assert_eq!(
             state
@@ -483,8 +488,9 @@ fn draw_session_selection(
         .draw(|frame| state.render_bentobox(frame, "test"))
         .unwrap();
     let area = terminal.backend().buffer().area;
-    // Top project row + header, single-line composer with borders, footer.
-    let workspace = ratatui::layout::Rect::new(0, 2, area.width, area.height - 6);
+    // Top project row + layer-2 sub-tab row + header, single-line composer
+    // with borders, footer.
+    let workspace = ratatui::layout::Rect::new(0, 5, area.width, area.height - 9);
     zenpi::tui::BentoBoxLayoutAdapter::new(state.workspace_layout(), workspace)
         .visible_panes()
         .find(|pane| pane.id == zenpi::layout::PaneId::SessionList)
@@ -589,4 +595,445 @@ fn session_list_borders_and_empty_rows_do_not_change_selection() {
             Some(rows[1].path.as_str())
         );
     }
+}
+
+#[test]
+fn layer1_project_tabs_move_rename_and_style() {
+    use zenpi::slash::{ProjectAction, SlashCommand};
+    // Parsing exposes the three new layer-1 operations.
+    match zenpi::slash::parse("/project move alpha 2").unwrap() {
+        Some(SlashCommand::Project {
+            action: ProjectAction::Move { name, index },
+        }) => {
+            assert_eq!(name, "alpha");
+            assert_eq!(index, 2);
+        }
+        other => panic!("unexpected: {other:?}"),
+    }
+    match zenpi::slash::parse("/project rename alpha beta").unwrap() {
+        Some(SlashCommand::Project {
+            action: ProjectAction::Rename { old, new },
+        }) => {
+            assert_eq!((old.as_str(), new.as_str()), ("alpha", "beta"));
+        }
+        other => panic!("unexpected: {other:?}"),
+    }
+    match zenpi::slash::parse("/project style alpha green").unwrap() {
+        Some(SlashCommand::Project {
+            action: ProjectAction::Style { name, style },
+        }) => {
+            assert_eq!((name.as_str(), style.as_str()), ("alpha", "green"));
+        }
+        other => panic!("unexpected: {other:?}"),
+    }
+    assert!(matches!(
+        zenpi::slash::parse("/project move alpha x"),
+        Err(zenpi::slash::SlashError::UnexpectedArgument { command: "project" })
+    ));
+
+    let mut state = TuiState::default();
+    assert!(state.open_project_tab("alpha"));
+    assert!(state.open_project_tab("beta"));
+    assert!(state.open_project_tab("gamma"));
+    let order = |s: &TuiState| s.project_tabs().to_vec();
+    // "default" is the initial tab; move alpha (index 1) to the end.
+    let alpha_index = state.project_index("alpha").unwrap();
+    assert!(state.move_project_tab("alpha", state.project_tabs().len() - 1));
+    assert_eq!(order(&state).last().unwrap(), "alpha");
+    assert!(state.move_project_tab("beta", 0));
+    assert_eq!(order(&state)[0], "beta");
+    assert_eq!(
+        state.active_project(),
+        "gamma",
+        "active project follows by name"
+    );
+    let _ = alpha_index;
+
+    assert!(state.rename_project_tab("beta", "beta-2"));
+    assert!(state.project_index("beta-2").is_some());
+
+    assert!(state.style_project_tab("alpha", "green"));
+    assert!(state.style_project_tab("alpha", "CYAN"));
+    assert!(!state.style_project_tab("alpha", "chartreuse"));
+    assert!(!state.style_project_tab("missing", "green"));
+}
+
+#[test]
+fn layer2_subtabs_default_reuse_and_manage() {
+    use zenpi::slash::{SlashCommand, WorktreeAction};
+    use zenpi::tui::SubTabKind;
+
+    // Alias + add forms parse.
+    match zenpi::slash::parse("/wt add --in-place").unwrap() {
+        Some(SlashCommand::Worktree {
+            action: WorktreeAction::Add { in_place, name },
+        }) => {
+            assert!(in_place);
+            assert!(name.is_none());
+        }
+        other => panic!("unexpected: {other:?}"),
+    }
+    match zenpi::slash::parse("/worktree select 2").unwrap() {
+        Some(SlashCommand::Worktree {
+            action: WorktreeAction::Select { index },
+        }) => assert_eq!(index, 2),
+        other => panic!("unexpected: {other:?}"),
+    }
+
+    let mut state = TuiState::default();
+    // Default layer-2 reuses the layer-1 information: exactly one main tab.
+    let tabs = state.subtabs();
+    assert_eq!(tabs.len(), 1);
+    assert_eq!(tabs[0].kind, SubTabKind::Main);
+    assert_eq!(state.active_subtab(), 0);
+
+    // "work in the current place" adds without touching git.
+    assert!(state.subtab_add_in_place(Some("scratch".into())));
+    assert_eq!(state.active_subtab(), 1);
+    assert_eq!(state.subtabs()[1].kind, SubTabKind::InPlace);
+    assert!(state.subtab_add_in_place(None));
+    assert!(state.subtab_move(1, 2));
+    assert_eq!(state.subtabs()[2].name, "scratch");
+    // The main tab cannot be closed or moved.
+    assert!(!state.subtab_close(0));
+    assert!(!state.subtab_move(0, 1));
+    assert!(state.subtab_close(1));
+}
+
+#[test]
+fn layer2_order_name_and_concurrency_survive_restart() {
+    let mut state = TuiState::default();
+    assert!(state.subtab_add_in_place(Some("scratch".into())));
+    assert!(state.subtab_rename(1, "renamed"));
+    assert!(state.subtab_concurrency(1, 3));
+    assert!(state.subtab_add_in_place(Some("two".into())));
+    assert!(state.subtab_move(1, 2));
+    assert!(state.subtab_select(1));
+
+    let before = state.subtabs();
+    let active = state.active_subtab();
+    assert_eq!(before.len(), 3);
+    assert_eq!(before[1].name, "two");
+    assert_eq!(before[2].name, "renamed");
+    assert_eq!(before[2].concurrency, 4);
+
+    let checkpoint = state.project_checkpoint();
+    let mut restored = TuiState::default();
+    assert!(restored.restore_project_checkpoint(&checkpoint));
+    assert_eq!(
+        restored.subtabs(),
+        before,
+        "order/name/concurrency restored"
+    );
+    assert_eq!(restored.active_subtab(), active, "active sub-tab restored");
+}
+
+#[test]
+fn worktree_helpers_create_list_and_remove() {
+    use std::process::Command;
+    let repo = tempdir().unwrap();
+    let root = repo.path();
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "t@example.invalid"]);
+    git(&["config", "user.name", "t"]);
+    fs::write(root.join("f.txt"), "x").unwrap();
+    git(&["add", "f.txt"]);
+    git(&["commit", "-qm", "base"]);
+
+    let before = zenpi::project_workspace::list_worktrees(root).unwrap();
+    assert_eq!(before.len(), 1);
+
+    let wt = root.join(".zenpi-worktrees").join("feature");
+    fs::create_dir_all(wt.parent().unwrap()).unwrap();
+    zenpi::project_workspace::add_worktree(root, &wt, "feature").unwrap();
+    let entries = zenpi::project_workspace::list_worktrees(root).unwrap();
+    assert_eq!(entries.len(), 2);
+    assert!(
+        entries
+            .iter()
+            .any(|e| e.branch.as_deref() == Some("feature")),
+        "{entries:?}"
+    );
+
+    zenpi::project_workspace::remove_worktree(root, &wt).unwrap();
+    assert_eq!(
+        zenpi::project_workspace::list_worktrees(root)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn interactive_double_row_tab_add_remove_reorder() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let mut state = TuiState::default();
+    assert!(state.open_project_tab("a"));
+    assert!(state.open_project_tab("b"));
+    let order = |s: &TuiState| s.project_tabs().to_vec();
+    // "b" is active; Ctrl-B moves it left, Ctrl-F right (wrapping).
+    state.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
+    assert_eq!(order(&state)[1], "b");
+    state.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL));
+    assert!(state.active_project() == "b");
+
+    // Layer-2: Alt-I adds in place, Alt-,/. reorder, Alt-W closes.
+    state.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::ALT));
+    state.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::ALT));
+    assert_eq!(state.subtabs().len(), 3);
+    let last = state.subtabs()[2].name.clone();
+    state.handle_key(KeyEvent::new(KeyCode::Char(','), KeyModifiers::ALT));
+    assert_eq!(state.subtabs()[1].name, last);
+    state.handle_key(KeyEvent::new(KeyCode::Char('.'), KeyModifiers::ALT));
+    assert_eq!(state.subtabs()[2].name, last);
+    let active = state.active_subtab();
+    state.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::ALT));
+    assert_eq!(state.subtabs().len(), 2);
+    let _ = active;
+}
+
+#[test]
+fn project_opens_on_current_layer_and_worktree_rename_concurrency() {
+    let mut state = TuiState::default();
+    assert!(state.open_project_tab("a"));
+    assert!(state.open_project_tab("b"));
+    assert_eq!(state.project_tabs(), &["default", "a", "b"]);
+    // A new project opens on the current layer: insert right after the active.
+    let index = state.project_index("a").unwrap();
+    assert!(state.select_project_tab(index));
+    assert!(state.open_project_tab("c"));
+    assert_eq!(state.project_tabs(), &["default", "a", "c", "b"]);
+
+    // Layer-2 tab rename + default harness concurrency control.
+    assert!(state.subtab_add_in_place(Some("w".into())));
+    let active = state.active_subtab();
+    assert!(state.subtab_rename(active, "wt-x"));
+    assert_eq!(state.subtabs()[active].name, "wt-x");
+    assert!(state.subtab_concurrency(active, 2));
+    assert_eq!(state.subtabs()[active].concurrency, 3);
+    assert!(state.subtab_concurrency(active, -1));
+    assert_eq!(state.subtabs()[active].concurrency, 2);
+    assert!(state.subtab_concurrency(active, -9));
+    assert_eq!(state.subtabs()[active].concurrency, 1);
+}
+
+#[allow(dead_code)]
+fn find_col(terminal: &Terminal<TestBackend>, row: u16, needle: &str) -> u16 {
+    let width = terminal.backend().buffer().area.width;
+    let line: String = (0..width)
+        .map(|x| terminal.backend().buffer()[(x, row)].symbol())
+        .collect();
+    let byte = line
+        .find(needle)
+        .unwrap_or_else(|| panic!("{needle:?} not on row {row}: {line:?}"));
+    line[..byte].chars().count() as u16
+}
+
+fn find_pos(terminal: &Terminal<TestBackend>, needle: &str) -> (u16, u16) {
+    let width = terminal.backend().buffer().area.width;
+    for row in 0..6u16 {
+        let line: String = (0..width)
+            .map(|x| terminal.backend().buffer()[(x, row)].symbol())
+            .collect();
+        if let Some(byte) = line.find(needle) {
+            return (line[..byte].chars().count() as u16, row);
+        }
+    }
+    panic!("{needle:?} not in the header");
+}
+
+fn mouse(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+    MouseEvent {
+        kind,
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    }
+}
+
+#[test]
+fn mouse_drag_reorders_project_and_subtab_rows() {
+    let mut state = TuiState::default();
+    assert!(state.open_project_tab("alpha"));
+    assert!(state.open_project_tab("beta"));
+    assert!(state.open_project_tab("gamma"));
+    assert_eq!(state.project_tabs(), &["default", "alpha", "beta", "gamma"]);
+    assert!(state.subtab_add_in_place(Some("one".into())));
+    assert!(state.subtab_add_in_place(Some("two".into())));
+
+    let mut terminal = Terminal::new(TestBackend::new(120, 20)).unwrap();
+    terminal
+        .draw(|frame| state.render_bentobox(frame, "zenpi"))
+        .unwrap();
+
+    // Drag layer-1 "gamma" (already active, so the press does not switch the
+    // active project) onto "alpha": it lands at the released column while the
+    // active project and its sub-tabs stay selected.
+    let (gamma, grow) = find_pos(&terminal, "gamma");
+    let (alpha, arow) = find_pos(&terminal, "alpha");
+    state.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), gamma, grow));
+    state.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), alpha, arow));
+    state.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), alpha, arow));
+    assert_eq!(state.project_tabs(), &["default", "gamma", "alpha", "beta"]);
+    assert_eq!(state.active_project(), "gamma");
+
+    // Drag layer-2 "one" onto "two" with the same gesture.
+    let (one, orow) = find_pos(&terminal, "one");
+    let (two, trow) = find_pos(&terminal, "two");
+    state.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), one, orow));
+    state.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), two, trow));
+    state.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), two, trow));
+    let names: Vec<String> = state.subtabs().into_iter().map(|tab| tab.name).collect();
+    assert_eq!(names, &["main", "two", "one"]);
+}
+
+#[test]
+fn layer2_opens_are_isolated_from_layer1_and_each_other() {
+    let mut state = TuiState::default();
+    assert!(state.open_project_tab("alpha"));
+    let layer1_root = state.active_subtab_root();
+    assert!(state.subtab_add_in_place(Some("one".into())));
+    let first = state.active_subtab_root();
+    assert_ne!(
+        first, layer1_root,
+        "a layer-2 open must not share the layer-1 workspace"
+    );
+    assert!(state.subtab_add_in_place(Some("one".into())));
+    let second = state.active_subtab_root();
+    assert_ne!(
+        second, first,
+        "two layer-2 opens must not share one workspace"
+    );
+    let tabs = state.subtabs();
+    assert!(!tabs[0].is_isolated(), "the default Main tab views layer 1");
+    assert_eq!(
+        tabs.iter().filter(|tab| tab.is_isolated()).count(),
+        2,
+        "each explicit layer-2 open carries its own workspace"
+    );
+}
+
+#[test]
+fn worktree_rename_and_concurrency_commands_parse() {
+    use zenpi::slash::{SlashCommand, WorktreeAction};
+    match zenpi::slash::parse("/worktree rename 1 wt-alpha").unwrap() {
+        Some(SlashCommand::Worktree {
+            action: WorktreeAction::Rename { index, name },
+        }) => {
+            assert_eq!(index, 1);
+            assert_eq!(name, "wt-alpha");
+        }
+        other => panic!("unexpected: {other:?}"),
+    }
+    match zenpi::slash::parse("/wt conc 2 +1").unwrap() {
+        Some(SlashCommand::Worktree {
+            action: WorktreeAction::Concurrency { index, delta },
+        }) => {
+            assert_eq!(index, 2);
+            assert_eq!(delta, 1);
+        }
+        other => panic!("unexpected: {other:?}"),
+    }
+}
+
+#[test]
+fn header_controls_click_to_add_close_and_change_concurrency() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut state = TuiState::default();
+    assert!(state.open_project_tab("alpha"));
+    assert!(state.subtab_add_in_place(Some("one".into())));
+    let mut terminal = Terminal::new(TestBackend::new(160, 40)).unwrap();
+    terminal
+        .draw(|f| state.render_bentobox(f, "zenpi"))
+        .unwrap();
+
+    // Click the layer-2 concurrency "up" glyph beside the active sub-tab.
+    // The first ↑ belongs to the first sub-tab ("main").
+    let (up_col, up_row) = find_pos(&terminal, "↑");
+    let before = state.subtabs()[0].concurrency;
+    state.handle_mouse(mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        up_col,
+        up_row,
+    ));
+    assert_eq!(
+        state.subtabs()[0].concurrency,
+        before + 1,
+        "clicking ↑ must raise concurrency"
+    );
+
+    // Click a project "-" to close that tab.
+    let projects = state.project_tab_count();
+    let (close_col, close_row) = find_pos(&terminal, "[-]");
+    state.handle_mouse(mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        close_col,
+        close_row,
+    ));
+    assert_eq!(
+        state.project_tab_count(),
+        projects - 1,
+        "close control wired"
+    );
+
+    // Confirm Esc still works after clicks.
+    let _ = state.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+}
+
+#[test]
+fn right_click_renames_a_workspace_card() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut state = TuiState::default();
+    assert!(state.open_project_tab("alpha"));
+    let mut terminal = Terminal::new(TestBackend::new(160, 40)).unwrap();
+    terminal
+        .draw(|f| state.render_bentobox(f, "zenpi"))
+        .unwrap();
+    let (col, row) = find_pos(&terminal, "alpha");
+    state.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Right), col, row));
+    for _ in 0..64 {
+        let _ = state.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+    }
+    for character in "alpine".chars() {
+        let _ = state.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+    }
+    let _ = state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(
+        (0..state.project_tab_count()).any(|index| state.project_label(index) == "alpine"),
+        "right-click rename must relabel the workspace card"
+    );
+}
+
+#[test]
+fn right_click_renames_a_worktree_card() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut state = TuiState::default();
+    let mut terminal = Terminal::new(TestBackend::new(160, 40)).unwrap();
+    terminal
+        .draw(|f| state.render_bentobox(f, "zenpi"))
+        .unwrap();
+    let (col, row) = find_pos(&terminal, "main");
+    state.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Right), col, row));
+    for _ in 0.."main".len() {
+        let _ = state.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+    }
+    for character in "trunk".chars() {
+        let _ = state.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+    }
+    let _ = state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(state.subtabs()[0].name, "trunk");
 }

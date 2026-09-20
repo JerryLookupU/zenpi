@@ -1,7 +1,9 @@
 use zenpi::layout::{
     Breakpoint, Column, ColumnRatios, FocusDirection, LayoutModel, LayoutPreset, PaneCapabilities,
-    PaneId, TabId, Visibility,
+    PaneId, PaneRect, TabId, Visibility, conversation_prompt_group,
 };
+
+const PROMPT_GROUP_ROWS: u16 = 5;
 
 #[test]
 fn every_workspace_tab_has_a_named_preset_and_required_panes() {
@@ -143,7 +145,9 @@ fn fully_collapsed_state_is_safe_at_a_normal_viewport() {
         PaneId::ProjectConversation,
         PaneId::Resources,
         PaneId::GoalConversation,
+        PaneId::Arch,
         PaneId::Gantt,
+        PaneId::Execution,
     ] {
         model.set_collapsed(pane, true);
     }
@@ -164,8 +168,9 @@ fn pane_focus_cycles_in_preset_order_and_skips_collapsed_or_unavailable_panes() 
         vec![
             PaneId::ProjectConversation,
             PaneId::Resources,
-            PaneId::GoalConversation,
+            PaneId::Arch,
             PaneId::Gantt,
+            PaneId::Execution,
             PaneId::Browser,
             PaneId::Terminal,
         ]
@@ -184,10 +189,7 @@ fn pane_focus_cycles_in_preset_order_and_skips_collapsed_or_unavailable_panes() 
     );
 
     model.set_collapsed(PaneId::Resources, true);
-    assert_eq!(
-        model.focus_next(viewport.0, viewport.1),
-        Some(PaneId::GoalConversation)
-    );
+    assert_eq!(model.focus_next(viewport.0, viewport.1), Some(PaneId::Arch));
     model.set_capabilities(PaneCapabilities::default());
     assert!(
         !model
@@ -216,13 +218,17 @@ fn directional_focus_prefers_same_row_or_column_before_falling_back() {
         model.focus_direction(FocusDirection::Right, 200, 40),
         Some(PaneId::Gantt)
     );
+    // From the center column, `Left` re-enters the left column at the nearest
+    // pane; with the baseline preset that is the top-left conversation.
     assert_eq!(
         model.focus_direction(FocusDirection::Left, 200, 40),
-        Some(PaneId::Resources)
+        Some(PaneId::ProjectConversation)
     );
+    // Up from the top-left conversation wraps to the last focusable pane.
+    model.set_focused(Some(PaneId::ProjectConversation));
     assert_eq!(
         model.focus_direction(FocusDirection::Up, 200, 40),
-        Some(PaneId::ProjectConversation)
+        Some(PaneId::Terminal)
     );
 
     // At a narrow width only the focused rectangle is rendered, but keyboard
@@ -232,6 +238,38 @@ fn directional_focus_prefers_same_row_or_column_before_falling_back() {
         model.focus_direction(FocusDirection::Down, 60, 20),
         Some(PaneId::Resources)
     );
+}
+
+#[test]
+fn conversation_prompt_group_shares_the_left_column_width() {
+    let model = LayoutModel::new(TabId::Project);
+    for (width, height) in [(120u16, 32u16), (200, 40)] {
+        let snapshot = model.compute(width, height);
+        let conversation = snapshot.pane(PaneId::ProjectConversation).unwrap();
+        assert_eq!(conversation.visibility, Visibility::Visible);
+        let (transcript, prompt) = conversation_prompt_group(conversation.rect, PROMPT_GROUP_ROWS);
+        // The prompt is part of the same left-column group: identical x and
+        // width, rendered directly beneath the transcript.
+        assert_eq!(prompt.x, conversation.rect.x);
+        assert_eq!(prompt.width, conversation.rect.width);
+        assert_eq!(prompt.y, transcript.bottom());
+        assert_eq!(transcript.height + prompt.height, conversation.rect.height);
+        assert!(!transcript.intersects(prompt));
+        assert!(transcript.height >= 1);
+    }
+}
+
+#[test]
+fn conversation_prompt_group_is_bounded_at_degenerate_heights() {
+    let (transcript, prompt) = conversation_prompt_group(PaneRect::new(4, 5, 24, 1), 5);
+    assert_eq!(prompt.height, 0);
+    assert_eq!(transcript.height, 1);
+
+    let (transcript, prompt) = conversation_prompt_group(PaneRect::new(0, 0, 30, 8), 100);
+    assert!(transcript.height >= 1);
+    assert_eq!(transcript.height + prompt.height, 8);
+    assert_eq!(prompt.x, 0);
+    assert_eq!(prompt.width, 30);
 }
 
 fn ratio_sum(ratios: ColumnRatios) -> u16 {
