@@ -13,8 +13,8 @@ Goal、Flow 和运行时交互以
 认证、模型/协议接入、CLI/TUI/headless 交互、Rust 目录和迁移的唯一细则见
 [认证、模型与协议 Rust 蓝图](Zenpi_Provider_Auth_Rust_Blueprint.md)。
 本文不再维护另一份 auth 命令、存储格式或验收列表；旧的 OAuth 静默导入、
-明文 key 位置参数和“profile 即账号”设想由该蓝图的待确认合同替代。
-本节不表示认证功能已经实现。
+明文 key 位置参数和“profile 即账号”设想由该蓝图的定稿设计合同替代。
+设计已定稿，不表示认证功能已经实现或通过验收。
 
 ## 功能二：Plan / DAG 流程引导
 

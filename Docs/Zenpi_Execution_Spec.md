@@ -78,9 +78,10 @@ unaccepted product work. Their detailed contracts are
 [local account broker](feat-account-broker.md). These documents specify
 behavior; external learning evidence is not an implementation dependency.
 
-The proposed local authentication/protocol foundation is consolidated in the
+The finalized local authentication/protocol design is consolidated in the
 [Provider/Auth Rust Blueprint](Zenpi_Provider_Auth_Rust_Blueprint.md).
-It precedes the explicitly enabled Broker phase below; it neither closes
+Design finalization does not imply runtime implementation or acceptance.
+This foundation precedes the explicitly enabled Broker phase below; it neither closes
 CF-901 through CF-910 nor changes execution-worker authority. Provider, login,
 wire protocol and multimodal details are maintained only in that design.
 
