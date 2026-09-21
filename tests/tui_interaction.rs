@@ -976,12 +976,18 @@ fn shell_hot_zone_owns_keys_even_with_a_discussion_draft() {
 #[test]
 fn hot_zone_follows_workspace_pane_focus() {
     let mut state = TuiState::default();
-    assert_eq!(state.hot_zone(), HotZone::Discussion);
+    assert_eq!(state.hot_zone(), HotZone::Conversation);
     assert!(state.focus_workspace_pane(PaneId::Arch));
     assert_eq!(state.hot_zone(), HotZone::Arch);
     assert_eq!(state.left_prompt(), LeftPrompt::Arch);
     assert!(state.focus_workspace_pane(PaneId::Resources));
-    assert_eq!(state.hot_zone(), HotZone::Discussion);
+    assert_eq!(state.hot_zone(), HotZone::Resources);
+    assert!(state.focus_workspace_pane(PaneId::Gantt));
+    assert_eq!(state.hot_zone(), HotZone::Gantt);
+    assert!(state.set_hot_zone(HotZone::None));
+    assert_eq!(state.hot_zone(), HotZone::None);
+    assert_eq!(state.focused_workspace_pane(), None);
+    assert!(state.set_hot_zone(HotZone::Conversation));
     assert_eq!(state.left_prompt(), LeftPrompt::Discussion);
     assert!(state.focus_workspace_pane(PaneId::Execution));
     assert_eq!(state.hot_zone(), HotZone::Shell);
@@ -1015,7 +1021,7 @@ fn switching_projects_isolates_the_arch_draft_and_transcript() {
     state.set_arch_input("first-draft");
     state.push_arch_message(MessageRole::User, "first-turn");
     assert!(state.select_project_tab(0));
-    assert_eq!(state.hot_zone(), HotZone::Discussion);
+    assert_eq!(state.hot_zone(), HotZone::Conversation);
     assert_eq!(state.arch_input(), "");
     assert_eq!(state.arch_message_count(), 0);
     assert!(state.select_project_tab(1));
@@ -1373,4 +1379,163 @@ fn resources_observation_mode_toggles_and_renders_square_tiles() {
         !state.resources_zoom_open(),
         "double-click returns from observation mode"
     );
+}
+
+#[test]
+fn no_hot_zone_blocks_text_and_tab_restores_a_zone() {
+    let mut state = TuiState::default();
+    assert!(state.set_hot_zone(HotZone::None));
+    assert_eq!(state.hot_zone(), HotZone::None);
+    for character in "typed".chars() {
+        let _ = state.handle_key(key(KeyCode::Char(character)));
+    }
+    assert_eq!(state.input(), "", "no-hot-zone must not edit the draft");
+    assert_eq!(
+        state.handle_key(key(KeyCode::Tab)),
+        TuiAction::Redraw,
+        "Tab still cycles panes"
+    );
+    assert_ne!(state.hot_zone(), HotZone::None);
+}
+
+#[test]
+fn resources_zone_owns_navigation_and_esc_leaves_to_no_hot_zone() {
+    let mut state = TuiState::default();
+    state.set_input("draft stays");
+    assert!(state.set_hot_zone(HotZone::Resources));
+    assert_eq!(state.hot_zone(), HotZone::Resources);
+    let _ = state.handle_key(key(KeyCode::Down));
+    assert_eq!(state.input(), "draft stays");
+    let _ = state.handle_key(key(KeyCode::Esc));
+    assert_eq!(state.hot_zone(), HotZone::None);
+    assert_eq!(state.input(), "draft stays");
+}
+
+#[test]
+fn gantt_zone_scrolls_with_keyboard() {
+    let mut state = TuiState::default();
+    assert!(state.set_hot_zone(HotZone::Gantt));
+    assert_eq!(state.hot_zone(), HotZone::Gantt);
+    for _ in 0..3 {
+        let _ = state.handle_key(key(KeyCode::Down));
+    }
+    assert_eq!(state.pane_scroll_offset(PaneId::Gantt), 3);
+    let _ = state.handle_key(key(KeyCode::PageUp));
+    assert_eq!(state.pane_scroll_offset(PaneId::Gantt), 0);
+    let _ = state.handle_key(key(KeyCode::Esc));
+    assert_eq!(state.hot_zone(), HotZone::None);
+}
+
+#[cfg(unix)]
+#[test]
+fn shell_zone_single_ctrl_c_reaches_the_pty_and_double_escalates() {
+    let mut state = TuiState::default();
+    let mut terminal = Terminal::new(TestBackend::new(160, 40)).unwrap();
+    terminal
+        .draw(|f| state.render_bentobox(f, "zenpi"))
+        .unwrap();
+    assert!(state.has_shell());
+    assert!(state.set_hot_zone(HotZone::Shell));
+    assert_eq!(
+        state.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+        TuiAction::Redraw,
+        "the first Ctrl-C is the PTY's own SIGINT"
+    );
+    assert_eq!(
+        state.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+        TuiAction::ForceKill,
+        "the second Ctrl-C escalates"
+    );
+}
+
+fn session_summary(path: &str, id: &str, name: Option<&str>) -> zenpi::session::SessionSummary {
+    zenpi::session::SessionSummary {
+        path: path.to_owned(),
+        session_id: id.to_owned(),
+        name: name.map(str::to_owned),
+        created_at_ms: 0,
+        turn_count: 0,
+        handoff_count: 0,
+        handoff_record_count: 0,
+        runtime_intent_count: 0,
+        event_count: 0,
+        recovery_warnings: 0,
+        next_seq: 0,
+    }
+}
+
+#[test]
+fn session_rename_editor_validates_and_emits_the_persisted_name() {
+    let mut state = TuiState::default();
+    assert!(state.begin_session_rename());
+    assert!(state.session_rename_active());
+    for _ in 0..32 {
+        let _ = state.handle_key(key(KeyCode::Backspace));
+    }
+    for character in "my-session".chars() {
+        let _ = state.handle_key(key(KeyCode::Char(character)));
+    }
+    assert_eq!(
+        state.handle_key(key(KeyCode::Enter)),
+        TuiAction::RenameSession("my-session".into())
+    );
+    assert!(!state.session_rename_active());
+    assert_eq!(state.session_header_label().as_deref(), Some("my-session"));
+
+    // The header shows the session label between the logo and workspaces.
+    let mut terminal = Terminal::new(TestBackend::new(160, 40)).unwrap();
+    terminal
+        .draw(|f| state.render_bentobox(f, "zenpi"))
+        .unwrap();
+    let rows = screen_rows(&terminal);
+    let row = rows
+        .iter()
+        .position(|line| line.contains("my-session"))
+        .expect("the session label is rendered in the header");
+    assert!(rows[row].contains("zenpi · my-session | workspaces"));
+
+    // Double-clicking the label reopens the editor.
+    let cells: Vec<char> = rows[row].chars().collect();
+    let column = cells
+        .windows(2)
+        .position(|window| window == ['m', 'y'])
+        .expect("the label starts with the name");
+    let point = (column as u16, row as u16);
+    let _ = state.handle_mouse(mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        point.0,
+        point.1,
+    ));
+    assert!(!state.session_rename_active());
+    let _ = state.handle_mouse(mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        point.0,
+        point.1,
+    ));
+    assert!(
+        state.session_rename_active(),
+        "double-click renames the session"
+    );
+}
+
+#[test]
+fn session_rename_rejects_duplicates_and_stays_open() {
+    let mut state = TuiState::default();
+    state.set_session_browser(vec![
+        session_summary("a.jsonl", "id-a", Some("taken")),
+        session_summary("b.jsonl", "id-b", None),
+    ]);
+    state.set_current_session_path(Some("b.jsonl".into()));
+    assert!(state.begin_session_rename());
+    for character in "taken".chars() {
+        let _ = state.handle_key(key(KeyCode::Char(character)));
+    }
+    assert_eq!(state.handle_key(key(KeyCode::Enter)), TuiAction::Redraw);
+    assert!(
+        state.session_rename_active(),
+        "a duplicate keeps the editor open for re-input"
+    );
+    assert!(state.status().contains("已存在"));
+    assert_eq!(state.handle_key(key(KeyCode::Esc)), TuiAction::Redraw);
+    assert!(!state.session_rename_active());
 }

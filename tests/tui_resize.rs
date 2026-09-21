@@ -75,16 +75,23 @@ fn ctrl_c_interrupts_a_busy_turn_without_quitting_the_tui() {
         "the owner clears busy after processing cancel"
     );
 
-    // Ctrl-D remains the explicit empty-prompt quit binding, while an idle
-    // Ctrl-C keeps its historical quit behavior for terminal ergonomics.
+    // Ctrl-D remains the explicit empty-prompt quit binding. An idle Ctrl-C
+    // asks for confirmation and a second press escalates to a force kill.
     assert_eq!(
         state.handle_key(key(KeyCode::Char('d'), KeyModifiers::CONTROL)),
         TuiAction::Quit
     );
     state.set_busy(false);
+    // The busy interrupt above armed the escalation window; let it lapse so
+    // the idle pair starts a fresh confirmation.
+    std::thread::sleep(std::time::Duration::from_millis(1300));
     assert_eq!(
         state.handle_key(key(KeyCode::Char('c'), KeyModifiers::CONTROL)),
-        TuiAction::Quit
+        TuiAction::None
+    );
+    assert_eq!(
+        state.handle_key(key(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+        TuiAction::ForceKill
     );
 }
 

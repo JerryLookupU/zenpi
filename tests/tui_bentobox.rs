@@ -559,14 +559,9 @@ fn ctrl_number_switches_workspace_tab_without_submitting_prompt() {
 fn workspace_keyboard_controls_focus_and_split_without_touching_prompt() {
     let mut state = TuiState::default();
     assert_eq!(
-        state.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
-        TuiAction::Redraw
-    );
-    assert_eq!(
         state.focused_workspace_pane(),
         Some(PaneId::ProjectConversation)
     );
-
     assert_eq!(
         state.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::CONTROL)),
         TuiAction::Redraw
@@ -610,7 +605,6 @@ fn workspace_keyboard_controls_focus_and_split_without_touching_prompt() {
 #[test]
 fn terminal_backtab_moves_workspace_focus_backwards() {
     let mut state = TuiState::default();
-    state.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     state.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     assert_eq!(state.focused_workspace_pane(), Some(PaneId::Resources));
 
@@ -744,10 +738,6 @@ fn short_workspace_tab_cycle_skips_panes_that_have_no_screen_rows() {
     assert!(output.contains("Gantt"));
     assert!(!output.contains("Resources"));
     assert_eq!(
-        state.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
-        TuiAction::Redraw
-    );
-    assert_eq!(
         state.focused_workspace_pane(),
         Some(PaneId::ProjectConversation)
     );
@@ -791,7 +781,6 @@ fn short_workspace_narrow_cycle_reveals_each_selected_pane() {
     terminal
         .draw(|frame| state.render_bentobox(frame, "zenpi"))
         .unwrap();
-    state.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     state.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     terminal
         .draw(|frame| state.render_bentobox(frame, "zenpi"))

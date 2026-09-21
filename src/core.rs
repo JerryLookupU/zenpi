@@ -5622,6 +5622,9 @@ pub enum RunMode {
 pub struct CliOptions {
     pub mode: RunMode,
     pub session: PathBuf,
+    /// `-s NAME|ID`: resolve a cached session by operator name or session id
+    /// instead of opening a literal path (ZS1-178).
+    pub session_ref: Option<String>,
     pub backend: String,
     pub backend_explicit: bool,
     pub profile: Option<String>,
@@ -5664,6 +5667,7 @@ impl Default for CliOptions {
         Self {
             mode: RunMode::Tui,
             session: SessionStore::default_path(),
+            session_ref: None,
             backend: "openai".into(),
             backend_explicit: false,
             profile: None,
@@ -5928,6 +5932,17 @@ where
                 }
                 options.session = PathBuf::from(value);
             }
+            "-s" => {
+                let value = inline
+                    .map(str::to_owned)
+                    .or_else(|| args.next())
+                    .ok_or_else(|| ZenpiError::arguments("-s requires a session name or id"))?;
+                let value = value.trim();
+                if value.is_empty() {
+                    return Err(ZenpiError::arguments("-s session reference is empty"));
+                }
+                options.session_ref = Some(value.to_owned());
+            }
             "--backend" => {
                 options.backend = inline
                     .map(str::to_owned)
@@ -6110,7 +6125,7 @@ fn backend_from_effective(
 
 fn print_help() {
     println!(
-        "zenpi [--mode tui|headless] [--session PATH] [--backend openai|anthropic|google] [--profile NAME] [--model NAME]"
+        "zenpi [--mode tui|headless] [--session PATH | -s NAME|ID] [--backend openai|anthropic|google] [--profile NAME] [--model NAME]"
     );
     println!("zenpi config import-codex [--profile NAME]");
     println!("zenpi config doctor [--profile NAME] [--json]");
@@ -6359,7 +6374,22 @@ pub fn run() -> Result<(), ZenpiError> {
         };
     }
     let backend = make_backend(&options)?;
-    let session = SessionStore::open(&options.session)?;
+    // `-s NAME|ID` resolves against the cached zenpi sessions; `--session PATH`
+    // keeps its literal path semantics.
+    let session_path = match options.session_ref.as_deref() {
+        Some(reference) => {
+            let paths = crate::config::ConfigPaths::discover()?;
+            crate::session::resolve_session_reference(reference, &paths.sessions).ok_or_else(
+                || {
+                    ZenpiError::arguments(format!(
+                        "no cached zenpi session named or identified by `{reference}`; use --session PATH to open a journal"
+                    ))
+                },
+            )?
+        }
+        None => options.session.clone(),
+    };
+    let session = SessionStore::open(&session_path)?;
     let mut agent = Agent::new(session, backend);
     agent.project_overrides = crate::config::ConfigOverrides {
         profile: options.profile.clone(),

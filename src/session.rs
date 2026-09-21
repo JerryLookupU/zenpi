@@ -281,6 +281,11 @@ impl Drop for NewSessionFile {
 pub struct SessionSummary {
     pub path: String,
     pub session_id: String,
+    /// Operator-assigned name from the newest `session_renamed` event
+    /// (ZS1-178). Names are unique across the cached catalog and are what
+    /// `zenpi -s <name>` resumes.
+    #[serde(default)]
+    pub name: Option<String>,
     pub created_at_ms: u64,
     pub turn_count: usize,
     pub handoff_count: usize,
@@ -841,6 +846,7 @@ impl SessionStore {
         SessionSummary {
             path: self.path.display().to_string(),
             session_id: self.header.session_id.clone(),
+            name: self.session_name().map(str::to_owned),
             created_at_ms: self.header.created_at_ms,
             turn_count: self.turns.len(),
             handoff_count: self.handoffs.len() + self.handoff_records.len(),
@@ -2702,6 +2708,113 @@ impl SessionStore {
         }
         Ok(())
     }
+
+    /// Operator-assigned name from the newest `session_renamed` event
+    /// (ZS1-178). The event log stays append-only; a rename never rewrites
+    /// the header.
+    pub fn session_name(&self) -> Option<&str> {
+        self.events()
+            .iter()
+            .rev()
+            .find(|event| event["type"] == "session_renamed")
+            .and_then(|event| event["name"].as_str())
+    }
+
+    /// Persist a new operator name. The name is validated and bounded; an
+    /// identical name is a no-op.
+    pub fn rename(&mut self, name: &str) -> Result<String, SessionError> {
+        let name = validate_session_name(name)?;
+        require_clean_session(self)?;
+        if self.session_name() == Some(name.as_str()) {
+            return Ok(name);
+        }
+        self.append_event(json!({"type": "session_renamed", "name": name}))?;
+        Ok(name)
+    }
+}
+
+/// Maximum byte length of an operator-assigned session name.
+pub const MAX_SESSION_NAME_BYTES: usize = 64;
+
+/// Normalize and validate an operator-supplied session name: trimmed,
+/// non-empty, bounded and free of control characters.
+pub fn validate_session_name(name: &str) -> Result<String, SessionError> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(SessionError::InvalidRecord("session name is empty".into()));
+    }
+    if name.len() > MAX_SESSION_NAME_BYTES {
+        return Err(SessionError::InvalidRecord(format!(
+            "session name exceeds {MAX_SESSION_NAME_BYTES} bytes"
+        )));
+    }
+    if name.chars().any(char::is_control) {
+        return Err(SessionError::InvalidRecord(
+            "session name contains control characters".into(),
+        ));
+    }
+    Ok(name.to_owned())
+}
+
+/// Maximum journals inspected when resolving `-s NAME|ID`.
+const MAX_SESSION_REFERENCE_CANDIDATES: usize = 512;
+
+/// Resolve an operator session reference to a journal path (ZS1-178). Custom
+/// names win over session ids; the bounded scan covers the sessions directory,
+/// its project journals and the default journal.
+pub fn resolve_session_reference(
+    reference: &str,
+    sessions_dir: impl AsRef<Path>,
+) -> Option<PathBuf> {
+    let reference = reference.trim();
+    if reference.is_empty() {
+        return None;
+    }
+    let sessions_dir = sessions_dir.as_ref();
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(entries) = fs::read_dir(sessions_dir) {
+        for entry in entries.flatten().take(MAX_SESSION_REFERENCE_CANDIDATES) {
+            let path = entry.path();
+            if path.is_file()
+                && path
+                    .extension()
+                    .is_some_and(|extension| extension == "jsonl")
+            {
+                candidates.push(path);
+            }
+        }
+    }
+    if let Ok(entries) = fs::read_dir(sessions_dir.join("projects")) {
+        for entry in entries.flatten().take(MAX_SESSION_REFERENCE_CANDIDATES) {
+            let path = entry.path().join("session.jsonl");
+            if path.is_file() {
+                candidates.push(path);
+            }
+        }
+    }
+    let default = SessionStore::default_path();
+    if default.is_file() && !candidates.contains(&default) {
+        candidates.push(default);
+    }
+    let stores: Vec<(PathBuf, SessionStore)> = candidates
+        .into_iter()
+        .filter_map(|path| {
+            SessionStore::open_existing(&path)
+                .ok()
+                .map(|store| (path, store))
+        })
+        .collect();
+    for (path, store) in &stores {
+        if store.session_name() == Some(reference) {
+            return Some(path.clone());
+        }
+    }
+    for (path, store) in &stores {
+        if store.session_id() == reference {
+            return Some(path.clone());
+        }
+    }
+    None
 }
 
 /// A local catalog, not a claim that these sessions have running agents.
@@ -4733,5 +4846,45 @@ mod session_reliability_tests {
         assert_eq!(report.removed, vec![store.path().to_owned()]);
         assert!(!store.path().exists());
         assert_eq!(fs::read(&foreign).unwrap(), b"foreign data\n");
+    }
+}
+
+#[cfg(test)]
+mod session_name_tests {
+    use super::*;
+
+    #[test]
+    fn session_name_validation_is_bounded_and_control_free() {
+        assert_eq!(
+            validate_session_name("  my session  ").unwrap(),
+            "my session"
+        );
+        assert!(validate_session_name("").is_err());
+        assert!(validate_session_name("   ").is_err());
+        assert!(validate_session_name(&"x".repeat(MAX_SESSION_NAME_BYTES + 1)).is_err());
+        assert!(validate_session_name("bad\nname").is_err());
+    }
+
+    #[test]
+    fn rename_event_round_trips_and_resolves_by_name_then_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let mut store = SessionStore::open(&path).unwrap();
+        let session_id = store.session_id().to_owned();
+        assert_eq!(store.session_name(), None);
+        let name = store.rename("alpha").unwrap();
+        assert_eq!(name, "alpha");
+        assert_eq!(store.session_name(), Some("alpha"));
+        assert_eq!(store.summary().name.as_deref(), Some("alpha"));
+
+        assert_eq!(
+            resolve_session_reference("alpha", dir.path()).as_deref(),
+            Some(path.as_path())
+        );
+        assert_eq!(
+            resolve_session_reference(&session_id, dir.path()).as_deref(),
+            Some(path.as_path())
+        );
+        assert_eq!(resolve_session_reference("missing", dir.path()), None);
     }
 }

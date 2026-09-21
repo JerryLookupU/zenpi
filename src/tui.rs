@@ -199,6 +199,12 @@ enum SubTabHit {
     Close(usize),
 }
 
+/// Inline header rename of the current session name (ZS1-178).
+#[derive(Debug, Clone)]
+struct SessionRename {
+    text: String,
+}
+
 /// Inline numeric edit of one layer-2 worktree concurrency value (ZS1-174).
 /// Opened by double-clicking the centered number, committed with Enter and
 /// cancelled with Esc; the value goes through the same 1..=64 clamp as the
@@ -641,13 +647,25 @@ pub enum LeftPrompt {
     Arch,
 }
 
-/// The single keyboard hot zone. Exactly one zone owns ordinary text, paste
-/// and the IME cursor at any time, so the three input surfaces (discussion
-/// prompt, arch console and Shell PTY) can never steal each other's keys.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// The single keyboard hot zone (ZS1-177). Exactly one zone owns the keyboard
+/// at a time, and each zone has its own behavior matrix:
+///
+/// - `None`: no text target; only global chords (Tab cycling, Alt overlays,
+///   double Ctrl-C) work.
+/// - `Conversation`: the discussion prompt accepts text and slash commands.
+/// - `Resources`: block selection, drill-down and the double-click worker
+///   observation mode; no text input.
+/// - `Arch`: the independent arch console accepts text and slash commands.
+/// - `Gantt`: keyboard and wheel/trackpad scrolling of the Gantt projection.
+/// - `Shell`: raw PTY input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum HotZone {
-    Discussion,
+    #[default]
+    None,
+    Conversation,
+    Resources,
     Arch,
+    Gantt,
     Shell,
 }
 
@@ -693,6 +711,11 @@ pub enum TuiAction {
     OpenExternalEditor,
     Quit,
     Interrupt,
+    /// Second Ctrl-C inside the escalation window (ZS1-179): terminate the
+    /// active job without discarding the journal so `zenpi -s` can resume.
+    ForceKill,
+    /// Persist an operator session name from the header rename editor (ZS1-178).
+    RenameSession(String),
     Redraw,
 }
 
@@ -1918,6 +1941,8 @@ struct ProjectDraft {
 /// Window that turns two left-button presses on the same cell into a
 /// double-click; crossterm emits only Down/Up, never DoubleClick.
 const DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(400);
+/// Window that turns a second Ctrl-C into a force kill (ZS1-179).
+const INTERRUPT_WINDOW: Duration = Duration::from_millis(1200);
 /// Bound on the per-worker session-journal tail read by the Resources zoom.
 const WORKER_STDIO_TAIL_BYTES: usize = 512 * 1024;
 /// Bound on one displayed worker input/output excerpt.
@@ -2758,6 +2783,16 @@ pub struct TuiState {
     /// Last left-button press used to synthesize double clicks; crossterm has
     /// no native double-click event.
     last_left_click: Option<(Instant, u16, u16)>,
+    /// Last Ctrl-C press used to escalate to a force kill (ZS1-179).
+    last_interrupt: Option<Instant>,
+    /// Current session's operator name, projected from the journal (ZS1-178).
+    session_name: Option<String>,
+    /// Journal path of the current session, for rename duplicate checks.
+    current_session_path: Option<String>,
+    /// Inline header session rename editor (ZS1-178).
+    session_rename: Option<SessionRename>,
+    /// Header rect of the session label, used for double-click rename.
+    session_label_rect: Option<Rect>,
     max_messages: usize,
     max_history: usize,
     spinner_tick: usize,
@@ -2816,7 +2851,11 @@ impl TuiState {
             streaming_job_id: None,
             streaming_message_started: false,
             streaming_block: None,
-            workspace_layout: LayoutModel::new(TabId::Project),
+            workspace_layout: {
+                let mut layout = LayoutModel::new(TabId::Project);
+                layout.focused = Some(PaneId::ProjectConversation);
+                layout
+            },
             workspace_layouts: BTreeMap::new(),
             layout_dirty: false,
             layout_resets: BTreeSet::new(),
@@ -2883,6 +2922,11 @@ impl TuiState {
             pane_scroll: BTreeMap::new(),
             resources_zoom: None,
             last_left_click: None,
+            last_interrupt: None,
+            session_name: None,
+            current_session_path: None,
+            session_rename: None,
+            session_label_rect: None,
             max_messages: max_messages.max(1),
             max_history: 100,
             spinner_tick: 0,
@@ -2924,6 +2968,8 @@ impl TuiState {
             .unwrap_or("INTJ")
             .into();
         self.cached_transcript = None;
+        self.session_name = session.session_name().map(str::to_owned);
+        self.current_session_path = Some(session.path().display().to_string());
         let snapshot = SessionPaneSnapshot::from_session(session);
         self.refresh_session_browser(session);
         self.set_project_session_cursor(
@@ -3010,7 +3056,16 @@ impl TuiState {
         // active project instead of appending to the far right.
         let insert_at = (self.active_project + 1).min(self.project_tabs.len());
         self.project_tabs.insert(insert_at, name);
-        self.select_project_tab(insert_at)
+        let opened = self.select_project_tab(insert_at);
+        // A freshly opened project starts on the conversation prompt so the
+        // operator can type immediately; only an explicit action enters the
+        // no-hot-zone state (ZS1-177).
+        if opened && self.workspace_layout.focused.is_none() {
+            let pane = conversation_pane_for_tab(self.workspace_layout.tab);
+            self.workspace_layout.focused = Some(pane);
+            self.dirty = true;
+        }
+        opened
     }
 
     pub fn select_project_tab(&mut self, index: usize) -> bool {
@@ -4459,6 +4514,11 @@ impl TuiState {
         self.workspace_area
     }
 
+    /// Scroll offset of one pane, used by the zone key handling and tests.
+    pub fn pane_scroll_offset(&self, pane: PaneId) -> u16 {
+        self.pane_scroll.get(&pane).copied().unwrap_or(0)
+    }
+
     /// The project tab is the only top-level workspace scope. Feature
     /// presets may exist for migration, but they are never project identity.
     pub fn active_project_workspace(&self) -> &LayoutModel {
@@ -4836,14 +4896,10 @@ impl TuiState {
     /// derives it from pane focus; leaving the two input panes returns the
     /// prompt flag to the discussion draft.
     fn sync_left_prompt_with_pane(&mut self, pane: PaneId) {
-        match pane {
-            PaneId::Arch => self.left_prompt = LeftPrompt::Arch,
-            PaneId::Execution => {}
-            _ => {
-                if self.left_prompt == LeftPrompt::Arch {
-                    self.left_prompt = LeftPrompt::Discussion;
-                }
-            }
+        if pane == PaneId::Arch {
+            self.left_prompt = LeftPrompt::Arch;
+        } else if pane == self.conversation_pane() {
+            self.left_prompt = LeftPrompt::Discussion;
         }
     }
 
@@ -5342,51 +5398,58 @@ impl TuiState {
         std::mem::take(&mut self.arch_submit_pending)
     }
 
-    /// The one zone that owns ordinary text input, paste and the IME cursor.
-    /// The Shell pane focus wins over the left prompts so a live PTY is never
-    /// half-focused, and the Arch pane body counts as arch focus even when the
-    /// prompt flag has not caught up yet.
+    /// The one zone that owns the keyboard. The focused pane is the single
+    /// source of truth: input panes map to their own zone, navigation panes
+    /// (Resources/Gantt) map to theirs, other panes and "no focus" are the
+    /// explicit no-hot-zone state (ZS1-177).
     pub fn hot_zone(&self) -> HotZone {
-        if self.workspace_layout.focused == Some(PaneId::Execution) {
-            HotZone::Shell
-        } else if self.left_prompt == LeftPrompt::Arch
-            || self.workspace_layout.focused == Some(PaneId::Arch)
-        {
-            HotZone::Arch
-        } else {
-            HotZone::Discussion
+        match self.workspace_layout.focused {
+            Some(PaneId::Execution) => HotZone::Shell,
+            Some(PaneId::Arch) => HotZone::Arch,
+            Some(PaneId::Resources) => HotZone::Resources,
+            Some(PaneId::Gantt) => HotZone::Gantt,
+            Some(pane) if pane == self.conversation_pane() => HotZone::Conversation,
+            Some(_) | None => HotZone::None,
         }
     }
 
     /// Focus a left-column prompt without mutating either draft.
     pub fn set_left_prompt(&mut self, prompt: LeftPrompt) -> bool {
-        if self.left_prompt == prompt {
-            return false;
-        }
-        self.left_prompt = prompt;
-        self.dirty = true;
-        true
+        let zone = match prompt {
+            LeftPrompt::Discussion => HotZone::Conversation,
+            LeftPrompt::Arch => HotZone::Arch,
+        };
+        let changed = self.hot_zone() != zone || self.left_prompt != prompt;
+        self.set_hot_zone(zone);
+        changed
     }
 
-    /// Move the unique hot zone and keep pane focus consistent with it. Moving
-    /// focus off the Shell pane is required so Alt-M can always leave the PTY.
+    /// Move the unique hot zone and keep pane focus consistent with it. Every
+    /// transition goes through pane focus so exactly one zone can own keys.
     pub fn set_hot_zone(&mut self, zone: HotZone) -> bool {
         let changed = self.hot_zone() != zone;
         match zone {
-            HotZone::Discussion => {
+            HotZone::None => {
+                self.workspace_layout.focused = None;
+                self.layout_dirty = true;
+            }
+            HotZone::Conversation => {
                 self.left_prompt = LeftPrompt::Discussion;
-                if matches!(
-                    self.workspace_layout.focused,
-                    Some(PaneId::Execution | PaneId::Arch)
-                ) {
-                    self.focus_workspace_pane(self.conversation_pane());
-                }
+                self.focus_workspace_pane(self.conversation_pane());
             }
             HotZone::Arch => {
-                if self.workspace_layout.focused == Some(PaneId::Execution) {
-                    self.focus_workspace_pane(self.conversation_pane());
-                }
                 self.left_prompt = LeftPrompt::Arch;
+                if !self.focus_workspace_pane(PaneId::Arch) {
+                    // Tabs without an arch pane keep the flag so the model
+                    // selection still targets the arch zone.
+                    self.left_prompt = LeftPrompt::Arch;
+                }
+            }
+            HotZone::Resources => {
+                self.focus_workspace_pane(PaneId::Resources);
+            }
+            HotZone::Gantt => {
+                self.focus_workspace_pane(PaneId::Gantt);
             }
             HotZone::Shell => {
                 self.focus_workspace_pane(PaneId::Execution);
@@ -5405,12 +5468,16 @@ impl TuiState {
     /// console. Bound to Alt-M in the production key map.
     pub fn toggle_left_prompt(&mut self) -> LeftPrompt {
         let next = match self.hot_zone() {
-            HotZone::Discussion => LeftPrompt::Arch,
-            HotZone::Arch | HotZone::Shell => LeftPrompt::Discussion,
+            HotZone::Conversation => LeftPrompt::Arch,
+            HotZone::Arch
+            | HotZone::Shell
+            | HotZone::Resources
+            | HotZone::Gantt
+            | HotZone::None => LeftPrompt::Discussion,
         };
         self.set_hot_zone(match next {
             LeftPrompt::Arch => HotZone::Arch,
-            LeftPrompt::Discussion => HotZone::Discussion,
+            LeftPrompt::Discussion => HotZone::Conversation,
         });
         next
     }
@@ -5420,6 +5487,159 @@ impl TuiState {
         match self.left_prompt {
             LeftPrompt::Discussion => crate::view_model::Zone::Discussion,
             LeftPrompt::Arch => crate::view_model::Zone::Arch,
+        }
+    }
+
+    /// Keys owned by the Resources hot zone (ZS1-177): block selection,
+    /// drill-down and leaving to the explicit no-hot-zone state.
+    fn resources_zone_key(&mut self, key: KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Up => self.move_resource_block(-1),
+            KeyCode::Down => self.move_resource_block(1),
+            KeyCode::PageUp => self.move_resource_block(-8),
+            KeyCode::PageDown => self.move_resource_block(8),
+            KeyCode::Enter => {
+                let _ = self.activate_resource_block();
+                self.dirty = true;
+            }
+            KeyCode::Esc => {
+                if self.resource_open_block.is_some() {
+                    self.close_resource_block();
+                } else {
+                    self.set_hot_zone(HotZone::None);
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// Keys owned by the Gantt hot zone (ZS1-177): keyboard scrolling mirrors
+    /// the wheel/trackpad behavior; Esc leaves to the no-hot-zone state.
+    fn gantt_zone_key(&mut self, key: KeyEvent) -> bool {
+        let scroll = self.pane_scroll.entry(PaneId::Gantt).or_insert(0);
+        match key.code {
+            KeyCode::Up => *scroll = scroll.saturating_sub(1),
+            KeyCode::Down => *scroll = scroll.saturating_add(1),
+            KeyCode::PageUp => *scroll = scroll.saturating_sub(10),
+            KeyCode::PageDown => *scroll = scroll.saturating_add(10),
+            KeyCode::Home => *scroll = 0,
+            KeyCode::End => *scroll = u16::MAX,
+            KeyCode::Esc => {
+                self.set_hot_zone(HotZone::None);
+            }
+            _ => return false,
+        }
+        self.dirty = true;
+        true
+    }
+
+    /// Header label for the current session: the operator name when set, else
+    /// a short session id, else nothing (ZS1-178).
+    pub fn session_header_label(&self) -> Option<String> {
+        if let Some(name) = self.session_name.as_deref().filter(|name| !name.is_empty()) {
+            return Some(name.to_owned());
+        }
+        self.session_snapshot
+            .as_ref()
+            .map(|snapshot| short_session_id(snapshot.session_id()))
+    }
+
+    /// Open the inline session rename editor (double-click on the header
+    /// label, ZS1-178).
+    pub fn begin_session_rename(&mut self) -> bool {
+        self.session_rename = Some(SessionRename {
+            text: self.session_name.clone().unwrap_or_default(),
+        });
+        self.dirty = true;
+        true
+    }
+
+    pub fn session_rename_active(&self) -> bool {
+        self.session_rename.is_some()
+    }
+
+    /// Validate the draft name against the bounded rules and the cached
+    /// session catalog. Invalid or duplicate names keep the editor open.
+    fn validate_session_rename(&mut self) -> Option<String> {
+        let text = self.session_rename.as_ref()?.text.clone();
+        let name = match crate::session::validate_session_name(&text) {
+            Ok(name) => name,
+            Err(error) => {
+                self.set_status(format!("Session 名字无效：{error} · 请重新输入"));
+                return None;
+            }
+        };
+        let current = self.current_session_path.as_deref();
+        let duplicate = self.session_browser.iter().any(|summary| {
+            summary.name.as_deref() == Some(name.as_str())
+                && summary.path.as_str() != current.unwrap_or_default()
+        });
+        if duplicate {
+            self.set_status(format!("Session 名字已存在：{name} · 请重新输入"));
+            return None;
+        }
+        Some(name)
+    }
+
+    fn session_rename_key(&mut self, key: KeyEvent) -> TuiAction {
+        match key.code {
+            KeyCode::Esc => {
+                self.session_rename = None;
+                self.set_status("Session 重命名已取消");
+                self.dirty = true;
+            }
+            KeyCode::Enter => {
+                if let Some(name) = self.validate_session_rename() {
+                    self.session_rename = None;
+                    self.session_name = Some(name.clone());
+                    self.dirty = true;
+                    return TuiAction::RenameSession(name);
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(rename) = self.session_rename.as_mut() {
+                    rename.text.pop();
+                }
+                self.dirty = true;
+            }
+            KeyCode::Char(character) if !character.is_control() => {
+                if let Some(rename) = self.session_rename.as_mut()
+                    && rename.text.len() < crate::session::MAX_SESSION_NAME_BYTES
+                {
+                    rename.text.push(character);
+                }
+                self.dirty = true;
+            }
+            _ => {}
+        }
+        TuiAction::Redraw
+    }
+
+    /// Keys owned by the SessionList pane. Kept outside the text zones so a
+    /// stale discussion draft never steals its navigation.
+    fn session_list_zone_key(&mut self, key: KeyEvent) -> Option<TuiAction> {
+        match key.code {
+            KeyCode::Up => {
+                self.move_session_browser_cursor(-1);
+                Some(TuiAction::Redraw)
+            }
+            KeyCode::Down => {
+                self.move_session_browser_cursor(1);
+                Some(TuiAction::Redraw)
+            }
+            KeyCode::PageUp => {
+                self.move_session_browser_cursor(-8);
+                Some(TuiAction::Redraw)
+            }
+            KeyCode::PageDown => {
+                self.move_session_browser_cursor(8);
+                Some(TuiAction::Redraw)
+            }
+            KeyCode::Enter => self
+                .selected_session_browser_path()
+                .map(|path| TuiAction::OpenSession(path.to_owned())),
+            _ => None,
         }
     }
 
@@ -5729,7 +5949,7 @@ impl TuiState {
                 }
             },
             KeyCode::Esc => {
-                self.set_hot_zone(HotZone::Discussion);
+                self.set_hot_zone(HotZone::Conversation);
                 self.set_status("Arch console unfocused · Alt-M to return");
             }
             KeyCode::Tab => {
@@ -7386,6 +7606,15 @@ impl TuiState {
             }
         }
         if mouse.kind == MouseEventKind::Down(MouseButton::Left)
+            && double_click
+            && self
+                .session_label_rect
+                .is_some_and(|rect| rect.contains(position))
+        {
+            self.begin_session_rename();
+            return TuiAction::Redraw;
+        }
+        if mouse.kind == MouseEventKind::Down(MouseButton::Left)
             && let Some((_, hit)) = self
                 .subtab_hits
                 .iter()
@@ -7442,7 +7671,7 @@ impl TuiState {
                 .docked_prompt_rect
                 .is_some_and(|rect| rect.contains(position))
             {
-                self.set_hot_zone(HotZone::Discussion);
+                self.set_hot_zone(HotZone::Conversation);
             }
             self.dragging_row = panes.iter().find_map(|top| {
                 panes
@@ -7735,6 +7964,7 @@ impl TuiState {
             || self.goal_edit.is_some()
             || self.resources_zoom.is_some()
             || self.subtab_concurrency_edit.is_some()
+            || self.session_rename.is_some()
             || self
                 .approval_views
                 .get(self.active_project())
@@ -7753,7 +7983,7 @@ impl TuiState {
         // The ordinary-paste buffer only exists for the discussion prompt. A
         // hot Arch console inserts graphemes directly so a committed IME
         // character can never land in the discussion draft.
-        let composing = !modal_active && self.hot_zone() == HotZone::Discussion;
+        let composing = !modal_active && self.hot_zone() == HotZone::Conversation;
         if let Event::Key(key) = &event {
             if key.kind == KeyEventKind::Release {
                 return TuiAction::None;
@@ -7837,6 +8067,7 @@ impl TuiState {
                     || self.goal_edit.is_some()
                     || self.resources_zoom.is_some()
                     || self.subtab_concurrency_edit.is_some()
+                    || self.session_rename.is_some()
                 {
                     return TuiAction::None;
                 }
@@ -7854,11 +8085,13 @@ impl TuiState {
                     match self.hot_zone() {
                         HotZone::Arch => self.arch_insert_text(&text),
                         HotZone::Shell => self.forward_shell_paste(&text),
-                        HotZone::Discussion => {
+                        HotZone::Conversation => {
                             self.insert_paste(&text);
                             // Pasted slash text remains literal until a deliberate later key.
                             self.palette_dismissed = true;
                         }
+                        // Navigation zones have no text target.
+                        HotZone::Resources | HotZone::Gantt | HotZone::None => {}
                     }
                 }
                 TuiAction::None
@@ -7878,6 +8111,10 @@ impl TuiState {
         // Inline tab rename is modal for direct callers as well (ZS1-169).
         if self.tab_rename.is_some() {
             return self.tab_rename_key(key);
+        }
+        // The header session rename editor is modal (ZS1-178).
+        if self.session_rename.is_some() {
+            return self.session_rename_key(key);
         }
         // The enlarged Resources overlay is modal over every hot zone.
         if self.resources_zoom.is_some() {
@@ -7903,6 +8140,20 @@ impl TuiState {
         // captures editing keys; every control chord still reaches its usual
         // handler so focus can always be moved away.
         let zone = self.hot_zone();
+        // ZS1-179: a second Ctrl-C inside the escalation window force-kills the
+        // active job in every zone. The first press keeps its zone meaning, so
+        // a Shell Ctrl-C still reaches the PTY and an idle Conversation shows
+        // the confirmation hint.
+        if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('c') {
+            let now = Instant::now();
+            let escalate = self
+                .last_interrupt
+                .is_some_and(|last| now.saturating_duration_since(last) <= INTERRUPT_WINDOW);
+            self.last_interrupt = Some(now);
+            if escalate {
+                return TuiAction::ForceKill;
+            }
+        }
         if zone == HotZone::Arch && self.arch_prompt_captures(key) {
             return self.arch_prompt_key(key);
         }
@@ -7912,6 +8163,18 @@ impl TuiState {
         // still reach their usual handler.
         if zone == HotZone::Shell && self.forward_shell_key(key) {
             return TuiAction::Redraw;
+        }
+        // ZS1-177: navigation zones own their keys before any text editing.
+        if zone == HotZone::Resources && self.resources_zone_key(key) {
+            return TuiAction::Redraw;
+        }
+        if zone == HotZone::Gantt && self.gantt_zone_key(key) {
+            return TuiAction::Redraw;
+        }
+        if self.workspace_layout.focused == Some(PaneId::SessionList)
+            && let Some(action) = self.session_list_zone_key(key)
+        {
+            return action;
         }
         if self.history_search.is_some() {
             return self.history_search_key(key);
@@ -8143,14 +8406,21 @@ impl TuiState {
                 // Ctrl-C is an interrupt while a provider turn is active;
                 // quitting in that state would discard a usable session
                 // instead of returning the user to an idle prompt. Ctrl-D
-                // remains the explicit empty-prompt quit binding.
+                // remains the explicit empty-prompt quit binding, and a second
+                // Ctrl-C escalates to a force kill (ZS1-179).
                 KeyCode::Char('c') if self.input.is_empty() && self.busy => {
                     return TuiAction::Interrupt;
                 }
-                KeyCode::Char('c') | KeyCode::Char('d') if self.input.is_empty() => {
+                KeyCode::Char('d') if self.input.is_empty() => {
                     return TuiAction::Quit;
                 }
-                KeyCode::Char('c') => return TuiAction::Interrupt,
+                KeyCode::Char('c') => {
+                    if self.busy || !self.input.is_empty() {
+                        return TuiAction::Interrupt;
+                    }
+                    self.set_status("再按一次 Ctrl-C 强制终止 · Ctrl-D 退出");
+                    return TuiAction::None;
+                }
                 KeyCode::Char('u') => {
                     let start = self.visible_line_boundary(false);
                     let start = if start == self.cursor && start > 0 {
@@ -8284,6 +8554,26 @@ impl TuiState {
                 }
                 _ => {}
             }
+        }
+        // ZS1-177: non-conversation zones keep global chords (handled above)
+        // and pane cycling, but never edit the discussion draft.
+        if zone != HotZone::Conversation {
+            match key.code {
+                KeyCode::Tab if key.modifiers.is_empty() => {
+                    self.focus_next_workspace_pane();
+                    return TuiAction::Redraw;
+                }
+                KeyCode::Tab if key.modifiers == KeyModifiers::SHIFT => {
+                    self.focus_previous_workspace_pane();
+                    return TuiAction::Redraw;
+                }
+                KeyCode::BackTab => {
+                    self.focus_previous_workspace_pane();
+                    return TuiAction::Redraw;
+                }
+                _ => {}
+            }
+            return TuiAction::None;
         }
         match key.code {
             // With an empty prompt, Tab cycles BentoBox focus; while typing
@@ -9392,7 +9682,7 @@ impl TuiState {
 
     /// Whether the discussion prompt is the field that keys and IME belong to.
     pub fn discussion_prompt_focused(&self) -> bool {
-        self.hot_zone() == HotZone::Discussion
+        self.hot_zone() == HotZone::Conversation
             && self.goal_edit.is_none()
             && self.directory_picker.is_none()
             && self.transcript_browser.is_none()
@@ -9619,12 +9909,8 @@ impl TuiState {
                 status
             } else if self.adjacent_paste().is_some() {
                 " Alt-Enter expand paste · Left/Right move · Backspace/Delete remove · Enter send "
-            } else if area.width < 100 {
-                " Enter send · Ctrl-T folder · Ctrl-Tab project · Ctrl-W close · Ctrl-B/F tab order · Alt-,/. subtab order · Alt-N/I/W subtab · Tab panes · Ctrl-J newline · Ctrl-R history · Ctrl-C stop · /help input "
-            } else if self.external_editor_shortcut_available() {
-                " Enter send · Ctrl-T folder · Ctrl-Tab project · Ctrl-W close · Ctrl-B/F tab order · Alt-,/. subtab order · Alt-N/I/W subtab · Tab panes · Ctrl-G editor · Ctrl-U line kill · Ctrl-Y yank · Ctrl-C stop · Alt-R reasoning · Alt-C copy · Alt-B blocks · /help input "
             } else {
-                " Enter send · Ctrl-T folder · Ctrl-Tab project · Ctrl-W close · Ctrl-B/F tab order · Alt-,/. subtab order · Alt-N/I/W subtab · Tab panes · Ctrl-U line kill · Ctrl-Y yank · Ctrl-C stop · Alt-R reasoning · Alt-C copy · Alt-B blocks · /help input "
+                return self.render_footer_zone_hint(frame, area);
             },
             usize::from(area.width),
         );
@@ -9640,6 +9926,41 @@ impl TuiState {
                         Color::DarkGray
                     },
                 ),
+            )),
+            area,
+        );
+    }
+
+    /// Footer line for the current hot zone (ZS1-177). Split out of
+    /// [`Self::render_footer`] so the zone matrix stays one readable table.
+    fn render_footer_zone_hint(&self, frame: &mut Frame<'_>, area: Rect) {
+        let editor = self.external_editor_shortcut_available();
+        let hint = match self.hot_zone() {
+            HotZone::Conversation => {
+                if editor {
+                    " Conversation 热区 · Enter send · Ctrl-R history · Ctrl-G editor · Ctrl-Tab project · Ctrl-T folder · Ctrl-W close · Alt-M Arch · Tab 切区 · 双击 Ctrl-C 强杀 "
+                } else {
+                    " Conversation 热区 · Enter send · Ctrl-R history · Ctrl-Tab project · Ctrl-T folder · Ctrl-W close · Alt-M Arch · Tab 切区 · 双击 Ctrl-C 强杀 "
+                }
+            }
+            HotZone::Resources => {
+                " Resources 热区 · ↑↓ 选择 · Enter 进入/展开 · 双击放大观察 worker · Esc 退出热区 · Tab 切区 "
+            }
+            HotZone::Arch => {
+                " Arch 热区 · Enter send · Shift-Enter 换行 · Esc 返回 Conversation · 双击 Ctrl-C 强杀 "
+            }
+            HotZone::Gantt => " Gantt 热区 · ↑↓/PgUp/PgDn 滚动 · Esc 退出热区 · Tab 切区 ",
+            HotZone::Shell => {
+                " Shell 热区 · 直接输入进 PTY · Ctrl-C 发送 SIGINT · 双击 Ctrl-C 强杀 · Tab 切区 "
+            }
+            HotZone::None => {
+                " 无热区 · Tab 切换区域 · 双击 Resources 观察 worker · 双击 Ctrl-C 强杀 · Ctrl-D 退出 "
+            }
+        };
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                truncate_to_width(hint, usize::from(area.width)),
+                Style::default().fg(Color::DarkGray),
             )),
             area,
         );
@@ -9808,6 +10129,67 @@ impl TuiState {
         self.render_tab_layer(frame, bottom, false);
     }
 
+    /// Layer-1 header with the current session label between the logo and the
+    /// workspaces list (ZS1-178): ` zenpi · <session> | workspaces : ...`.
+    /// Returns the full header text for column bookkeeping and records the
+    /// label rect so a double-click can rename the session.
+    fn render_session_header(&mut self, frame: &mut Frame<'_>, area: Rect, width: usize) -> String {
+        self.session_label_rect = None;
+        let prefix = " zenpi \u{b7} ";
+        let suffix = " | workspaces : ";
+        let editing = self.session_rename.is_some();
+        let label = if let Some(rename) = self.session_rename.as_ref() {
+            if rename.text.is_empty() {
+                "_".to_owned()
+            } else {
+                rename.text.clone()
+            }
+        } else {
+            self.session_header_label().unwrap_or_default()
+        };
+        let prefix_len = prefix.chars().count();
+        let suffix_len = suffix.chars().count();
+        let budget = width.saturating_sub(prefix_len + suffix_len).max(1);
+        let shown = truncate_chars(&label, budget);
+        let shown_len = shown.chars().count();
+        let mut text = String::from(prefix);
+        frame.render_widget(
+            Paragraph::new(prefix).style(Style::default().fg(Color::DarkGray)),
+            Rect::new(area.x, area.y, prefix_len.min(width) as u16, 1),
+        );
+        if prefix_len + shown_len < width {
+            let label_rect = Rect::new(
+                area.x + prefix_len as u16,
+                area.y,
+                shown_len.max(1) as u16,
+                1,
+            );
+            frame.render_widget(
+                Paragraph::new(shown.clone()).style(Style::default().fg(if editing {
+                    Color::Yellow
+                } else {
+                    Color::White
+                })),
+                label_rect,
+            );
+            self.session_label_rect = Some(label_rect);
+            text.push_str(&shown);
+            let suffix_available = width - prefix_len - shown_len;
+            let suffix_shown = truncate_chars(suffix, suffix_available);
+            frame.render_widget(
+                Paragraph::new(suffix_shown.clone()).style(Style::default().fg(Color::DarkGray)),
+                Rect::new(
+                    area.x + (prefix_len + shown_len) as u16,
+                    area.y,
+                    suffix_available as u16,
+                    1,
+                ),
+            );
+            text.push_str(&suffix_shown);
+        }
+        text
+    }
+
     /// One layer of the header: ` zenpi | workspaces : name [-] || ... [+]` or
     /// ` └ Worktrees: name ↑N↓ [-] || ... [+]`, wrapped into the given rows.
     fn render_tab_layer(&mut self, frame: &mut Frame<'_>, area: Rect, layer1: bool) {
@@ -9815,9 +10197,9 @@ impl TuiState {
             return;
         }
         let header = if layer1 {
-            " zenpi | workspaces : "
+            " zenpi | workspaces : ".to_owned()
         } else {
-            " \u{2514} Worktrees: "
+            " \u{2514} Worktrees: ".to_owned()
         };
         let separator = "  \u{2502}  ";
         // (text, kind): 0 select, 1 close, 2 conc-up, 3 conc-down, 4 value
@@ -9867,11 +10249,16 @@ impl TuiState {
         let width = usize::from(area.width);
         let max_rows = usize::from(area.height).max(1);
         let mut row = 0usize;
-        let header_shown = truncate_chars(header, width);
-        frame.render_widget(
-            Paragraph::new(header_shown.clone()).style(Style::default().fg(Color::DarkGray)),
-            Rect::new(area.x, area.y, width as u16, 1),
-        );
+        let header_shown = if layer1 {
+            self.render_session_header(frame, area, width)
+        } else {
+            let shown = truncate_chars(&header, width);
+            frame.render_widget(
+                Paragraph::new(shown.clone()).style(Style::default().fg(Color::DarkGray)),
+                Rect::new(area.x, area.y, width as u16, 1),
+            );
+            shown
+        };
         let mut column = header_shown.chars().count();
         if column >= width {
             row += 1;
@@ -10187,13 +10574,15 @@ impl TuiState {
             .take(32)
             .enumerate()
             .map(|(index, summary)| {
+                let name = summary.name.as_deref().unwrap_or("-");
                 format!(
-                    "{}{}  turns={} events={} next={}",
+                    "{}{:<16} {}  turns={} events={} next={}",
                     if index == self.session_browser_cursor {
                         "> "
                     } else {
                         "  "
                     },
+                    truncate_cells(name, 16),
                     summary.session_id,
                     summary.turn_count,
                     summary.event_count,
@@ -10202,6 +10591,17 @@ impl TuiState {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// Replace the cached session catalog (host scan projection, ZS1-178).
+    pub fn set_session_browser(&mut self, summaries: Vec<crate::session::SessionSummary>) {
+        self.session_browser = summaries;
+    }
+
+    /// Mark which cached journal is the current session; rename duplicate
+    /// checks exclude it.
+    pub fn set_current_session_path(&mut self, path: Option<String>) {
+        self.current_session_path = path;
     }
 
     fn refresh_session_browser(&mut self, session: &crate::session::SessionStore) {
@@ -17624,6 +18024,53 @@ pub fn run_async_with_profile(
                             state.set_status("Ready");
                         }
                     }
+                    TuiAction::ForceKill => {
+                        // ZS1-179: force kill only clears runtime state
+                        // (queue/approvals); the journal stays intact so the
+                        // session can be resumed with `zenpi -s <name>`.
+                        pending_inputs.cancel(&mut state);
+                        if let Some(id) = active_job {
+                            let _ = runner.try_cancel(id);
+                            if let Some(approval) = approval.as_ref() {
+                                approval.emergency_cancel();
+                            }
+                            pending_approvals.clear();
+                            state.clear_activity_approvals();
+                            state.set_busy(false);
+                            state.set_status(
+                                "Force-killed · journal intact · resume with zenpi -s <name>",
+                            );
+                        } else {
+                            break 'outer;
+                        }
+                    }
+                    TuiAction::RenameSession(name) => {
+                        // ZS1-178: persist the operator name as an append-only
+                        // journal event, then refresh the cached summary so the
+                        // duplicate check sees it immediately.
+                        let result = match shared.try_lock() {
+                            Ok(mut agent) => agent.session_mut().rename(&name),
+                            Err(_) => Err(crate::session::SessionError::InvalidRecord(
+                                "session owner busy; try again".into(),
+                            )),
+                        };
+                        match result {
+                            Ok(name) => {
+                                let current = state.current_session_path.clone();
+                                for summary in state.session_browser.iter_mut() {
+                                    if Some(summary.path.as_str()) == current.as_deref() {
+                                        summary.name = Some(name.clone());
+                                    }
+                                }
+                                state.set_status(format!(
+                                    "Session 已重命名：{name} · 恢复用 zenpi -s {name}"
+                                ));
+                            }
+                            Err(error) => {
+                                state.set_status(format!("Session 重命名失败：{error} · 请重试"))
+                            }
+                        }
+                    }
                     TuiAction::Quit => break 'outer,
                     // ZS1-148: arch submissions are normalized to `Submit`
                     // before this match, so this arm is a defensive no-op.
@@ -17939,6 +18386,13 @@ where
                     TuiAction::Interrupt => {
                         state.set_busy(false);
                         state.set_status("Interrupted");
+                    }
+                    TuiAction::ForceKill => {
+                        state.set_busy(false);
+                        state.set_status("Force-killed · journal intact");
+                    }
+                    TuiAction::RenameSession(name) => {
+                        state.set_status(format!("Session 已重命名：{name}（同步宿主仅更新视图）"));
                     }
                     TuiAction::Redraw | TuiAction::None => {}
                 }
@@ -18775,6 +19229,17 @@ pub fn grid_columns(workers: usize, width: usize, height: usize) -> usize {
         columns *= 2;
     }
     best_columns
+}
+
+/// Compact session id for the header label: keep a recognizable prefix.
+fn short_session_id(session_id: &str) -> String {
+    const KEEP: usize = 10;
+    if session_id.chars().count() <= KEEP {
+        return session_id.to_owned();
+    }
+    let mut short: String = session_id.chars().take(KEEP).collect();
+    short.push('\u{2026}');
+    short
 }
 
 fn wrap_plain(text: &str, width: usize) -> Vec<String> {
@@ -20072,6 +20537,7 @@ mod tests {
             .map(|index| crate::session::SessionSummary {
                 path: format!("session-{index}"),
                 session_id: format!("id-{index}"),
+                name: None,
                 created_at_ms: 0,
                 turn_count: 0,
                 handoff_count: 0,
@@ -20196,6 +20662,7 @@ mod tests {
             .map(|index| crate::session::SessionSummary {
                 path: format!("session-{index}"),
                 session_id: format!("id-{index}"),
+                name: None,
                 created_at_ms: 0,
                 turn_count: 0,
                 handoff_count: 0,

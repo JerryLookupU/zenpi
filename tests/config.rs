@@ -738,3 +738,15 @@ fn zone_models_reject_blank_control_and_unknown_identities() {
     fs::write(&paths.config, "[zone_models]\nworker = \"never\"\n").unwrap();
     assert!(load_config(&paths).is_err());
 }
+
+#[test]
+fn short_session_reference_parses_without_changing_the_path_form() {
+    let options = parse_args(["-s", "my-session"]).unwrap();
+    assert_eq!(options.session_ref.as_deref(), Some("my-session"));
+    let options = parse_args(["-s=other"]).unwrap();
+    assert_eq!(options.session_ref.as_deref(), Some("other"));
+    let options = parse_args(["--session", "/tmp/journal.jsonl"]).unwrap();
+    assert_eq!(options.session_ref, None);
+    assert!(options.session.ends_with("journal.jsonl"));
+    assert!(parse_args(["-s", "  "]).is_err());
+}
