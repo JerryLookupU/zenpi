@@ -596,55 +596,70 @@ fn actual_directory_permission_failure_keeps_old_owner_usable() {
 }
 
 #[test]
-fn durable_pending_input_and_unknown_operation_are_not_erased() {
-    for unknown in [false, true] {
-        let root = tempdir().unwrap();
+fn durable_pending_input_blocks_new_but_unknown_operation_does_not() {
+    // Queued input is ephemeral user data and still fences a fresh session.
+    let root = tempdir().unwrap();
+    let mut initial = agent(root.path());
+    initial
+        .input_queue_request(zenpi::protocol::InputQueueRequest {
+            schema_version: 2,
+            id: "queued".into(),
+            kind: "input_queue".into(),
+            session_id: initial.session().session_id().to_owned(),
+            input_queue: zenpi::protocol::InputQueueAction::Enqueue {
+                input_id: "old-followup".into(),
+                kind: zenpi::input_queue::InputKind::FollowUp,
+                text: "preserve queued input".into(),
+            },
+        })
+        .unwrap();
+    let old = initial.session().session_id().to_owned();
+    let bytes = fs::read(root.path().join("initial.jsonl")).unwrap();
+    let mut wire = Wire::new(initial);
+    let rejected = wire.command("unsettled", "/new");
+    assert_eq!(rejected["success"], false, "{rejected}");
+    assert_eq!(rejected["project"]["session_id"], old);
+    assert!(
+        fs::read(root.path().join("initial.jsonl"))
+            .unwrap()
+            .starts_with(&bytes)
+    );
+    wire.finish();
+
+    // An unsettled operation stays durably recorded in the old journal and
+    // must not fence a fresh session; reopening the old journal still
+    // requires an explicit recovery decision.
+    let root = tempdir().unwrap();
+    {
         let mut store =
             SessionStore::open_in_workspace(root.path().join("initial.jsonl"), root.path())
                 .unwrap();
-        if unknown {
-            store
-                .begin_operation_with_key(
-                    &zenpi::session::InterruptedOperation {
-                        operation_id: "uncertain".into(),
-                        kind: zenpi::session::OperationKind::Tool,
-                        turn_id: "old-turn".into(),
-                        retry_requires_confirmation: true,
-                    },
-                    "uncertain-key",
-                )
-                .unwrap();
-        }
-        drop(store);
-        let mut initial = agent(root.path());
-        if !unknown {
-            initial
-                .input_queue_request(zenpi::protocol::InputQueueRequest {
-                    schema_version: 2,
-                    id: "queued".into(),
-                    kind: "input_queue".into(),
-                    session_id: initial.session().session_id().to_owned(),
-                    input_queue: zenpi::protocol::InputQueueAction::Enqueue {
-                        input_id: "old-followup".into(),
-                        kind: zenpi::input_queue::InputKind::FollowUp,
-                        text: "preserve queued input".into(),
-                    },
-                })
-                .unwrap();
-        }
-        let old = initial.session().session_id().to_owned();
-        let bytes = fs::read(root.path().join("initial.jsonl")).unwrap();
-        let mut wire = Wire::new(initial);
-        let rejected = wire.command("unsettled", "/new");
-        assert_eq!(rejected["success"], false, "{rejected}");
-        assert_eq!(rejected["project"]["session_id"], old);
-        assert!(
-            fs::read(root.path().join("initial.jsonl"))
-                .unwrap()
-                .starts_with(&bytes)
-        );
-        wire.finish();
+        store
+            .begin_operation_with_key(
+                &zenpi::session::InterruptedOperation {
+                    operation_id: "uncertain".into(),
+                    kind: zenpi::session::OperationKind::Tool,
+                    turn_id: "old-turn".into(),
+                    retry_requires_confirmation: true,
+                },
+                "uncertain-key",
+            )
+            .unwrap();
     }
+    let initial = agent(root.path());
+    let bytes = fs::read(root.path().join("initial.jsonl")).unwrap();
+    let mut wire = Wire::new(initial);
+    let created = wire.command("uncertain-new", "/new");
+    assert_eq!(created["success"], true, "{created}");
+    assert!(
+        fs::read(root.path().join("initial.jsonl"))
+            .unwrap()
+            .starts_with(&bytes),
+        "old journal must not be erased"
+    );
+    wire.finish();
+    let reopened = SessionStore::open(root.path().join("initial.jsonl")).unwrap();
+    assert_eq!(reopened.operation_recovery().len(), 1);
 }
 
 // The provider is deterministic here; the JSONL owner, session checkpoint,

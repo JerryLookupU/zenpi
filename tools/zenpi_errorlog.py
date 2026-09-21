@@ -32,7 +32,7 @@ import re
 import sys
 from datetime import datetime, timezone
 
-FAILED_OUTCOMES = {"success"}
+FAILED_OUTCOMES = {"succeeded"}
 IDISH = re.compile(
     r"(session|turn|call|req|request|operation|resp|item|msg|fc)_[-0-9A-Za-z]{8,}"
     r"|-\d{13,}-\d+|\b\d{13,}\b"
@@ -60,7 +60,16 @@ def normalize(message):
 def fingerprint(record):
     key = "|".join(
         str(record.get(field) or "")
-        for field in ("source", "session_id", "seq", "sequence", "kind", "message")
+        for field in (
+            "source",
+            "session_id",
+            "turn_id",
+            "seq",
+            "sequence",
+            "timestamp",
+            "kind",
+            "message",
+        )
     )
     return hashlib.sha1(key.encode()).hexdigest()
 

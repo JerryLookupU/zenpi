@@ -5098,14 +5098,15 @@ impl Agent {
         }
         let queue = crate::input_queue::InputQueue::recover(&self.session, Default::default())
             .map_err(|e| AgentError::InvalidTurn(e.to_string()))?;
-        if queue.has_pending()
-            || !self.unknown_tool_outcomes().is_empty()
-            || !self.operation_recovery().is_empty()
-            || !self.pending_attachments.is_empty()
-        {
+        // Unsettled tool/operation outcomes stay durably recorded in the old
+        // journal, and resuming that session still demands an explicit
+        // retry/abandon decision. A fresh session neither retries nor
+        // abandons them, so it must not be fenced by them; the transition
+        // record keeps the old session path for later resolution. Pending
+        // input and attachments are ephemeral user data and still block.
+        if queue.has_pending() || !self.pending_attachments.is_empty() {
             return Err(AgentError::InvalidTurn(
-                "new session requires settled operations and no pending input or attachments"
-                    .into(),
+                "new session requires no pending input or attachments".into(),
             ));
         }
         if cancelled() {
