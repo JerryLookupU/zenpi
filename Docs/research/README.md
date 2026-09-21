@@ -19,6 +19,12 @@ state lives only in [`../Zenpi_Execution_Blueprint.md`](../Zenpi_Execution_Bluep
 
 ## Evidence policy
 
+The current provider/authentication design and revision-pinned Pi, OMP,
+local Codex and DeepSeek Harness comparison live in the single
+[Provider/Auth Rust Blueprint](../Zenpi_Provider_Auth_Rust_Blueprint.md).
+Older notes below this directory remain dated historical evidence, not a
+second current protocol or login specification.
+
 Research is performed against a pinned local revision where possible. Paths and
 line references are pointers for review, not copied implementation. A claim
 that cannot be reproduced is labeled unknown rather than filled by assumption.

@@ -19,6 +19,11 @@ defaultUpstreamConcurrency: 16
 仓库自动化 worker 的嵌套进程/服务禁止规则不变，本合同不授予 worker 启动 Broker 的权限。
 以下数值是待验证的初始合同，不是已测性能。蓝图登记待实施工作，运行时代码与现有验收结果不变。
 
+阶段边界：本文件仅在未来用户显式启用 Broker 后适用。
+当前 direct-client 的认证/协议基础以[唯一接入蓝图](Zenpi_Provider_Auth_Rust_Blueprint.md)为准；
+切入 Broker 时由服务接管其 auth/transport 所有权，不双写、不隐式降级回直连。
+本文件不另维护登录流程、凭据格式、provider 支持矩阵或协议转换细则。
+
 ## 1. 概念分开
 
 | 名称 | 内容 | 所有者与创建时机 |

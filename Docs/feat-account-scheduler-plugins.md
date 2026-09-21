@@ -22,6 +22,10 @@ verification: refusal-invariants; race-barriers; recovery-fixtures; resource-ben
 多进程部署、账号池和连接池、单实例启动、统一外部服务接口及性能门槛由
 [本地账号池与统一连接服务规格](feat-account-broker.md) 定义，本文件不复制其实现。
 
+本文件是未来显式 Broker 阶段的合同，不要求当前本地认证先实现调度插件。
+认证、provider/协议、TUI/headless 和多模态接入只引用
+[唯一接入蓝图](Zenpi_Provider_Auth_Rust_Blueprint.md)，不在此建立另一套底层规格。
+
 ## 1. 一页合同
 
 AS-01：账号分配只经过 AccountScheduler；主会话、Goal、Flow、Subagent 不自选账号。

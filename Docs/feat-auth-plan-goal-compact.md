@@ -10,31 +10,11 @@ Goal、Flow 和运行时交互以
 
 ## 功能一：账号体系
 
-### 新增命令
-
-- `zenpi config auth list [--json]`
-  列出所有已配置的 agent 账号：别名、provider、base_url、
-  认证方式（apikey / oauth）、是否默认账号，凭证全程脱敏。
-- `zenpi config add auth codex [email]`
-  通过 OpenAI OAuth（ChatGPT 账号）浏览器授权登录；传入 email
-  作为登录提示与账号别名，例如
-  `zenpi config add auth codex lzjaaaaa@gmail.com`。
-  授权凭证持久化后自动刷新，失效时提示重新登录。
-- `zenpi config add auth apikey <base_url> <provider> <apikey> [--alias 别名] [--json]`
-  非交互式添加 API Key 账号。
-- `zenpi config import-codex --profile codex` 增强
-  除 API Key 外，现在也能识别并导入 Codex 的 OAuth 登录凭证。
-
-### 影响
-
-- 所有账号（apikey 与 oauth token）统一持久化到
-  `~/.zenpi/auth.json`，文件权限保持 0600；旧格式配置无缝兼容。
-- 每个账号有唯一别名，别名即 profile，切换账号沿用现有习惯。
-
-### 效果
-
-- 用 ChatGPT 账号（Gmail）登录的用户不再需要手动管理 API Key。
-- 多账号、多 provider 集中管理，一目了然，随时切换。
+认证、模型/协议接入、CLI/TUI/headless 交互、Rust 目录和迁移的唯一细则见
+[认证、模型与协议 Rust 蓝图](Zenpi_Provider_Auth_Rust_Blueprint.md)。
+本文不再维护另一份 auth 命令、存储格式或验收列表；旧的 OAuth 静默导入、
+明文 key 位置参数和“profile 即账号”设想由该蓝图的待确认合同替代。
+本节不表示认证功能已经实现。
 
 ## 功能二：Plan / DAG 流程引导
 
@@ -133,8 +113,8 @@ Goal、Flow 和运行时交互以
 
 ## 验收标准
 
-- [ ] 三条 auth 命令可用，凭证脱敏，auth.json 权限 0600 且旧格式兼容
-- [ ] import-codex 能导入 OAuth 凭证且重复执行幂等
+认证验收只维护在[认证蓝图第 12 节](Zenpi_Provider_Auth_Rust_Blueprint.md#12-唯一验收矩阵)，不在此重复登记。
+
 - [ ] /plan 与 Goal 默认规划允许受控读取，但确认前不产生实现性副作用
 - [ ] Goal 按 KR 验收，自动续行有收束边界，超限/中断不误报完成
 - [ ] Plan/DAG 使用只读 fork 和同一交付入口，晚到提案不覆盖进度

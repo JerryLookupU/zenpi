@@ -38,75 +38,36 @@ Broker 持久化账号绑定，Session 保存任务及绑定回执；Runtime 继
 Flow 只声明路由意图，不能用提示词代替配额算法或修改安全限制。
 调度目标是减少不必要的缓存失效，而不是承诺本地能够控制远端 KV cache。
 
-## 2. 当前组件与最小改造
+## 2. 当前接入基础
 
-| 当前位置 | 事实 | 改造方向 |
-|---|---|---|
-| `Cargo.toml` | Rust + ureq + serde，没有 JavaScript 模型 SDK 依赖 | 保持原生 Rust；同一二进制提供共享 Broker，不增加 JavaScript 桥接 |
-| `src/backend.rs` | 已有 Backend、CompletionRequest、ProviderEvent；Responses 和非流式 Chat 适配 | 保留统一边界，逐协议拆分编码、流解析和能力验证 |
-| `src/core.rs::make_backend` | 创建后端时解析一个 Profile；生产入口缺省协议为 Responses | 每次模型请求边界解析不可变路由快照 |
-| `src/config.rs` | Profile、API Key、模型配置和导入基础；没有完整 OAuth 生命周期 | 增加账号身份、凭证引用、套餐、模型目录；兼容读取旧 Profile |
-| `src/governance.rs` | 已有资源预留、结算与未知结果保留 | 扩展账号/共享额度维度，不建立竞争账本 |
-| `src/runtime.rs`、`src/session.rs` | 有界执行、取消和持久化基础 | 复用任务所有权与恢复，增加路由与额度事件 |
+当前代码审阅、每 provider 一定义文件、共享协议、认证生命周期、TUI/headless
+与多模态合同，以[认证、模型与协议 Rust 蓝图](Zenpi_Provider_Auth_Rust_Blueprint.md)
+为唯一规格。本文件不再维护旧的 provider/认证支持矩阵或重复的底层协议合同。
 
-库级协议枚举的默认值与生产入口不同，迁移必须清点调用点并增加默认行为测试。
-模型目录目前主要来自本地配置，不能把可填写任意 model ID 当成已验证模型支持。
+该蓝图是现有 direct-client 的本地前置阶段，不表示本文件的 AccountScheduler
+或共享 Broker 已实现。未来显式启用 Broker 时，认证和实际网络连接所有权移入
+服务；不得同时运行两套刷新所有者，服务失败也不得回退客户端直连。
 
-## 3. Provider 与认证范围
+## 3. Provider 与产品资格
 
-以下是目标接入清单，不是当前全部可用的承诺。厂商、套餐、地域和模型分别验收。
+未来账号调度仍需区分 provider、产品/套餐、地域、workspace、账号与模型资格。
+2026-09-13 的外部调查保留为[历史证据](research/provider-account-routing-2026-09-13.md)，
+不是当前支持声明；各产品接入前重新核验认证、端点、模型与使用范围。
+新增 provider 不能绕过唯一接入蓝图的能力交集、目的地和凭据约束。
 
-| 接入项 | 认证方案 | 协议选择 | 范围 |
-|---|---|---|---|
-| OpenAI API | API Key | Responses 为主，Chat 兼容 | 复用现有适配并补充能力测试 |
-| ChatGPT/Codex 订阅 | 专用 OAuth 连接 | 专用认证/端点配置下的 Responses 适配 | 候选；确认授权方式与使用范围后接入，不能向任意 Base URL 转发 Token |
-| OpenCode Zen | API Key | 每个模型分别选择 Responses、Chat、Messages 或 Google | 目标内置 Provider；不能使用一个全局 wire_api 覆盖所有模型 |
-| OpenCode Go | 套餐 API Key | 每模型选择 Responses、Chat 或 Messages | 目标内置套餐；会话头、真实客户端标识和套餐资格必须正确 |
-| 火山方舟普通推理 | API Key | Chat、Responses，逐模型验证 | 目标内置 Provider；允许用户配置地域/推理接入点 |
-| 火山 Coding/Agent Plan | 套餐对应 API Key | 独立套餐路由；优先核验 Chat，其余逐套餐确认 | 不继承普通推理端点；Responses、并发及批量资格未核验时禁用相应能力 |
-| 阿里百炼普通推理 | API Key | Chat、Responses，按模型/业务空间验证 | 目标内置 Provider，地域和 Workspace 固定绑定 |
-| 阿里 Coding Plan | 专用 API Key | Chat、Messages；不使用 Responses | 独立套餐定义；不准入无人值守批量池 |
-| 阿里其他 Token Plan | 对应产品的专用凭证 | 独立产品配置 | 不是 Coding Plan 的别名，目录与使用范围另行验证 |
-| OpenRouter | API Key 或 PKCE 换取 API Key | 首期 Chat；其他路由独立验证 | OAuth 首期明确候选，账单仍属于授权后的 API Key |
-| Anthropic API | API Key | Messages | 目标协议适配；不内置第三方 Claude 订阅 Token 复用 |
-| Google Gemini API | API Key | Google 原生 | 支撑 Zen 的 Google 模型；云工作负载身份另行扩展 |
-| GitHub Copilot | 专用账号授权连接 | 按授权端点和模型决定 | 候选；模型权限、令牌交换及第三方接入资格是上线前置条件 |
-| 自定义兼容服务 | API Key 或显式 no-auth | 用户指定的已实现适配器 | 不因为域名/模型名称看起来相似而自动赋予能力 |
+## 4. 账号调度的接入位置
 
-OAuth 是登录方式，不是一个通用推理协议。授权完成可能得到可刷新 Token，
-也可能得到长期 API Key；两者必须有不同生命周期。当前 zenpi 没有完成上述
-OAuth 登录/刷新闭环。未核验的第三方 OAuth 不能列为已支持，更不能冒充官方客户端。
-
-模型目录记录 `provider + product + region + upstream_model_id + protocol`。
-用户的逻辑模型别名解析到一个版本化候选集合；同名模型跨 Provider 不自动视为同一版本。
-目录可由受控刷新和本地覆盖形成，运行中快照不因远端目录更新而变化。
-
-## 4. 统一协议边界
-
-统一的是代码中的语义类型，不是把所有请求伪装成 `/v1/responses` HTTP：
+以下是未来 Broker 阶段的调用合同，不替换本地基础阶段的现有请求所有者：
 
 ```text
 用户/Goal/Flow -> ExecutionIntent -> AccountScheduler.bind -> BindingHandle
-BindingHandle + 规范化上下文 -> Agent Loop
-Agent Loop -> 统一 ModelRequest -> Gateway
-Gateway -> AccountScheduler.acquire -> RequestPermit 或等待/拒绝
-RequestPermit -> Auth/编码准备 -> begin_dispatch 消费 Permit -> 厂商 HTTP/流
-厂商 HTTP/流 -> Protocol Adapter -> 统一 ModelEvent -> Agent Loop
-结束/失败/取消 -> AccountScheduler.settle -> Quota Owner + Session/Runtime
+Agent Loop -> 统一请求 -> Gateway -> AccountScheduler.acquire
+RequestPermit -> Auth/协议准备 -> begin_dispatch -> 实际 HTTP/流
+结束/失败/取消 -> AccountScheduler.settle -> 既有 Quota Owner + Session/Runtime
 ```
 
-进入 Loop 前完成配置规范化和能力约束；每次实际调用前仍须重新检查账号可用性，
-否则长任务期间的配额耗尽、Token 过期和用户切换无法生效。Loop 不读取厂商 JSON。
-
-统一请求包括有序消息内容块、工具定义、工具调用/结果 ID、输出约束、推理选项、
-上下文引用、请求 ID、使用上限和缓存意图。统一事件至少区分开始、文本增量、
-可选受控推理块、完整工具调用、用量、成功、失败和取消；每次尝试只有一个终态。
-工具参数流解析完成且验证成功后才交给工具执行器，禁止把半段 JSON 当作调用。
-
-有效能力 = 模型声明与适配器实现、接入点限制、任务策略的交集。
-不支持的参数应在发请求前拒绝，或按显式允许的降级策略生成回执，不能静默丢弃。
-不可移植的 reasoning 签名、response ID、文件 ID 和缓存句柄留在带路由作用域的
-私有扩展中；换厂商时不转发这些对象，也不把私有推理强行转换成普通提示词。
+底层请求、事件、工具配对、多模态和协议能力只引用接入蓝图，不在这里另定义。
+本文件以下章节只负责账号分配、准入和路由；不实现 OAuth 或第二个 Agent Loop。
 
 ### 4.1 独立的账号分配与调度层
 
