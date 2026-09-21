@@ -208,6 +208,12 @@ impl InputQueue {
             .any(|i| i.status == InputStatus::Received)
     }
 
+    pub fn pending_received(&self) -> impl Iterator<Item = &QueuedInput> {
+        self.inputs
+            .values()
+            .filter(|i| i.status == InputStatus::Received)
+    }
+
     pub fn modes(&self) -> (QueueMode, QueueMode) {
         (self.steer_mode, self.follow_up_mode)
     }

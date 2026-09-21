@@ -159,10 +159,18 @@ fn recovery_commands_require_explicit_confirmation() {
             },
         })
     );
+    assert_eq!(
+        parse("/recovery abandon-all --yes").unwrap(),
+        Some(SlashCommand::Recovery {
+            action: RecoveryAction::AbandonAll,
+        })
+    );
     assert!(spec("recovery").is_some());
     for invalid in [
         "/recovery retry operation-1",
         "/recovery abandon operation-1",
+        "/recovery abandon-all",
+        "/recovery abandon-all operation-1 --yes",
         "/recovery retry operation-1 --yes extra",
         "/recovery abandon '' --yes",
     ] {

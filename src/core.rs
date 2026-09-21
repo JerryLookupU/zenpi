@@ -5296,9 +5296,21 @@ impl Agent {
         // record keeps the old session path for later resolution. Pending
         // input and attachments are ephemeral user data and still block.
         if queue.has_pending() || !self.pending_attachments.is_empty() {
-            return Err(AgentError::InvalidTurn(
-                "new session requires no pending input or attachments".into(),
-            ));
+            let mut remedies: Vec<String> = queue
+                .pending_received()
+                .take(8)
+                .map(|input| format!("{} (/input cancel {})", input.id, input.id))
+                .collect();
+            if !self.pending_attachments.is_empty() {
+                remedies.push(format!(
+                    "{} attachment(s) (send a turn to consume them first)",
+                    self.pending_attachments.len()
+                ));
+            }
+            return Err(AgentError::InvalidTurn(format!(
+                "new session blocked by pending input or attachments: {}",
+                remedies.join("; ")
+            )));
         }
         if cancelled() {
             return Err(BackendError::Cancelled.into());

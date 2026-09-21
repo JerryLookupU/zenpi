@@ -276,6 +276,7 @@ pub enum RecoveryAction {
     Inspect,
     Retry { operation_id: String },
     Abandon { operation_id: String },
+    AbandonAll,
 }
 
 /// Durable session operations exposed by `/session`.
@@ -714,7 +715,7 @@ pub const COMMAND_SPECS: &[SlashCommandSpec] = &[
         name: "recovery",
         aliases: NO_ALIASES,
         route: SlashRoute::Local,
-        usage: "/recovery [inspect|retry ID --yes|abandon ID --yes]",
+        usage: "/recovery [inspect|retry ID --yes|abandon ID --yes|abandon-all --yes]",
         summary: "inspect uncertain operations or record an explicit recovery decision",
     },
     SlashCommandSpec {
@@ -1154,6 +1155,11 @@ pub fn parse(input: &str) -> Result<Option<SlashCommand>, SlashError> {
             action: match args {
                 [] => RecoveryAction::Inspect,
                 [action] if action.eq_ignore_ascii_case("inspect") => RecoveryAction::Inspect,
+                [action, confirm]
+                    if confirm == "--yes" && action.eq_ignore_ascii_case("abandon-all") =>
+                {
+                    RecoveryAction::AbandonAll
+                }
                 [action, operation_id, confirm]
                     if confirm == "--yes"
                         && !operation_id.trim().is_empty()

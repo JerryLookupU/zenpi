@@ -1954,7 +1954,64 @@ pub fn recovery_view(
         RecoveryAction::Abandon { operation_id } => {
             Some((operation_id, ToolRecoveryDecision::Abandon))
         }
+        RecoveryAction::AbandonAll => None,
     };
+    let mut batch_resolved: Vec<String> = Vec::new();
+    let mut batch_failed: Vec<serde_json::Value> = Vec::new();
+    if matches!(action, RecoveryAction::AbandonAll) {
+        // A tool marker and a generic marker can refer to the same operation;
+        // decide each operation once, tool first, and never stop the batch on
+        // a single failure.
+        let mut ids: Vec<String> = Vec::new();
+        for id in agent
+            .unknown_tool_outcomes()
+            .iter()
+            .map(|pending| pending.operation_id.clone())
+            .chain(
+                agent
+                    .operation_recovery()
+                    .iter()
+                    .map(|pending| pending.operation_id.clone()),
+            )
+        {
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+        for id in ids {
+            let result = (|| {
+                if let Some(previous) = agent.session().events().iter().rev().find(|event| {
+                    event["type"] == "tool_recovery_decided" && event["operation_id"] == id
+                }) && previous["decision"] != json!(ToolRecoveryDecision::Abandon)
+                {
+                    return Err("recovery decision conflicts with durable decision".to_owned());
+                }
+                if agent
+                    .unknown_tool_outcomes()
+                    .iter()
+                    .any(|pending| pending.operation_id == id)
+                {
+                    agent
+                        .resolve_tool_outcome(&id, ToolRecoveryDecision::Abandon)
+                        .map_err(|error| error.to_string())?;
+                }
+                if agent
+                    .operation_recovery()
+                    .iter()
+                    .any(|pending| pending.operation_id == id)
+                {
+                    agent
+                        .resolve_operation_recovery(&id, ToolRecoveryDecision::Abandon)
+                        .map_err(|error| error.to_string())?;
+                }
+                Ok::<(), String>(())
+            })();
+            match result {
+                Ok(()) => batch_resolved.push(id),
+                Err(error) => batch_failed.push(json!({"operation_id": id, "error": error})),
+            }
+        }
+    }
     if let Some((id, decision)) = resolution {
         if let Some(previous) =
             agent.session().events().iter().rev().find(|event| {
@@ -1999,6 +2056,8 @@ pub fn recovery_view(
         "tools": tools.iter().take(64).collect::<Vec<_>>(),
         "truncated": operations.len() > 64 || tools.len() > 64,
         "new_attempt_required": matches!(action, RecoveryAction::Retry { .. }),
+        "resolved": batch_resolved,
+        "failed": batch_failed,
     });
     Ok(crate::security::redact_json(&value, &[]))
 }
@@ -5780,15 +5839,23 @@ where
                     action: crate::slash::SessionAction::New
                 }
             ) {
-                let busy = jobs
-                    .values()
-                    .any(|work| work.project.project_id == project.project_id)
-                    || pending_inputs
+                let busy_reasons: Vec<&str> = [
+                    jobs.values()
+                        .any(|work| work.project.project_id == project.project_id)
+                        .then_some("active request"),
+                    pending_inputs
                         .iter()
                         .any(|work| work.project.project_id == project.project_id)
-                    || pending_steers
+                        .then_some("pending inputs"),
+                    pending_steers
                         .iter()
-                        .any(|work| work.project.project_id == project.project_id);
+                        .any(|work| work.project.project_id == project.project_id)
+                        .then_some("pending steers"),
+                ]
+                .into_iter()
+                .flatten()
+                .collect();
+                let busy = !busy_reasons.is_empty();
                 if busy {
                     write_retryable_response(
                         output,
@@ -5796,7 +5863,7 @@ where
                             id,
                             command_name,
                             "agent_busy",
-                            "new session requires settled current-project requests",
+                            format!("new session blocked by: {}", busy_reasons.join(", ")),
                         )
                         .for_version(request_version),
                         replay,

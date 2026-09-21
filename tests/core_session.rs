@@ -1464,3 +1464,55 @@ fn leftover_unknown_outcome_vetoes_automatic_compaction_with_journal_evidence() 
             .any(|event| event["type"] == "automation_vetoed")
     );
 }
+
+#[test]
+fn recovery_abandon_all_dedupes_and_resolves_every_pending_operation() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("abandon-all.jsonl");
+    let mut store = SessionStore::open(&path).unwrap();
+    store
+        .begin_operation(&zenpi::session::InterruptedOperation {
+            operation_id: "both".into(),
+            kind: zenpi::session::OperationKind::Tool,
+            turn_id: "t".into(),
+            retry_requires_confirmation: true,
+        })
+        .unwrap();
+    store
+        .append_event(json!({
+            "type":"tool_execution_started","operation_id":"both",
+            "turn_id":"t","call_id":"c1","tool":"run_command",
+            "policy_digest":"d".repeat(64),"worker_binding":null,
+        }))
+        .unwrap();
+    store
+        .begin_operation(&zenpi::session::InterruptedOperation {
+            operation_id: "provider-only".into(),
+            kind: zenpi::session::OperationKind::Provider,
+            turn_id: "t".into(),
+            retry_requires_confirmation: true,
+        })
+        .unwrap();
+    drop(store);
+    let mut agent = Agent::with_echo(SessionStore::open(&path).unwrap());
+    let value =
+        zenpi::headless::recovery_view(&mut agent, &zenpi::slash::RecoveryAction::AbandonAll)
+            .unwrap();
+    assert_eq!(value["pending_count"], 0, "{value}");
+    assert!(value["failed"].as_array().unwrap().is_empty(), "{value}");
+    let mut resolved: Vec<String> = value["resolved"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|id| id.as_str().unwrap().to_owned())
+        .collect();
+    resolved.sort();
+    assert_eq!(resolved, ["both", "provider-only"]);
+    assert!(agent.unknown_tool_outcomes().is_empty());
+    assert!(agent.operation_recovery().is_empty());
+    let again =
+        zenpi::headless::recovery_view(&mut agent, &zenpi::slash::RecoveryAction::AbandonAll)
+            .unwrap();
+    assert_eq!(again["pending_count"], 0);
+    assert!(again["resolved"].as_array().unwrap().is_empty());
+}

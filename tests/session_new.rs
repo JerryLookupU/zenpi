@@ -619,6 +619,10 @@ fn durable_pending_input_blocks_new_but_unknown_operation_does_not() {
     let rejected = wire.command("unsettled", "/new");
     assert_eq!(rejected["success"], false, "{rejected}");
     assert_eq!(rejected["project"]["session_id"], old);
+    // The rejection names the real blocker and the exact remedy command.
+    let message = rejected["error"].as_str().unwrap_or_default();
+    assert!(message.contains("old-followup"), "{rejected}");
+    assert!(message.contains("/input cancel old-followup"), "{rejected}");
     assert!(
         fs::read(root.path().join("initial.jsonl"))
             .unwrap()
