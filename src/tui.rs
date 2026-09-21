@@ -9109,30 +9109,10 @@ impl TuiState {
             .into_iter()
             .map(Line::from)
             .collect::<Vec<_>>();
-        let visible_height = usize::from(inner.height);
-        let (cursor_x, cursor_y) = cursor_position(
-            &projection.text,
-            projection.display_cursor(self.cursor),
-            width,
-        );
-        let max_scroll = lines.len().saturating_sub(visible_height);
-        if visible_height > 0 {
-            let mut scroll = self.input_scroll.min(max_scroll);
-            let cursor_y = usize::from(cursor_y);
-            if cursor_y < scroll {
-                scroll = cursor_y;
-            } else if cursor_y >= scroll.saturating_add(visible_height) {
-                scroll = cursor_y.saturating_add(1).saturating_sub(visible_height);
-            }
-            self.input_scroll = scroll.min(max_scroll);
-        } else {
-            self.input_scroll = 0;
-        }
         frame.render_widget(
             Paragraph::new(Text::from(lines))
                 .block(block)
-                .wrap(Wrap { trim: false })
-                .scroll((u16::try_from(self.input_scroll).unwrap_or(u16::MAX), 0)),
+                .wrap(Wrap { trim: false }),
             area,
         );
         if inner.width > 0 && inner.height > 0 {
@@ -9248,17 +9228,6 @@ impl TuiState {
                 .saturating_add(cursor_y.min(inner.height.saturating_sub(1)));
             frame.set_cursor_position(Position::new(x, y));
         }
-    }
-
-    fn external_editor_shortcut_available(&self) -> bool {
-        self.directory_picker.is_none()
-            && self.transcript_browser.is_none()
-            && self.history_search.is_none()
-            && !self
-                .approval_views
-                .get(self.active_project())
-                .is_some_and(|view| view.focused && !view.requests.is_empty())
-            && self.slash_choices().is_empty()
     }
 
     fn external_editor_shortcut_available(&self) -> bool {

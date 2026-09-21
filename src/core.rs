@@ -1225,15 +1225,6 @@ impl Agent {
         Ok(())
     }
 
-    pub fn model_status(&self) -> Result<Value, AgentError> {
-        let active = self.backend.model_descriptor(self.model.as_deref())?;
-        Ok(serde_json::json!({
-            "active": active, "capabilities": self.backend.model_capabilities(self.model.as_deref())?,
-            "budget": self.context_budget(), "catalog": self.backend.model_catalog(),
-            "registry_bound": active.is_some(), "reasoning_effort": self.backend.reasoning_effort(),
-        }))
-    }
-
     pub fn snapshot(&self) -> AgentSnapshot {
         AgentSnapshot {
             session: self.session.summary(),
