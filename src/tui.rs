@@ -622,11 +622,22 @@ impl TuiMessage {
 /// `Discussion` is the resident top-left Conversation prompt (ZS1-147).
 /// `Arch` is the lower-left arch console that belongs to the master session and
 /// can execute bash/steering.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum LeftPrompt {
     #[default]
     Discussion,
     Arch,
+}
+
+/// The single keyboard hot zone. Exactly one zone owns ordinary text, paste
+/// and the IME cursor at any time, so the three input surfaces (discussion
+/// prompt, arch console and Shell PTY) can never steal each other's keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HotZone {
+    Discussion,
+    Arch,
+    Shell,
 }
 
 /// Which transcript receives host feedback while a command runs. The two left
@@ -1863,6 +1874,12 @@ struct ProjectDraft {
     ux: TranscriptUx,
     input: String,
     cursor: usize,
+    /// Independent arch console state (ZS1-156): the master-session draft and
+    /// transcript switch with the project like the discussion draft does.
+    arch_input: String,
+    arch_cursor: usize,
+    arch_messages: VecDeque<TuiMessage>,
+    left_prompt: LeftPrompt,
     history: VecDeque<String>,
     scroll: usize,
     input_scroll: usize,
@@ -1887,15 +1904,49 @@ struct ProjectDraft {
     gantt_status: Option<GanttPaneStatus>,
 }
 
+/// Window that turns two left-button presses on the same cell into a
+/// double-click; crossterm emits only Down/Up, never DoubleClick.
+const DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(400);
+/// Bound on the per-worker session-journal tail read by the Resources zoom.
+const WORKER_STDIO_TAIL_BYTES: usize = 512 * 1024;
+/// Bound on one displayed worker input/output excerpt.
+const WORKER_STDIO_EXCERPT_BYTES: usize = 4 * 1024;
+
+/// One local headless worker matched to the active project, with the last
+/// input/output excerpt read from its session journal.
+#[derive(Debug, Clone)]
+struct WorkerStdioRow {
+    pid: u32,
+    phase: crate::resources::FootprintPhase,
+    cpu_percent: f64,
+    resident_bytes: u64,
+    session: String,
+    input: Option<String>,
+    output: Option<String>,
+}
+
+/// Enlarged Resources view opened by double-clicking the pane. Rendering reads
+/// the same bounded projection as the pane; worker rows are snapshotted on
+/// open and on `r` so a render never blocks on `ps` or journal I/O.
+#[derive(Debug, Clone, Default)]
+struct ResourcesZoom {
+    scroll: u16,
+    selected: usize,
+    expanded: BTreeSet<usize>,
+    workers: Vec<WorkerStdioRow>,
+    /// Content line index of every worker row, recorded by the last render so
+    /// a mouse click can map a screen row back to a worker.
+    row_lines: Vec<usize>,
+    area: Rect,
+}
+
 #[derive(Debug, Clone, Default)]
 struct SessionBrowserRefresh {
     owner: Option<(std::path::PathBuf, String)>,
     directory: Option<std::path::PathBuf>,
     query: Option<String>,
     last_checked: Option<Instant>,
-}
-
-// The interactive host owns one in-flight scan and one replaceable pending
+} // The interactive host owns one in-flight scan and one replaceable pending
 // request. Neither channel grows with keystrokes, ticks or project switches.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SessionBrowserScope {
@@ -2685,6 +2736,12 @@ pub struct TuiState {
     )>,
     dragging_row: Option<(PaneId, PaneId, u16, u16, u16, u16)>,
     pane_scroll: BTreeMap<PaneId, u16>,
+    /// Enlarged Resources overlay (double-click on the pane). It owns keys
+    /// while open and adds per-worker stdio rows for the active project.
+    resources_zoom: Option<ResourcesZoom>,
+    /// Last left-button press used to synthesize double clicks; crossterm has
+    /// no native double-click event.
+    last_left_click: Option<(Instant, u16, u16)>,
     max_messages: usize,
     max_history: usize,
     spinner_tick: usize,
@@ -2807,6 +2864,8 @@ impl TuiState {
             dragging_split: None,
             dragging_row: None,
             pane_scroll: BTreeMap::new(),
+            resources_zoom: None,
+            last_left_click: None,
             max_messages: max_messages.max(1),
             max_history: 100,
             spinner_tick: 0,
@@ -2966,6 +3025,10 @@ impl TuiState {
                 ux: std::mem::take(&mut self.transcript_ux),
                 input: std::mem::take(&mut self.input),
                 cursor: self.cursor,
+                arch_input: std::mem::take(&mut self.arch_input),
+                arch_cursor: self.arch_cursor,
+                arch_messages: std::mem::take(&mut self.arch_messages),
+                left_prompt: self.left_prompt,
                 history: std::mem::take(&mut self.history),
                 scroll: self.scroll,
                 input_scroll: self.input_scroll,
@@ -3017,6 +3080,10 @@ impl TuiState {
         self.input = draft.input;
         self.kill_buffer = draft.kill_buffer;
         self.paste = draft.paste;
+        self.arch_input = draft.arch_input;
+        self.arch_cursor = draft.arch_cursor;
+        self.arch_messages = draft.arch_messages;
+        self.left_prompt = draft.left_prompt;
         self.submitted_pastes = draft.submitted_pastes;
         self.cursor = draft.cursor;
         self.history = draft.history;
@@ -3799,6 +3866,8 @@ impl TuiState {
                     serde_json::json!({"input":self.stable_input().0,"cursor":self.stable_input().1,
                         "paste_folds":paste.folds,"next_paste_id":paste.next_id,
                         "scroll":self.scroll,"history":self.history,"presets":self.workspace_layouts,
+                        "arch_input":self.arch_input,"arch_cursor":self.arch_cursor,
+                        "arch_messages":self.arch_messages,"left_prompt":self.left_prompt,
                         "reasoning_folded":self.transcript_ux.reasoning_folded})
                 } else {
                     self.project_drafts.get(name).map(|draft| {
@@ -3807,6 +3876,8 @@ impl TuiState {
                             .unwrap_or((&draft.input,draft.cursor,&draft.paste));
                         serde_json::json!({"input":input,"cursor":cursor,"paste_folds":paste.folds,
                             "next_paste_id":paste.next_id,"scroll":draft.scroll,"history":draft.history,
+                            "arch_input":draft.arch_input,"arch_cursor":draft.arch_cursor,
+                            "arch_messages":draft.arch_messages,"left_prompt":draft.left_prompt,
                             "presets":draft.presets,"reasoning_folded":draft.ux.reasoning_folded})
                     }).unwrap_or_default()
                 };
@@ -4026,6 +4097,28 @@ impl TuiState {
                                     PasteMetadata::default()
                                 });
                             let cursor = paste.visible_cursor(cursor);
+                            let arch_input = d["arch_input"].as_str().unwrap_or_default();
+                            let arch_input = if arch_input.len()
+                                <= crate::tool_runtime::MAX_MASTER_SESSION_INPUT_BYTES
+                            {
+                                arch_input.to_owned()
+                            } else {
+                                String::new()
+                            };
+                            let arch_cursor = (d["arch_cursor"].as_u64().unwrap_or(0) as usize)
+                                .min(arch_input.len());
+                            let arch_cursor = if grapheme_boundary(&arch_input, arch_cursor) {
+                                arch_cursor
+                            } else {
+                                previous_boundary(&arch_input, arch_cursor)
+                            };
+                            let arch_messages = serde_json::from_value::<VecDeque<TuiMessage>>(
+                                d["arch_messages"].clone(),
+                            )
+                            .unwrap_or_default();
+                            let left_prompt =
+                                serde_json::from_value::<LeftPrompt>(d["left_prompt"].clone())
+                                    .unwrap_or_default();
                             self.project_drafts.insert(
                                 name.to_owned(),
                                 ProjectDraft {
@@ -4038,6 +4131,10 @@ impl TuiState {
                                     },
                                     input: input.to_owned(),
                                     cursor,
+                                    arch_input,
+                                    arch_cursor,
+                                    arch_messages,
+                                    left_prompt,
                                     scroll: d["scroll"]
                                         .as_u64()
                                         .unwrap_or(0)
@@ -4252,6 +4349,12 @@ impl TuiState {
     /// ratios/capabilities without coupling themselves to Ratatui rectangles.
     pub fn workspace_layout(&self) -> &LayoutModel {
         &self.workspace_layout
+    }
+
+    /// The last measured workspace viewport (the BentoBox area inside the
+    /// header, prompt strip and footer). Zero before the first frame.
+    pub fn workspace_area(&self) -> Rect {
+        self.workspace_area
     }
 
     /// The project tab is the only top-level workspace scope. Feature
@@ -4592,7 +4695,8 @@ impl TuiState {
     pub fn focus_next_workspace_pane(&mut self) -> Option<PaneId> {
         let (width, height) = self.workspace_viewport();
         let focused = self.workspace_layout.focus_next(width, height);
-        if focused.is_some() {
+        if let Some(pane) = focused {
+            self.sync_left_prompt_with_pane(pane);
             self.layout_dirty = true;
             self.dirty = true;
         }
@@ -4603,7 +4707,8 @@ impl TuiState {
     pub fn focus_previous_workspace_pane(&mut self) -> Option<PaneId> {
         let (width, height) = self.workspace_viewport();
         let focused = self.workspace_layout.focus_previous(width, height);
-        if focused.is_some() {
+        if let Some(pane) = focused {
+            self.sync_left_prompt_with_pane(pane);
             self.layout_dirty = true;
             self.dirty = true;
         }
@@ -4616,11 +4721,28 @@ impl TuiState {
         let focused = self
             .workspace_layout
             .focus_direction(direction, width, height);
-        if focused.is_some() {
+        if let Some(pane) = focused {
+            self.sync_left_prompt_with_pane(pane);
             self.layout_dirty = true;
             self.dirty = true;
         }
         focused
+    }
+
+    /// Keep the left-prompt flag consistent with pane focus so exactly one text
+    /// hot zone is visible. The Shell pane needs no flag because `hot_zone`
+    /// derives it from pane focus; leaving the two input panes returns the
+    /// prompt flag to the discussion draft.
+    fn sync_left_prompt_with_pane(&mut self, pane: PaneId) {
+        match pane {
+            PaneId::Arch => self.left_prompt = LeftPrompt::Arch,
+            PaneId::Execution => {}
+            _ => {
+                if self.left_prompt == LeftPrompt::Arch {
+                    self.left_prompt = LeftPrompt::Discussion;
+                }
+            }
+        }
     }
 
     /// Nudge the focused column split by one bounded keyboard step.
@@ -4697,6 +4819,7 @@ impl TuiState {
         let was_collapsed = self.workspace_layout.collapsed.remove(&pane);
         let changed = !was_focused || was_collapsed;
         self.workspace_layout.focused = Some(pane);
+        self.sync_left_prompt_with_pane(pane);
         if changed {
             self.layout_dirty = true;
             self.dirty = true;
@@ -5117,6 +5240,22 @@ impl TuiState {
         std::mem::take(&mut self.arch_submit_pending)
     }
 
+    /// The one zone that owns ordinary text input, paste and the IME cursor.
+    /// The Shell pane focus wins over the left prompts so a live PTY is never
+    /// half-focused, and the Arch pane body counts as arch focus even when the
+    /// prompt flag has not caught up yet.
+    pub fn hot_zone(&self) -> HotZone {
+        if self.workspace_layout.focused == Some(PaneId::Execution) {
+            HotZone::Shell
+        } else if self.left_prompt == LeftPrompt::Arch
+            || self.workspace_layout.focused == Some(PaneId::Arch)
+        {
+            HotZone::Arch
+        } else {
+            HotZone::Discussion
+        }
+    }
+
     /// Focus a left-column prompt without mutating either draft.
     pub fn set_left_prompt(&mut self, prompt: LeftPrompt) -> bool {
         if self.left_prompt == prompt {
@@ -5127,15 +5266,50 @@ impl TuiState {
         true
     }
 
+    /// Move the unique hot zone and keep pane focus consistent with it. Moving
+    /// focus off the Shell pane is required so Alt-M can always leave the PTY.
+    pub fn set_hot_zone(&mut self, zone: HotZone) -> bool {
+        let changed = self.hot_zone() != zone;
+        match zone {
+            HotZone::Discussion => {
+                self.left_prompt = LeftPrompt::Discussion;
+                if matches!(
+                    self.workspace_layout.focused,
+                    Some(PaneId::Execution | PaneId::Arch)
+                ) {
+                    self.focus_workspace_pane(self.conversation_pane());
+                }
+            }
+            HotZone::Arch => {
+                if self.workspace_layout.focused == Some(PaneId::Execution) {
+                    self.focus_workspace_pane(self.conversation_pane());
+                }
+                self.left_prompt = LeftPrompt::Arch;
+            }
+            HotZone::Shell => {
+                self.focus_workspace_pane(PaneId::Execution);
+            }
+        }
+        self.dirty = true;
+        changed
+    }
+
+    /// The conversation pane that hosts the discussion prompt for this tab.
+    fn conversation_pane(&self) -> PaneId {
+        conversation_pane_for_tab(self.workspace_layout.tab)
+    }
+
     /// Toggle between the top-left discussion prompt and the lower-left arch
     /// console. Bound to Alt-M in the production key map.
     pub fn toggle_left_prompt(&mut self) -> LeftPrompt {
-        let next = match self.left_prompt {
-            LeftPrompt::Discussion => LeftPrompt::Arch,
-            LeftPrompt::Arch => LeftPrompt::Discussion,
+        let next = match self.hot_zone() {
+            HotZone::Discussion => LeftPrompt::Arch,
+            HotZone::Arch | HotZone::Shell => LeftPrompt::Discussion,
         };
-        self.left_prompt = next;
-        self.dirty = true;
+        self.set_hot_zone(match next {
+            LeftPrompt::Arch => HotZone::Arch,
+            LeftPrompt::Discussion => HotZone::Discussion,
+        });
         next
     }
 
@@ -5439,16 +5613,12 @@ impl TuiState {
     /// Bounded editor for the lower-left arch console (ZS1-148). Enter submits
     /// (Shift-Enter inserts a newline), Esc returns focus to the discussion
     /// prompt while keeping the draft, and every edit stays within the
-    /// master-session byte budget.
+    /// master-session byte budget. Editing is grapheme-safe so combining marks,
+    /// ZWJ emoji and CJK never split a cursor position.
     fn arch_prompt_key(&mut self, key: KeyEvent) -> TuiAction {
-        let max = crate::tool_runtime::MAX_MASTER_SESSION_INPUT_BYTES;
         match key.code {
             KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                if self.arch_input.len() < max {
-                    let at = self.arch_cursor.min(self.arch_input.len());
-                    self.arch_input.insert(at, '\n');
-                    self.arch_cursor = at + 1;
-                }
+                self.arch_insert_text("\n");
             }
             KeyCode::Enter => match self.submit_arch_prompt() {
                 Ok(action) => return action,
@@ -5457,7 +5627,7 @@ impl TuiState {
                 }
             },
             KeyCode::Esc => {
-                self.left_prompt = LeftPrompt::Discussion;
+                self.set_hot_zone(HotZone::Discussion);
                 self.set_status("Arch console unfocused · Alt-M to return");
             }
             KeyCode::Tab => {
@@ -5466,66 +5636,30 @@ impl TuiState {
                 }
             }
             KeyCode::Char(character) => {
-                let width = character.len_utf8();
-                if self.arch_input.len().saturating_add(width) <= max {
-                    let at = self.arch_cursor.min(self.arch_input.len());
-                    if self.arch_input.is_char_boundary(at) {
-                        self.arch_input.insert(at, character);
-                        self.arch_cursor = at + width;
-                    }
-                }
+                self.arch_insert_text(&character.to_string());
             }
             KeyCode::Backspace => {
-                if self.arch_cursor > 0 {
-                    let mut at = self.arch_cursor.min(self.arch_input.len());
-                    while at > 0 && !self.arch_input.is_char_boundary(at) {
-                        at -= 1;
-                    }
-                    if at > 0 {
-                        let previous = self.arch_input[..at]
-                            .chars()
-                            .next_back()
-                            .map_or(0, char::len_utf8);
-                        self.arch_input.replace_range(at - previous..at, "");
-                        self.arch_cursor = at - previous;
-                    }
+                let at = self.arch_cursor.min(self.arch_input.len());
+                let start = previous_boundary(&self.arch_input, at);
+                if start < at {
+                    self.arch_input.replace_range(start..at, "");
+                    self.arch_cursor = start;
                 }
             }
             KeyCode::Delete => {
                 let at = self.arch_cursor.min(self.arch_input.len());
-                if at < self.arch_input.len() && self.arch_input.is_char_boundary(at) {
-                    let next = self.arch_input[at..]
-                        .chars()
-                        .next()
-                        .map_or(0, char::len_utf8);
-                    self.arch_input.replace_range(at..at + next, "");
+                let end = next_boundary(&self.arch_input, at);
+                if end > at {
+                    self.arch_input.replace_range(at..end, "");
                 }
             }
             KeyCode::Left => {
-                let mut at = self.arch_cursor.min(self.arch_input.len());
-                while at > 0 && !self.arch_input.is_char_boundary(at) {
-                    at -= 1;
-                }
-                if at > 0 {
-                    at -= self.arch_input[..at]
-                        .chars()
-                        .next_back()
-                        .map_or(0, char::len_utf8);
-                }
-                self.arch_cursor = at;
+                let at = self.arch_cursor.min(self.arch_input.len());
+                self.arch_cursor = previous_boundary(&self.arch_input, at);
             }
             KeyCode::Right => {
-                let mut at = self.arch_cursor.min(self.arch_input.len());
-                while at < self.arch_input.len() && !self.arch_input.is_char_boundary(at) {
-                    at += 1;
-                }
-                if at < self.arch_input.len() {
-                    at += self.arch_input[at..]
-                        .chars()
-                        .next()
-                        .map_or(0, char::len_utf8);
-                }
-                self.arch_cursor = at;
+                let at = self.arch_cursor.min(self.arch_input.len());
+                self.arch_cursor = next_boundary(&self.arch_input, at);
             }
             KeyCode::Home => self.arch_cursor = 0,
             KeyCode::End => self.arch_cursor = self.arch_input.len(),
@@ -5533,6 +5667,37 @@ impl TuiState {
         }
         self.dirty = true;
         TuiAction::Redraw
+    }
+
+    /// Grapheme-safe, byte-bounded insertion for the arch console. Control
+    /// characters are sanitized so a paste cannot smuggle terminal escapes,
+    /// and the master-session byte budget is enforced before the draft grows.
+    fn arch_insert_text(&mut self, text: &str) {
+        let max = crate::tool_runtime::MAX_MASTER_SESSION_INPUT_BYTES;
+        let text = sanitize_input_with_limit(text, max.saturating_add(4));
+        if text.is_empty() {
+            return;
+        }
+        let room = max.saturating_sub(self.arch_input.len());
+        if room == 0 {
+            self.set_status(format!(
+                "Arch console input exceeds {max} bytes; draft unchanged"
+            ));
+            return;
+        }
+        let text = truncate_bytes(&text, room).to_owned();
+        if text.is_empty() {
+            return;
+        }
+        let at = self.arch_cursor.min(self.arch_input.len());
+        let at = if grapheme_boundary(&self.arch_input, at) {
+            at
+        } else {
+            next_boundary(&self.arch_input, at)
+        };
+        self.arch_input.insert_str(at, &text);
+        self.arch_cursor = at + text.len();
+        self.dirty = true;
     }
 
     /// Replace the Goal lane when its owner changes (for example after a
@@ -6910,6 +7075,18 @@ impl TuiState {
     }
 
     pub fn handle_mouse(&mut self, mouse: MouseEvent) -> TuiAction {
+        if self.resources_zoom.is_some() {
+            return self.resources_zoom_mouse(mouse);
+        }
+        // Synthesize double clicks: crossterm only reports Down/Up, so two
+        // left presses on the same cell inside the window count as one.
+        let double_click = mouse.kind == MouseEventKind::Down(MouseButton::Left)
+            && self.last_left_click.is_some_and(|(at, column, row)| {
+                at.elapsed() <= DOUBLE_CLICK_WINDOW && column == mouse.column && row == mouse.row
+            });
+        if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+            self.last_left_click = Some((Instant::now(), mouse.column, mouse.row));
+        }
         if let Some(picker) = self.directory_picker.as_mut() {
             let result = picker.mouse(mouse);
             self.picker_result(result);
@@ -7150,12 +7327,12 @@ impl TuiState {
                 .arch_prompt_rect
                 .is_some_and(|rect| rect.contains(position))
             {
-                self.set_left_prompt(LeftPrompt::Arch);
+                self.set_hot_zone(HotZone::Arch);
             } else if self
                 .docked_prompt_rect
                 .is_some_and(|rect| rect.contains(position))
             {
-                self.set_left_prompt(LeftPrompt::Discussion);
+                self.set_hot_zone(HotZone::Discussion);
             }
             self.dragging_row = panes.iter().find_map(|top| {
                 panes
@@ -7256,6 +7433,12 @@ impl TuiState {
                     }
                 }
                 if pane.id == PaneId::Resources {
+                    // A double click enlarges the pane into the worker/stdio
+                    // overlay; a single click keeps block selection.
+                    if double_click {
+                        self.open_resources_zoom();
+                        return TuiAction::Redraw;
+                    }
                     // Clicking a block row enters its detail table; clicking
                     // again closes it. Content line 0 is the LAN header, so the
                     // first block row is two cells below the pane's top border.
@@ -7433,29 +7616,33 @@ impl TuiState {
         {
             return self.tab_rename_key(*key);
         }
-        // A focused Shell pane owns raw keystrokes. Forward them here, before
-        // the ordinary-paste buffer can divert ASCII characters into the
-        // prompt (ZS1-166); control chords the TUI reserves still fall through.
+        // Modals own the keyboard before any hot zone: the Shell forward below
+        // must never swallow an approval key, and the ordinary-paste buffer
+        // must never fill while a picker/browser is open.
+        let modal_active = self.directory_picker.is_some()
+            || self.transcript_browser.is_some()
+            || self.history_search.is_some()
+            || self.goal_edit.is_some()
+            || self.resources_zoom.is_some()
+            || self
+                .approval_views
+                .get(self.active_project())
+                .is_some_and(|view| view.focused && !view.requests.is_empty());
+        // A hot Shell pane owns raw keystrokes. Forward them here, before the
+        // ordinary-paste buffer can divert ASCII characters into the prompt
+        // (ZS1-166); control chords the TUI reserves still fall through.
         if let Event::Key(key) = &event
             && key.kind != KeyEventKind::Release
-            && self.workspace_layout.focused == Some(PaneId::Execution)
-            && self.input.is_empty()
-            && self.directory_picker.is_none()
-            && self.transcript_browser.is_none()
-            && self.history_search.is_none()
-            && self.goal_edit.is_none()
-            && self.left_prompt != LeftPrompt::Arch
+            && !modal_active
+            && self.hot_zone() == HotZone::Shell
             && self.forward_shell_key(*key)
         {
             return TuiAction::Redraw;
         }
-        let composing = self.directory_picker.is_none()
-            && self.transcript_browser.is_none()
-            && self.history_search.is_none()
-            && !self
-                .approval_views
-                .get(self.active_project())
-                .is_some_and(|view| view.focused && !view.requests.is_empty());
+        // The ordinary-paste buffer only exists for the discussion prompt. A
+        // hot Arch console inserts graphemes directly so a committed IME
+        // character can never land in the discussion draft.
+        let composing = !modal_active && self.hot_zone() == HotZone::Discussion;
         if let Event::Key(key) = &event {
             if key.kind == KeyEventKind::Release {
                 return TuiAction::None;
@@ -7535,7 +7722,10 @@ impl TuiState {
                 if let Some(view) = self.approval_views.get_mut(&project) {
                     view.focused = false;
                 }
-                if self.transcript_browser.is_some() {
+                if self.transcript_browser.is_some()
+                    || self.goal_edit.is_some()
+                    || self.resources_zoom.is_some()
+                {
                     return TuiAction::None;
                 }
                 if let Some(picker) = self.directory_picker.as_mut() {
@@ -7546,9 +7736,18 @@ impl TuiState {
                 if self.history_search.is_some() {
                     self.history_search_text(&text);
                 } else {
-                    self.insert_paste(&text);
-                    // Pasted slash text remains literal until a deliberate later key.
-                    self.palette_dismissed = true;
+                    // Paste follows the unique hot zone: the arch console and
+                    // the Shell PTY are independent targets (never the
+                    // discussion draft by default).
+                    match self.hot_zone() {
+                        HotZone::Arch => self.arch_insert_text(&text),
+                        HotZone::Shell => self.forward_shell_paste(&text),
+                        HotZone::Discussion => {
+                            self.insert_paste(&text);
+                            // Pasted slash text remains literal until a deliberate later key.
+                            self.palette_dismissed = true;
+                        }
+                    }
                 }
                 TuiAction::None
             }
@@ -7568,6 +7767,10 @@ impl TuiState {
         if self.tab_rename.is_some() {
             return self.tab_rename_key(key);
         }
+        // The enlarged Resources overlay is modal over every hot zone.
+        if self.resources_zoom.is_some() {
+            return self.resources_zoom_key(key);
+        }
         self.touch_editor_draft();
         self.project_checkpoint_dirty = true;
         // The inline Goal editor is modal within the conversation group so
@@ -7575,26 +7778,24 @@ impl TuiState {
         if self.goal_edit.is_some() {
             return self.goal_edit_key(key);
         }
+        // A focused approval view is modal over every hot zone, including the
+        // Shell PTY, so y/n decisions can never be typed into a child process.
+        if let Some(action) = self.approval_key(key) {
+            return action;
+        }
         // The arch console is the focused left-column prompt (ZS1-148). It only
         // captures editing keys; every control chord still reaches its usual
         // handler so focus can always be moved away.
-        if self.left_prompt == LeftPrompt::Arch && self.arch_prompt_captures(key) {
+        let zone = self.hot_zone();
+        if zone == HotZone::Arch && self.arch_prompt_captures(key) {
             return self.arch_prompt_key(key);
         }
-        // While the Shell pane holds focus, keystrokes drive the live PTY
-        // (ZS1-166). Chords the TUI reserves (tabs, pane cycling) return `None`
-        // from `key_bytes` and still reach their usual handler.
-        // While the Shell pane holds focus, keystrokes drive the live PTY
-        // (ZS1-166). Chords the TUI reserves (tabs, pane cycling) return `None`
-        // from `key_bytes` and still reach their usual handler.
-        if self.workspace_layout.focused == Some(PaneId::Execution)
-            && self.input.is_empty()
-            && self.forward_shell_key(key)
-        {
+        // While the Shell pane holds the hot zone, keystrokes drive the live
+        // PTY (ZS1-166) regardless of any discussion draft. Chords the TUI
+        // reserves (tabs, pane cycling) return `None` from `key_bytes` and
+        // still reach their usual handler.
+        if zone == HotZone::Shell && self.forward_shell_key(key) {
             return TuiAction::Redraw;
-        }
-        if let Some(action) = self.approval_key(key) {
-            return action;
         }
         if self.history_search.is_some() {
             return self.history_search_key(key);
@@ -9075,13 +9276,40 @@ impl TuiState {
 
     /// Whether the discussion prompt is the field that keys and IME belong to.
     pub fn discussion_prompt_focused(&self) -> bool {
-        self.left_prompt == LeftPrompt::Discussion
+        self.hot_zone() == HotZone::Discussion
             && self.goal_edit.is_none()
             && self.directory_picker.is_none()
             && self.transcript_browser.is_none()
             && self.history_search.is_none()
             && self.tab_rename.is_none()
-            && self.workspace_layout.focused != Some(PaneId::Execution)
+            && !self
+                .approval_views
+                .get(self.active_project())
+                .is_some_and(|view| view.focused && !view.requests.is_empty())
+    }
+
+    /// Whether the arch console is the field that keys and IME belong to.
+    pub fn arch_prompt_focused(&self) -> bool {
+        self.hot_zone() == HotZone::Arch
+            && self.goal_edit.is_none()
+            && self.directory_picker.is_none()
+            && self.transcript_browser.is_none()
+            && self.history_search.is_none()
+            && self.tab_rename.is_none()
+            && !self
+                .approval_views
+                .get(self.active_project())
+                .is_some_and(|view| view.focused && !view.requests.is_empty())
+    }
+
+    /// Whether the Shell PTY is the field that keys and IME belong to.
+    pub fn shell_prompt_focused(&self) -> bool {
+        self.hot_zone() == HotZone::Shell
+            && self.goal_edit.is_none()
+            && self.directory_picker.is_none()
+            && self.transcript_browser.is_none()
+            && self.history_search.is_none()
+            && self.tab_rename.is_none()
             && !self
                 .approval_views
                 .get(self.active_project())
@@ -9144,7 +9372,7 @@ impl TuiState {
         if area.width == 0 || area.height == 0 {
             return;
         }
-        let focused = self.left_prompt == LeftPrompt::Arch;
+        let focused = self.arch_prompt_focused();
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(if focused {
@@ -9197,7 +9425,7 @@ impl TuiState {
         if area.width == 0 || area.height == 0 {
             return;
         }
-        let focused = self.left_prompt == LeftPrompt::Arch;
+        let focused = self.arch_prompt_focused();
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(if focused { Color::Cyan } else { Color::Magenta }))
@@ -9379,6 +9607,7 @@ impl TuiState {
         }
         self.render_tab_rename(frame);
         self.render_approval(frame);
+        self.render_resources_zoom(frame);
     }
 
     /// Draw the inline tab-rename overlay when a header card is being renamed.
@@ -9644,13 +9873,9 @@ impl TuiState {
                 if let Some(shell) = self.pty_shell.as_mut() {
                     shell.resize(rows, cols);
                 }
-                // Anchor the IME/preedit to the shell pane while it is focused
-                // (ZS1-172); the column follows the live prompt.
-                if self.workspace_layout.focused == Some(PaneId::Execution)
-                    && self.left_prompt == LeftPrompt::Discussion
-                    && self.directory_picker.is_none()
-                    && self.tab_rename.is_none()
-                {
+                // Anchor the IME/preedit to the shell pane while it is the hot
+                // zone (ZS1-172); the column follows the live prompt.
+                if self.shell_prompt_focused() {
                     let (column, cursor_row) = self
                         .pty_shell
                         .as_ref()
@@ -10107,6 +10332,283 @@ impl TuiState {
         Some(lines.join("\n"))
     }
 
+    /// Whether the enlarged Resources overlay owns the keyboard.
+    pub fn resources_zoom_open(&self) -> bool {
+        self.resources_zoom.is_some()
+    }
+
+    /// Number of project workers snapshotted into the enlarged Resources view.
+    pub fn resources_zoom_worker_count(&self) -> usize {
+        self.resources_zoom
+            .as_ref()
+            .map(|zoom| zoom.workers.len())
+            .unwrap_or(0)
+    }
+
+    /// Last input/output excerpt for one worker in the enlarged view.
+    pub fn resources_zoom_worker_stdio(&self, pid: u32) -> Option<(Option<&str>, Option<&str>)> {
+        self.resources_zoom.as_ref().and_then(|zoom| {
+            zoom.workers
+                .iter()
+                .find(|worker| worker.pid == pid)
+                .map(|worker| (worker.input.as_deref(), worker.output.as_deref()))
+        })
+    }
+
+    /// Open the enlarged Resources view and snapshot the local headless workers
+    /// that belong to the active project.
+    pub fn open_resources_zoom(&mut self) {
+        let workers = self.project_worker_rows();
+        self.resources_zoom = Some(ResourcesZoom {
+            workers,
+            ..ResourcesZoom::default()
+        });
+        self.dirty = true;
+    }
+
+    pub fn close_resources_zoom(&mut self) {
+        if self.resources_zoom.take().is_some() {
+            self.dirty = true;
+        }
+    }
+
+    fn refresh_resources_zoom(&mut self) {
+        let workers = self.project_worker_rows();
+        if let Some(zoom) = self.resources_zoom.as_mut() {
+            zoom.workers = workers;
+            zoom.selected = 0;
+            zoom.expanded.clear();
+            zoom.scroll = 0;
+        }
+        self.dirty = true;
+    }
+
+    /// Local `--mode headless` workers whose `--session` journal belongs to the
+    /// active project: either the exact project journal or one beneath the
+    /// project cwd. The cluster projection only carries worker ids, so remote
+    /// workers stay visible in the aggregate cluster section instead.
+    fn project_worker_rows(&self) -> Vec<WorkerStdioRow> {
+        let Some(snapshot) = self.resource_snapshot.as_ref() else {
+            return Vec::new();
+        };
+        let session_path = self
+            .project_metadata(self.active_project())
+            .and_then(|metadata| metadata.session_path.clone());
+        let cwd = self
+            .project_metadata(self.active_project())
+            .map(|metadata| metadata.cwd.clone())
+            .filter(|cwd| !cwd.is_empty() && cwd != ".");
+        let mut rows = Vec::new();
+        for row in &snapshot.headless.rows {
+            let Some(session) = row.session.as_deref() else {
+                continue;
+            };
+            let matches = session_path.as_deref().is_some_and(|path| path == session)
+                || cwd.as_deref().is_some_and(|cwd| session.starts_with(cwd));
+            if !matches {
+                continue;
+            }
+            let (input, output) = read_worker_stdio(session);
+            rows.push(WorkerStdioRow {
+                pid: row.pid,
+                phase: row.phase,
+                cpu_percent: row.cpu_percent,
+                resident_bytes: row.resident_bytes,
+                session: session.to_owned(),
+                input,
+                output,
+            });
+        }
+        rows
+    }
+
+    fn resources_zoom_key(&mut self, key: KeyEvent) -> TuiAction {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => self.close_resources_zoom(),
+            KeyCode::Char('r') if key.modifiers.is_empty() => self.refresh_resources_zoom(),
+            KeyCode::Up => {
+                if let Some(zoom) = self.resources_zoom.as_mut() {
+                    zoom.selected = zoom.selected.saturating_sub(1);
+                }
+                self.dirty = true;
+            }
+            KeyCode::Down => {
+                if let Some(zoom) = self.resources_zoom.as_mut() {
+                    let max = zoom.workers.len().saturating_sub(1);
+                    zoom.selected = (zoom.selected + 1).min(max);
+                }
+                self.dirty = true;
+            }
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                if let Some(zoom) = self.resources_zoom.as_mut()
+                    && zoom.workers.get(zoom.selected).is_some()
+                    && !zoom.expanded.remove(&zoom.selected)
+                {
+                    zoom.expanded.insert(zoom.selected);
+                }
+                self.dirty = true;
+            }
+            KeyCode::PageDown => {
+                if let Some(zoom) = self.resources_zoom.as_mut() {
+                    zoom.scroll = zoom.scroll.saturating_add(10);
+                }
+                self.dirty = true;
+            }
+            KeyCode::PageUp => {
+                if let Some(zoom) = self.resources_zoom.as_mut() {
+                    zoom.scroll = zoom.scroll.saturating_sub(10);
+                }
+                self.dirty = true;
+            }
+            KeyCode::Home => {
+                if let Some(zoom) = self.resources_zoom.as_mut() {
+                    zoom.scroll = 0;
+                }
+                self.dirty = true;
+            }
+            KeyCode::End => {
+                if let Some(zoom) = self.resources_zoom.as_mut() {
+                    zoom.scroll = u16::MAX;
+                }
+                self.dirty = true;
+            }
+            _ => {}
+        }
+        TuiAction::Redraw
+    }
+
+    fn resources_zoom_mouse(&mut self, mouse: MouseEvent) -> TuiAction {
+        let Some(zoom) = self.resources_zoom.as_mut() else {
+            return TuiAction::None;
+        };
+        let area = zoom.area;
+        match mouse.kind {
+            MouseEventKind::ScrollUp => zoom.scroll = zoom.scroll.saturating_sub(3),
+            MouseEventKind::ScrollDown => zoom.scroll = zoom.scroll.saturating_add(3),
+            MouseEventKind::Down(MouseButton::Left) => {
+                // Clicking a worker row selects and expands it.
+                if area.width > 0
+                    && mouse.column > area.x
+                    && mouse.column < area.right().saturating_sub(1)
+                    && mouse.row > area.y
+                    && mouse.row < area.bottom().saturating_sub(1)
+                    && let Some(row) = zoom.row_lines.iter().position(|line| {
+                        *line == usize::from(mouse.row - area.y - 1) + usize::from(zoom.scroll)
+                    })
+                {
+                    zoom.selected = row;
+                    if !zoom.expanded.remove(&row) {
+                        zoom.expanded.insert(row);
+                    }
+                }
+            }
+            _ => {}
+        }
+        self.dirty = true;
+        TuiAction::Redraw
+    }
+
+    fn render_resources_zoom(&mut self, frame: &mut Frame<'_>) {
+        if self.resources_zoom.is_none() {
+            return;
+        }
+        let screen = frame.area();
+        if screen.width < 24 || screen.height < 6 {
+            return;
+        }
+        let resources_content = self.resource_pane_content();
+        let project = self.active_project().to_owned();
+        let Some(zoom) = self.resources_zoom.as_mut() else {
+            return;
+        };
+        let area = Rect {
+            x: screen.x.saturating_add(2),
+            y: screen.y.saturating_add(1),
+            width: screen.width.saturating_sub(4),
+            height: screen.height.saturating_sub(2),
+        };
+        zoom.area = area;
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan))
+            .title(" Resources · zoom · ↑↓ worker · Enter 展开 i/o · r 刷新 · Esc 关闭 ");
+        let inner = block.inner(area);
+        let width = usize::from(inner.width).max(1);
+        let mut lines: Vec<String> = resources_content.lines().map(str::to_owned).collect();
+        lines.push(String::new());
+        lines.push(format!(
+            "Headless workers · {project} · {} 个（当前项目）",
+            zoom.workers.len()
+        ));
+        if zoom.workers.is_empty() {
+            lines.push("  (没有带 --session 的本地 headless worker)".into());
+        }
+        let mut row_lines = Vec::with_capacity(zoom.workers.len());
+        let mut selected_line = None;
+        for (index, worker) in zoom.workers.iter().enumerate() {
+            row_lines.push(lines.len());
+            if index == zoom.selected {
+                selected_line = Some(lines.len());
+            }
+            let marker = if index == zoom.selected { '▶' } else { ' ' };
+            let chevron = if zoom.expanded.contains(&index) {
+                '▾'
+            } else {
+                '▸'
+            };
+            let session_width = width.saturating_sub(52).max(12);
+            lines.push(format!(
+                "{marker}{chevron} pid {}  {:<8} cpu {:>5.1}%  rss {:<10} · {}",
+                worker.pid,
+                worker.phase.label(),
+                worker.cpu_percent,
+                format_byte_count(worker.resident_bytes),
+                truncate_cells(&worker.session, session_width),
+            ));
+            if !zoom.expanded.contains(&index) {
+                continue;
+            }
+            for (label, value) in [
+                ("i", worker.input.as_deref()),
+                ("o", worker.output.as_deref()),
+            ] {
+                match value {
+                    Some(text) if !text.trim().is_empty() => {
+                        let wrapped = wrap_plain(text, width.saturating_sub(8).max(8));
+                        for (line_index, line) in wrapped.iter().enumerate() {
+                            if line_index >= 8 {
+                                lines.push(format!("     {label} …"));
+                                break;
+                            }
+                            lines.push(format!("     {label} {line}"));
+                        }
+                    }
+                    _ => lines.push(format!("     {label} (no recorded turn)")),
+                }
+            }
+        }
+        zoom.row_lines = row_lines;
+        let height = usize::from(inner.height).max(1);
+        let max_scroll = lines.len().saturating_sub(height);
+        let mut scroll = usize::from(zoom.scroll).min(max_scroll);
+        if let Some(selected_line) = selected_line {
+            if selected_line < scroll {
+                scroll = selected_line;
+            } else if selected_line >= scroll.saturating_add(height) {
+                scroll = selected_line.saturating_add(1).saturating_sub(height);
+            }
+        }
+        zoom.scroll = scroll.min(u16::MAX as usize) as u16;
+        let text: Vec<Line<'_>> = lines.into_iter().map(Line::from).collect();
+        frame.render_widget(Clear, area);
+        frame.render_widget(
+            Paragraph::new(Text::from(text))
+                .block(block)
+                .scroll((zoom.scroll, 0)),
+            area,
+        );
+    }
+
     fn resource_pane_content(&self) -> String {
         let lan = self.resource_lan_content();
         let cluster = self.cluster_pane_content();
@@ -10343,6 +10845,22 @@ impl TuiState {
         shell.write_input(&bytes);
         self.dirty = true;
         true
+    }
+
+    /// Forward a paste burst to the hot Shell PTY as raw UTF-8 bytes. Bounded
+    /// so a hostile clipboard cannot grow one PTY write without limit.
+    fn forward_shell_paste(&mut self, text: &str) {
+        const MAX_SHELL_PASTE_BYTES: usize = 64 * 1024;
+        let bytes = truncate_bytes(text, MAX_SHELL_PASTE_BYTES)
+            .as_bytes()
+            .to_vec();
+        if bytes.is_empty() {
+            return;
+        }
+        if let Some(shell) = self.pty_shell.as_mut() {
+            shell.write_input(&bytes);
+            self.dirty = true;
+        }
     }
 }
 
@@ -10648,7 +11166,7 @@ fn pane_available(pane: PaneId, capabilities: crate::layout::PaneCapabilities) -
 fn workspace_pane_title(id: PaneId) -> &'static str {
     match id {
         PaneId::ProjectConversation => "Conversation",
-        PaneId::Resources => "Resources",
+        PaneId::Resources => "Resources · 双击放大",
         PaneId::GoalConversation => "Goal",
         PaneId::Gantt => "Gantt",
         PaneId::Arch => "Arch",
@@ -14183,6 +14701,9 @@ pub struct TuiPendingInputs {
     projects: VecDeque<String>,
     identities: VecDeque<(String, u64)>,
     paste_metadata: VecDeque<Option<SubmittedPaste>>,
+    /// True when a queued input belongs to the independent arch master session
+    /// (ZS1-156) and must never run on the discussion owner.
+    arch: VecDeque<bool>,
     serial: u64,
     bytes: usize,
 }
@@ -14193,6 +14714,14 @@ impl TuiPendingInputs {
             || !self.inputs.is_empty()
     }
     fn push(&mut self, kind: TuiRequestKind, text: String) -> Result<(), &'static str> {
+        self.push_with_arch(kind, text, false)
+    }
+    fn push_with_arch(
+        &mut self,
+        kind: TuiRequestKind,
+        text: String,
+        arch: bool,
+    ) -> Result<(), &'static str> {
         if text.trim().is_empty()
             || self.inputs.len() >= MAX_TUI_PENDING_INPUTS
             || self.bytes.saturating_add(text.len()) > MAX_TUI_PENDING_INPUT_BYTES
@@ -14210,14 +14739,17 @@ impl TuiPendingInputs {
         self.inputs.push_back((kind, text));
         self.paste_metadata.push_back(None);
         self.projects.push_back(String::new());
+        self.arch.push_back(arch);
         Ok(())
     }
-    fn pop(&mut self) -> Option<(TuiRequestKind, String, Option<SubmittedPaste>)> {
+    fn pop(&mut self) -> Option<(TuiRequestKind, String, Option<SubmittedPaste>, bool)> {
         let input = self.inputs.pop_front()?;
         self.projects.pop_front();
         self.identities.pop_front();
         self.bytes -= input.1.len();
-        Some((input.0, input.1, self.paste_metadata.pop_front().unwrap()))
+        let paste = self.paste_metadata.pop_front().unwrap();
+        let arch = self.arch.pop_front().unwrap_or(false);
+        Some((input.0, input.1, paste, arch))
     }
     fn sync_projection(&self, state: &mut TuiState) {
         state
@@ -14249,6 +14781,7 @@ impl TuiPendingInputs {
         self.projects.remove(index);
         self.identities.remove(index);
         self.paste_metadata.remove(index);
+        self.arch.remove(index);
     }
     fn cancel(&mut self, state: &mut TuiState) {
         let mut count = 0;
@@ -14274,11 +14807,28 @@ impl TuiPendingInputs {
         self.admit_original(kind, text, rejected, state);
     }
 
+    /// Queue an input that belongs to the independent arch master session.
+    fn admit_arch(&mut self, kind: TuiRequestKind, text: String, state: &mut TuiState) {
+        let rejected = text.clone();
+        self.admit_original_with_arch(kind, text, rejected, true, state);
+    }
+
     fn admit_original(
         &mut self,
         kind: TuiRequestKind,
         text: String,
         rejected: String,
+        state: &mut TuiState,
+    ) {
+        self.admit_original_with_arch(kind, text, rejected, false, state);
+    }
+
+    fn admit_original_with_arch(
+        &mut self,
+        kind: TuiRequestKind,
+        text: String,
+        rejected: String,
+        arch: bool,
         state: &mut TuiState,
     ) {
         let paste = state.take_submitted_paste(&rejected);
@@ -14298,7 +14848,7 @@ impl TuiPendingInputs {
         } else if total_bytes.saturating_add(text.len()) > MAX_TUI_PENDING_INPUT_BYTES {
             Err("Scheduled queue byte limit exceeded; resolve interrupted entries first")
         } else {
-            self.push(kind, text)
+            self.push_with_arch(kind, text, arch)
         };
         match result {
             Ok(()) => {
@@ -15752,7 +16302,7 @@ pub fn run_async_with_profile(
                 && !queued_project
                     .as_deref()
                     .is_some_and(|project| new_sessions.owns(project))
-                && let Some((kind, text, paste)) = pending_inputs.pop()
+                && let Some((kind, text, paste, arch_queued)) = pending_inputs.pop()
             {
                 pending_inputs.sync_projection(&mut state);
                 if let Some(index) = queued_project
@@ -15762,15 +16312,24 @@ pub fn run_async_with_profile(
                     state.select_project_tab(index);
                     shared = project_host.active(&state);
                 }
+                // A queued arch turn keeps its independent master-session owner
+                // (ZS1-156); only discussion turns run on the shared owner.
+                let owner = if arch_queued {
+                    project_host
+                        .active_arch(&state)
+                        .unwrap_or_else(|_| Arc::clone(&shared))
+                } else {
+                    Arc::clone(&shared)
+                };
                 let request_text = queued_request_text(kind, text);
                 let display = request_text.clone();
                 let (request, events) = TuiRequest::with_kind(request_text, kind);
                 let mut request = request;
-                request.owner = Some(Arc::clone(&shared));
-                if let Ok(agent) = shared.try_lock() {
+                request.owner = Some(Arc::clone(&owner));
+                if let Ok(agent) = owner.try_lock() {
                     input_controls.remember_owner(state.active_project(), &agent);
                 }
-                approval = shared
+                approval = owner
                     .try_lock()
                     .ok()
                     .and_then(|agent| agent.approval_coordinator())
@@ -15789,7 +16348,9 @@ pub fn run_async_with_profile(
                             if kind == TuiRequestKind::UserShell {
                                 state.begin_stream_for_job(id.get());
                             }
-                            state.push_message(MessageRole::User, display);
+                            if !arch_queued {
+                                state.push_message(MessageRole::User, display);
+                            }
                             state.set_status(if kind == TuiRequestKind::ResourceControl {
                                 "Loading resources"
                             } else {
@@ -15798,8 +16359,9 @@ pub fn run_async_with_profile(
                         }
                         active_job = Some(id);
                         active_job_project = Some(state.active_project().to_owned());
-                        active_job_owner = Some(Arc::clone(&shared));
+                        active_job_owner = Some(Arc::clone(&owner));
                         active_job_kind = Some(kind);
+                        active_job_is_arch = arch_queued;
                         state.set_busy(true);
                     }
                     Err(error) => {
@@ -16540,10 +17102,11 @@ pub fn run_async_with_profile(
                                 if pending_inputs
                                     .should_queue(TuiRequestKind::UserShell, active_job_kind)
                                 {
-                                    pending_inputs.admit_original(
+                                    pending_inputs.admit_original_with_arch(
                                         TuiRequestKind::UserShell,
                                         command,
                                         text.clone(),
+                                        arch_submit,
                                         &mut state,
                                     );
                                 } else {
@@ -16575,10 +17138,12 @@ pub fn run_async_with_profile(
                                             submitted_inputs.insert(id, submitted_text);
                                             stream_buffers.insert(id, events);
                                             state.begin_stream_for_job(id.get());
-                                            state.push_message(
-                                                MessageRole::User,
-                                                format!("!{command}"),
-                                            );
+                                            if !arch_submit {
+                                                state.push_message(
+                                                    MessageRole::User,
+                                                    format!("!{command}"),
+                                                );
+                                            }
                                             state.set_busy(true);
                                             state.set_status("Local shell running");
                                             active_job = Some(id);
@@ -16603,18 +17168,44 @@ pub fn run_async_with_profile(
                                 if active_job.is_some()
                                     && active_job_project.as_deref() != Some(state.active_project())
                                 {
-                                    pending_inputs.admit(TuiRequestKind::Model, text, &mut state);
+                                    if arch_submit {
+                                        pending_inputs.admit_arch(
+                                            TuiRequestKind::Model,
+                                            text,
+                                            &mut state,
+                                        );
+                                    } else {
+                                        pending_inputs.admit(
+                                            TuiRequestKind::Model,
+                                            text,
+                                            &mut state,
+                                        );
+                                    }
                                     scheduler.request();
                                     continue 'outer;
                                 }
                                 if pending_inputs
                                     .should_queue(TuiRequestKind::Model, active_job_kind)
                                 {
-                                    pending_inputs.admit(TuiRequestKind::Model, text, &mut state);
+                                    if arch_submit {
+                                        pending_inputs.admit_arch(
+                                            TuiRequestKind::Model,
+                                            text,
+                                            &mut state,
+                                        );
+                                    } else {
+                                        pending_inputs.admit(
+                                            TuiRequestKind::Model,
+                                            text,
+                                            &mut state,
+                                        );
+                                    }
                                     scheduler.request();
                                     continue 'outer;
                                 }
-                                state.push_message(MessageRole::User, &text);
+                                if !arch_submit {
+                                    state.push_message(MessageRole::User, &text);
+                                }
                                 if active_job.is_some() {
                                     // Resources and files need normal owner admission as a future
                                     // job; text-only inputs can join the current Agent boundary.
@@ -16622,11 +17213,44 @@ pub fn run_async_with_profile(
                                         || prompt_file_references(&text)
                                             .map_or(true, |references| !references.is_empty())
                                     {
-                                        pending_inputs.admit(
-                                            TuiRequestKind::Model,
-                                            text,
-                                            &mut state,
-                                        );
+                                        if arch_submit {
+                                            pending_inputs.admit_arch(
+                                                TuiRequestKind::Model,
+                                                text,
+                                                &mut state,
+                                            );
+                                        } else {
+                                            pending_inputs.admit(
+                                                TuiRequestKind::Model,
+                                                text,
+                                                &mut state,
+                                            );
+                                        }
+                                    } else if arch_submit {
+                                        // Arch steering only joins an active arch turn.
+                                        // While a discussion turn runs, the master
+                                        // session is busy and the arch input waits for
+                                        // its own owner instead of hijacking it.
+                                        if active_job_is_arch {
+                                            let action =
+                                                crate::protocol::InputQueueAction::Enqueue {
+                                                    input_id: input_controls.next_id(),
+                                                    kind: crate::input_queue::InputKind::Steer,
+                                                    text: text.clone(),
+                                                };
+                                            let owner = active_job_owner
+                                                .clone()
+                                                .unwrap_or_else(|| Arc::clone(&shared));
+                                            input_controls.submit(&mut state, &owner, action, text);
+                                        } else {
+                                            pending_inputs.admit_arch(
+                                                TuiRequestKind::Model,
+                                                text,
+                                                &mut state,
+                                            );
+                                            scheduler.request();
+                                            continue 'outer;
+                                        }
                                     } else {
                                         let action = crate::protocol::InputQueueAction::Enqueue {
                                             input_id: input_controls.next_id(),
@@ -17791,6 +18415,54 @@ fn truncate_to_width(text: &str, width: usize) -> String {
         result.push(character);
     }
     result
+}
+
+/// Read the last user input and assistant output from a worker session
+/// journal. The read is bounded to the file tail so a long-running worker
+/// cannot make the Resources zoom scan an unbounded journal.
+fn read_worker_stdio(path: &str) -> (Option<String>, Option<String>) {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(_) => return (None, None),
+    };
+    let length = file.metadata().map(|meta| meta.len()).unwrap_or(0);
+    let start = length.saturating_sub(WORKER_STDIO_TAIL_BYTES as u64);
+    if start > 0 && file.seek(SeekFrom::Start(start)).is_err() {
+        return (None, None);
+    }
+    let mut bytes = Vec::new();
+    if file
+        .take(WORKER_STDIO_TAIL_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .is_err()
+    {
+        return (None, None);
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    let mut input = None;
+    let mut output = None;
+    for line in text.lines() {
+        let Ok(record) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if record["kind"] != "turn" {
+            continue;
+        }
+        let turn = &record["turn"];
+        let role = turn["role"].as_str().unwrap_or_default();
+        let content = turn["content"].as_str().unwrap_or_default();
+        if content.trim().is_empty() {
+            continue;
+        }
+        let excerpt = truncate_bytes(content, WORKER_STDIO_EXCERPT_BYTES).to_owned();
+        if role.eq_ignore_ascii_case("user") {
+            input = Some(excerpt);
+        } else if role.eq_ignore_ascii_case("assistant") {
+            output = Some(excerpt);
+        }
+    }
+    (input, output)
 }
 
 fn wrap_plain(text: &str, width: usize) -> Vec<String> {
@@ -19017,7 +19689,7 @@ mod tests {
             .expect("first shell input");
         assert!(queue.should_queue(TuiRequestKind::Model, Some(TuiRequestKind::UserShell)));
         assert_eq!(
-            queue.pop().map(|(kind, text, _)| (kind, text)),
+            queue.pop().map(|(kind, text, _, _)| (kind, text)),
             Some((TuiRequestKind::UserShell, "echo one".into()))
         );
         for index in 0..MAX_TUI_PENDING_INPUTS {
@@ -19276,12 +19948,12 @@ fn accepted_shell_queue_owns_original_bytes_through_pop_cancel_and_edit() {
     let edited = "  !printf edited\n";
     assert!(pending.scheduled_command(&mut state, &format!("/scheduled edit {id} 0 {edited}")));
     assert!(state.submitted_pastes.is_empty());
-    let (kind, text, paste) = pending.pop().unwrap();
+    let (kind, text, paste, _) = pending.pop().unwrap();
     assert!(paste.is_none());
     assert_eq!(queued_request_text(kind, text), edited);
     pending.sync_projection(&mut state);
     submit(&mut state, &mut pending);
-    let (kind, text, paste) = pending.pop().unwrap();
+    let (kind, text, paste, _) = pending.pop().unwrap();
     let text = queued_request_text(kind, text);
     assert_eq!(text, original);
     let snapshot = paste.unwrap();
@@ -19337,13 +20009,13 @@ fn identical_scheduled_payloads_keep_metadata_on_their_actual_queue_identity() {
             };
             pending.scheduled_command(&mut state, &command);
             assert_eq!(pending.identities[0].0, first_id);
-            let (_, text, paste) = pending.pop().unwrap();
+            let (_, text, paste, _) = pending.pop().unwrap();
             state.restore_submitted_input(SubmittedInput { text, paste });
             assert_eq!(state.input, original);
             assert_eq!(state.cursor, 0);
             assert_eq!(state.paste.folds, first);
             if edit_second {
-                let (_, text, paste) = pending.pop().unwrap();
+                let (_, text, paste, _) = pending.pop().unwrap();
                 assert_eq!(text, "echo edited");
                 assert!(paste.is_none());
             }

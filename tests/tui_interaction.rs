@@ -8,8 +8,8 @@ use zenpi::{
     session::SessionStore,
     slash::{self, SlashCommand},
     tui::{
-        BentoBoxLayoutAdapter, LeftPrompt, MessageRole, MessageTarget, TuiAction, TuiState,
-        dispatch_slash_command,
+        BentoBoxLayoutAdapter, HotZone, LeftPrompt, MessageRole, MessageTarget, TuiAction,
+        TuiState, dispatch_slash_command,
     },
 };
 
@@ -918,4 +918,246 @@ fn focused_arch_model_selection_does_not_disturb_the_discussion_agent() {
     assert_eq!(agent.snapshot().model.as_deref(), Some("discussion-model"));
     // The arch override is retained and independent.
     assert_eq!(agent.zone_model(Zone::Arch), Some("arch-model"));
+}
+
+#[test]
+fn arch_typing_through_the_event_stream_never_touches_the_discussion_draft() {
+    let mut state = TuiState::default();
+    assert!(state.set_left_prompt(LeftPrompt::Arch));
+    for character in "hi 世界".chars() {
+        let _ = state.handle_event_at(
+            Event::Key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE)),
+            std::time::Instant::now(),
+        );
+    }
+    assert_eq!(state.arch_input(), "hi 世界");
+    assert_eq!(
+        state.input(),
+        "",
+        "the real event stream must route arch characters to the arch console"
+    );
+}
+
+#[test]
+fn paste_follows_the_unique_hot_zone() {
+    let mut state = TuiState::default();
+    assert!(state.set_left_prompt(LeftPrompt::Arch));
+    let _ = state.handle_event(Event::Paste("hello 世界".into()));
+    assert_eq!(state.arch_input(), "hello 世界");
+    assert_eq!(state.input(), "");
+
+    assert!(state.set_left_prompt(LeftPrompt::Discussion));
+    let _ = state.handle_event(Event::Paste("disc".into()));
+    assert_eq!(state.input(), "disc");
+    assert_eq!(state.arch_input(), "hello 世界");
+}
+
+#[cfg(unix)]
+#[test]
+fn shell_hot_zone_owns_keys_even_with_a_discussion_draft() {
+    let mut state = TuiState::default();
+    let mut terminal = Terminal::new(TestBackend::new(160, 40)).unwrap();
+    terminal
+        .draw(|f| state.render_bentobox(f, "zenpi"))
+        .unwrap();
+    assert!(state.has_shell());
+    state.set_input("draft stays");
+    assert!(state.focus_workspace_pane(PaneId::Execution));
+    assert_eq!(state.hot_zone(), HotZone::Shell);
+    let action = state.handle_key(key(KeyCode::Char('x')));
+    assert!(matches!(action, TuiAction::Redraw));
+    assert_eq!(
+        state.input(),
+        "draft stays",
+        "a Shell keystroke must not touch the discussion draft"
+    );
+}
+
+#[test]
+fn hot_zone_follows_workspace_pane_focus() {
+    let mut state = TuiState::default();
+    assert_eq!(state.hot_zone(), HotZone::Discussion);
+    assert!(state.focus_workspace_pane(PaneId::Arch));
+    assert_eq!(state.hot_zone(), HotZone::Arch);
+    assert_eq!(state.left_prompt(), LeftPrompt::Arch);
+    assert!(state.focus_workspace_pane(PaneId::Resources));
+    assert_eq!(state.hot_zone(), HotZone::Discussion);
+    assert_eq!(state.left_prompt(), LeftPrompt::Discussion);
+    assert!(state.focus_workspace_pane(PaneId::Execution));
+    assert_eq!(state.hot_zone(), HotZone::Shell);
+    assert!(state.set_hot_zone(HotZone::Arch));
+    assert_eq!(state.hot_zone(), HotZone::Arch);
+    assert_ne!(state.focused_workspace_pane(), Some(PaneId::Execution));
+}
+
+#[test]
+fn arch_editing_is_grapheme_safe() {
+    let mut state = TuiState::default();
+    assert!(state.set_left_prompt(LeftPrompt::Arch));
+    state.set_arch_input("a👨‍👩‍👧b");
+    let _ = state.handle_key(key(KeyCode::End));
+    let _ = state.handle_key(key(KeyCode::Left));
+    let _ = state.handle_key(key(KeyCode::Backspace));
+    assert_eq!(
+        state.arch_input(),
+        "ab",
+        "backspace must delete the whole ZWJ family grapheme"
+    );
+    let _ = state.handle_key(key(KeyCode::Delete));
+    assert_eq!(state.arch_input(), "a");
+}
+
+#[test]
+fn switching_projects_isolates_the_arch_draft_and_transcript() {
+    let mut state = TuiState::default();
+    assert!(state.open_project_tab("second"));
+    assert!(state.set_left_prompt(LeftPrompt::Arch));
+    state.set_arch_input("first-draft");
+    state.push_arch_message(MessageRole::User, "first-turn");
+    assert!(state.select_project_tab(0));
+    assert_eq!(state.hot_zone(), HotZone::Discussion);
+    assert_eq!(state.arch_input(), "");
+    assert_eq!(state.arch_message_count(), 0);
+    assert!(state.select_project_tab(1));
+    assert_eq!(state.arch_input(), "first-draft");
+    assert_eq!(state.arch_message_count(), 1);
+}
+
+#[test]
+fn resources_double_click_opens_the_enlarged_worker_stdio_view() {
+    use zenpi::resources::{
+        FootprintPhase, HeadlessFootprintBudget, HeadlessFootprintSummary,
+        HeadlessFootprintVerdict, HeadlessProcessFootprint, ResourceCollector, SignalStatus,
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let journal = dir.path().join("worker.jsonl");
+    std::fs::write(
+        &journal,
+        "{\"kind\":\"turn\",\"turn\":{\"id\":\"t1\",\"role\":\"user\",\"content\":\"build it\",\"created_at_ms\":1}}\n\
+         {\"kind\":\"turn\",\"turn\":{\"id\":\"t2\",\"role\":\"assistant\",\"content\":\"done 世界\",\"created_at_ms\":2}}\n",
+    )
+    .unwrap();
+
+    let mut state = TuiState::default();
+    let mut terminal = Terminal::new(TestBackend::new(160, 40)).unwrap();
+    terminal
+        .draw(|f| state.render_bentobox(f, "zenpi"))
+        .unwrap();
+
+    let mut snapshot = ResourceCollector::new(dir.path())
+        .unwrap()
+        .collect()
+        .unwrap();
+    snapshot.headless = HeadlessFootprintSummary::from_processes(
+        HeadlessFootprintBudget::default(),
+        vec![HeadlessProcessFootprint {
+            pid: 4321,
+            phase: FootprintPhase::Busy,
+            cpu_percent: 12.5,
+            resident_bytes: 4096,
+            status: SignalStatus::Available,
+            verdict: HeadlessFootprintVerdict::Within,
+            session: Some(journal.display().to_string()),
+        }],
+    );
+    state.set_resource_snapshot(snapshot);
+    state.set_project_metadata(
+        "default",
+        zenpi::tui::ProjectTabMetadata {
+            cwd: dir.path().display().to_string(),
+            session_path: Some(journal.display().to_string()),
+            ..Default::default()
+        },
+    );
+
+    let adapter = BentoBoxLayoutAdapter::new(state.workspace_layout(), state.workspace_area());
+    let rect = adapter
+        .pane(PaneId::Resources)
+        .expect("Resources pane is part of the project preset")
+        .rect;
+    let point = (rect.x + 2, rect.y + 2);
+    let _ = state.handle_mouse(mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        point.0,
+        point.1,
+    ));
+    assert!(
+        !state.resources_zoom_open(),
+        "one click keeps block selection"
+    );
+    let _ = state.handle_mouse(mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        point.0,
+        point.1,
+    ));
+    assert!(
+        state.resources_zoom_open(),
+        "two presses on the same cell open the enlarged view"
+    );
+    assert_eq!(state.resources_zoom_worker_count(), 1);
+    assert_eq!(
+        state.resources_zoom_worker_stdio(4321),
+        Some((Some("build it"), Some("done 世界")))
+    );
+
+    let _ = state.handle_key(key(KeyCode::Esc));
+    assert!(!state.resources_zoom_open());
+}
+
+#[test]
+fn resources_zoom_skips_workers_from_other_projects() {
+    use zenpi::resources::{
+        FootprintPhase, HeadlessFootprintBudget, HeadlessFootprintSummary,
+        HeadlessFootprintVerdict, HeadlessProcessFootprint, ResourceCollector, SignalStatus,
+    };
+
+    let mine = tempfile::tempdir().unwrap();
+    let other = tempfile::tempdir().unwrap();
+    let journal = mine.path().join("mine.jsonl");
+    std::fs::write(&journal, "{\"kind\":\"turn\",\"turn\":{\"id\":\"t1\",\"role\":\"user\",\"content\":\"x\",\"created_at_ms\":1}}\n").unwrap();
+    let foreign = other.path().join("foreign.jsonl");
+    std::fs::write(&foreign, "{\"kind\":\"turn\",\"turn\":{\"id\":\"t1\",\"role\":\"user\",\"content\":\"y\",\"created_at_ms\":1}}\n").unwrap();
+
+    let mut state = TuiState::default();
+    let mut snapshot = ResourceCollector::new(mine.path())
+        .unwrap()
+        .collect()
+        .unwrap();
+    snapshot.headless = HeadlessFootprintSummary::from_processes(
+        HeadlessFootprintBudget::default(),
+        vec![
+            HeadlessProcessFootprint {
+                pid: 1,
+                phase: FootprintPhase::Idle,
+                cpu_percent: 0.0,
+                resident_bytes: 1024,
+                status: SignalStatus::Available,
+                verdict: HeadlessFootprintVerdict::Within,
+                session: Some(journal.display().to_string()),
+            },
+            HeadlessProcessFootprint {
+                pid: 2,
+                phase: FootprintPhase::Idle,
+                cpu_percent: 0.0,
+                resident_bytes: 1024,
+                status: SignalStatus::Available,
+                verdict: HeadlessFootprintVerdict::Within,
+                session: Some(foreign.display().to_string()),
+            },
+        ],
+    );
+    state.set_resource_snapshot(snapshot);
+    state.set_project_metadata(
+        "default",
+        zenpi::tui::ProjectTabMetadata {
+            cwd: mine.path().display().to_string(),
+            session_path: Some(journal.display().to_string()),
+            ..Default::default()
+        },
+    );
+    state.open_resources_zoom();
+    assert_eq!(state.resources_zoom_worker_count(), 1);
+    assert!(state.resources_zoom_worker_stdio(1).is_some());
+    assert!(state.resources_zoom_worker_stdio(2).is_none());
 }

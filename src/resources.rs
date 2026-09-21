@@ -516,6 +516,12 @@ pub struct HeadlessProcessFootprint {
     pub status: SignalStatus,
     #[serde(default)]
     pub verdict: HeadlessFootprintVerdict,
+    /// The `--session <path>` argument of a `--mode headless` worker, when the
+    /// command line carries one. It is the only stable key that ties a local
+    /// worker to a project journal, so the Resources zoom can render its
+    /// input/output state.
+    #[serde(default)]
+    pub session: Option<String>,
 }
 
 /// Per-process footprint rows plus their aggregate against one budget. The
@@ -697,6 +703,7 @@ impl HeadlessFootprintSampler {
                 SignalStatus::Unavailable
             },
             verdict: HeadlessFootprintVerdict::Within,
+            session: None,
         }
     }
 }
@@ -1408,6 +1415,32 @@ fn is_headless_command_line(args: &str) -> bool {
     args.split_whitespace().any(|token| token == "headless")
 }
 
+/// Extract the `--session <path>` (or `--session=<path>`) argument from a
+/// `--mode headless` command line. The value is bounded so a hostile process
+/// title cannot make the footprint row unbounded.
+fn headless_session_argument(tokens: &[&str]) -> Option<String> {
+    const MAX_SESSION_ARGUMENT_BYTES: usize = 1024;
+    let mut iterator = tokens.iter();
+    while let Some(token) = iterator.next() {
+        let value = if *token == "--session" {
+            iterator.next().copied()
+        } else {
+            token.strip_prefix("--session=")
+        };
+        if let Some(value) = value {
+            let value = value.trim();
+            if !value.is_empty()
+                && value.len() <= MAX_SESSION_ARGUMENT_BYTES
+                && !value.chars().any(char::is_control)
+            {
+                return Some(value.to_owned());
+            }
+            return None;
+        }
+    }
+    None
+}
+
 /// Enumerate `--mode headless` processes and score each against `budget`. The
 /// scan is bounded by [`MAX_PROCESSES_SCANNED`] rows and degrades to an
 /// explicit `Unavailable` summary when `ps` is missing or unrestricted.
@@ -1509,6 +1542,7 @@ fn parse_headless_rows(
             resident_bytes: rss_kib.saturating_mul(1024),
             status: SignalStatus::Available,
             verdict: HeadlessFootprintVerdict::Within,
+            session: headless_session_argument(&command),
         });
     }
     rows
@@ -2320,5 +2354,42 @@ impl ResourceBusSnapshot {
             keys.push("cluster");
         }
         keys
+    }
+}
+
+#[cfg(test)]
+mod worker_session_tests {
+    use super::*;
+
+    #[test]
+    fn session_argument_accepts_separate_and_equals_forms() {
+        assert_eq!(
+            headless_session_argument(&[
+                "zenpi",
+                "--mode",
+                "headless",
+                "--session",
+                "/tmp/a.jsonl"
+            ]),
+            Some("/tmp/a.jsonl".into())
+        );
+        assert_eq!(
+            headless_session_argument(&["zenpi", "--session=/tmp/b.jsonl", "--mode", "headless"]),
+            Some("/tmp/b.jsonl".into())
+        );
+        assert_eq!(
+            headless_session_argument(&["zenpi", "--mode", "headless"]),
+            None
+        );
+        assert_eq!(headless_session_argument(&["zenpi", "--session", ""]), None);
+    }
+
+    #[test]
+    fn parsed_footprint_rows_keep_the_worker_session() {
+        let text = "  4242  10240 0:01.20 00:12 zenpi --mode headless --session /tmp/w.jsonl\n";
+        let rows = parse_headless_rows(text, HeadlessFootprintBudget::default());
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].pid, 4242);
+        assert_eq!(rows[0].session.as_deref(), Some("/tmp/w.jsonl"));
     }
 }

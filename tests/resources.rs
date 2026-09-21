@@ -194,6 +194,7 @@ fn footprint(
         resident_bytes,
         status: SignalStatus::Available,
         verdict: HeadlessFootprintVerdict::Within,
+        session: None,
     }
 }
 
