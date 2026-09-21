@@ -521,7 +521,11 @@ impl Stream {
                     return Err(invalid("unsupported Chat tool call type"));
                 }
                 let call = self.calls.entry(index).or_default();
-                bind(&mut call.id, string_field(fragment, "id")?, "tool call ID")?;
+                bind(
+                    &mut call.id,
+                    string_field(fragment, "id")?.filter(|s| !s.is_empty()),
+                    "tool call ID",
+                )?;
                 let mut arguments_delta = "";
                 if let Some(function) = fragment.get("function") {
                     if !function.is_object() {
@@ -529,7 +533,7 @@ impl Stream {
                     }
                     bind(
                         &mut call.name,
-                        string_field(function, "name")?,
+                        string_field(function, "name")?.filter(|s| !s.is_empty()),
                         "tool function name",
                     )?;
                     arguments_delta = string_field(function, "arguments")?.unwrap_or_default();

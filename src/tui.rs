@@ -17013,18 +17013,37 @@ pub fn run_async_with_profile(
                                     }
                                 ) {
                                     let project = state.active_project().to_owned();
-                                    let busy = (active_job.is_some()
-                                        && active_job_project.as_deref() == Some(project.as_str()))
-                                        || input_controls.has_pending(&project)
-                                        || pending_inputs.projects.contains(&project)
-                                        || state
+                                    let busy_reasons: Vec<&str> = [
+                                        (active_job.is_some()
+                                            && active_job_project.as_deref()
+                                                == Some(project.as_str()))
+                                        .then_some("active request (/cancel)"),
+                                        input_controls
+                                            .has_pending(&project)
+                                            .then_some("queued input controls"),
+                                        pending_inputs
+                                            .projects
+                                            .contains(&project)
+                                            .then_some("pending inputs"),
+                                        state
                                             .scheduled_inputs
                                             .iter()
                                             .any(|entry| entry.project == project)
-                                        || state.approval_views.contains_key(&project)
-                                        || (active_resource_job.is_some()
+                                            .then_some("scheduled inputs (/scheduled list)"),
+                                        state
+                                            .approval_views
+                                            .contains_key(&project)
+                                            .then_some("pending approvals"),
+                                        (active_resource_job.is_some()
                                             && active_resource_project == project)
-                                        || editor.active();
+                                            .then_some("active resource job"),
+                                        editor
+                                            .active()
+                                            .then_some("external editor (save and close)"),
+                                    ]
+                                    .into_iter()
+                                    .flatten()
+                                    .collect();
                                     let fingerprint = format!(
                                         "tui-{}",
                                         std::time::SystemTime::now()
@@ -17032,15 +17051,18 @@ pub fn run_async_with_profile(
                                             .unwrap_or_default()
                                             .as_nanos()
                                     );
-                                    let proposal = if busy {
-                                        Err("new session requires settled requests, approvals and scheduled work".to_owned())
-                                    } else {
+                                    let proposal = if busy_reasons.is_empty() {
                                         project_host.pool.new_session_plan(
                                             &project,
                                             None,
                                             fingerprint,
                                             1,
                                         )
+                                    } else {
+                                        Err(format!(
+                                            "new session blocked by: {}",
+                                            busy_reasons.join(", ")
+                                        ))
                                     };
                                     match proposal {
                                         Err(error) => {

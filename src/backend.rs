@@ -1167,15 +1167,30 @@ impl OpenAiCompatibleBackend {
                 .expect("request object")
                 .remove("stream_options");
         }
-        if descriptor.is_some() || request.max_output_tokens.is_some() {
-            let limit = request
-                .max_output_tokens
-                .unwrap_or(crate::context::DEFAULT_RESERVED_OUTPUT_TOKENS)
-                .min(
-                    descriptor
-                        .as_ref()
-                        .map_or(u64::MAX, |model| model.max_output_tokens),
-                );
+        // Anthropic/Google builders default the field themselves; OpenAI wires
+        // send a limit only when the caller explicitly requested one, because
+        // some Responses upstreams reject the field outright.
+        let openai_wire = matches!(
+            self.wire_api,
+            OpenAiWireApi::Responses | OpenAiWireApi::ChatCompletions
+        );
+        let limit = if openai_wire {
+            request.max_output_tokens
+        } else if descriptor.is_some() || request.max_output_tokens.is_some() {
+            Some(
+                request
+                    .max_output_tokens
+                    .unwrap_or(crate::context::DEFAULT_RESERVED_OUTPUT_TOKENS),
+            )
+        } else {
+            None
+        };
+        if let Some(limit) = limit {
+            let limit = limit.min(
+                descriptor
+                    .as_ref()
+                    .map_or(u64::MAX, |model| model.max_output_tokens),
+            );
             if limit == 0 {
                 return Err(BackendError::Configuration(
                     "output token limit must be positive".into(),

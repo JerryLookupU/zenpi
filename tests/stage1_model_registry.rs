@@ -457,6 +457,76 @@ fn responses_retains_images_files_and_structured_output_and_honors_output_cap() 
     server.join().unwrap();
 }
 
+#[test]
+fn chat_stream_tolerates_empty_tool_name_continuation_chunks() {
+    // Some gateways repeat the function object in every chunk with an empty
+    // name instead of omitting the field. Continuation chunks must merge
+    // into the pending call instead of failing validation.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        read_request(&mut stream);
+        let chunks = [
+            json!({"id":"chunk","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"run_command","arguments":""}}]},"finish_reason":null}]}),
+            json!({"id":"chunk","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"","arguments":"{\"command\":"}}]},"finish_reason":null}]}),
+            json!({"id":"chunk","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"","arguments":"\"ls\"}"}}]},"finish_reason":null}]}),
+            json!({"id":"chunk","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":""},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}),
+        ];
+        let mut body = String::new();
+        for chunk in chunks {
+            body.push_str(&format!("data: {chunk}\n\n"));
+        }
+        body.push_str("data: [DONE]\n\n");
+        write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+        stream.flush().unwrap();
+    });
+    let backend = strict(&url, "gateway-model", OpenAiWireApi::ChatCompletions, &[]);
+    let turns = [Turn::new("t", TurnRole::User, "list files")];
+    let tools = [zenpi::tools::ToolDefinition {
+        name: "run_command".into(),
+        description: "Run a shell command.".into(),
+        input_schema: json!({"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}),
+        side_effect: zenpi::tools::ToolSideEffect::CommandExecution,
+    }];
+    let completion = backend
+        .complete(CompletionRequest::new("t", &turns, None, &tools))
+        .unwrap();
+    assert_eq!(completion.tool_calls.len(), 1);
+    assert_eq!(completion.tool_calls[0].id, "call-1");
+    assert_eq!(completion.tool_calls[0].name, "run_command");
+    assert_eq!(completion.tool_calls[0].arguments, json!({"command":"ls"}));
+    handle.join().unwrap();
+}
+
+#[test]
+fn openai_wires_send_output_limit_only_when_explicit() {
+    for (responses, field) in [
+        (true, "max_output_tokens"),
+        (false, "max_completion_tokens"),
+    ] {
+        let wire = if responses {
+            OpenAiWireApi::Responses
+        } else {
+            OpenAiWireApi::ChatCompletions
+        };
+        let (url, requests, server) = server(2, responses);
+        let backend = strict(&url, "gpt-4.1", wire, &[]);
+        let turns = [Turn::new("t", TurnRole::User, "question")];
+        backend
+            .complete(CompletionRequest::new("t", &turns, None, &[]))
+            .unwrap();
+        let sent = requests.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(sent.get(field).is_none(), "field must be omitted: {sent}");
+        backend
+            .complete(CompletionRequest::new("t", &turns, None, &[]).with_max_output_tokens(1024))
+            .unwrap();
+        let sent = requests.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(sent[field], 1024);
+        server.join().unwrap();
+    }
+}
+
 struct Cli {
     child: Child,
     input: ChildStdin,
@@ -562,7 +632,10 @@ fn actual_headless_unknown_is_open_and_models_query_is_local() {
             .as_array()
             .is_some_and(|tools| !tools.is_empty())
     );
-    assert_eq!(sent["max_completion_tokens"], 4096);
+    assert!(
+        sent.get("max_completion_tokens").is_none(),
+        "no explicit output limit configured: {sent}"
+    );
     server.join().unwrap();
 }
 

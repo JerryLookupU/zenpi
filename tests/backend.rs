@@ -798,18 +798,24 @@ fn circuit_breaker_opens_and_recovers_after_cooldown() {
         Box::new(backend),
     );
     assert!(agent.process(TurnInputRequest::new("first")).is_err());
-    assert!(matches!(
-        agent.process(TurnInputRequest::new("blocked until reconciled")),
-        Err(zenpi::core::AgentError::Recovery(_))
-    ));
     let recovery = agent.operation_recovery();
     assert_eq!(recovery.len(), 1);
-    agent
-        .resolve_operation_recovery(
-            &recovery[0].operation_id,
-            zenpi::core::ToolRecoveryDecision::Abandon,
-        )
-        .unwrap();
+    // A new turn is user input and is not fenced; it fails on the open
+    // circuit, not on a recovery gate.
+    assert!(matches!(
+        agent.process(TurnInputRequest::new("not fenced")),
+        Err(zenpi::core::AgentError::Backend(
+            BackendError::CircuitOpen { .. }
+        ))
+    ));
+    for op in agent.operation_recovery() {
+        agent
+            .resolve_operation_recovery(
+                &op.operation_id,
+                zenpi::core::ToolRecoveryDecision::Abandon,
+            )
+            .unwrap();
+    }
     let second = agent.process(TurnInputRequest::new("second")).unwrap_err();
     assert!(matches!(
         second,

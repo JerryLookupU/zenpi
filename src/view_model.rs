@@ -1144,6 +1144,15 @@ impl ViewEvent {
                     retryable: false,
                 },
             ),
+            AgentEvent::Warning { message } => Self::with_context(
+                sequence,
+                request_id,
+                None,
+                None,
+                ViewEventKind::Warning {
+                    message: message.clone(),
+                },
+            ),
         }
     }
 

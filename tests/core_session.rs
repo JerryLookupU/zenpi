@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tempfile::tempdir;
 use zenpi::{
     backend::{Backend, BackendError, Completion, CompletionRequest},
-    core::{Agent, AgentError, TurnInputRequest, TurnRole, TurnSubmission},
+    core::{Agent, AgentError, AgentEvent, TurnInputRequest, TurnRole, TurnSubmission},
     session::{MailboxStatus, SessionMailbox, SessionStore},
     tools::{
         SideEffectPolicy, Tool, ToolCall, ToolContext, ToolDefinition, ToolError, ToolRegistry,
@@ -410,7 +410,7 @@ fn blueprint_worker_admission_rejects_raw_credential_metadata() {
 }
 
 #[test]
-fn pending_unknown_operation_blocks_new_turn_until_explicit_decision() {
+fn pending_unknown_operation_warns_and_vetoes_automation_but_allows_new_turn() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("unknown.jsonl");
     let mut store = SessionStore::open(&path).unwrap();
@@ -424,13 +424,19 @@ fn pending_unknown_operation_blocks_new_turn_until_explicit_decision() {
         .unwrap();
     drop(store);
     let mut agent = Agent::with_echo(SessionStore::open(&path).unwrap());
-    let error = agent
-        .submit(TurnInputRequest::new("must wait"))
-        .unwrap_err();
-    assert!(error.to_string().contains("unknown_outcome"));
+    assert!(agent.automation_vetoed().is_some());
+    // User input is never fenced by leftover uncertainty; automation is.
+    agent.process(TurnInputRequest::new("must wait")).unwrap();
+    assert!(
+        agent
+            .take_events()
+            .iter()
+            .any(|event| matches!(event, AgentEvent::Warning { .. }))
+    );
     agent
         .resolve_operation_recovery("tool-unknown", zenpi::core::ToolRecoveryDecision::Abandon)
         .unwrap();
+    assert!(agent.automation_vetoed().is_none());
     assert!(agent.submit(TurnInputRequest::new("now allowed")).is_ok());
 }
 
@@ -495,7 +501,7 @@ fn shell_agent(root: &std::path::Path, backend: Box<dyn Backend>) -> Agent {
 
 #[cfg(unix)]
 #[test]
-fn generic_unknown_outcome_cannot_be_bypassed_by_local_shell() {
+fn generic_unknown_outcome_warns_but_allows_explicit_local_shell() {
     let dir = tempdir().unwrap();
     let mut agent = shell_agent(dir.path(), Box::new(zenpi::backend::EchoBackend));
     agent
@@ -507,11 +513,19 @@ fn generic_unknown_outcome_cannot_be_bypassed_by_local_shell() {
             retry_requires_confirmation: true,
         })
         .unwrap();
-    assert!(matches!(
-        agent.run_user_shell_with_cancel("!touch must-not-exist", || false),
-        Err(zenpi::core::AgentError::Recovery(_))
-    ));
-    assert!(!dir.path().join("must-not-exist").exists());
+    // An explicit user shell command is user input, not automation: it runs
+    // with a warning instead of being fenced.
+    agent
+        .run_user_shell_with_cancel("!touch user-choice", || false)
+        .unwrap();
+    assert!(dir.path().join("user-choice").exists());
+    assert!(
+        agent
+            .take_events()
+            .iter()
+            .any(|event| matches!(event, AgentEvent::Warning { .. }))
+    );
+    assert!(agent.automation_vetoed().is_some());
 }
 
 #[cfg(unix)]
@@ -681,19 +695,24 @@ fn user_shell_crash_recovery_never_invents_a_model_tool_call() {
             "policy_digest": "d".repeat(64), "worker_binding": null, "origin": "user_shell",
         }))
         .unwrap();
-    assert!(matches!(
-        agent.run_user_shell_with_cancel("!printf duplicate > duplicate", || false),
-        Err(AgentError::Recovery(_))
-    ));
-    assert!(!dir.path().join("duplicate").exists());
+    // The crashed shell operation stays pending; an explicit new shell
+    // command is the user's own action and is not fenced by it.
+    agent
+        .run_user_shell_with_cancel("!printf duplicate > duplicate", || false)
+        .unwrap();
+    assert!(dir.path().join("duplicate").exists());
     agent
         .resolve_tool_outcome(
             "user-shell-crash",
             zenpi::core::ToolRecoveryDecision::Abandon,
         )
         .unwrap();
-    assert_eq!(agent.history()[0].role, TurnRole::User);
-    assert!(agent.history()[0].content.contains("unknown_outcome"));
+    assert!(
+        agent
+            .history()
+            .iter()
+            .any(|turn| turn.content.contains("unknown_outcome"))
+    );
     assert!(agent.unknown_tool_outcomes().is_empty());
 }
 
@@ -733,7 +752,7 @@ fn backend_failure_keeps_the_user_turn_and_returns_idle() {
 }
 
 #[test]
-fn provider_transport_failure_is_unknown_and_requires_explicit_recovery() {
+fn provider_transport_failure_is_unknown_and_vetoes_automation_not_turns() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("provider-unknown.jsonl");
     let mut agent = Agent::new(SessionStore::open(&path).unwrap(), Box::new(FailingBackend));
@@ -747,9 +766,12 @@ fn provider_transport_failure_is_unknown_and_requires_explicit_recovery() {
         pending[0].state,
         zenpi::session::OperationRecoveryState::UnknownOutcome
     );
+    assert!(agent.automation_vetoed().is_some());
+    // A new user turn is not fenced; it fails on the failing backend again,
+    // not on a recovery gate.
     assert!(matches!(
-        agent.process(TurnInputRequest::new("must be blocked")),
-        Err(AgentError::Recovery(_))
+        agent.process(TurnInputRequest::new("must not be fenced")),
+        Err(AgentError::Backend(BackendError::Transport(_)))
     ));
     agent
         .resolve_operation_recovery(
@@ -757,7 +779,17 @@ fn provider_transport_failure_is_unknown_and_requires_explicit_recovery() {
             zenpi::core::ToolRecoveryDecision::Abandon,
         )
         .unwrap();
+    // The second turn left its own provider operation pending.
+    for op in agent.operation_recovery() {
+        agent
+            .resolve_operation_recovery(
+                &op.operation_id,
+                zenpi::core::ToolRecoveryDecision::Abandon,
+            )
+            .unwrap();
+    }
     assert!(agent.operation_recovery().is_empty());
+    assert!(agent.automation_vetoed().is_none());
 }
 
 #[test]
@@ -1200,12 +1232,12 @@ fn cancelled_side_effect_is_unknown_and_requires_explicit_host_decision_after_re
     drop(agent);
     let mut restarted = Agent::with_echo(SessionStore::open(&path).unwrap());
     restarted.acknowledge_recovery().unwrap();
-    let before = restarted.session().next_sequence();
-    assert!(matches!(
-        restarted.process_sync("try again"),
-        Err(AgentError::Recovery(_))
-    ));
-    assert_eq!(restarted.session().next_sequence(), before);
+    // The cancelled call already persisted its result, so the transcript is
+    // well-formed; adjudication is untouched and automation stays vetoed.
+    assert_eq!(restarted.unknown_tool_outcomes().len(), 1);
+    assert!(restarted.automation_vetoed().is_some());
+    // New turns are user input and are not fenced.
+    restarted.process_sync("try again").unwrap();
     restarted
         .resolve_tool_outcome(
             &pending[0].operation_id,
@@ -1318,10 +1350,8 @@ fn dispatch_marker_recovers_unknown_outcome_when_result_and_error_persistence_fa
     let mut restarted = Agent::with_echo(SessionStore::open(&path).unwrap());
     let pending = restarted.unknown_tool_outcomes();
     assert_eq!(pending.len(), 1);
-    assert!(matches!(
-        restarted.process_sync("continue"),
-        Err(AgentError::Recovery(_))
-    ));
+    // New turns are not fenced by the leftover marker.
+    restarted.process_sync("continue").unwrap();
     restarted
         .resolve_tool_outcome(
             &pending[0].operation_id,
@@ -1342,4 +1372,147 @@ fn dispatch_marker_recovers_unknown_outcome_when_result_and_error_persistence_fa
     drop(restarted);
     let reopened = Agent::with_echo(SessionStore::open(&path).unwrap());
     assert!(reopened.unknown_tool_outcomes().is_empty());
+}
+
+#[test]
+fn repair_transcript_gaps_synthesizes_only_missing_results_and_is_idempotent() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("repair.jsonl");
+    let mut store = SessionStore::open(&path).unwrap();
+    store
+        .append_turn(zenpi::core::Turn::new("turn-1", TurnRole::User, "go"))
+        .unwrap();
+    let mut assistant =
+        zenpi::core::Turn::with_parent("assistant-1", "turn-1", TurnRole::Assistant, "");
+    assistant.metadata = Some(json!({"tool_calls":[
+        {"id":"call-started","name":"run_command","arguments":{"command":"ls"}},
+        {"id":"call-never","name":"write_file","arguments":{"path":"a.txt","content":"x"}},
+    ]}));
+    store.append_turn(assistant).unwrap();
+    // Crash window: this marker precedes every handler, so call-started ran
+    // (outcome unknown) while call-never provably never executed.
+    store
+        .append_event(json!({
+            "type":"tool_execution_started","operation_id":"op-started",
+            "turn_id":"turn-1","call_id":"call-started","tool":"run_command",
+            "policy_digest":"d".repeat(64),"worker_binding":null,
+        }))
+        .unwrap();
+    drop(store);
+
+    let mut agent = Agent::with_echo(SessionStore::open(&path).unwrap());
+    assert_eq!(agent.repair_transcript_gaps().unwrap(), 2);
+    let synthesized: Vec<_> = agent
+        .history()
+        .iter()
+        .filter(|turn| {
+            turn.metadata
+                .as_ref()
+                .is_some_and(|m| m["synthetic"] == true)
+        })
+        .collect();
+    assert_eq!(synthesized.len(), 2);
+    let outcome_of = |id: &str| {
+        synthesized
+            .iter()
+            .find(|turn| turn.metadata.as_ref().unwrap()["tool_call_id"] == id)
+            .unwrap()
+            .metadata
+            .as_ref()
+            .unwrap()["outcome"]
+            .clone()
+    };
+    assert_eq!(outcome_of("call-started"), json!("unknown_outcome"));
+    assert_eq!(outcome_of("call-never"), json!("cancelled"));
+    // Adjudication is untouched: the started call still vetoes automation.
+    assert_eq!(agent.unknown_tool_outcomes().len(), 1);
+    assert!(agent.automation_vetoed().is_some());
+    assert_eq!(agent.repair_transcript_gaps().unwrap(), 0);
+}
+
+#[test]
+fn leftover_unknown_outcome_vetoes_automatic_compaction_with_journal_evidence() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("veto.jsonl");
+    let mut store = SessionStore::open(&path).unwrap();
+    store
+        .begin_operation(&zenpi::session::InterruptedOperation {
+            operation_id: "stuck".into(),
+            kind: zenpi::session::OperationKind::Tool,
+            turn_id: "old-turn".into(),
+            retry_requires_confirmation: true,
+        })
+        .unwrap();
+    drop(store);
+    let mut agent = Agent::with_echo(SessionStore::open(&path).unwrap());
+    agent.set_context_budget(zenpi::context::ContextBudget {
+        max_tokens: 4096,
+        reserved_output_tokens: 8,
+    });
+    let error = agent
+        .process(TurnInputRequest::new(&"over budget input ".repeat(2000)))
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("compaction vetoed"),
+        "unexpected error: {error}"
+    );
+    assert!(
+        agent
+            .session()
+            .events()
+            .iter()
+            .any(|event| event["type"] == "automation_vetoed")
+    );
+}
+
+#[test]
+fn recovery_abandon_all_dedupes_and_resolves_every_pending_operation() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("abandon-all.jsonl");
+    let mut store = SessionStore::open(&path).unwrap();
+    store
+        .begin_operation(&zenpi::session::InterruptedOperation {
+            operation_id: "both".into(),
+            kind: zenpi::session::OperationKind::Tool,
+            turn_id: "t".into(),
+            retry_requires_confirmation: true,
+        })
+        .unwrap();
+    store
+        .append_event(json!({
+            "type":"tool_execution_started","operation_id":"both",
+            "turn_id":"t","call_id":"c1","tool":"run_command",
+            "policy_digest":"d".repeat(64),"worker_binding":null,
+        }))
+        .unwrap();
+    store
+        .begin_operation(&zenpi::session::InterruptedOperation {
+            operation_id: "provider-only".into(),
+            kind: zenpi::session::OperationKind::Provider,
+            turn_id: "t".into(),
+            retry_requires_confirmation: true,
+        })
+        .unwrap();
+    drop(store);
+    let mut agent = Agent::with_echo(SessionStore::open(&path).unwrap());
+    let value =
+        zenpi::headless::recovery_view(&mut agent, &zenpi::slash::RecoveryAction::AbandonAll)
+            .unwrap();
+    assert_eq!(value["pending_count"], 0, "{value}");
+    assert!(value["failed"].as_array().unwrap().is_empty(), "{value}");
+    let mut resolved: Vec<String> = value["resolved"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|id| id.as_str().unwrap().to_owned())
+        .collect();
+    resolved.sort();
+    assert_eq!(resolved, ["both", "provider-only"]);
+    assert!(agent.unknown_tool_outcomes().is_empty());
+    assert!(agent.operation_recovery().is_empty());
+    let again =
+        zenpi::headless::recovery_view(&mut agent, &zenpi::slash::RecoveryAction::AbandonAll)
+            .unwrap();
+    assert_eq!(again["pending_count"], 0);
+    assert!(again["resolved"].as_array().unwrap().is_empty());
 }
