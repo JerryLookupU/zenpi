@@ -194,8 +194,19 @@ enum SubTabHit {
     Select(usize),
     AddWorktree,
     ConcurrencyUp(usize),
+    ConcurrencyValue(usize),
     ConcurrencyDown(usize),
     Close(usize),
+}
+
+/// Inline numeric edit of one layer-2 worktree concurrency value (ZS1-174).
+/// Opened by double-clicking the centered number, committed with Enter and
+/// cancelled with Esc; the value goes through the same 1..=64 clamp as the
+/// arrow buttons.
+#[derive(Debug, Clone)]
+struct SubTabConcurrencyEdit {
+    index: usize,
+    text: String,
 }
 
 /// Inline rename of a layer-1 workspace or layer-2 worktree card (ZS1-169).
@@ -1925,18 +1936,20 @@ struct WorkerStdioRow {
     output: Option<String>,
 }
 
-/// Enlarged Resources view opened by double-clicking the pane. Rendering reads
-/// the same bounded projection as the pane; worker rows are snapshotted on
-/// open and on `r` so a render never blocks on `ps` or journal I/O.
+/// Enlarged Resources observation mode opened by double-clicking the pane and
+/// closed by double-clicking again. Workers are laid out as square tiles in a
+/// power-of-two column grid that approximates the viewport aspect ratio; the
+/// selected worker's input/output is shown in the detail strip.
 #[derive(Debug, Clone, Default)]
 struct ResourcesZoom {
-    scroll: u16,
     selected: usize,
-    expanded: BTreeSet<usize>,
+    detail_expanded: bool,
     workers: Vec<WorkerStdioRow>,
-    /// Content line index of every worker row, recorded by the last render so
-    /// a mouse click can map a screen row back to a worker.
-    row_lines: Vec<usize>,
+    /// Tile rects recorded by the last render so a mouse click can select the
+    /// worker under the pointer.
+    tile_rects: Vec<Rect>,
+    /// (columns, rows, cell) chosen by the last grid render.
+    grid_shape: Option<(usize, usize, usize)>,
     area: Rect,
 }
 
@@ -2666,6 +2679,9 @@ pub struct TuiState {
     project_subtabs: BTreeMap<String, Vec<SubTab>>,
     active_subtab: BTreeMap<String, usize>,
     subtab_hits: Vec<(Rect, SubTabHit)>,
+    /// Inline concurrency number edit opened by double-clicking a layer-2
+    /// worktree's centered number (ZS1-174).
+    subtab_concurrency_edit: Option<SubTabConcurrencyEdit>,
     /// Active inline rename for a header tab card (ZS1-169).
     tab_rename: Option<TabRename>,
     project_session_cursors: BTreeMap<String, ProjectSessionCursor>,
@@ -2831,6 +2847,7 @@ impl TuiState {
             project_subtabs: BTreeMap::new(),
             active_subtab: BTreeMap::new(),
             subtab_hits: Vec::new(),
+            subtab_concurrency_edit: None,
             tab_rename: None,
             project_session_cursors: BTreeMap::new(),
             project_checkpoint_dirty: false,
@@ -3536,6 +3553,91 @@ impl TuiState {
         tabs[index].concurrency = next;
         self.project_checkpoint_dirty = true;
         true
+    }
+
+    /// Set one worktree's concurrency with the same 1..=64 clamp as the
+    /// arrow buttons (ZS1-174).
+    pub fn set_subtab_concurrency(&mut self, index: usize, value: u16) -> bool {
+        self.ensure_subtabs();
+        let project = self.active_project().to_owned();
+        let Some(tabs) = self.project_subtabs.get_mut(&project) else {
+            return false;
+        };
+        if index >= tabs.len() {
+            return false;
+        }
+        let next = value.clamp(1, 64);
+        if next == tabs[index].concurrency {
+            return false;
+        }
+        tabs[index].concurrency = next;
+        self.project_checkpoint_dirty = true;
+        self.dirty = true;
+        true
+    }
+
+    /// Begin the inline numeric edit for one layer-2 worktree (ZS1-174).
+    pub fn begin_subtab_concurrency_edit(&mut self, index: usize) -> bool {
+        self.ensure_subtabs();
+        let project = self.active_project().to_owned();
+        let Some(tabs) = self.project_subtabs.get(&project) else {
+            return false;
+        };
+        let Some(tab) = tabs.get(index) else {
+            return false;
+        };
+        self.subtab_concurrency_edit = Some(SubTabConcurrencyEdit {
+            index,
+            text: tab.concurrency.to_string(),
+        });
+        self.dirty = true;
+        true
+    }
+
+    pub fn subtab_concurrency_edit_active(&self) -> bool {
+        self.subtab_concurrency_edit.is_some()
+    }
+
+    fn cancel_subtab_concurrency_edit(&mut self) {
+        if self.subtab_concurrency_edit.take().is_some() {
+            self.dirty = true;
+        }
+    }
+
+    fn commit_subtab_concurrency_edit(&mut self) {
+        let Some(edit) = self.subtab_concurrency_edit.take() else {
+            return;
+        };
+        if let Ok(value) = edit.text.trim().parse::<u16>() {
+            self.set_subtab_concurrency(edit.index, value);
+        }
+        self.dirty = true;
+    }
+
+    fn subtab_concurrency_edit_key(&mut self, key: KeyEvent) -> TuiAction {
+        match key.code {
+            KeyCode::Esc => self.cancel_subtab_concurrency_edit(),
+            KeyCode::Enter => self.commit_subtab_concurrency_edit(),
+            KeyCode::Backspace => {
+                if let Some(edit) = self.subtab_concurrency_edit.as_mut() {
+                    edit.text.pop();
+                }
+                self.dirty = true;
+            }
+            KeyCode::Char(character)
+                if character.is_ascii_digit()
+                    && (key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT) =>
+            {
+                if let Some(edit) = self.subtab_concurrency_edit.as_mut()
+                    && edit.text.len() < 3
+                {
+                    edit.text.push(character);
+                }
+                self.dirty = true;
+            }
+            _ => {}
+        }
+        TuiAction::Redraw
     }
 
     pub fn close_project_tab(&mut self, name: &str) -> bool {
@@ -7075,17 +7177,18 @@ impl TuiState {
     }
 
     pub fn handle_mouse(&mut self, mouse: MouseEvent) -> TuiAction {
-        if self.resources_zoom.is_some() {
-            return self.resources_zoom_mouse(mouse);
-        }
         // Synthesize double clicks: crossterm only reports Down/Up, so two
-        // left presses on the same cell inside the window count as one.
+        // left presses on the same cell inside the window count as one. The
+        // observation overlay uses this to toggle back to the ordinary pane.
         let double_click = mouse.kind == MouseEventKind::Down(MouseButton::Left)
             && self.last_left_click.is_some_and(|(at, column, row)| {
                 at.elapsed() <= DOUBLE_CLICK_WINDOW && column == mouse.column && row == mouse.row
             });
         if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
             self.last_left_click = Some((Instant::now(), mouse.column, mouse.row));
+        }
+        if self.resources_zoom.is_some() {
+            return self.resources_zoom_mouse(mouse, double_click);
         }
         if let Some(picker) = self.directory_picker.as_mut() {
             let result = picker.mouse(mouse);
@@ -7307,6 +7410,13 @@ impl TuiState {
                 },
                 SubTabHit::ConcurrencyUp(index) => {
                     self.subtab_concurrency(index, 1);
+                }
+                SubTabHit::ConcurrencyValue(index) => {
+                    if double_click {
+                        self.begin_subtab_concurrency_edit(index);
+                    } else {
+                        self.subtab_select(index);
+                    }
                 }
                 SubTabHit::ConcurrencyDown(index) => {
                     self.subtab_concurrency(index, -1);
@@ -7624,6 +7734,7 @@ impl TuiState {
             || self.history_search.is_some()
             || self.goal_edit.is_some()
             || self.resources_zoom.is_some()
+            || self.subtab_concurrency_edit.is_some()
             || self
                 .approval_views
                 .get(self.active_project())
@@ -7725,6 +7836,7 @@ impl TuiState {
                 if self.transcript_browser.is_some()
                     || self.goal_edit.is_some()
                     || self.resources_zoom.is_some()
+                    || self.subtab_concurrency_edit.is_some()
                 {
                     return TuiAction::None;
                 }
@@ -7770,6 +7882,10 @@ impl TuiState {
         // The enlarged Resources overlay is modal over every hot zone.
         if self.resources_zoom.is_some() {
             return self.resources_zoom_key(key);
+        }
+        // The inline layer-2 concurrency number editor is modal (ZS1-174).
+        if self.subtab_concurrency_edit.is_some() {
+            return self.subtab_concurrency_edit_key(key);
         }
         self.touch_editor_draft();
         self.project_checkpoint_dirty = true;
@@ -9718,14 +9834,31 @@ impl TuiState {
                 entries.push((index, vec![(label, 0), (" [-]".to_owned(), 1)]));
             }
         } else {
+            let editing = self
+                .subtab_concurrency_edit
+                .as_ref()
+                .map(|edit| (edit.index, edit.text.clone()));
             for (index, tab) in self.subtabs().into_iter().enumerate() {
+                let is_editing = editing
+                    .as_ref()
+                    .is_some_and(|(edit_index, _)| *edit_index == index);
+                let number = match &editing {
+                    Some((edit_index, text)) if *edit_index == index => {
+                        if text.is_empty() {
+                            "_".to_owned()
+                        } else {
+                            text.clone()
+                        }
+                    }
+                    _ => tab.concurrency.to_string(),
+                };
                 entries.push((
                     index,
                     vec![
                         (tab.name.clone(), 0),
                         (" [\u{2191}]".to_owned(), 2),
-                        (format!(" {} ", tab.concurrency), 4),
-                        (" [\u{2193}]".to_owned(), 3),
+                        (format!("{:^3}", number), if is_editing { 5 } else { 4 }),
+                        ("[\u{2193}]".to_owned(), 3),
                         (" [-]".to_owned(), 1),
                     ],
                 ));
@@ -9769,6 +9902,8 @@ impl TuiState {
                     Color::Red
                 } else if *kind == 2 || *kind == 3 {
                     Color::Yellow
+                } else if *kind == 5 {
+                    Color::LightGreen
                 } else if *kind == 4 {
                     Color::White
                 } else if layer1 {
@@ -9845,6 +9980,9 @@ impl TuiState {
                     3 => self
                         .subtab_hits
                         .push((rect, SubTabHit::ConcurrencyDown(index))),
+                    4 | 5 => self
+                        .subtab_hits
+                        .push((rect, SubTabHit::ConcurrencyValue(index))),
                     _ => self.subtab_hits.push((rect, SubTabHit::Select(index))),
                 }
             }
@@ -10377,8 +10515,6 @@ impl TuiState {
         if let Some(zoom) = self.resources_zoom.as_mut() {
             zoom.workers = workers;
             zoom.selected = 0;
-            zoom.expanded.clear();
-            zoom.scroll = 0;
         }
         self.dirty = true;
     }
@@ -10422,87 +10558,85 @@ impl TuiState {
         rows
     }
 
+    /// (columns, rows, cell) chosen by the last observation render.
+    pub fn resources_zoom_grid_shape(&self) -> Option<(usize, usize, usize)> {
+        self.resources_zoom
+            .as_ref()
+            .and_then(|zoom| zoom.grid_shape)
+    }
+
+    /// True when every rendered worker tile is square and belongs to a worker.
+    pub fn resources_zoom_tiles_square(&self) -> bool {
+        self.resources_zoom.as_ref().is_some_and(|zoom| {
+            !zoom.tile_rects.is_empty()
+                && zoom.tile_rects.len() == zoom.workers.len()
+                && zoom.tile_rects.iter().all(|rect| rect.width == rect.height)
+        })
+    }
+
     fn resources_zoom_key(&mut self, key: KeyEvent) -> TuiAction {
-        match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => self.close_resources_zoom(),
-            KeyCode::Char('r') if key.modifiers.is_empty() => self.refresh_resources_zoom(),
-            KeyCode::Up => {
-                if let Some(zoom) = self.resources_zoom.as_mut() {
-                    zoom.selected = zoom.selected.saturating_sub(1);
-                }
-                self.dirty = true;
-            }
-            KeyCode::Down => {
-                if let Some(zoom) = self.resources_zoom.as_mut() {
-                    let max = zoom.workers.len().saturating_sub(1);
-                    zoom.selected = (zoom.selected + 1).min(max);
-                }
-                self.dirty = true;
-            }
-            KeyCode::Enter | KeyCode::Char(' ') => {
-                if let Some(zoom) = self.resources_zoom.as_mut()
-                    && zoom.workers.get(zoom.selected).is_some()
-                    && !zoom.expanded.remove(&zoom.selected)
-                {
-                    zoom.expanded.insert(zoom.selected);
-                }
-                self.dirty = true;
-            }
-            KeyCode::PageDown => {
-                if let Some(zoom) = self.resources_zoom.as_mut() {
-                    zoom.scroll = zoom.scroll.saturating_add(10);
-                }
-                self.dirty = true;
-            }
-            KeyCode::PageUp => {
-                if let Some(zoom) = self.resources_zoom.as_mut() {
-                    zoom.scroll = zoom.scroll.saturating_sub(10);
-                }
-                self.dirty = true;
-            }
-            KeyCode::Home => {
-                if let Some(zoom) = self.resources_zoom.as_mut() {
-                    zoom.scroll = 0;
-                }
-                self.dirty = true;
-            }
-            KeyCode::End => {
-                if let Some(zoom) = self.resources_zoom.as_mut() {
-                    zoom.scroll = u16::MAX;
-                }
-                self.dirty = true;
-            }
-            _ => {}
+        if key.modifiers.is_empty() && key.code == KeyCode::Char('r') {
+            self.refresh_resources_zoom();
+            return TuiAction::Redraw;
         }
+        let mut close = false;
+        if let Some(zoom) = self.resources_zoom.as_mut() {
+            let count = zoom.workers.len();
+            let columns = zoom.grid_shape.map(|shape| shape.0).unwrap_or(1).max(1);
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => close = true,
+                KeyCode::Left => zoom.selected = zoom.selected.saturating_sub(1),
+                KeyCode::Right if count > 0 => {
+                    zoom.selected = (zoom.selected + 1).min(count - 1);
+                }
+                KeyCode::Up => zoom.selected = zoom.selected.saturating_sub(columns),
+                KeyCode::Down if count > 0 => {
+                    zoom.selected = (zoom.selected + columns).min(count - 1);
+                }
+                KeyCode::Home => zoom.selected = 0,
+                KeyCode::End if count > 0 => zoom.selected = count - 1,
+                KeyCode::Enter | KeyCode::Char(' ') => {
+                    zoom.detail_expanded = !zoom.detail_expanded;
+                }
+                _ => {}
+            }
+        }
+        if close {
+            self.resources_zoom = None;
+        }
+        self.dirty = true;
         TuiAction::Redraw
     }
 
-    fn resources_zoom_mouse(&mut self, mouse: MouseEvent) -> TuiAction {
+    fn resources_zoom_mouse(&mut self, mouse: MouseEvent, double_click: bool) -> TuiAction {
         let Some(zoom) = self.resources_zoom.as_mut() else {
             return TuiAction::None;
         };
-        let area = zoom.area;
+        let columns = zoom.grid_shape.map(|shape| shape.0).unwrap_or(1).max(1);
+        let mut close = false;
         match mouse.kind {
-            MouseEventKind::ScrollUp => zoom.scroll = zoom.scroll.saturating_sub(3),
-            MouseEventKind::ScrollDown => zoom.scroll = zoom.scroll.saturating_add(3),
+            MouseEventKind::ScrollUp => {
+                zoom.selected = zoom.selected.saturating_sub(columns);
+            }
+            MouseEventKind::ScrollDown if !zoom.workers.is_empty() => {
+                zoom.selected = (zoom.selected + columns).min(zoom.workers.len() - 1);
+            }
             MouseEventKind::Down(MouseButton::Left) => {
-                // Clicking a worker row selects and expands it.
-                if area.width > 0
-                    && mouse.column > area.x
-                    && mouse.column < area.right().saturating_sub(1)
-                    && mouse.row > area.y
-                    && mouse.row < area.bottom().saturating_sub(1)
-                    && let Some(row) = zoom.row_lines.iter().position(|line| {
-                        *line == usize::from(mouse.row - area.y - 1) + usize::from(zoom.scroll)
-                    })
+                if double_click {
+                    // The second double-click returns to the ordinary pane.
+                    close = true;
+                } else if let Some(index) = zoom
+                    .tile_rects
+                    .iter()
+                    .position(|rect| rect.contains(Position::new(mouse.column, mouse.row)))
                 {
-                    zoom.selected = row;
-                    if !zoom.expanded.remove(&row) {
-                        zoom.expanded.insert(row);
-                    }
+                    zoom.selected = index;
                 }
             }
             _ => {}
+        }
+        if close {
+            self.resources_zoom = None;
         }
         self.dirty = true;
         TuiAction::Redraw
@@ -10513,10 +10647,10 @@ impl TuiState {
             return;
         }
         let screen = frame.area();
-        if screen.width < 24 || screen.height < 6 {
+        if screen.width < 24 || screen.height < 8 {
             return;
         }
-        let resources_content = self.resource_pane_content();
+        let summary = self.resource_zoom_summary();
         let project = self.active_project().to_owned();
         let Some(zoom) = self.resources_zoom.as_mut() else {
             return;
@@ -10531,82 +10665,206 @@ impl TuiState {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Cyan))
-            .title(" Resources · zoom · ↑↓ worker · Enter 展开 i/o · r 刷新 · Esc 关闭 ");
+            .title(" Resources \u{b7} headless \u{89c2}\u{5bdf}\u{6a21}\u{5f0f} \u{b7} \u{2190}\u{2191}\u{2193}\u{2192} \u{9009}\u{62e9} \u{b7} Enter \u{8be6}\u{60c5} \u{b7} r \u{5237}\u{65b0} \u{b7} \u{53cc}\u{51fb}/Esc \u{8fd4}\u{56de} ");
         let inner = block.inner(area);
-        let width = usize::from(inner.width).max(1);
-        let mut lines: Vec<String> = resources_content.lines().map(str::to_owned).collect();
-        lines.push(String::new());
-        lines.push(format!(
-            "Headless workers · {project} · {} 个（当前项目）",
-            zoom.workers.len()
-        ));
-        if zoom.workers.is_empty() {
-            lines.push("  (没有带 --session 的本地 headless worker)".into());
+        frame.render_widget(Clear, area);
+        frame.render_widget(block, area);
+        if inner.width == 0 || inner.height == 0 {
+            return;
         }
-        let mut row_lines = Vec::with_capacity(zoom.workers.len());
-        let mut selected_line = None;
-        for (index, worker) in zoom.workers.iter().enumerate() {
-            row_lines.push(lines.len());
-            if index == zoom.selected {
-                selected_line = Some(lines.len());
+        frame.render_widget(
+            Paragraph::new(truncate_cells(&summary, usize::from(inner.width)))
+                .style(Style::default().fg(Color::DarkGray)),
+            Rect::new(inner.x, inner.y, inner.width, 1),
+        );
+        let body = Rect {
+            x: inner.x,
+            y: inner.y.saturating_add(1),
+            width: inner.width,
+            height: inner.height.saturating_sub(1),
+        };
+        let worker_count = zoom.workers.len();
+        let detail_height = if worker_count == 0 {
+            0
+        } else if zoom.detail_expanded {
+            7
+        } else {
+            4
+        }
+        .min(body.height.saturating_sub(3));
+        let grid = Rect {
+            x: body.x,
+            y: body.y,
+            width: body.width,
+            height: body.height.saturating_sub(detail_height),
+        };
+        let detail = Rect {
+            x: body.x,
+            y: body.y.saturating_add(grid.height),
+            width: body.width,
+            height: detail_height,
+        };
+        zoom.tile_rects.clear();
+        zoom.grid_shape = None;
+        if worker_count == 0 {
+            frame.render_widget(
+                Paragraph::new(format!(
+                    "\u{5f53}\u{524d}\u{9879}\u{76ee}\u{6ca1}\u{6709}\u{5e26} --session \u{7684}\u{672c}\u{5730} headless worker\u{ff08}project {project}\u{ff09}"
+                )),
+                grid,
+            );
+        } else if grid.width >= 3 && grid.height >= 3 {
+            let columns = grid_columns(
+                worker_count,
+                usize::from(grid.width),
+                usize::from(grid.height),
+            );
+            let rows = worker_count.div_ceil(columns);
+            let cell = (usize::from(grid.width) / columns)
+                .min(usize::from(grid.height) / rows)
+                .max(3);
+            zoom.grid_shape = Some((columns, rows, cell));
+            let used_width = columns * cell;
+            let used_height = rows * cell;
+            let x0 = grid
+                .x
+                .saturating_add(((usize::from(grid.width).saturating_sub(used_width)) / 2) as u16);
+            let y0 = grid.y.saturating_add(
+                ((usize::from(grid.height).saturating_sub(used_height)) / 2) as u16,
+            );
+            for (index, worker) in zoom.workers.iter().enumerate() {
+                let column = index % columns;
+                let row = index / columns;
+                let rect = Rect::new(
+                    x0.saturating_add((column * cell) as u16),
+                    y0.saturating_add((row * cell) as u16),
+                    cell as u16,
+                    cell as u16,
+                );
+                zoom.tile_rects.push(rect);
+                let tile = Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(if index == zoom.selected {
+                        Color::Cyan
+                    } else {
+                        Color::DarkGray
+                    }))
+                    .title(format!(" {} ", worker.pid));
+                let tile_inner = tile.inner(rect);
+                frame.render_widget(tile, rect);
+                if tile_inner.width == 0 || tile_inner.height == 0 {
+                    continue;
+                }
+                let text_width = usize::from(tile_inner.width);
+                let session_name = std::path::Path::new(&worker.session)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or(worker.session.as_str());
+                let mut lines = vec![
+                    truncate_cells(worker.phase.label(), text_width),
+                    truncate_cells(&format!("cpu {:.1}%", worker.cpu_percent), text_width),
+                    truncate_cells(
+                        &format!("rss {}", format_byte_count(worker.resident_bytes)),
+                        text_width,
+                    ),
+                    truncate_cells(session_name, text_width),
+                    truncate_cells(
+                        &format!(
+                            "i {}",
+                            worker
+                                .input
+                                .as_deref()
+                                .map(|text| inline_token(text, text_width.saturating_sub(2)))
+                                .unwrap_or_else(|| "\u{2014}".to_owned())
+                        ),
+                        text_width,
+                    ),
+                ];
+                if usize::from(tile_inner.height) >= 7
+                    && let Some(output) = worker.output.as_deref()
+                {
+                    lines.push(truncate_cells(
+                        &format!("o {}", inline_token(output, text_width.saturating_sub(2))),
+                        text_width,
+                    ));
+                }
+                let visible: Vec<Line<'_>> = lines
+                    .into_iter()
+                    .take(usize::from(tile_inner.height))
+                    .map(Line::from)
+                    .collect();
+                frame.render_widget(Paragraph::new(Text::from(visible)), tile_inner);
             }
-            let marker = if index == zoom.selected { '▶' } else { ' ' };
-            let chevron = if zoom.expanded.contains(&index) {
-                '▾'
-            } else {
-                '▸'
-            };
-            let session_width = width.saturating_sub(52).max(12);
-            lines.push(format!(
-                "{marker}{chevron} pid {}  {:<8} cpu {:>5.1}%  rss {:<10} · {}",
-                worker.pid,
-                worker.phase.label(),
-                worker.cpu_percent,
-                format_byte_count(worker.resident_bytes),
-                truncate_cells(&worker.session, session_width),
-            ));
-            if !zoom.expanded.contains(&index) {
-                continue;
-            }
+        }
+        if worker_count > 0 && detail.height >= 2 {
+            let worker = &zoom.workers[zoom.selected.min(worker_count - 1)];
+            let mut lines: Vec<Line<'_>> = vec![Line::from(Span::styled(
+                format!(
+                    " pid {} \u{b7} {} \u{b7} cpu {:.1}% \u{b7} rss {} \u{b7} {}",
+                    worker.pid,
+                    worker.phase.label(),
+                    worker.cpu_percent,
+                    format_byte_count(worker.resident_bytes),
+                    truncate_cells(&worker.session, 80),
+                ),
+                Style::default().fg(Color::Cyan),
+            ))];
+            let width = usize::from(detail.width).saturating_sub(4).max(8);
+            let budget = (usize::from(detail.height).saturating_sub(1) / 2).max(1);
             for (label, value) in [
                 ("i", worker.input.as_deref()),
                 ("o", worker.output.as_deref()),
             ] {
                 match value {
                     Some(text) if !text.trim().is_empty() => {
-                        let wrapped = wrap_plain(text, width.saturating_sub(8).max(8));
-                        for (line_index, line) in wrapped.iter().enumerate() {
-                            if line_index >= 8 {
-                                lines.push(format!("     {label} …"));
+                        let wrapped = wrap_plain(text, width);
+                        for (index, line) in wrapped.iter().enumerate() {
+                            if index >= budget {
+                                lines.push(Line::from(format!(" {label} \u{2026}")));
                                 break;
                             }
-                            lines.push(format!("     {label} {line}"));
+                            lines.push(Line::from(format!(" {label} {line}")));
                         }
                     }
-                    _ => lines.push(format!("     {label} (no recorded turn)")),
+                    _ => lines.push(Line::from(format!(" {label} (no recorded turn)"))),
                 }
             }
+            frame.render_widget(Clear, detail);
+            frame.render_widget(
+                Paragraph::new(Text::from(lines)).block(
+                    Block::default()
+                        .borders(Borders::TOP)
+                        .border_style(Style::default().fg(Color::DarkGray)),
+                ),
+                detail,
+            );
         }
-        zoom.row_lines = row_lines;
-        let height = usize::from(inner.height).max(1);
-        let max_scroll = lines.len().saturating_sub(height);
-        let mut scroll = usize::from(zoom.scroll).min(max_scroll);
-        if let Some(selected_line) = selected_line {
-            if selected_line < scroll {
-                scroll = selected_line;
-            } else if selected_line >= scroll.saturating_add(height) {
-                scroll = selected_line.saturating_add(1).saturating_sub(height);
-            }
-        }
-        zoom.scroll = scroll.min(u16::MAX as usize) as u16;
-        let text: Vec<Line<'_>> = lines.into_iter().map(Line::from).collect();
-        frame.render_widget(Clear, area);
-        frame.render_widget(
-            Paragraph::new(Text::from(text))
-                .block(block)
-                .scroll((zoom.scroll, 0)),
-            area,
-        );
+    }
+
+    /// One bounded host/worker summary line for the observation header.
+    fn resource_zoom_summary(&self) -> String {
+        let Some(snapshot) = self.resource_snapshot.as_ref() else {
+            return "Resources \u{b7} waiting for snapshot".to_owned();
+        };
+        format!(
+            "Resources \u{b7} project {} \u{b7} headless {} \u{b7} load {} \u{b7} mem {} \u{b7} workers {}",
+            self.active_project(),
+            snapshot.headless.total,
+            snapshot
+                .cpu
+                .load_one_minute
+                .map(|load| format!("{load:.2}"))
+                .unwrap_or_else(|| "n/a".into()),
+            snapshot
+                .memory
+                .available_bytes
+                .map(format_byte_count)
+                .unwrap_or_else(|| "n/a".into()),
+            self.resources_zoom
+                .as_ref()
+                .map(|zoom| zoom.workers.len())
+                .unwrap_or(0),
+        )
     }
 
     fn resource_pane_content(&self) -> String {
@@ -18463,6 +18721,38 @@ fn read_worker_stdio(path: &str) -> (Option<String>, Option<String>) {
         }
     }
     (input, output)
+}
+
+/// Choose the power-of-two column count for the worker grid (ZS1-175). Cells
+/// stay square (cell size is the smaller of width/columns and height/rows); the
+/// winner maximizes the filled area and then the column/row ratio closest to
+/// the viewport aspect ratio.
+pub fn grid_columns(workers: usize, width: usize, height: usize) -> usize {
+    if workers == 0 || width == 0 || height == 0 {
+        return 1;
+    }
+    let area_ratio = width as f64 / height as f64;
+    let max_columns = workers.next_power_of_two().min(256);
+    let mut best_columns = 1usize;
+    let mut best_fill = 0usize;
+    let mut best_ratio = f64::MAX;
+    let mut columns = 1usize;
+    while columns <= max_columns {
+        let rows = workers.div_ceil(columns);
+        let cell = (width / columns).min(height / rows);
+        if cell >= 3 {
+            let fill = cell * cell * columns * rows;
+            let ratio = columns as f64 / rows as f64;
+            let difference = (ratio - area_ratio).abs();
+            if fill > best_fill || (fill == best_fill && difference < best_ratio) {
+                best_fill = fill;
+                best_ratio = difference;
+                best_columns = columns;
+            }
+        }
+        columns *= 2;
+    }
+    best_columns
 }
 
 fn wrap_plain(text: &str, width: usize) -> Vec<String> {

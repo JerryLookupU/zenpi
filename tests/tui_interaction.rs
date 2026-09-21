@@ -1161,3 +1161,216 @@ fn resources_zoom_skips_workers_from_other_projects() {
     assert!(state.resources_zoom_worker_stdio(1).is_some());
     assert!(state.resources_zoom_worker_stdio(2).is_none());
 }
+
+fn screen_rows(terminal: &Terminal<TestBackend>) -> Vec<String> {
+    let buffer = terminal.backend().buffer();
+    let width = usize::from(buffer.area.width);
+    let mut rows = vec![String::new()];
+    for (index, cell) in buffer.content().iter().enumerate() {
+        if index > 0 && index % width == 0 {
+            rows.push(String::new());
+        }
+        rows.last_mut().unwrap().push_str(cell.symbol());
+    }
+    rows
+}
+
+#[test]
+fn subtab_concurrency_number_is_centered_and_double_click_edits_it() {
+    let mut state = TuiState::default();
+    let mut terminal = Terminal::new(TestBackend::new(160, 40)).unwrap();
+    terminal
+        .draw(|f| state.render_bentobox(f, "zenpi"))
+        .unwrap();
+    let rows = screen_rows(&terminal);
+    let row = rows
+        .iter()
+        .position(|line| line.contains("[↑]"))
+        .expect("the layer-2 concurrency control is rendered");
+    assert!(
+        rows[row].contains("[↑] 1 [↓]"),
+        "the concurrency number is centered between the arrows: {:?}",
+        rows[row]
+    );
+
+    // Double-clicking the number cell opens the inline editor. Column math is
+    // in buffer cells, not UTF-8 bytes.
+    let cells: Vec<char> = rows[row].chars().collect();
+    let arrow = cells
+        .windows(3)
+        .position(|window| window == ['[', '↑', ']'])
+        .expect("the up arrow is rendered");
+    let point = ((arrow + 4) as u16, row as u16);
+    let _ = state.handle_mouse(mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        point.0,
+        point.1,
+    ));
+    assert!(!state.subtab_concurrency_edit_active());
+    let _ = state.handle_mouse(mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        point.0,
+        point.1,
+    ));
+    assert!(
+        state.subtab_concurrency_edit_active(),
+        "the second press on the number cell opens the inline editor"
+    );
+
+    // Clear the prefilled value, type a new one and commit with Enter.
+    let _ = state.handle_key(key(KeyCode::Backspace));
+    let _ = state.handle_key(key(KeyCode::Char('1')));
+    let _ = state.handle_key(key(KeyCode::Char('2')));
+    let _ = state.handle_key(key(KeyCode::Enter));
+    assert!(!state.subtab_concurrency_edit_active());
+    assert_eq!(state.subtabs()[0].concurrency, 12);
+
+    // Esc cancels without changing the value.
+    assert!(state.begin_subtab_concurrency_edit(0));
+    let _ = state.handle_key(key(KeyCode::Backspace));
+    let _ = state.handle_key(key(KeyCode::Backspace));
+    let _ = state.handle_key(key(KeyCode::Char('7')));
+    let _ = state.handle_key(key(KeyCode::Esc));
+    assert_eq!(state.subtabs()[0].concurrency, 12);
+
+    // Committed values share the arrow clamp.
+    assert!(state.set_subtab_concurrency(0, 999));
+    assert_eq!(state.subtabs()[0].concurrency, 64);
+    assert!(state.set_subtab_concurrency(0, 0));
+    assert_eq!(state.subtabs()[0].concurrency, 1);
+}
+
+fn observation_state(dir: &tempfile::TempDir, count: usize) -> TuiState {
+    use zenpi::resources::{
+        FootprintPhase, HeadlessFootprintBudget, HeadlessFootprintSummary,
+        HeadlessFootprintVerdict, HeadlessProcessFootprint, ResourceCollector, SignalStatus,
+    };
+
+    let journal = dir.path().join("worker.jsonl");
+    std::fs::write(
+        &journal,
+        "{\"kind\":\"turn\",\"turn\":{\"id\":\"t1\",\"role\":\"user\",\"content\":\"build it\",\"created_at_ms\":1}}\n\
+         {\"kind\":\"turn\",\"turn\":{\"id\":\"t2\",\"role\":\"assistant\",\"content\":\"done\",\"created_at_ms\":2}}\n",
+    )
+    .unwrap();
+    let mut state = TuiState::default();
+    let mut snapshot = ResourceCollector::new(dir.path())
+        .unwrap()
+        .collect()
+        .unwrap();
+    let rows = (0..count)
+        .map(|index| HeadlessProcessFootprint {
+            pid: 4000 + index as u32,
+            phase: FootprintPhase::Busy,
+            cpu_percent: 12.5,
+            resident_bytes: 4096,
+            status: SignalStatus::Available,
+            verdict: HeadlessFootprintVerdict::Within,
+            session: Some(journal.display().to_string()),
+        })
+        .collect::<Vec<_>>();
+    snapshot.headless =
+        HeadlessFootprintSummary::from_processes(HeadlessFootprintBudget::default(), rows);
+    state.set_resource_snapshot(snapshot);
+    state.set_project_metadata(
+        "default",
+        zenpi::tui::ProjectTabMetadata {
+            cwd: dir.path().display().to_string(),
+            session_path: Some(journal.display().to_string()),
+            ..Default::default()
+        },
+    );
+    state
+}
+
+#[test]
+fn resources_grid_columns_are_power_of_two_and_fill_the_viewport() {
+    for (workers, width, height) in [
+        (1usize, 100usize, 40usize),
+        (5, 100, 40),
+        (8, 160, 40),
+        (13, 120, 60),
+        (64, 200, 60),
+    ] {
+        let columns = zenpi::tui::grid_columns(workers, width, height);
+        assert!(
+            columns.is_power_of_two(),
+            "{workers} workers in {width}x{height}: columns {columns} must be a power of two"
+        );
+        let rows = workers.div_ceil(columns);
+        let cell = (width / columns).min(height / rows);
+        assert!(cell >= 3);
+        let fill = cell * cell * columns * rows;
+        let mut other = 1usize;
+        while other <= workers.next_power_of_two().min(256) {
+            let other_rows = workers.div_ceil(other);
+            let other_cell = (width / other).min(height / other_rows);
+            if other_cell >= 3 {
+                assert!(
+                    fill >= other_cell * other_cell * other * other_rows,
+                    "{workers} workers in {width}x{height}: {columns} columns must not be beaten by {other}"
+                );
+            }
+            other *= 2;
+        }
+    }
+    assert_eq!(zenpi::tui::grid_columns(5, 100, 40), 4);
+    assert_eq!(zenpi::tui::grid_columns(1, 100, 40), 1);
+}
+
+#[test]
+fn resources_observation_mode_toggles_and_renders_square_tiles() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = observation_state(&dir, 5);
+    let mut terminal = Terminal::new(TestBackend::new(160, 40)).unwrap();
+    terminal
+        .draw(|f| state.render_bentobox(f, "zenpi"))
+        .unwrap();
+    assert!(state.focus_workspace_pane(PaneId::Resources));
+    let adapter = BentoBoxLayoutAdapter::new(state.workspace_layout(), state.workspace_area());
+    let rect = adapter.pane(PaneId::Resources).unwrap().rect;
+    let point = (rect.x + 2, rect.y + 2);
+    let _ = state.handle_mouse(mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        point.0,
+        point.1,
+    ));
+    let _ = state.handle_mouse(mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        point.0,
+        point.1,
+    ));
+    assert!(
+        state.resources_zoom_open(),
+        "double-click opens observation mode"
+    );
+    assert_eq!(state.resources_zoom_worker_count(), 5);
+    terminal
+        .draw(|f| state.render_bentobox(f, "zenpi"))
+        .unwrap();
+    let (columns, rows, _cell) = state.resources_zoom_grid_shape().expect("grid rendered");
+    assert!(
+        columns.is_power_of_two(),
+        "columns {columns} must be a power of two"
+    );
+    assert_eq!(rows, 5usize.div_ceil(columns));
+    assert!(state.resources_zoom_tiles_square(), "tiles must be square");
+
+    // A second double-click on the same overlay cell returns to the pane.
+    let area = state.workspace_area();
+    let inside = (area.x + 4, area.y + 3);
+    let _ = state.handle_mouse(mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        inside.0,
+        inside.1,
+    ));
+    let _ = state.handle_mouse(mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        inside.0,
+        inside.1,
+    ));
+    assert!(
+        !state.resources_zoom_open(),
+        "double-click returns from observation mode"
+    );
+}
