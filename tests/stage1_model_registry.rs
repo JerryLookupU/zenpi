@@ -499,6 +499,34 @@ fn chat_stream_tolerates_empty_tool_name_continuation_chunks() {
     handle.join().unwrap();
 }
 
+#[test]
+fn openai_wires_send_output_limit_only_when_explicit() {
+    for (responses, field) in [
+        (true, "max_output_tokens"),
+        (false, "max_completion_tokens"),
+    ] {
+        let wire = if responses {
+            OpenAiWireApi::Responses
+        } else {
+            OpenAiWireApi::ChatCompletions
+        };
+        let (url, requests, server) = server(2, responses);
+        let backend = strict(&url, "gpt-4.1", wire, &[]);
+        let turns = [Turn::new("t", TurnRole::User, "question")];
+        backend
+            .complete(CompletionRequest::new("t", &turns, None, &[]))
+            .unwrap();
+        let sent = requests.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(sent.get(field).is_none(), "field must be omitted: {sent}");
+        backend
+            .complete(CompletionRequest::new("t", &turns, None, &[]).with_max_output_tokens(1024))
+            .unwrap();
+        let sent = requests.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(sent[field], 1024);
+        server.join().unwrap();
+    }
+}
+
 struct Cli {
     child: Child,
     input: ChildStdin,
@@ -604,7 +632,10 @@ fn actual_headless_unknown_is_open_and_models_query_is_local() {
             .as_array()
             .is_some_and(|tools| !tools.is_empty())
     );
-    assert_eq!(sent["max_completion_tokens"], 4096);
+    assert!(
+        sent.get("max_completion_tokens").is_none(),
+        "no explicit output limit configured: {sent}"
+    );
     server.join().unwrap();
 }
 

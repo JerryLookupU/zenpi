@@ -1738,6 +1738,26 @@ impl Agent {
             )
     }
 
+    /// The wire-level output limit is sent only when the user explicitly set
+    /// the model's `max_output_tokens` through `model_overrides`; builtin and
+    /// conservative registry defaults clamp local budgets but must not force
+    /// the field onto OpenAI-wire upstreams that reject it. The returned value
+    /// is the local budget reservation clamped to the overridden model limit.
+    fn explicit_output_limit(&self, reserved_output_tokens: u64) -> Option<u64> {
+        let descriptor = self
+            .backend
+            .model_descriptor(self.model.as_deref())
+            .ok()
+            .flatten()?;
+        if !matches!(
+            descriptor.sources.get("max_output_tokens"),
+            Some(crate::providers::registry::FieldSource::UserOverride { .. })
+        ) {
+            return None;
+        }
+        Some(reserved_output_tokens.min(descriptor.max_output_tokens))
+    }
+
     /// Monetary caps use the same durable budget owner as request/token limits.
     pub fn set_summary_cost_limit(
         &mut self,
@@ -1927,8 +1947,11 @@ impl Agent {
         let request =
             CompletionRequest::new(&operation_id, &request_turns, self.model.as_deref(), &[])
                 .with_instructions(Some(crate::context::SUMMARY_INSTRUCTIONS))
-                .with_metadata(Some(&metadata))
-                .with_max_output_tokens(output_limit);
+                .with_metadata(Some(&metadata));
+        let request = match self.explicit_output_limit(output_limit) {
+            Some(limit) => request.with_max_output_tokens(limit),
+            None => request,
+        };
         let pump =
             crate::input_queue::InputPump::new(&mut self.session, self.input_port.clone(), &scope);
         let mut streamed_bytes = 0usize;
@@ -3804,8 +3827,11 @@ impl Agent {
                 &definitions,
             )
             .with_instructions((!instructions.is_empty()).then_some(instructions.as_str()))
-            .with_attachments(&self.active_attachments)
-            .with_max_output_tokens(turn_budget.reserved_output_tokens);
+            .with_attachments(&self.active_attachments);
+            let request = match self.explicit_output_limit(turn_budget.reserved_output_tokens) {
+                Some(limit) => request.with_max_output_tokens(limit),
+                None => request,
+            };
             let pump = crate::input_queue::InputPump::new(
                 &mut self.session,
                 self.input_port.clone(),
