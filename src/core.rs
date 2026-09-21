@@ -317,6 +317,11 @@ pub enum AgentEvent {
     Error {
         message: String,
     },
+    /// Non-terminal notice (e.g. transcript repair); never rendered as a
+    /// failed turn.
+    Warning {
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -562,9 +567,19 @@ impl Agent {
     pub fn acknowledge_recovery(
         &mut self,
     ) -> Result<Vec<crate::session::InterruptedOperation>, AgentError> {
-        self.session
+        let interrupted = self
+            .session
             .mark_interrupted_operations()
-            .map_err(AgentError::from)
+            .map_err(AgentError::from)?;
+        let repaired = self.repair_transcript_gaps()?;
+        if repaired > 0 {
+            self.events.push(AgentEvent::Warning {
+                message: format!(
+                    "repaired {repaired} interrupted tool call(s) with synthetic results; side effects unknown, /recovery inspect for details"
+                ),
+            });
+        }
+        Ok(interrupted)
     }
 
     /// Shared headless/TUI contract. Busy hosts submit bounded tickets; idle
@@ -829,14 +844,12 @@ impl Agent {
         }
         let queue = crate::input_queue::InputQueue::recover(&self.session, Default::default())
             .map_err(|e| AgentError::InvalidTurn(e.to_string()))?;
-        if queue.has_pending()
-            || !self.unknown_tool_outcomes().is_empty()
-            || !self.operation_recovery().is_empty()
-            || !self.pending_attachments.is_empty()
-        {
+        // Unsettled operations stay journaled and fork validation already
+        // refuses to inherit their results; navigation itself is the escape
+        // hatch and is not fenced. Pending input and attachments still block.
+        if queue.has_pending() || !self.pending_attachments.is_empty() {
             return Err(AgentError::InvalidTurn(
-                "tree navigation requires settled operations and no pending input or attachments"
-                    .into(),
+                "tree navigation requires no pending input or attachments".into(),
             ));
         }
         match request.tree {
@@ -1609,6 +1622,143 @@ impl Agent {
         self.session.operation_recovery()
     }
 
+    /// Leftover operations with unknown outcomes veto automation paths
+    /// (automatic compaction and any future replay). Operations belonging to
+    /// the currently executing turn are in flight, not leftover, and never
+    /// veto the turn they belong to. User input is never vetoed; this gate
+    /// exists only for paths that act without an explicit user decision.
+    pub fn automation_vetoed(&self) -> Option<String> {
+        let tools = self.unknown_tool_outcomes();
+        if let Some(first) = tools.first() {
+            return Some(format!(
+                "{} tool call(s) with unknown outcomes (first: {})",
+                tools.len(),
+                first.operation_id
+            ));
+        }
+        let current = self.active_turn_id.as_deref();
+        let leftover: Vec<_> = self
+            .operation_recovery()
+            .into_iter()
+            .filter(|op| current != Some(op.turn_id.as_str()))
+            .collect();
+        (!leftover.is_empty()).then(|| {
+            format!(
+                "{} operation(s) pending recovery (first: {})",
+                leftover.len(),
+                leftover[0].operation_id
+            )
+        })
+    }
+
+    /// Append truthful synthetic results for provider tool calls whose result
+    /// was never persisted, so the journaled transcript is well-formed for the
+    /// next provider request. Pairing is computed from the branch history
+    /// itself, which also covers calls persisted without a dispatch marker
+    /// (crash between assistant persistence and marker write). Recovery
+    /// adjudication is unchanged: dispatch markers keep their outcome and
+    /// automation stays vetoed until an explicit recovery decision.
+    /// Idempotent; returns the number of synthesized results.
+    pub fn repair_transcript_gaps(&mut self) -> Result<usize, AgentError> {
+        let mut expected: BTreeMap<(String, String), String> = BTreeMap::new();
+        let mut results: BTreeSet<(String, String)> = BTreeSet::new();
+        for turn in self.session.turns() {
+            let metadata = turn.metadata.as_ref();
+            match turn.role {
+                TurnRole::Assistant => {
+                    if let Some(calls) = metadata
+                        .and_then(|m| m.get("tool_calls"))
+                        .and_then(Value::as_array)
+                    {
+                        for call in calls {
+                            let (Some(id), Some(name)) = (
+                                call.get("id").and_then(Value::as_str),
+                                call.get("name").and_then(Value::as_str),
+                            ) else {
+                                continue;
+                            };
+                            let parent = turn.parent_id.clone().unwrap_or_else(|| turn.id.clone());
+                            expected.insert((parent, id.to_owned()), name.to_owned());
+                        }
+                    }
+                }
+                TurnRole::Tool | TurnRole::User => {
+                    if let Some(id) = metadata
+                        .and_then(|m| m.get("tool_call_id"))
+                        .and_then(Value::as_str)
+                        && let Some(parent) = turn.parent_id.as_ref()
+                    {
+                        results.insert((parent.clone(), id.to_owned()));
+                    }
+                }
+                _ => {}
+            }
+        }
+        let pending: BTreeMap<(String, String), UnknownToolOutcome> = self
+            .unknown_tool_outcomes()
+            .into_iter()
+            .map(|outcome| ((outcome.turn_id.clone(), outcome.call_id.clone()), outcome))
+            .collect();
+        let mut repaired = 0usize;
+        for ((turn_id, call_id), tool) in expected {
+            if results.contains(&(turn_id.clone(), call_id.clone())) {
+                continue;
+            }
+            let pending_outcome = pending.get(&(turn_id.clone(), call_id.clone()));
+            let user_shell = pending_outcome.is_some_and(|o| o.tool == "user_shell");
+            let (message, outcome) = if pending_outcome.is_some() {
+                (
+                    "interrupted before a durable result; side effects unknown",
+                    "unknown_outcome",
+                )
+            } else {
+                // No dispatch marker exists, and the marker precedes every
+                // handler, so this call provably never ran.
+                ("never dispatched; no side effects", "cancelled")
+            };
+            let invocation = tool_failure(
+                &crate::tools::ToolCall {
+                    id: call_id.clone(),
+                    name: tool.clone(),
+                    arguments: serde_json::json!({}),
+                },
+                crate::tools::ToolErrorCode::Internal,
+                message,
+                ToolInvocationOutcome::Failed,
+            );
+            let mut turn = Turn::with_parent(
+                next_id("tool"),
+                &turn_id,
+                if user_shell {
+                    TurnRole::User
+                } else {
+                    TurnRole::Tool
+                },
+                serde_json::to_string(&invocation.result)
+                    .map_err(|error| AgentError::Recovery(error.to_string()))?,
+            );
+            turn.metadata = Some(serde_json::json!({
+                "operation_id": pending_outcome.map(|o| o.operation_id.clone()),
+                "tool_call_id": call_id,
+                "tool_name": tool,
+                "outcome": outcome,
+                "synthetic": true,
+                "origin": if user_shell { "user_shell" } else { "agent_tool" },
+            }));
+            self.session.append_turn(turn)?;
+            self.session.append_event(serde_json::json!({
+                "type": "tool_transcript_repaired",
+                "operation_id": pending_outcome.map(|o| o.operation_id.clone()),
+                "turn_id": turn_id,
+                "call_id": call_id,
+                "tool": tool,
+                "execution": if pending_outcome.is_some() { "started" } else { "not_started" },
+            }))?;
+            repaired += 1;
+        }
+        Ok(repaired)
+    }
+
     /// Record an explicit retry/abandon decision for a generic operation.
     /// Retry means that a host may submit a *new* attempt; it is not an
     /// instruction to execute the old side effect again.
@@ -1827,6 +1977,18 @@ impl Agent {
                 checkpoint: None,
                 estimate,
             });
+        }
+        // Compaction rewrites history over a possibly broken tail. Leftover
+        // unknown outcomes veto it; the turn must fail explicitly here rather
+        // than send an over-budget request.
+        if let Some(reason) = self.automation_vetoed() {
+            self.session.append_event(serde_json::json!({
+                "type": "automation_vetoed", "automation": "semantic_compaction",
+                "reason": reason, "turn_id": self.active_turn_id,
+            }))?;
+            return Err(AgentError::Recovery(format!(
+                "compaction vetoed: {reason}; resolve with /recovery inspect"
+            )));
         }
         let source = self.selected_history()?;
         let branch_id = self.session.selected_tree_branch();
@@ -2664,11 +2826,12 @@ impl Agent {
                 "help": "!<command> runs a local shell command after host approval; !echo hi",
             }));
         }
-        if !self.unknown_tool_outcomes().is_empty() || !self.operation_recovery().is_empty() {
-            return Err(AgentError::Recovery(
-                "unknown_outcome requires explicit retry or abandon before a user shell command"
-                    .into(),
-            ));
+        if let Some(reason) = self.automation_vetoed() {
+            self.events.push(AgentEvent::Warning {
+                message: format!(
+                    "{reason}; automation is suspended, /recovery inspect for details"
+                ),
+            });
         }
         let runtime = self.tools.as_mut().ok_or_else(|| {
             AgentError::InvalidTurn(
@@ -2929,11 +3092,13 @@ impl Agent {
             return Err(AgentError::Closed);
         }
         if self.phase == AgentPhase::Idle
-            && (!self.unknown_tool_outcomes().is_empty() || !self.operation_recovery().is_empty())
+            && let Some(reason) = self.automation_vetoed()
         {
-            return Err(AgentError::Recovery(
-                "unknown_outcome requires explicit retry or abandon before a new turn".into(),
-            ));
+            self.events.push(AgentEvent::Warning {
+                message: format!(
+                    "{reason}; automation is suspended, /recovery inspect for details"
+                ),
+            });
         }
         if request.message.trim().is_empty() {
             let submission = TurnSubmission::NotSubmitted {
@@ -5301,6 +5466,14 @@ impl Agent {
         // into the first request on the replacement session.
         self.events.clear();
         self.governance = replacement_governance;
+        let repaired = self.repair_transcript_gaps()?;
+        if repaired > 0 {
+            self.events.push(AgentEvent::Warning {
+                message: format!(
+                    "repaired {repaired} interrupted tool call(s) with synthetic results; side effects unknown, /recovery inspect for details"
+                ),
+            });
+        }
         if let Some(candidate) = replacement_extensions {
             self.publish_extensions(candidate, "resume");
         }

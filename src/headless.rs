@@ -9163,6 +9163,13 @@ fn agent_event_block(event: &AgentEvent) -> Option<serde_json::Value> {
             message: message.clone(),
             retryable: false,
         },
+        // ViewBlock has no warning variant; the code distinguishes severity
+        // for JSONL consumers.
+        AgentEvent::Warning { message } => crate::view_model::ViewBlock::Error {
+            code: Some("agent_warning".into()),
+            message: message.clone(),
+            retryable: false,
+        },
         _ => return None,
     };
     serde_json::to_value(block.redacted()).ok()
