@@ -1458,7 +1458,7 @@ fn leftover_unknown_outcome_vetoes_automatic_compaction_with_journal_evidence() 
         reserved_output_tokens: 8,
     });
     let error = agent
-        .process(TurnInputRequest::new(&"over budget input ".repeat(2000)))
+        .process(TurnInputRequest::new("over budget input ".repeat(2000)))
         .unwrap_err();
     assert!(
         error.to_string().contains("compaction vetoed"),

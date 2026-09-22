@@ -21355,7 +21355,7 @@ mod local_diff_host_tests {
         });
         assert_eq!(before, vec!["default".to_owned(), "other".to_owned()]);
         assert_eq!(state.project_tabs(), &["default".to_owned()]);
-        assert!(!state.project_metadata("other").is_some());
+        assert!(state.project_metadata("other").is_none());
     }
     #[test]
     fn ctrl_w_requests_project_close_only_for_an_empty_prompt() {

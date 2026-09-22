@@ -1801,6 +1801,16 @@ pub struct AuthAddReport {
     pub binding_error: Option<String>,
 }
 
+/// The profile a newly added API key is bound to.  Grouped so the call sites
+/// name what each optional value is for instead of trailing positional `None`s.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ApiKeyProfile<'a> {
+    pub alias: Option<&'a str>,
+    pub model: Option<&'a str>,
+    pub wire: Option<&'a str>,
+    pub auth_header: Option<&'a str>,
+}
+
 /// Add a provider API key.
 ///
 /// The key is passed in already read from standard input; this function never
@@ -1811,12 +1821,15 @@ pub fn add_auth_apikey(
     paths: &ConfigPaths,
     base_url: &str,
     provider: &str,
-    wire: Option<&str>,
-    auth_header: Option<&str>,
     key: String,
-    alias: Option<&str>,
-    model: Option<&str>,
+    profile: ApiKeyProfile<'_>,
 ) -> Result<AuthAddReport, ConfigError> {
+    let ApiKeyProfile {
+        alias,
+        model,
+        wire,
+        auth_header,
+    } = profile;
     validate_api_key(&key)?;
     let destinations = api_key_destinations(provider, Some(base_url), wire, auth_header)
         .map_err(config_backend_error)?;
@@ -2570,7 +2583,7 @@ fn update_auth_legacy(
         };
         Ok(outcome)
     })?;
-    Ok(outcome?)
+    outcome
 }
 
 /// Whole-file legacy write.  The reserved namespace is stripped from the

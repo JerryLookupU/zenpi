@@ -788,10 +788,8 @@ impl PrivateCredential {
                 validate_text(field, MAX_METADATA_BYTES)?;
             }
         }
-        for field in [&self.account_id, &self.user_id] {
-            if let Some(value) = field {
-                validate_text(value, MAX_METADATA_BYTES)?;
-            }
+        for value in [&self.account_id, &self.user_id].into_iter().flatten() {
+            validate_text(value, MAX_METADATA_BYTES)?;
         }
         if self.revision == 0 || self.definition_version == 0 {
             return Err(StoreError::InvalidData("invalid revision"));

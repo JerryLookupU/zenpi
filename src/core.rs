@@ -326,7 +326,7 @@ impl SelectionSnapshotV1 {
     pub const VERSION: u32 = 1;
 
     fn event(&self) -> Value {
-        let mut event = serde_json::to_value(self).unwrap_or_else(|_| Value::Null);
+        let mut event = serde_json::to_value(self).unwrap_or(Value::Null);
         event["type"] = Value::String("model_selected".into());
         event
     }
@@ -400,10 +400,12 @@ impl ConnectionRejectCode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConnectionSelectionOutcome {
-    /// The event is durable and the swap has happened.
+    /// The event is durable and the swap has happened.  The snapshot is boxed
+    /// because it is far larger than a rejection, and this value is returned
+    /// once per selection rather than stored.
     Applied {
         selection_revision: u64,
-        snapshot: SelectionSnapshotV1,
+        snapshot: Box<SelectionSnapshotV1>,
     },
     Rejected {
         code: ConnectionRejectCode,
@@ -1517,7 +1519,7 @@ impl Agent {
             .commit_reasoning_effort(snapshot.reasoning_effort.clone());
         Ok(ConnectionSelectionOutcome::Applied {
             selection_revision,
-            snapshot,
+            snapshot: Box::new(snapshot),
         })
     }
 
@@ -7499,11 +7501,13 @@ pub fn run() -> Result<(), ZenpiError> {
                     &paths,
                     &base_url,
                     &provider,
-                    options.wire_api.as_deref(),
-                    options.auth_header.as_deref(),
                     key,
-                    options.alias.as_deref(),
-                    options.model.as_deref(),
+                    crate::config::ApiKeyProfile {
+                        alias: options.alias.as_deref(),
+                        model: options.model.as_deref(),
+                        wire: options.wire_api.as_deref(),
+                        auth_header: options.auth_header.as_deref(),
+                    },
                 )?;
                 print_auth_add_report(&report, options.json)?;
                 if let Some(error) = &report.binding_error {
