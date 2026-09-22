@@ -306,6 +306,29 @@ $Z config add auth apikey https://api.deepseek.com/anthropic/v1 deepseek \
 3. **真实刷新与 401 恢复**：需要真实 token 过期。
 4. **真实跨账号/跨 profile 的 file ID 拒绝**：本地测试用手工构造的 scope，不是两套真实凭据。
 
+### 已完成的 live 收据（API key 路径）
+
+2026-09-22，用户授权使用其 DeepSeek API key，在本分支的 release binary 上完成了一次真实调用：
+
+```text
+运行日期：2026-09-22
+zenpi 版本/commit：0.1.0 @ 06b44b2（本 PR）
+构建方式：cargo build --release
+provider / 模型：deepseek / deepseek-flash
+wire：chat_completions（base_url 由定义文件固定为 https://api.deepseek.com）
+账号类型与地域：用户自有 DeepSeek API key
+隔离方式：临时 ZENPI_HOME + 临时 CODEX_HOME；key 只经 stdin 传入，未进 argv、未回显
+命令（不含 key）：
+  config add auth apikey https://api.deepseek.com deepseek --stdin --model deepseek-flash
+  config use deepseek
+  config doctor --profile deepseek --json      -> auth_binding_state=ready, exit 0
+  --mode headless 单条 prompt「Reply with exactly one word: ok」
+观察结果：prompt 响应 success=true code=ok；19 条事件；模型文本恰为 "ok"
+```
+
+这证明的是**这条链路**：凭据存储 → 路由解析 → Authorization 头注入 → 真实 HTTPS 调用 → SSE 解析。
+它**不**证明：OAuth（Codex）登录、刷新/401 恢复、真实工具续接与多模态。
+
 真实调试时的建议（用户侧填写，便于回溯）：
 
 ```text

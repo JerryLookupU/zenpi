@@ -554,3 +554,21 @@ release binary 实跑确认：空装 → 引导菜单（`q` 退出码 0）；已
 **PA10 未完成的部分**（不声称可用）：运行中会话的 `/auth`、`/login`、`/profile` slash 入口；
 由受控后台任务驱动的会话内登录与取消回收 listener；引导界面是终端提示，不是蓝图要求的 TUI 私有界面。
 `tui_interaction` 的 51 条既有用例证明本次改动没有破坏既有 TUI 行为，但不证明上述未实现的部分。
+
+### 6.13 首次 live 收据：DeepSeek API key 真实调用
+
+2026-09-22，用户明确授权后，用其 DeepSeek API key 在本分支 release binary 上完成一次真实调用
+（此前所有验证都只用合成数据）。隔离在临时 `ZENPI_HOME`/`CODEX_HOME`，key 仅经 stdin 传入。
+
+结果：`config doctor` 报 `ready` 且 exit 0；一条 headless prompt 返回 `success=true code=ok`、
+19 条事件、模型文本恰为 `ok`。链路（凭据存储 → 路由解析 → header 注入 → 真实 HTTPS → SSE 解析）因此
+从"本地 fixture 通过"升级为"真实服务验证过"。
+
+**仍未验证**：OAuth（Codex）真实登录与刷新、401 恢复、真实工具续接与多模态、Linux/Windows。
+
+同时记录一个与本次实现无关但影响 PR 状态的事实：**`main` 的 CI 在本轮开始前就是红的**。
+`a274e5a` 那次运行的 "Format, lint, test, and contract checks" 与
+"Stage 1 production host smoke and bounds" 两个 job 均失败，失败原因与本次 PR 相同
+（clippy `-D warnings` 撞上未接宿主的 dead code；smoke 的 `shared-projects` 用例失败）。
+本 PR 未使该状态变差，也未修复它——修复前者要么补完 PA10/PA12，要么加 `allow(dead_code)`
+（实施记录明确禁止用 allow 掩盖）。
