@@ -1,7 +1,7 @@
 //! Shared provider wire encoding and bounded response decoding.
 pub(crate) mod anthropic;
 pub(crate) mod chat;
-mod content;
+pub(crate) mod content;
 pub(crate) mod google;
 mod responses;
 

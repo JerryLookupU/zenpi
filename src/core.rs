@@ -29,6 +29,7 @@ use crate::{
     },
     error::ZenpiError,
     protocol::{MAX_ID_BYTES, MAX_TEXT_BYTES, TurnMode},
+    protocols::content,
     session::{SessionError, SessionStore, SessionSummary},
     tools::{SideEffectPolicy, ToolContext, ToolError, ToolRegistry},
 };
@@ -3833,6 +3834,12 @@ impl Agent {
                 "attachments": attachment_journal_metadata(&materialized),
             }));
         }
+        // Ordered content is the protocol authority for what this turn holds;
+        // the attachment list above stays for readers that predate the field.
+        if let Some(content) = self.turn_content_metadata(&turn, &materialized)? {
+            turn.metadata.get_or_insert_with(|| serde_json::json!({}))
+                [content::STORED_CONTENT_FIELD] = content;
+        }
         if let Some(provenance) = provenance {
             turn.metadata.get_or_insert_with(|| serde_json::json!({}))["resource"] = provenance;
         }
@@ -3906,6 +3913,10 @@ impl Agent {
             turn.metadata = Some(serde_json::json!({
                 "attachments": attachment_journal_metadata(&materialized),
             }));
+        }
+        if let Some(content) = self.turn_content_metadata(&turn, &materialized)? {
+            turn.metadata.get_or_insert_with(|| serde_json::json!({}))
+                [content::STORED_CONTENT_FIELD] = content;
         }
         if let Some(provenance) = provenance {
             turn.metadata.get_or_insert_with(|| serde_json::json!({}))["resource"] = provenance;
@@ -3991,6 +4002,16 @@ impl Agent {
                 "attachments".into(),
                 serde_json::json!(attachment_journal_metadata(&materialized)),
             );
+        }
+        let stored = match self.turn_content_metadata(&turn, &materialized) {
+            Ok(stored) => stored,
+            Err(error) => {
+                self.pending_attachments = staged;
+                return Err(error.into());
+            }
+        };
+        if let Some(content) = stored {
+            metadata.insert(content::STORED_CONTENT_FIELD.into(), content);
         }
         if let Some(provenance) = provenance {
             metadata.insert("resource".into(), provenance);
@@ -4088,6 +4109,73 @@ impl Agent {
             });
         }
         Ok(materialized)
+    }
+
+    /// The identity a provider file reference is bound to: provider, credential
+    /// and route scope. A backend without an explicit connection still has a
+    /// stable binding of its own, so its files are scoped rather than unbound,
+    /// and a user cannot self-certify a scope through input.
+    fn media_scope(&self) -> Result<content::MediaScope, BackendError> {
+        let connection = self.backend.connection_snapshot(self.model.as_deref())?;
+        let identity_scope = match &connection {
+            Some(snapshot) if !snapshot.identity_scope.is_empty() => {
+                snapshot.identity_scope.clone()
+            }
+            _ => {
+                self.backend
+                    .request_binding(self.model.as_deref())?
+                    .identity_scope
+            }
+        };
+        Ok(content::MediaScope {
+            provider: connection
+                .as_ref()
+                .map(|snapshot| snapshot.provider.clone())
+                .filter(|provider| !provider.is_empty())
+                .unwrap_or_else(|| self.backend.name().to_owned()),
+            credential_id: connection
+                .as_ref()
+                .and_then(|snapshot| snapshot.credential_ref.clone())
+                .unwrap_or_default(),
+            identity_scope,
+        })
+    }
+
+    /// The ordered content recorded for one user turn: the turn text, then the
+    /// attachments in exactly the order they were admitted. Only references and
+    /// verified hashes are recorded; bytes, tokens and signed URLs never are.
+    fn turn_content_metadata(
+        &self,
+        turn: &Turn,
+        attachments: &[crate::backend::RequestAttachment],
+    ) -> Result<Option<Value>, BackendError> {
+        content::stored_content_metadata(&turn.content, attachments, &self.media_scope()?)
+    }
+
+    /// Ordered content is authority, so a session is only adopted while every
+    /// turn that records it still validates and still belongs to this
+    /// connection. A turn written before the field existed records nothing and
+    /// keeps its legacy text-only behaviour.
+    fn validate_stored_turn_content(&self, turns: &[Turn]) -> Result<(), AgentError> {
+        let mut recorded = Vec::new();
+        for turn in turns {
+            let Some(metadata) = turn.metadata.as_ref() else {
+                continue;
+            };
+            if let Some(stored) = content::parse_stored_content(metadata)? {
+                recorded.push(stored);
+            }
+        }
+        if recorded.is_empty() {
+            // Nothing here asserts ordered content, so no connection state is
+            // consulted and a legacy journal resumes exactly as it always did.
+            return Ok(());
+        }
+        let current = self.media_scope()?;
+        for stored in &recorded {
+            content::validate_stored_content_scope(stored, &current)?;
+        }
+        Ok(())
     }
 
     /// Run the currently admitted turn and append the normalized assistant
@@ -5566,7 +5654,9 @@ impl Agent {
                 .expect("one result per call"),
         );
         invocation.output_capture = output_capture;
-        if let crate::tools::ToolResult::Success { output, .. } = &invocation.result
+        if let crate::tools::ToolResult::Success {
+            output, content, ..
+        } = &invocation.result
             && let Some(extensions) = self
                 .extensions
                 .as_ref()
@@ -5574,10 +5664,13 @@ impl Agent {
         {
             match extensions.after_tool(call, output, is_cancelled) {
                 Ok(output) => {
+                    // The hook rewrites the compatibility record; typed content
+                    // is still the authority and is carried over unchanged.
                     let result = crate::tools::ToolResult::Success {
                         call_id: call.id.clone(),
                         tool: call.name.clone(),
                         output,
+                        content: content.clone(),
                     };
                     match crate::tools::compact_tool_result(&runtime.context, result) {
                         Ok(result) => invocation.result = result,
@@ -5627,10 +5720,13 @@ impl Agent {
         // Compaction errors from a registry must not replace the provider's
         // stable call identity with the artifact writer's identity.
         let result = match result {
-            crate::tools::ToolResult::Success { output, .. } => crate::tools::ToolResult::Success {
+            crate::tools::ToolResult::Success {
+                output, content, ..
+            } => crate::tools::ToolResult::Success {
                 call_id: call.id.clone(),
                 tool: call.name.clone(),
                 output,
+                content,
             },
             crate::tools::ToolResult::Error { error, .. } => crate::tools::ToolResult::Error {
                 call_id: call.id.clone(),
@@ -6052,6 +6148,10 @@ impl Agent {
             .transpose()?;
         let replacement_model = self.selected_model_for_session(&replacement)?;
         self.require_same_connection(&replacement_model.connection)?;
+        // Ordered content is protocol authority, so a loaded journal is only
+        // adopted while every recorded version, reference and media scope still
+        // validates against this connection.
+        self.validate_stored_turn_content(replacement.turns())?;
         let replacement_extensions = self
             .extensions
             .as_ref()

@@ -110,7 +110,7 @@ API key 解析优先级仍为显式 override > ZENPI_API_KEY > OPENAI_API_KEY > 
 | PA09 | PA02/PA06/PA08 | Core/session 原子连接选择、owner/queue 栅栏、scope、选择事件恢复 | C15 / A18/A19 | `Agent::select_connection` 已落地：owner/phase/队列/附件/审批/worker/未决 operation 栅栏 → revision 复核 → 候选校验 → 单条 durable 事件 → infallible swap；拒绝不改运行状态。恢复拒绝把保存的选择套到另一个 profile/credential 上。**TUI/headless 的宿主接线分属 PA10/PA11** | verified |
 | PA10 | PA07/PA09 | TUI bootstrap/auth 任务/菜单；复用宿主状态机，迟到 callback/取消 | C15 / A17 | 缺凭据在 TUI 前失败；`tui/bootstrap.rs`、`/auth`、`/login`、`/profile` 均未实现 | pending |
 | PA11 | PA09 | protocol/headless v2 connection 控制/capability/回执/replay；无秘密 JSONL | C15 / A18/A19 | `connection_v1`/`ordered_content_v1` 已在 status 声明；`type:"connection"` 的 select/status 严格校验、data/error 互斥、request ID 幂等复用既有 replay cache；**ordered_content_v1 的行为面仍待 PA12** | verified |
-| PA12 | PA01/PA02/PA09/PA11 | 有序内容 DTO、ToolResult、Core 物化、协议映射、journal/compact/resume | C10/C15 / A14/A15/A19 | 当前附件不等于跨 turn 恢复；工具 Value 会文本化；`zenpi_content_v1`/`InputContentPart`/typed ToolResult 尚未实现 | pending |
+| PA12 | PA01/PA02/PA09/PA11 | 有序内容 DTO、ToolResult、Core 物化、协议映射、journal/compact/resume | C10/C15 / A14/A15/A19 | **部分完成**：`zenpi_content_v1` 有序 DTO、`InputContentPart` 公共输入、逐 turn 有序快照落盘、采纳时的跨账号/限额/版本校验、`ToolResult::Success` 可选 typed content 均已落地并测试。**协议编码侧未接线**：编码器仍只发 `turn.content`，typed content 不会到达模型；headless `prompt.content` 的 v2 有序输入入口也未实现 | implementing |
 | PA13 | PA07-PA12 | 路径链路调试文档、命令再核查、用户真实调试与版本收据 | P6 / A20 | 只在实际命令落地后成文，不给未实现命令标可用 | pending |
 
 PA01 可先完成 native 提取再迁 Chat/Responses；PA02 可先完成定义/路由再接 config。阶段性证据分行记录，不提前将整行标 verified。
