@@ -3061,13 +3061,26 @@ impl TuiState {
         let opened = self.select_project_tab(insert_at);
         // A freshly opened project starts on the conversation prompt so the
         // operator can type immediately; only an explicit action enters the
-        // no-hot-zone state (ZS1-177).
-        if opened && self.workspace_layout.focused.is_none() {
+        // no-hot-zone state (ZS1-177). Restoring a saved layout is not that
+        // action, but it is also not this path: see the select handler.
+        if opened {
+            self.ensure_conversation_hot_zone();
+        }
+        opened
+    }
+
+    /// Put the operator back on a pane that accepts input when the active
+    /// layout has none.
+    ///
+    /// An unfocused layout is a state a deliberate action produces; restoring
+    /// one from persistence or from another project is not that action, and
+    /// leaving it in place silently swallows every ordinary keystroke.
+    pub(crate) fn ensure_conversation_hot_zone(&mut self) {
+        if self.workspace_layout.focused.is_none() {
             let pane = conversation_pane_for_tab(self.workspace_layout.tab);
             self.workspace_layout.focused = Some(pane);
             self.dirty = true;
         }
-        opened
     }
 
     pub fn select_project_tab(&mut self, index: usize) -> bool {
@@ -14009,6 +14022,12 @@ impl ProjectRuntimeHost {
         }
         if let Some(index) = state.project_index(&id) {
             state.select_project_tab(index);
+            // A user action moved the operator to another project, so the
+            // conversation prompt must accept input: an unfocused saved layout
+            // would otherwise swallow every ordinary keystroke (ZS1-177).
+            if matches!(intent, ProjectIntent::Select(_) | ProjectIntent::Open(_)) {
+                state.ensure_conversation_hot_zone();
+            }
         } else {
             state.open_project_tab(id.clone());
         }
@@ -16299,6 +16318,12 @@ pub fn run_async_with_profile(
             format!("Shared project workspace could not be restored: {error}"),
         );
     }
+    // The app has to open able to accept input: a persisted layout with no
+    // focused pane would silently drop every ordinary keystroke, and a
+    // restored layout is not the explicit action that state is reserved for
+    // (ZS1-177).  Applied here rather than in `restore_workspace_layouts`, so
+    // that restoring stays a faithful data round-trip.
+    state.ensure_conversation_hot_zone();
     shared = project_host.active(&state);
     if let Ok(agent) = shared.lock() {
         gantt_tracker.switch_session(agent.session().path().to_path_buf());
