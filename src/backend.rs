@@ -346,6 +346,25 @@ pub struct BackendRequestBinding {
     pub identity_scope: String,
 }
 
+/// Non-secret description of the connection a backend was built for.
+///
+/// A selection event has to describe what was selected without carrying a
+/// token or a credential, so this is the only form of "which account" that may
+/// reach the journal.  `credential_ref` is an identifier, never material.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConnectionSnapshot {
+    pub profile: String,
+    pub provider: String,
+    pub protocol: String,
+    pub auth_kind: String,
+    pub credential_ref: Option<String>,
+    pub identity_scope: String,
+    pub route_digest: String,
+    pub definition_version: u32,
+    pub config_revision: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequestScope {
     pub owner_id: String,
@@ -476,6 +495,13 @@ impl BackendError {
         match self {
             Self::Configuration(_) => "backend_configuration",
             Self::Transport(_) => "backend_transport",
+            // Refine the statuses a host must act on differently.  A 401 is
+            // the credential being refused, a 403 is the account not being
+            // allowed to do this, and a 429 is a quota the operator can wait
+            // out; lumping them under one code hides which remedy applies.
+            Self::HttpStatus { status: 401, .. } => "auth_login_required",
+            Self::HttpStatus { status: 403, .. } => "provider_permission_denied",
+            Self::HttpStatus { status: 429, .. } => "provider_usage_limit",
             Self::HttpStatus { .. } => "backend_http_status",
             Self::CircuitOpen { .. } => "backend_circuit_open",
             Self::InvalidResponse(_) => "backend_invalid_response",
@@ -529,6 +555,18 @@ pub trait Backend: Send + Sync {
             model: completion.model.clone(),
         })?;
         Ok(completion)
+    }
+
+    /// The connection this backend serves, when it is bound to an explicit one.
+    ///
+    /// `None` means the backend is not connection bound (a legacy or test
+    /// backend), which is what a selection event records as "no explicit
+    /// connection" rather than inventing one.
+    fn connection_snapshot(
+        &self,
+        _model: Option<&str>,
+    ) -> Result<Option<ConnectionSnapshot>, BackendError> {
+        Ok(None)
     }
 
     fn request_binding(&self, model: Option<&str>) -> Result<BackendRequestBinding, BackendError> {
@@ -903,6 +941,42 @@ impl OpenAiCompatibleBackend {
         });
         backend.validate_model(None)?;
         Ok(backend)
+    }
+
+    fn connection_snapshot(
+        &self,
+        model: Option<&str>,
+    ) -> Result<Option<ConnectionSnapshot>, BackendError> {
+        let Some(state) = &self.explicit else {
+            return Ok(None);
+        };
+        // The route digest and identity scope are per model, so a snapshot
+        // without a model describes the connection but not a route.
+        let model = model.unwrap_or(self.model.as_str());
+        let route = self.explicit_route(model)?;
+        let (auth_kind, credential_ref) = match &state.connection.auth {
+            AuthBinding::LegacyApiKey => ("legacy_api_key", None),
+            AuthBinding::StoredApiKey { credential_id } => ("api_key", Some(credential_id.clone())),
+            AuthBinding::CodexOAuth { credential_id } => ("oauth", Some(credential_id.clone())),
+            AuthBinding::Anonymous => ("anonymous", None),
+        };
+        Ok(Some(ConnectionSnapshot {
+            profile: state.connection.profile.clone(),
+            provider: state.connection.provider.clone(),
+            protocol: state.connection.protocol.as_str().to_owned(),
+            auth_kind: auth_kind.to_owned(),
+            credential_ref,
+            identity_scope: route
+                .as_ref()
+                .map(|route| route.identity_scope().to_owned())
+                .unwrap_or_default(),
+            route_digest: route
+                .as_ref()
+                .map(|route| route.route_digest().to_owned())
+                .unwrap_or_default(),
+            definition_version: route.as_ref().map_or(0, |route| route.definition_version()),
+            config_revision: state.connection.config_revision,
+        }))
     }
 
     fn explicit_route(&self, model: &str) -> Result<Option<ValidatedRoute>, BackendError> {

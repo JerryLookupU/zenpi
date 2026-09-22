@@ -279,6 +279,137 @@ pub enum AgentPhase {
     Closed,
 }
 
+/// A complete, versioned connection selection.
+///
+/// This extends the existing `model_selected` event instead of adding a second
+/// one that could half commit: a reader that does not know the new fields still
+/// sees the model, descriptor, digest and reasoning effort it always did, and
+/// keeps its old behaviour.  Nothing here is secret — `credential_ref` is an
+/// identifier, and the route/identity fields are digests.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SelectionSnapshotV1 {
+    pub selection_version: u32,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub descriptor: Option<Value>,
+    #[serde(default)]
+    pub digest: Option<String>,
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
+    // Everything below was added after the first `model_selected` events were
+    // written, so every field defaults.  An event from an older writer stays
+    // readable and simply looks like a selection with no explicit connection.
+    #[serde(default)]
+    pub profile: String,
+    #[serde(default)]
+    pub provider: String,
+    #[serde(default)]
+    pub protocol: String,
+    #[serde(default)]
+    pub auth_kind: String,
+    #[serde(default)]
+    pub credential_ref: Option<String>,
+    #[serde(default)]
+    pub identity_scope: String,
+    #[serde(default)]
+    pub route_digest: String,
+    #[serde(default)]
+    pub definition_version: u32,
+    #[serde(default)]
+    pub config_revision: u64,
+}
+
+impl SelectionSnapshotV1 {
+    pub const VERSION: u32 = 1;
+
+    fn event(&self) -> Value {
+        let mut event = serde_json::to_value(self).unwrap_or_else(|_| Value::Null);
+        event["type"] = Value::String("model_selected".into());
+        event
+    }
+}
+
+/// The model, reasoning effort, and connection a session last chose.
+struct SavedSelection {
+    model: Option<String>,
+    effort: Option<String>,
+    connection: Option<SelectionSnapshotV1>,
+}
+
+/// A candidate connection prepared by the host.
+///
+/// The host owns turning configuration into a backend, because it already does
+/// that at startup and the core deliberately knows nothing about where
+/// configuration lives.  The core owns the fences, the durable event, and the
+/// swap.
+pub struct ConnectionSelection {
+    /// The owner this selection applies to.  It must be the agent's own owner;
+    /// a selection never reaches another owner or another project.
+    pub owner_id: String,
+    pub profile: String,
+    pub model: Option<String>,
+    /// `None` skips the revision check; a host that is applying a queued
+    /// command passes the revision it planned against.
+    pub expected_selection_revision: Option<u64>,
+    pub backend: Box<dyn Backend>,
+}
+
+impl std::fmt::Debug for ConnectionSelection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ConnectionSelection")
+            .field("owner_id", &self.owner_id)
+            .field("profile", &self.profile)
+            .field("model", &self.model)
+            .field(
+                "expected_selection_revision",
+                &self.expected_selection_revision,
+            )
+            .finish_non_exhaustive()
+    }
+}
+
+/// Why a selection was refused.  A refusal always leaves the running
+/// connection, model, journal and UI exactly as they were.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectionRejectCode {
+    /// The request named a different owner than this agent serves.
+    OwnerMismatch,
+    /// The owner is running, or has queued work that has not taken the lock.
+    ConnectionBusy,
+    /// The selection revision moved since the caller planned against it.
+    ConnectionStale,
+    /// The requested connection or model cannot serve this session.
+    ConnectionInvalid,
+}
+
+impl ConnectionRejectCode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::OwnerMismatch => "connection_owner_mismatch",
+            Self::ConnectionBusy => "connection_busy",
+            Self::ConnectionStale => "connection_stale",
+            Self::ConnectionInvalid => "connection_invalid",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConnectionSelectionOutcome {
+    /// The event is durable and the swap has happened.
+    Applied {
+        selection_revision: u64,
+        snapshot: SelectionSnapshotV1,
+    },
+    Rejected {
+        code: ConnectionRejectCode,
+        detail: String,
+    },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentEvent {
@@ -1140,6 +1271,17 @@ impl Agent {
         self.session.turns()
     }
 
+    /// The owner identity every request scope and every connection selection
+    /// is checked against.
+    pub fn request_owner_id(&self) -> &str {
+        &self.request_owner_id
+    }
+
+    /// The active model identity, or `None` for the provider default.
+    pub fn model(&self) -> Option<&str> {
+        self.model.as_deref()
+    }
+
     pub fn phase(&self) -> AgentPhase {
         self.phase
     }
@@ -1161,14 +1303,249 @@ impl Agent {
         let descriptor = self.backend.model_descriptor(model.as_deref())?;
         let selected = model.or_else(|| self.backend.model().map(str::to_owned));
         if let Some(descriptor) = &descriptor {
-            self.session.append_event(serde_json::json!({
-                "type": "model_selected", "model": selected,
-                "descriptor": descriptor, "digest": descriptor.digest(),
-                "reasoning_effort": self.backend.reasoning_effort(),
-            }))?;
+            let snapshot = Self::selection_snapshot_for(
+                self.backend.as_ref(),
+                &self.profile_hint(),
+                selected.clone(),
+                self.backend.reasoning_effort().map(str::to_owned),
+                Some(descriptor),
+            )?;
+            self.session.append_event(snapshot.event())?;
         }
         self.model = selected;
         Ok(())
+    }
+
+    /// The profile this agent is currently connected to, when it has one.
+    /// Recorded in the selection event so a reader can tell a same-profile
+    /// model change from a connection change.
+    fn profile_hint(&self) -> String {
+        self.backend
+            .connection_snapshot(self.model.as_deref())
+            .ok()
+            .flatten()
+            .map_or_else(String::new, |snapshot| snapshot.profile)
+    }
+
+    /// Sequence of the last durable selection event, or 0 when this session has
+    /// never selected a connection.
+    ///
+    /// This is the session's own selection revision.  It is not the
+    /// configuration revision and not a credential revision: an OAuth refresh
+    /// advances the credential without moving a selection, and editing the
+    /// configuration does not either.
+    pub fn selection_revision(&self) -> u64 {
+        self.session
+            .records()
+            .iter()
+            .rev()
+            .find(|record| {
+                record.kind == "event" && record.value["event"]["type"] == "model_selected"
+            })
+            .map_or(0, |record| record.sequence)
+    }
+
+    /// Everything that must be settled before the running connection may
+    /// change.
+    ///
+    /// `phase == Idle` is not enough on its own: the host can hold queued input
+    /// that has not taken the lock, staged or active attachments, an approval
+    /// the user is looking at, an admitted worker operation, or an operation
+    /// whose journal outcome is still unknown.  Swapping the account under any
+    /// of those would change the backend out from under work that is already
+    /// accounted for.
+    fn connection_change_fence(&self) -> Result<(), String> {
+        if !self.pending_attachments.is_empty() {
+            return Err("staged attachments must be sent or cleared first".into());
+        }
+        if !self.active_attachments.is_empty() {
+            return Err("a turn with attachments is still in flight".into());
+        }
+        if let Some(tools) = &self.tools
+            && tools.approval.has_pending()
+        {
+            return Err("an approval is still awaiting a decision".into());
+        }
+        if self.worker_admission_operation.is_some() {
+            return Err("an admitted worker operation has not settled".into());
+        }
+        if !self.session.operation_recovery().is_empty() {
+            return Err(
+                "an operation outcome is unknown; resolve it before changing the connection".into(),
+            );
+        }
+        let queue = crate::input_queue::InputQueue::recover(&self.session, Default::default())
+            .map_err(|error| error.to_string())?;
+        if queue.has_pending() {
+            return Err("queued input is still pending".into());
+        }
+        // A submitted ticket has not taken the owner lock yet, so `Idle` alone
+        // does not mean nothing is scheduled against the running connection.
+        if self.input_port.has_pending() {
+            return Err("host input is queued but not yet serviced".into());
+        }
+        Ok(())
+    }
+
+    /// Atomically replace the connection, model, and reasoning effort.
+    ///
+    /// The order is the contract: every fence and validation runs first, then
+    /// one durable selection event is appended, and only then is the swap done.
+    /// After the event is durable nothing below it can fail, so a reader that
+    /// recovers from the journal and one that stayed in memory agree.  A
+    /// rejection — including a fence rejection — leaves the running backend,
+    /// model, journal and UI exactly as they were.
+    pub fn select_connection(
+        &mut self,
+        selection: ConnectionSelection,
+    ) -> Result<ConnectionSelectionOutcome, AgentError> {
+        if self.phase == AgentPhase::Closed {
+            return Err(AgentError::Closed);
+        }
+        let reject = |code: ConnectionRejectCode, detail: &str| {
+            Ok(ConnectionSelectionOutcome::Rejected {
+                code,
+                detail: detail.to_owned(),
+            })
+        };
+        // A selection is scoped to one owner.  It is never broadcast to another
+        // owner, project, or worker.
+        if selection.owner_id != self.request_owner_id {
+            return reject(
+                ConnectionRejectCode::OwnerMismatch,
+                "the selection names a different owner",
+            );
+        }
+        if self.phase != AgentPhase::Idle {
+            return reject(
+                ConnectionRejectCode::ConnectionBusy,
+                "the owner is running a turn",
+            );
+        }
+        if let Err(detail) = self.connection_change_fence() {
+            return reject(ConnectionRejectCode::ConnectionBusy, &detail);
+        }
+        // Re-checked inside the fence: the caller planned against this revision
+        // and may have been overtaken while it prepared the candidate.
+        let current = self.selection_revision();
+        if let Some(expected) = selection.expected_selection_revision
+            && expected != current
+        {
+            return reject(
+                ConnectionRejectCode::ConnectionStale,
+                "the selection revision changed while the candidate was prepared",
+            );
+        }
+        // Prepare: validate the candidate against the session's own history
+        // before anything is written.
+        let model = selection.model.clone();
+        if let Err(error) = selection.backend.validate_model(model.as_deref()) {
+            return reject(ConnectionRejectCode::ConnectionInvalid, &error.to_string());
+        }
+        let history = self.selected_history()?;
+        if let Err(error) = selection
+            .backend
+            .validate_history_model(&history, model.as_deref())
+        {
+            return reject(ConnectionRejectCode::ConnectionInvalid, &error.to_string());
+        }
+        // A candidate that cannot describe the requested model is a rejection,
+        // not an internal error: nothing has been written yet and the running
+        // connection stays exactly as it was.
+        let descriptor = match selection.backend.model_descriptor(model.as_deref()) {
+            Ok(descriptor) => descriptor,
+            Err(error) => {
+                return reject(ConnectionRejectCode::ConnectionInvalid, &error.to_string());
+            }
+        };
+        let snapshot = Self::selection_snapshot_for(
+            selection.backend.as_ref(),
+            &selection.profile,
+            model,
+            selection.backend.reasoning_effort().map(str::to_owned),
+            descriptor.as_ref(),
+        )?;
+        // Durable first.  A failed append leaves the old connection running and
+        // the journal unchanged.
+        self.session.append_event(snapshot.event())?;
+        let selection_revision = self.selection_revision();
+        // Infallible swap: no fallible operation may sit below the event.
+        self.backend = selection.backend;
+        self.model = snapshot.model.clone();
+        self.backend
+            .commit_reasoning_effort(snapshot.reasoning_effort.clone());
+        Ok(ConnectionSelectionOutcome::Applied {
+            selection_revision,
+            snapshot,
+        })
+    }
+
+    /// Build the selection event for a backend.
+    ///
+    /// A model-only change inside a profile still writes a complete snapshot,
+    /// so a reader never has to combine two events to know what was selected.
+    fn selection_snapshot_for(
+        backend: &dyn Backend,
+        profile_hint: &str,
+        model: Option<String>,
+        effort: Option<String>,
+        descriptor: Option<&crate::providers::registry::ModelDescriptor>,
+    ) -> Result<SelectionSnapshotV1, AgentError> {
+        let connection = backend.connection_snapshot(model.as_deref())?;
+        let (
+            profile,
+            provider,
+            protocol,
+            auth_kind,
+            credential_ref,
+            identity_scope,
+            route_digest,
+            definition_version,
+            config_revision,
+        ) = match connection {
+            Some(connection) => (
+                connection.profile,
+                connection.provider,
+                connection.protocol,
+                connection.auth_kind,
+                connection.credential_ref,
+                connection.identity_scope,
+                connection.route_digest,
+                connection.definition_version,
+                connection.config_revision,
+            ),
+            // A backend that is not connection bound (legacy or a test
+            // backend) is recorded as such rather than given a invented
+            // profile.
+            None => (
+                profile_hint.to_owned(),
+                String::new(),
+                String::new(),
+                "legacy".into(),
+                None,
+                String::new(),
+                String::new(),
+                0,
+                0,
+            ),
+        };
+        Ok(SelectionSnapshotV1 {
+            selection_version: SelectionSnapshotV1::VERSION,
+            model,
+            descriptor: descriptor
+                .map(|descriptor| serde_json::to_value(descriptor).unwrap_or(Value::Null)),
+            digest: descriptor.map(|descriptor| descriptor.digest()),
+            reasoning_effort: effort,
+            profile,
+            provider,
+            protocol,
+            auth_kind,
+            credential_ref,
+            identity_scope,
+            route_digest,
+            definition_version,
+            config_revision,
+        })
     }
 
     /// None restores the provider default (omits the field); Some("none") is
@@ -1188,10 +1565,14 @@ impl Agent {
             .ok_or_else(|| {
                 AgentError::InvalidTurn("reasoning settings require a model registry".into())
             })?;
-        self.session.append_event(serde_json::json!({
-            "type":"model_selected", "model":self.model,
-            "descriptor":descriptor, "digest":descriptor.digest(), "reasoning_effort":effort,
-        }))?;
+        let snapshot = Self::selection_snapshot_for(
+            self.backend.as_ref(),
+            &self.profile_hint(),
+            self.model.clone(),
+            effort.clone(),
+            Some(&descriptor),
+        )?;
+        self.session.append_event(snapshot.event())?;
         self.backend.commit_reasoning_effort(effort);
         Ok(())
     }
@@ -1203,16 +1584,17 @@ impl Agent {
     fn selected_model_for_session(
         &self,
         session: &SessionStore,
-    ) -> Result<(Option<String>, Option<String>), AgentError> {
+    ) -> Result<SavedSelection, AgentError> {
         if self.backend.model_descriptor(None)?.is_none() {
             self.backend.validate_history_model(
                 &session.selected_tree_turns(&|| false)?,
                 self.model.as_deref(),
             )?;
-            return Ok((
-                self.model.clone(),
-                self.backend.reasoning_effort().map(str::to_owned),
-            ));
+            return Ok(SavedSelection {
+                model: self.model.clone(),
+                effort: self.backend.reasoning_effort().map(str::to_owned),
+                connection: None,
+            });
         }
         let saved = session.records().iter().rev().find_map(|record| {
             let event = record.value.get("event")?;
@@ -1223,10 +1605,11 @@ impl Agent {
                 &session.selected_tree_turns(&|| false)?,
                 self.backend.model(),
             )?;
-            return Ok((
-                self.backend.model().map(str::to_owned),
-                self.backend.reasoning_effort().map(str::to_owned),
-            ));
+            return Ok(SavedSelection {
+                model: self.backend.model().map(str::to_owned),
+                effort: self.backend.reasoning_effort().map(str::to_owned),
+                connection: None,
+            });
         };
         let selected = saved["model"]
             .as_str()
@@ -1255,13 +1638,60 @@ impl Agent {
         }
         self.backend
             .validate_history_model(&session.selected_tree_turns(&|| false)?, Some(selected))?;
-        Ok((Some(selected.into()), effort))
+        // The connection fields are advisory for an event written before they
+        // existed; `serde(default)` makes such an event parse with no claim.
+        let connection = serde_json::from_value::<SelectionSnapshotV1>(saved.clone()).ok();
+        Ok(SavedSelection {
+            model: Some(selected.into()),
+            effort,
+            connection,
+        })
     }
 
     pub fn restore_model_selection(&mut self) -> Result<(), AgentError> {
-        let (model, effort) = self.selected_model_for_session(&self.session)?;
-        self.model = model;
-        self.backend.commit_reasoning_effort(effort);
+        let saved = self.selected_model_for_session(&self.session)?;
+        self.require_same_connection(&saved.connection)?;
+        self.model = saved.model;
+        self.backend.commit_reasoning_effort(saved.effort);
+        Ok(())
+    }
+
+    /// Refuse to restore a saved model onto a connection the journal did not
+    /// record.
+    ///
+    /// This is deliberately a visible failure rather than a silent fallback to
+    /// the current default profile: restoring a model chosen for one account
+    /// onto another would send the session's history to the wrong service
+    /// without saying so.  An event written before the connection fields
+    /// existed carries no claim and is accepted.
+    fn require_same_connection(
+        &self,
+        saved: &Option<SelectionSnapshotV1>,
+    ) -> Result<(), AgentError> {
+        let Some(saved) = saved else {
+            return Ok(());
+        };
+        let current = self.backend.connection_snapshot(self.model.as_deref())?;
+        let profile = current
+            .as_ref()
+            .map_or_else(String::new, |snapshot| snapshot.profile.clone());
+        if !saved.profile.is_empty() && !profile.is_empty() && saved.profile != profile {
+            return Err(AgentError::InvalidTurn(format!(
+                "this session was selected on profile `{}` but the connection serves `{profile}`; explicitly select the connection to adopt it",
+                saved.profile
+            )));
+        }
+        let credential = current
+            .as_ref()
+            .and_then(|snapshot| snapshot.credential_ref.clone());
+        if let (Some(saved), Some(credential)) = (saved.credential_ref.as_ref(), credential)
+            && *saved != credential
+        {
+            return Err(AgentError::InvalidTurn(
+                "this session was selected on a different credential; explicitly select the connection to adopt it"
+                    .into(),
+            ));
+        }
         Ok(())
     }
 
@@ -5473,14 +5903,17 @@ impl Agent {
         )?;
         let result = (|| {
             if let Some(descriptor) = self.backend.model_descriptor(self.model.as_deref())? {
-                file.append_event(
-                    &mut replacement,
-                    serde_json::json!({
-                        "type":"model_selected", "model":self.model,
-                        "descriptor":descriptor, "digest":descriptor.digest(),
-                        "reasoning_effort":self.backend.reasoning_effort(),
-                    }),
+                // A new session inherits the connection snapshot of the owner
+                // that created it, so it does not silently follow a different
+                // default profile later.
+                let snapshot = Self::selection_snapshot_for(
+                    self.backend.as_ref(),
+                    &self.profile_hint(),
+                    self.model.clone(),
+                    self.backend.reasoning_effort().map(str::to_owned),
+                    Some(&descriptor),
                 )?;
+                file.append_event(&mut replacement, snapshot.event())?;
             }
             file.append_event(
                 &mut replacement,
@@ -5578,6 +6011,7 @@ impl Agent {
             .map(|loader| restore_resource_state(&replacement, loader.paths().clone(), &cancelled))
             .transpose()?;
         let replacement_model = self.selected_model_for_session(&replacement)?;
+        self.require_same_connection(&replacement_model.connection)?;
         let replacement_extensions = self
             .extensions
             .as_ref()
@@ -5600,8 +6034,9 @@ impl Agent {
                 .configured_approval_policy
                 .with_remembered_events(self.session.events());
         }
-        self.model = replacement_model.0;
-        self.backend.commit_reasoning_effort(replacement_model.1);
+        self.model = replacement_model.model;
+        self.backend
+            .commit_reasoning_effort(replacement_model.effort);
         if let Some((loader, stale)) = replacement_resources {
             self.skills = loader.snapshot().skills.clone();
             self.resource_loader = Some(loader);

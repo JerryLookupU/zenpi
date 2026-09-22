@@ -244,6 +244,17 @@ impl ApprovalCoordinator {
     /// Return each newly pending request once. Calling this is what marks a
     /// request as visible to a host, preventing a slow renderer from emitting
     /// duplicate approval prompts.
+    /// Whether any request is still awaiting a host decision.
+    ///
+    /// Used as a connection-selection fence: swapping the backend while a tool
+    /// is blocked on approval would change the account under a decision the
+    /// host is already looking at. A poisoned coordinator reports pending, so
+    /// the fence fails closed rather than open.
+    pub fn has_pending(&self) -> bool {
+        let (lock, _) = &*self.inner;
+        lock.lock().map_or(true, |state| !state.pending.is_empty())
+    }
+
     pub fn drain_pending(&self) -> Vec<ApprovalRequest> {
         let (lock, _) = &*self.inner;
         let Ok(mut state) = lock.lock() else {
