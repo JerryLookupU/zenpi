@@ -1231,6 +1231,19 @@ struct ApprovalView {
     scroll: usize,
     allow: bool,
     remember: bool,
+    /// ZS1-182 staged confirm: once submits directly, remember asks for a
+    /// second confirm, reject collects optional feedback for the model.
+    stage: ApprovalStage,
+    message: String,
+}
+
+/// The three approval confirmation stages (ZS1-182).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum ApprovalStage {
+    #[default]
+    Select,
+    ConfirmRemember,
+    RejectMessage,
 }
 
 impl TuiState {
@@ -1267,6 +1280,8 @@ impl TuiState {
                 view.scroll = 0;
                 view.allow = false;
                 view.remember = false;
+                view.stage = ApprovalStage::Select;
+                view.message.clear();
             }
             self.dirty = true;
             self.sync_activity_timer();
@@ -1330,6 +1345,8 @@ impl TuiState {
             view.allow = false;
             view.remember = false;
             view.scroll = 0;
+            view.stage = ApprovalStage::Select;
+            view.message.clear();
             if view.requests.is_empty() {
                 view.focused = false;
             }
@@ -1355,6 +1372,8 @@ impl TuiState {
             view.allow = false;
             view.remember = false;
             view.scroll = 0;
+            view.stage = ApprovalStage::Select;
+            view.message.clear();
             if view.requests.is_empty() {
                 view.focused = false;
             }
@@ -1417,6 +1436,68 @@ impl TuiState {
         if key.modifiers != KeyModifiers::NONE {
             return Some(TuiAction::None);
         }
+        // ZS1-182 staged confirm: once submits directly, remember asks for a
+        // second confirm, reject collects optional feedback for the model.
+        match view.stage {
+            ApprovalStage::ConfirmRemember => {
+                return match key.code {
+                    KeyCode::Enter => {
+                        let r = &view.requests[view.index];
+                        view.remember = true;
+                        view.allow = true;
+                        view.stage = ApprovalStage::Select;
+                        Some(TuiAction::RespondApproval {
+                            project,
+                            request_id: r.request_id.clone(),
+                            turn_id: r.turn_id.clone(),
+                            call_id: r.call_id.clone(),
+                            allow: true,
+                            remember: true,
+                        })
+                    }
+                    KeyCode::Esc => {
+                        view.stage = ApprovalStage::Select;
+                        Some(TuiAction::Redraw)
+                    }
+                    _ => Some(TuiAction::Redraw),
+                };
+            }
+            ApprovalStage::RejectMessage => {
+                return match key.code {
+                    KeyCode::Enter => {
+                        let r = &view.requests[view.index];
+                        // Keep the message until the host retires the request;
+                        // respond_tui_approval reads it from this view.
+                        view.stage = ApprovalStage::Select;
+                        Some(TuiAction::RespondApproval {
+                            project,
+                            request_id: r.request_id.clone(),
+                            turn_id: r.turn_id.clone(),
+                            call_id: r.call_id.clone(),
+                            allow: false,
+                            remember: false,
+                        })
+                    }
+                    KeyCode::Esc => {
+                        view.stage = ApprovalStage::Select;
+                        view.message.clear();
+                        Some(TuiAction::Redraw)
+                    }
+                    KeyCode::Backspace => {
+                        view.message.pop();
+                        Some(TuiAction::Redraw)
+                    }
+                    KeyCode::Char(character) if !character.is_control() => {
+                        if view.message.len() < 512 {
+                            view.message.push(character);
+                        }
+                        Some(TuiAction::Redraw)
+                    }
+                    _ => Some(TuiAction::Redraw),
+                };
+            }
+            ApprovalStage::Select => {}
+        }
         match key.code {
             KeyCode::Esc => {
                 view.focused = false;
@@ -1433,12 +1514,16 @@ impl TuiState {
             KeyCode::Char('n') => {
                 view.allow = false;
                 view.remember = false;
+                view.stage = ApprovalStage::RejectMessage;
+                view.message.clear();
             }
             KeyCode::Char('r')
                 if view.requests[view.index].origin
                     != crate::tools::ToolOrigin::BlueprintWorker =>
             {
-                view.remember = !view.remember;
+                view.allow = true;
+                view.remember = true;
+                view.stage = ApprovalStage::ConfirmRemember;
             }
             KeyCode::Tab | KeyCode::Right => {
                 view.index = (view.index + 1) % view.requests.len();
@@ -1459,7 +1544,14 @@ impl TuiState {
             KeyCode::Home => view.scroll = 0,
             KeyCode::End => view.scroll = usize::MAX,
             KeyCode::Enter => {
+                if !view.allow {
+                    // A bare Enter on a not-yet-allowed request opens the
+                    // reject-feedback stage instead of silently denying.
+                    view.stage = ApprovalStage::RejectMessage;
+                    return Some(TuiAction::Redraw);
+                }
                 let r = &view.requests[view.index];
+                view.stage = ApprovalStage::Select;
                 return Some(TuiAction::RespondApproval {
                     project,
                     request_id: r.request_id.clone(),
@@ -1570,7 +1662,18 @@ impl TuiState {
         let decision_hint = if incomplete {
             "INCOMPLETE preview · inspect source · n deny".to_owned()
         } else {
-            format!("y allow · n deny · Enter confirm · {remember}")
+            match view.stage {
+                ApprovalStage::ConfirmRemember => {
+                    "Confirm remember? Enter allow+remember · Esc cancel".to_owned()
+                }
+                ApprovalStage::RejectMessage => format!(
+                    "Reject message (optional): {}▏ · Enter deny · Esc back",
+                    view.message
+                ),
+                ApprovalStage::Select => {
+                    format!("y allow · n deny · r remember · Enter confirm · {remember}")
+                }
+            }
         };
         frame.render_widget(
             Paragraph::new(format!(
@@ -1611,6 +1714,11 @@ pub fn respond_tui_approval(
     if !valid || !coordinator.is_pending(request_id) {
         return Err(ApprovalError::UnknownRequest);
     }
+    let message = state
+        .approval_views
+        .get(project)
+        .map(|view| view.message.trim().to_owned())
+        .filter(|message| !message.is_empty());
     coordinator.respond(ApprovalResponse {
         request_id: request_id.into(),
         decision: if allow {
@@ -1619,6 +1727,7 @@ pub fn respond_tui_approval(
             ApprovalDecision::Deny
         },
         remember,
+        message,
     })?;
     state.retire_approval(request_id);
     state.push_message(
@@ -2793,6 +2902,9 @@ pub struct TuiState {
     session_rename: Option<SessionRename>,
     /// Header rect of the session label, used for double-click rename.
     session_label_rect: Option<Rect>,
+    /// ZS1-180: the host started with `--auto`, so project binding keeps the
+    /// Never approval policy instead of restoring per-project metadata.
+    auto_approve: bool,
     max_messages: usize,
     max_history: usize,
     spinner_tick: usize,
@@ -2927,6 +3039,7 @@ impl TuiState {
             current_session_path: None,
             session_rename: None,
             session_label_rect: None,
+            auto_approve: false,
             max_messages: max_messages.max(1),
             max_history: 100,
             spinner_tick: 0,
@@ -5212,6 +5325,8 @@ impl TuiState {
         if self.busy != busy {
             self.busy = busy;
             if busy {
+                // ZS1-181: the thinking animation starts on its first frame.
+                self.spinner_tick = 0;
                 self.transcript_ux.elapsed = Duration::ZERO;
                 self.transcript_ux.activity_ended = false;
                 self.sync_activity_timer();
@@ -5225,11 +5340,26 @@ impl TuiState {
         }
     }
 
+    /// Advance the thinking animation while either lane is active (ZS1-181).
     pub fn tick(&mut self) {
-        if self.busy {
+        if self.busy || self.master_busy {
             self.spinner_tick = self.spinner_tick.wrapping_add(1);
             self.dirty = true;
         }
+    }
+
+    /// Braille frame of the thinking animation.
+    fn spinner_frame(&self) -> char {
+        const FRAMES: [char; 10] = [
+            '\u{280b}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283c}', '\u{2834}', '\u{2826}',
+            '\u{2827}', '\u{2807}', '\u{280f}',
+        ];
+        FRAMES[self.spinner_tick % FRAMES.len()]
+    }
+
+    /// The animation frame when a lane is thinking, else `None`.
+    pub fn thinking_frame(&self) -> Option<char> {
+        (self.busy || self.master_busy).then(|| self.spinner_frame())
     }
 
     pub fn set_max_history(&mut self, limit: usize) {
@@ -5816,7 +5946,12 @@ impl TuiState {
     /// was not started through [`Self::submit_arch_prompt`] reaches a terminal
     /// boundary, so the arch console can never stay permanently busy.
     pub fn set_master_busy(&mut self, busy: bool) {
+        if busy && !self.master_busy {
+            // ZS1-181: restart the animation for the arch lane.
+            self.spinner_tick = 0;
+        }
         self.master_busy = busy;
+        self.dirty = true;
     }
 
     /// Mark the master turn finished and record its bounded outcome in the arch
@@ -9440,11 +9575,14 @@ impl TuiState {
             return;
         }
         let title = if goal {
-            " Goal "
+            " Goal ".to_owned()
+        } else if self.busy {
+            // ZS1-181: the production path shows the thinking animation.
+            format!(" Conversation \u{b7} {} 思考中 ", self.spinner_frame())
         } else if self.fold_tool_logs {
-            " Conversation (tools folded) "
+            " Conversation (tools folded) ".to_owned()
         } else {
-            " Conversation "
+            " Conversation ".to_owned()
         };
         let block = Block::default()
             .borders(Borders::ALL)
@@ -9606,7 +9744,13 @@ impl TuiState {
             } else {
                 Color::Cyan
             }))
-            .title(if let Some(search) = &self.history_search {
+            .title(if self.busy {
+                format!(
+                    " Prompt · {} 思考中 {}s · Ctrl-C 中断 ",
+                    self.spinner_frame(),
+                    self.transcript_ux.seconds()
+                )
+            } else if let Some(search) = &self.history_search {
                 format!(
                     " History search: {} · {} · Ctrl-R older · Enter select · Esc restore ",
                     inline_token(&search.query, 40),
@@ -9786,7 +9930,11 @@ impl TuiState {
             } else {
                 Color::DarkGray
             }))
-            .title(" Arch · master session ");
+            .title(if self.master_busy {
+                format!(" Arch · {} 思考中 ", self.spinner_frame())
+            } else {
+                " Arch · master session ".to_owned()
+            });
         let inner_height = usize::from(block.inner(area).height);
         let mut lines: Vec<Line> = self
             .arch_messages
@@ -10591,6 +10739,30 @@ impl TuiState {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// Reject feedback staged for one pending approval (ZS1-182).
+    pub fn approval_reject_message(&self, request_id: &str) -> Option<String> {
+        self.approval_views
+            .values()
+            .find(|view| {
+                view.requests
+                    .iter()
+                    .any(|request| request.request_id == request_id)
+            })
+            .map(|view| view.message.clone())
+            .filter(|message| !message.is_empty())
+    }
+
+    /// True when this host runs in `--auto` (ZS1-180).
+    pub fn auto_approve(&self) -> bool {
+        self.auto_approve
+    }
+
+    /// Record the host's `--auto` choice so project binding never downgrades
+    /// it back to per-project metadata.
+    pub fn set_auto_approve(&mut self, auto_approve: bool) {
+        self.auto_approve = auto_approve;
     }
 
     /// Replace the cached session catalog (host scan projection, ZS1-178).
@@ -13765,6 +13937,9 @@ impl ProjectRuntimeHost {
         let mut host = Self {
             pool: crate::project_workspace::ProjectOwnerPool::new(Arc::clone(&agent))?,
         };
+        // ZS1-180: propagate the pool's auto-approval mode into the view so
+        // project switches keep Never instead of restoring metadata.
+        state.set_auto_approve(host.pool.auto_approve());
         if !state.project_tabs.contains(&actual_id) {
             let workspace = state
                 .project_workspace
@@ -14085,8 +14260,13 @@ fn bind_agent_to_active_project(state: &mut TuiState, agent: &mut crate::core::A
             ),
         }
     }
+    let mode = if state.auto_approve() {
+        crate::approval::ApprovalMode::Never
+    } else {
+        metadata.approval_mode
+    };
     let _ = agent.set_approval_policy(crate::approval::ApprovalPolicy {
-        mode: metadata.approval_mode,
+        mode,
         ..crate::approval::ApprovalPolicy::default()
     });
     state.refresh_session_snapshot(agent.session());
@@ -17074,7 +17254,9 @@ pub fn run_async_with_profile(
             }
             let now = Instant::now();
             state.flush_ordinary_paste(now);
-            if state.is_busy() && now.saturating_duration_since(last_tick) >= poll_interval {
+            if (state.is_busy() || state.master_busy())
+                && now.saturating_duration_since(last_tick) >= poll_interval
+            {
                 state.tick();
                 scheduler.request();
                 last_tick = now;
@@ -18223,7 +18405,9 @@ where
             }
             let now = Instant::now();
             state.flush_ordinary_paste(now);
-            if state.is_busy() && now.saturating_duration_since(last_tick) >= poll_interval {
+            if (state.is_busy() || state.master_busy())
+                && now.saturating_duration_since(last_tick) >= poll_interval
+            {
                 state.tick();
                 scheduler.request();
                 last_tick = now;

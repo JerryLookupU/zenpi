@@ -39,6 +39,8 @@ fn deny_default_and_explicit_allow_keep_draft_cursor() {
     plain(&mut s, KeyCode::Left);
     let cursor = s.cursor();
     s.present_approval(request("a"));
+    // ZS1-182: Enter opens the reject-feedback stage; the second Enter denies.
+    assert_eq!(plain(&mut s, KeyCode::Enter), TuiAction::Redraw);
     assert!(matches!(
         plain(&mut s, KeyCode::Enter),
         TuiAction::RespondApproval {
@@ -67,6 +69,8 @@ fn escape_and_paste_never_grant_or_discard_draft() {
         key(&mut s, KeyCode::Char('y'), KeyModifiers::CONTROL),
         TuiAction::None
     ));
+    // ZS1-182: Enter opens the reject-feedback stage; the second Enter denies.
+    assert_eq!(plain(&mut s, KeyCode::Enter), TuiAction::Redraw);
     assert!(matches!(
         plain(&mut s, KeyCode::Enter),
         TuiAction::RespondApproval { allow: false, .. }
@@ -88,6 +92,8 @@ fn multiple_requests_reset_selection_and_projects_do_not_share_focus() {
     s.present_approval(request("b"));
     plain(&mut s, KeyCode::Char('y'));
     plain(&mut s, KeyCode::Tab);
+    // ZS1-182: Enter opens the reject stage; the second Enter submits.
+    assert_eq!(plain(&mut s, KeyCode::Enter), TuiAction::Redraw);
     assert!(
         matches!(plain(&mut s,KeyCode::Enter),TuiAction::RespondApproval{request_id,allow:false,..} if request_id=="b")
     );
@@ -100,6 +106,8 @@ fn multiple_requests_reset_selection_and_projects_do_not_share_focus() {
     s.select_project_tab(0);
     assert_eq!(s.approval_count(), 2);
     s.retire_approval("b");
+    // ZS1-182: Enter opens the reject stage; the second Enter submits.
+    assert_eq!(plain(&mut s, KeyCode::Enter), TuiAction::Redraw);
     assert!(
         matches!(plain(&mut s,KeyCode::Enter),TuiAction::RespondApproval{request_id,allow:false,..} if request_id=="a")
     );
@@ -426,6 +434,8 @@ fn directory_picker_owns_keys_over_existing_or_new_approval_view() {
     assert_eq!(s.approval_count(), 1);
     plain(&mut s, KeyCode::Esc);
     key(&mut s, KeyCode::Char('a'), KeyModifiers::ALT);
+    // ZS1-182: Enter opens the reject stage; the second Enter submits.
+    assert_eq!(plain(&mut s, KeyCode::Enter), TuiAction::Redraw);
     assert!(matches!(
         plain(&mut s, KeyCode::Enter),
         TuiAction::RespondApproval { allow: false, .. }
@@ -437,4 +447,37 @@ fn directory_picker_owns_keys_over_existing_or_new_approval_view() {
         plain(&mut other, KeyCode::Enter),
         TuiAction::RespondApproval { .. }
     ));
+}
+
+#[test]
+fn staged_confirm_requires_a_second_enter_and_carries_reject_feedback() {
+    let mut s = TuiState::default();
+    s.present_approval(request("stage"));
+    // Remember asks for a confirmation step; Esc returns to the selector.
+    plain(&mut s, KeyCode::Char('r'));
+    assert_eq!(plain(&mut s, KeyCode::Esc), TuiAction::Redraw);
+    plain(&mut s, KeyCode::Char('r'));
+    assert!(matches!(
+        plain(&mut s, KeyCode::Enter),
+        TuiAction::RespondApproval {
+            allow: true,
+            remember: true,
+            ..
+        }
+    ));
+
+    // Reject collects optional feedback for the model.
+    s.present_approval(request("stage2"));
+    plain(&mut s, KeyCode::Char('n'));
+    for character in "use a safer path".chars() {
+        plain(&mut s, KeyCode::Char(character));
+    }
+    assert!(matches!(
+        plain(&mut s, KeyCode::Enter),
+        TuiAction::RespondApproval { allow: false, .. }
+    ));
+    assert_eq!(
+        s.approval_reject_message("stage2").as_deref(),
+        Some("use a safer path")
+    );
 }

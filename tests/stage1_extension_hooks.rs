@@ -514,6 +514,7 @@ fn rewritten_arguments_are_the_exact_human_approval_payload() {
             request_id: request.request_id,
             decision: ApprovalDecision::Allow,
             remember: false,
+            message: None,
         })
         .unwrap();
     let _a = worker.join().unwrap();

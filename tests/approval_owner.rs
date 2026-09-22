@@ -144,6 +144,7 @@ fn denied_pending_request_is_durable_and_has_no_side_effect() {
             request_id: request.request_id.clone(),
             decision: ApprovalDecision::Deny,
             remember: false,
+            message: None,
         })
         .unwrap();
 
@@ -177,6 +178,7 @@ fn remembered_allow_is_durable_and_executes_once() {
             request_id: request.request_id.clone(),
             decision: ApprovalDecision::Allow,
             remember: true,
+            message: None,
         })
         .unwrap();
 
@@ -326,7 +328,20 @@ fn worker_allow_cannot_override_prohibitions_revocation_or_missing_preflight() {
             .into(),
             ..Default::default()
         });
-        agent.process_sync("write").unwrap();
+        let result = agent.process_sync("write");
+        if scenario == "revoked" {
+            // Provider requests are scope-checked against the live blueprint
+            // gate, so a revoked lease fails the turn closed before any tool
+            // is prepared. The other scenarios keep the ordinary denied-tool
+            // result and let the turn finish.
+            let error = result.expect_err("revoked lease must fail the turn");
+            assert!(
+                error.to_string().contains("lease_revoked"),
+                "{scenario}: {error}"
+            );
+        } else {
+            result.unwrap();
+        }
         assert!(!root.path().join("note.txt").exists(), "{scenario}");
         assert!(
             agent
@@ -366,7 +381,8 @@ fn request_identity_is_session_scoped_and_responses_carry_policy() {
                     .respond(ApprovalResponse {
                         request_id: prior.clone(),
                         decision: ApprovalDecision::Allow,
-                        remember: false
+                        remember: false,
+                        message: None,
                     })
                     .is_err()
             );
@@ -376,6 +392,7 @@ fn request_identity_is_session_scoped_and_responses_carry_policy() {
                 request_id: request.request_id.clone(),
                 decision: ApprovalDecision::Deny,
                 remember: false,
+                message: None,
             })
             .unwrap();
         assert_eq!(accepted.policy_digest, request.policy_digest);
@@ -450,4 +467,25 @@ fn host_emergency_cancel_stops_and_reaps_an_already_allowed_command() {
         !root.path().join("survived").exists(),
         "descendant survived host cancellation"
     );
+}
+
+#[test]
+fn auto_approval_executes_side_effects_without_pending_requests() {
+    let workspace = tempdir().unwrap();
+    let mut agent = configured_agent(workspace.path());
+    agent.set_approval_policy(ApprovalPolicy {
+        mode: ApprovalMode::Never,
+        ..ApprovalPolicy::default()
+    });
+    let coordinator = agent.approval_coordinator().unwrap();
+
+    // ZS1-180: under Never the turn runs to completion; nothing waits for a
+    // human response and the side effect lands.
+    agent.process(TurnInputRequest::new("write it")).unwrap();
+    assert!(coordinator.drain_pending().is_empty());
+    assert_eq!(
+        std::fs::read_to_string(workspace.path().join("note.txt")).unwrap(),
+        "approved"
+    );
+    assert_eq!(agent.phase(), zenpi::core::AgentPhase::Idle);
 }

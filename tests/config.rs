@@ -1051,3 +1051,12 @@ fn short_session_reference_parses_without_changing_the_path_form() {
     assert!(options.session.ends_with("journal.jsonl"));
     assert!(parse_args(["-s", "  "]).is_err());
 }
+
+#[test]
+fn auto_flag_parses_and_rejects_inline_values() {
+    let options = parse_args(["--auto"]).unwrap();
+    assert!(options.auto);
+    assert!(parse_args(["--auto=yes"]).is_err());
+    let options = parse_args(["--session", "x.jsonl"]).unwrap();
+    assert!(!options.auto);
+}

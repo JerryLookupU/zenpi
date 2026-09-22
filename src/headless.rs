@@ -5799,6 +5799,7 @@ where
                     request_id: approval_id.clone(),
                     decision,
                     remember,
+                    message: None,
                 }) {
                     Ok(request) => write_cached_versioned_response(
                         output,
@@ -6505,6 +6506,7 @@ where
                 request_id: approval_id.clone(),
                 decision,
                 remember,
+                message: None,
             }) {
                 Ok(request) => write_cached_versioned_response(
                     output,
@@ -7361,6 +7363,7 @@ pub fn respond_to_slash_approval(
             request_id: id.to_owned(),
             decision,
             remember,
+            message: None,
         })
         .map_err(|error| error.to_string())?;
     Ok(json!({

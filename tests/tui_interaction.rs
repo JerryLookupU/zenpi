@@ -1539,3 +1539,58 @@ fn session_rename_rejects_duplicates_and_stays_open() {
     assert_eq!(state.handle_key(key(KeyCode::Esc)), TuiAction::Redraw);
     assert!(!state.session_rename_active());
 }
+
+/// Wide CJK glyphs occupy a lead cell plus a blank continuation cell, so the
+/// joined buffer reads "思 考 中". Normalize before matching.
+fn contains_cjk(screen: &str, needle: &str) -> bool {
+    screen.replace(' ', "").contains(needle)
+}
+
+fn rendered_screen(state: &mut TuiState, width: u16, height: u16) -> String {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+    terminal
+        .draw(|f| state.render_bentobox(f, "zenpi"))
+        .unwrap();
+    screen_rows(&terminal).join("\n")
+}
+
+#[test]
+fn thinking_animation_appears_and_advances_while_busy() {
+    let mut state = TuiState::default();
+    let idle = rendered_screen(&mut state, 160, 40);
+    assert!(
+        !contains_cjk(&idle, "思考中"),
+        "idle shows no thinking animation"
+    );
+
+    state.set_busy(true);
+    let first = state.thinking_frame().expect("busy exposes a frame");
+    let screen = rendered_screen(&mut state, 160, 40);
+    assert!(contains_cjk(&screen, "思考中"), "{screen}");
+    assert!(screen.contains(first), "{screen}");
+
+    state.tick();
+    let second = state.thinking_frame().unwrap();
+    assert_ne!(first, second, "the frame advances with the tick");
+    let screen = rendered_screen(&mut state, 160, 40);
+    assert!(screen.contains(second), "{screen}");
+
+    state.set_busy(false);
+    assert!(state.thinking_frame().is_none());
+}
+
+#[test]
+fn arch_lane_shows_the_thinking_animation() {
+    let mut state = TuiState::default();
+    let idle = rendered_screen(&mut state, 160, 40);
+    assert!(idle.contains("Arch · master session"), "{idle}");
+
+    state.set_master_busy(true);
+    let frame = state.thinking_frame().expect("arch busy exposes a frame");
+    let screen = rendered_screen(&mut state, 160, 40);
+    assert!(contains_cjk(&screen, "思考中"), "{screen}");
+    assert!(screen.contains(frame), "{screen}");
+
+    state.set_master_busy(false);
+    assert!(state.thinking_frame().is_none());
+}

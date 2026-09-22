@@ -985,3 +985,44 @@ fn rejected_resume_checkpoint_keeps_actual_owner_and_host_usable() {
         restart.finish();
     }
 }
+
+#[test]
+fn auto_approval_propagates_to_project_and_arch_owners() {
+    let root = tempdir().unwrap();
+    let mut pool = ProjectOwnerPool::new(Arc::new(Mutex::new(agent(root.path())))).unwrap();
+    assert!(
+        pool.auto_approve(),
+        "a Never root owner marks the whole pool as auto"
+    );
+    let id = pool.workspace().active().unwrap().id().as_str().to_owned();
+    let arch = pool.arch_agent(&id).unwrap();
+    assert_eq!(
+        arch.lock().unwrap().approval_policy().unwrap().mode,
+        ApprovalMode::Never
+    );
+}
+
+#[test]
+fn explicit_auto_preparation_sets_never_while_default_stays_read_only() {
+    let root = tempdir().unwrap();
+    let default = Agent::prepare_project_with_options(
+        &root.path().join("default.jsonl"),
+        root.path(),
+        Default::default(),
+        true,
+    )
+    .unwrap();
+    assert_eq!(
+        default.approval_policy().unwrap().mode,
+        ApprovalMode::ReadOnly
+    );
+    let auto = Agent::prepare_project_with_approval(
+        &root.path().join("auto.jsonl"),
+        root.path(),
+        Default::default(),
+        true,
+        true,
+    )
+    .unwrap();
+    assert_eq!(auto.approval_policy().unwrap().mode, ApprovalMode::Never);
+}
