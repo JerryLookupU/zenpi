@@ -638,13 +638,19 @@ impl ProjectOwnerPool {
                 agent.backend_name() == "echo",
             )
         };
-        let agent = crate::core::Agent::prepare_project_with_options(
+        let mut agent = crate::core::Agent::prepare_project_with_options(
             &arch_session,
             &cwd,
             overrides,
             echo_fixture,
         )
         .map_err(|error| error.to_string())?;
+        // An arch owner is a separate agent with its own journal, so a
+        // connection command addressed to `arch` must reach this one and not
+        // the discussion owner.
+        agent
+            .set_owner_label("arch")
+            .map_err(|error| error.to_string())?;
         let handle = std::sync::Arc::new(std::sync::Mutex::new(agent));
         self.arch_owners.insert(id.to_owned(), handle.clone());
         Ok(handle)

@@ -534,6 +534,10 @@ impl AgentError {
 /// Shared state machine used by both runtime modes.
 pub struct Agent {
     request_owner_id: String,
+    /// The host-facing name of this owner.  `request_owner_id` is an opaque
+    /// per-process correlation id; the protocol names the two hosts that can
+    /// own a session, and a selection is addressed to one of those.
+    owner_label: String,
     output_store: crate::tool_output::SessionOutputStore,
     input_port: crate::input_queue::InputPort,
     project_overrides: crate::config::ConfigOverrides,
@@ -732,6 +736,7 @@ impl Agent {
         let recovered = session.interrupted_operations();
         let mut agent = Self {
             request_owner_id: next_id("request-owner"),
+            owner_label: "discussion".into(),
             output_store: crate::tool_output::SessionOutputStore::default(),
             input_port: crate::input_queue::InputPort::new(session.session_id()),
             project_overrides: crate::config::ConfigOverrides::default(),
@@ -1271,15 +1276,50 @@ impl Agent {
         self.session.turns()
     }
 
-    /// The owner identity every request scope and every connection selection
-    /// is checked against.
+    /// The opaque per-process owner id used for request-scope correlation.
     pub fn request_owner_id(&self) -> &str {
         &self.request_owner_id
+    }
+
+    /// The host-facing owner name, `discussion` or `arch`.
+    ///
+    /// A connection command addresses this label, not the opaque correlation
+    /// id, because that is what a client can name without inventing state.
+    pub fn owner_label(&self) -> &str {
+        &self.owner_label
+    }
+
+    /// Name the host this owner serves.  Arch owners are independent agents
+    /// with their own journal, so a selection must be able to tell them apart.
+    pub fn set_owner_label(&mut self, label: &str) -> Result<(), AgentError> {
+        if !matches!(label, "discussion" | "arch") {
+            return Err(AgentError::InvalidTurn(
+                "owner label must be discussion or arch".into(),
+            ));
+        }
+        self.owner_label = label.to_owned();
+        Ok(())
     }
 
     /// The active model identity, or `None` for the provider default.
     pub fn model(&self) -> Option<&str> {
         self.model.as_deref()
+    }
+
+    /// The complete, versioned selection this owner is running.
+    ///
+    /// Built from the running backend rather than from the journal, so a host
+    /// reports what is actually in effect.  It contains no secret: the
+    /// credential is an identifier and the route/identity fields are digests.
+    pub fn selection_state(&self) -> Result<SelectionSnapshotV1, AgentError> {
+        let descriptor = self.backend.model_descriptor(self.model.as_deref())?;
+        Self::selection_snapshot_for(
+            self.backend.as_ref(),
+            &self.profile_hint(),
+            self.model.clone(),
+            self.backend.reasoning_effort().map(str::to_owned),
+            descriptor.as_ref(),
+        )
     }
 
     pub fn phase(&self) -> AgentPhase {
@@ -1410,7 +1450,7 @@ impl Agent {
         };
         // A selection is scoped to one owner.  It is never broadcast to another
         // owner, project, or worker.
-        if selection.owner_id != self.request_owner_id {
+        if selection.owner_id != self.owner_label {
             return reject(
                 ConnectionRejectCode::OwnerMismatch,
                 "the selection names a different owner",
@@ -7129,6 +7169,23 @@ fn make_backend(options: &CliOptions) -> Result<Box<dyn Backend>, ZenpiError> {
             "unknown backend `{other}` (expected echo, openai, anthropic or google)"
         ))),
     }
+}
+
+/// Build a backend for a named profile without disturbing the running one.
+///
+/// A candidate is constructed and validated before the owner is asked to swap,
+/// so a profile that cannot be resolved, or whose credential is missing, leaves
+/// the running connection exactly as it was.
+pub(crate) fn connection_candidate(
+    profile: &str,
+    model: Option<&str>,
+) -> Result<Box<dyn Backend>, ZenpiError> {
+    let effective = crate::config::resolve_default(&crate::config::ConfigOverrides {
+        profile: Some(profile.to_owned()),
+        model: model.map(str::to_owned),
+        ..crate::config::ConfigOverrides::default()
+    })?;
+    backend_from_effective(effective)
 }
 
 fn backend_from_effective(
