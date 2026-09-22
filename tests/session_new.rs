@@ -1,5 +1,7 @@
 #![cfg(unix)]
 use serde_json::{Value, json};
+mod support;
+
 use std::{
     fs,
     io::{BufRead, BufReader, Write},
@@ -133,6 +135,7 @@ fn old_port_cannot_acquire_the_new_sessions_running_turn() {
         release: Arc<AtomicBool>,
     }
     impl Backend for HoldingBackend {
+        crate::support::controlled_local_backend!();
         fn complete(&self, _: CompletionRequest<'_>) -> Result<Completion, BackendError> {
             self.started.store(true, Ordering::Release);
             let deadline = std::time::Instant::now() + Duration::from_secs(3);
@@ -673,6 +676,7 @@ fn new_policy_agent(root: &Path) -> Agent {
     use zenpi::backend::{Backend, BackendError, Completion, CompletionRequest};
     struct Writes(AtomicUsize);
     impl Backend for Writes {
+        crate::support::controlled_local_backend!();
         fn complete(&self, _: CompletionRequest<'_>) -> Result<Completion, BackendError> {
             let call = self.0.fetch_add(1, Ordering::SeqCst);
             let mut response = Completion::text("policy fixture reply");

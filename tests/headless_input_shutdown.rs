@@ -1,5 +1,7 @@
 #![cfg(unix)]
 
+mod support;
+
 use serde_json::{Value, json};
 use std::{
     io::{Cursor, Write},
@@ -24,6 +26,7 @@ struct FiniteRead {
     dropped: mpsc::Sender<()>,
 }
 impl Backend for FiniteRead {
+    crate::support::controlled_local_backend!();
     fn complete(&self, _: CompletionRequest<'_>) -> Result<Completion, BackendError> {
         unreachable!("controlled provider entry required")
     }

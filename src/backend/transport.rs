@@ -24,7 +24,7 @@ use ureq::{
 };
 const SLICE: Duration = Duration::from_millis(25);
 #[derive(Clone, Debug, Default)]
-pub(super) struct Cancellation(Arc<AtomicBool>);
+pub(crate) struct Cancellation(Arc<AtomicBool>);
 impl Cancellation {
     fn cancel(&self) {
         self.0.store(true, Ordering::Release);
@@ -41,7 +41,7 @@ impl Cancellation {
         }
     }
 }
-pub(super) fn client(config: Config) -> (ureq::Agent, Cancellation) {
+pub(crate) fn client(config: Config) -> (ureq::Agent, Cancellation) {
     let cancel = Cancellation::default();
     let connector =
         ().chain(ConnectProxyConnector::default())
@@ -55,9 +55,26 @@ pub(super) fn client(config: Config) -> (ureq::Agent, Cancellation) {
 /// Only the send/header stage moves to an owned scoped worker. The borrowed
 /// host callback stays on the calling thread; no lifetime erasure or detached
 /// job is needed. The scope always joins, including unwinding/error paths.
-pub(super) fn send_json(
+pub(crate) fn send_json(
     builder: ureq::RequestBuilder<ureq::typestate::WithBody>,
     body: &Value,
+    cancelled: &dyn Fn() -> bool,
+    cancel: Cancellation,
+) -> Result<ureq::http::Response<ureq::Body>, BackendError> {
+    send_with_control(move || builder.send_json(body), cancelled, cancel)
+}
+
+pub(crate) fn send_bytes(
+    builder: ureq::RequestBuilder<ureq::typestate::WithBody>,
+    body: &[u8],
+    cancelled: &dyn Fn() -> bool,
+    cancel: Cancellation,
+) -> Result<ureq::http::Response<ureq::Body>, BackendError> {
+    send_with_control(move || builder.send(body), cancelled, cancel)
+}
+
+fn send_with_control(
+    send: impl FnOnce() -> Result<ureq::http::Response<ureq::Body>, ureq::Error> + Send,
     cancelled: &dyn Fn() -> bool,
     cancel: Cancellation,
 ) -> Result<ureq::http::Response<ureq::Body>, BackendError> {
@@ -82,7 +99,7 @@ pub(super) fn send_json(
         };
         let worker = thread::Builder::new()
             .name("zenpi-provider-send".into())
-            .spawn_scoped(scope, move || builder.send_json(body))
+            .spawn_scoped(scope, send)
             .map_err(|error| BackendError::Transport(error.to_string()))?;
         while !worker.is_finished() {
             if cancelled() {
@@ -102,6 +119,48 @@ pub(super) fn send_json(
         response.map_err(map_ureq_error)
     })
 }
+
+pub(crate) fn read_bytes(
+    body: &mut ureq::Body,
+    limit: usize,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Vec<u8>, BackendError> {
+    let mut reader = body
+        .with_config()
+        .limit(limit.saturating_add(1) as u64)
+        .reader();
+    let mut bytes = Vec::new();
+    let mut chunk = [0_u8; 16 * 1024];
+    loop {
+        if cancelled() {
+            return Err(BackendError::Cancelled);
+        }
+        match reader.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(count) => {
+                if count > limit.saturating_sub(bytes.len()) {
+                    return Err(BackendError::InvalidResponse(
+                        "response body exceeds byte limit".into(),
+                    ));
+                }
+                bytes.extend_from_slice(&chunk[..count]);
+            }
+            Err(error)
+                if error
+                    .get_ref()
+                    .and_then(|source| source.downcast_ref::<ureq::Error>())
+                    .is_some_and(|error| {
+                        matches!(error, ureq::Error::Timeout(ureq::Timeout::RecvBody))
+                    }) => {}
+            Err(error) => return Err(BackendError::Transport(error.to_string())),
+        }
+    }
+    if cancelled() {
+        return Err(BackendError::Cancelled);
+    }
+    Ok(bytes)
+}
+
 fn deadline(timeout: NextTimeout) -> Option<Instant> {
     if timeout.after.is_not_happening() {
         None

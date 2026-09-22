@@ -846,6 +846,11 @@ impl ToolContext {
         self.blueprint_gate.as_ref().map(|gate| gate.evidence())
     }
 
+    pub(crate) fn checked_policy_evidence(&self) -> Result<Option<PolicyEvidence>, ToolError> {
+        self.checked_gate()
+            .map(|gate| gate.map(BlueprintGate::evidence))
+    }
+
     fn checked_gate(&self) -> Result<Option<&BlueprintGate>, ToolError> {
         match (self.origin, self.blueprint_gate.as_deref()) {
             (ToolOrigin::BlueprintWorker, Some(gate)) => {

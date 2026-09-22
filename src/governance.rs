@@ -58,7 +58,7 @@ pub enum ResourceKind {
     NetworkRequests,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BudgetLedger {
     summary_cost: SummaryCostBudget,
     limits: ResourceLimits,
@@ -440,6 +440,8 @@ struct WorkerBudgetSnapshot {
     leases: BTreeMap<String, WorkerLease>,
     revoked_leases: BTreeMap<String, BudgetTerminal>,
     operations: BTreeMap<String, WorkerOperation>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    provider_requests: BTreeMap<String, u64>,
     terminal: Option<BudgetTerminal>,
 }
 
@@ -485,6 +487,7 @@ impl WorkerBudgetLedger {
             leases: BTreeMap::new(),
             revoked_leases: BTreeMap::new(),
             operations: BTreeMap::new(),
+            provider_requests: BTreeMap::new(),
             terminal: None,
         });
         let mut ledger = Self { snapshot };
@@ -677,6 +680,73 @@ impl WorkerBudgetLedger {
             }
         }
         self.commit(session, proposed.snapshot, None)
+    }
+
+    // Provider sends run inside an admitted worker, whose reservation already
+    // owns wall time and concurrency. Count admission, not HTTP completion.
+    pub(crate) fn charge_provider_request(
+        &mut self,
+        session: &mut SessionStore,
+        admission_operation_id: &str,
+        lease_id: &str,
+        now_ms: u64,
+    ) -> Result<(), GovernanceError> {
+        self.require_open(now_ms)?;
+        let admission = self
+            .snapshot
+            .operations
+            .get(admission_operation_id)
+            .ok_or_else(|| GovernanceError::UnknownOperation(admission_operation_id.into()))?;
+        if admission.reservation.origin != BudgetOrigin::BlueprintWorker
+            || admission.reservation.lease_id != lease_id
+            || admission.settlement.is_some()
+            || admission.cancel_requested
+        {
+            return Err(GovernanceError::LeaseUnavailable(lease_id.into()));
+        }
+        let lease = self
+            .snapshot
+            .leases
+            .get(lease_id)
+            .ok_or_else(|| GovernanceError::LeaseUnavailable(lease_id.into()))?;
+        self.active_lease(
+            lease_id,
+            &admission.reservation.policy_digest,
+            &lease.blueprint_item,
+            now_ms,
+        )?;
+        let elapsed = now_ms.saturating_sub(admission.reserved_at_ms);
+        if elapsed > admission.reservation.resources.wall_ms {
+            let terminal = BudgetTerminal::Exhausted {
+                kind: ResourceKind::WallTime,
+                used: elapsed,
+                limit: admission.reservation.resources.wall_ms,
+            };
+            self.stop(session, None, terminal.clone(), now_ms)?;
+            return Err(GovernanceError::WorkerStopped(terminal));
+        }
+        let limits = lease.limits;
+        let mut candidate = Self {
+            snapshot: self.snapshot.clone(),
+        };
+        candidate.snapshot.last_observed_ms = now_ms;
+        let count = candidate
+            .snapshot
+            .provider_requests
+            .entry(lease_id.into())
+            .or_default();
+        *count = count
+            .checked_add(1)
+            .ok_or(GovernanceError::AccountingOverflow(
+                ResourceKind::NetworkRequests,
+            ))?;
+        for (scope, limits) in [(None, self.snapshot.limits), (Some(lease_id), limits)] {
+            if let Some(terminal) = budget_exhaustion(candidate.committed_usage(scope)?, limits) {
+                self.stop(session, scope, terminal.clone(), now_ms)?;
+                return Err(GovernanceError::WorkerStopped(terminal));
+            }
+        }
+        self.commit(session, candidate.snapshot, None)
     }
 
     /// Extend one active lease without changing its immutable policy or
@@ -894,7 +964,8 @@ impl WorkerBudgetLedger {
                     .ok_or_else(|| GovernanceError::LeaseUnavailable(id.into()))
             })
             .transpose()?;
-        self.snapshot
+        let usage = self
+            .snapshot
             .operations
             .values()
             .filter(|op| {
@@ -908,6 +979,18 @@ impl WorkerBudgetLedger {
                         .as_ref()
                         .map_or(op.reservation.resources, |settlement| settlement.actual),
                 )
+            })?;
+        self.snapshot
+            .provider_requests
+            .iter()
+            .filter(|(id, _)| {
+                item.is_none_or(|item| self.snapshot.leases[*id].blueprint_item == item)
+            })
+            .try_fold(usage, |sum, (_, count)| {
+                sum.checked_add(ResourceUsage {
+                    network_requests: *count,
+                    ..Default::default()
+                })
             })
     }
 
@@ -1026,6 +1109,15 @@ impl WorkerBudgetLedger {
             }
         }
         if snapshot
+            .provider_requests
+            .iter()
+            .any(|(id, count)| *count == 0 || !snapshot.leases.contains_key(id))
+        {
+            return Err(GovernanceError::InvalidSnapshot(
+                "invalid provider request counter".into(),
+            ));
+        }
+        if snapshot
             .revoked_leases
             .keys()
             .any(|id| !snapshot.leases.contains_key(id))
@@ -1106,6 +1198,11 @@ fn validate_transition(
             .revoked_leases
             .iter()
             .any(|(id, terminal)| next.revoked_leases.get(id) != Some(terminal))
+        || previous.provider_requests.iter().any(|(id, count)| {
+            next.provider_requests
+                .get(id)
+                .is_none_or(|next| next < count)
+        })
         || previous.operations.iter().any(|(id, operation)| {
             next.operations.get(id).is_none_or(|updated| {
                 operation.reservation != updated.reservation
@@ -1253,4 +1350,345 @@ pub fn quoted_summary_cost(
         .ok_or_else(|| GovernanceError::InvalidSnapshot("summary price overflow".into()))?;
     u64::try_from(total.div_ceil(1_000_000))
         .map_err(|_| GovernanceError::InvalidSnapshot("summary price overflow".into()))
+}
+
+#[cfg(test)]
+mod provider_tests {
+    use super::*;
+    use serde_json::{Value, json};
+
+    fn lease(id: &str, network: u64) -> WorkerLease {
+        WorkerLease {
+            lease_id: id.into(),
+            blueprint_item: "PA04".into(),
+            policy_digest: "a".repeat(64),
+            expires_at_ms: 10_000,
+            limits: ResourceLimits {
+                max_network_requests: network,
+                max_concurrency: 1,
+                ..Default::default()
+            },
+        }
+    }
+
+    fn admission(id: &str, lease_id: &str) -> BudgetReservation {
+        BudgetReservation {
+            operation_id: id.into(),
+            lease_id: lease_id.into(),
+            policy_digest: "a".repeat(64),
+            origin: BudgetOrigin::BlueprintWorker,
+            resources: ResourceUsage {
+                wall_ms: 100,
+                concurrency: 1,
+                ..Default::default()
+            },
+            gate_decision_id: format!("gate-{id}"),
+            network_host: None,
+            credential_handles: Vec::new(),
+        }
+    }
+
+    fn fixture(network: u64) -> (tempfile::TempDir, SessionStore, WorkerBudgetLedger) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut session = SessionStore::open(dir.path().join("provider.jsonl")).unwrap();
+        let mut ledger =
+            WorkerBudgetLedger::restore(&mut session, ResourceLimits::default()).unwrap();
+        ledger
+            .open_lease(&mut session, lease("one", network), 1)
+            .unwrap();
+        ledger
+            .reserve(&mut session, admission("worker-one", "one"), 10)
+            .unwrap();
+        (dir, session, ledger)
+    }
+
+    fn snapshot(ledger: &WorkerBudgetLedger) -> Value {
+        serde_json::to_value(&ledger.snapshot).unwrap()
+    }
+
+    #[test]
+    fn provider_counts_survive_settlement_and_recovery_without_new_operations() {
+        let (dir, mut session, mut ledger) = fixture(2);
+        for now in [20, 21] {
+            ledger
+                .charge_provider_request(&mut session, "worker-one", "one", now)
+                .unwrap();
+        }
+        assert_eq!(ledger.operations().len(), 1);
+        assert_eq!(ledger.committed_usage(None).unwrap().concurrency, 1);
+        ledger
+            .settle(
+                &mut session,
+                "worker-one",
+                ResourceUsage::default(),
+                BudgetCompletion::Completed,
+                30,
+            )
+            .unwrap();
+        drop(session);
+        let mut session =
+            SessionStore::open_existing_writable(dir.path().join("provider.jsonl")).unwrap();
+        let restored = WorkerBudgetLedger::restore_existing(&mut session).unwrap();
+        assert_eq!(restored.committed_usage(None).unwrap().network_requests, 2);
+        assert_eq!(
+            restored
+                .committed_usage(Some("one"))
+                .unwrap()
+                .network_requests,
+            2
+        );
+        assert_eq!(restored.committed_usage(None).unwrap().concurrency, 0);
+        assert_eq!(restored.operations().len(), 1);
+    }
+
+    #[test]
+    fn only_the_live_original_worker_admission_can_charge() {
+        for state in [
+            "missing",
+            "other_lease",
+            "other_origin",
+            "settled",
+            "revoked",
+            "cancelled",
+            "expired",
+            "unknown",
+        ] {
+            let (_dir, mut session, mut ledger) = fixture(2);
+            let mut operation = "worker-one";
+            let mut lease_id = "one";
+            let mut now = 30;
+            match state {
+                "missing" => operation = "missing",
+                "other_lease" => lease_id = "other",
+                "other_origin" => {
+                    ledger
+                        .snapshot
+                        .operations
+                        .get_mut(operation)
+                        .unwrap()
+                        .reservation
+                        .origin = BudgetOrigin::AgentTool
+                }
+                "settled" => {
+                    ledger
+                        .settle(
+                            &mut session,
+                            operation,
+                            ResourceUsage::default(),
+                            BudgetCompletion::Completed,
+                            20,
+                        )
+                        .unwrap();
+                }
+                "revoked" => {
+                    ledger
+                        .revoke_lease(&mut session, lease_id, "revoked", 20)
+                        .unwrap();
+                }
+                "cancelled" => {
+                    ledger
+                        .snapshot
+                        .operations
+                        .get_mut(operation)
+                        .unwrap()
+                        .cancel_requested = true
+                }
+                "expired" => now = 10_000,
+                "unknown" => ledger = WorkerBudgetLedger::restore_existing(&mut session).unwrap(),
+                _ => unreachable!(),
+            }
+            let before = snapshot(&ledger);
+            let sequence = session.next_sequence();
+            assert!(
+                ledger
+                    .charge_provider_request(&mut session, operation, lease_id, now)
+                    .is_err(),
+                "{state}"
+            );
+            assert_eq!(snapshot(&ledger), before, "{state}");
+            assert_eq!(session.next_sequence(), sequence, "{state}");
+        }
+    }
+
+    #[test]
+    fn worker_wall_budget_blocks_retry_even_before_the_host_expiry_tick() {
+        let (_dir, mut session, mut ledger) = fixture(3);
+        ledger
+            .charge_provider_request(&mut session, "worker-one", "one", 20)
+            .unwrap();
+        assert!(matches!(
+            ledger.charge_provider_request(&mut session, "worker-one", "one", 111),
+            Err(GovernanceError::WorkerStopped(BudgetTerminal::Exhausted {
+                kind: ResourceKind::WallTime,
+                used: 101,
+                limit: 100
+            }))
+        ));
+        assert_eq!(ledger.committed_usage(None).unwrap().network_requests, 1);
+        assert!(ledger.operations()["worker-one"].cancel_requested);
+        assert!(ledger.terminal().is_some());
+        assert!(ledger.snapshot.leases["one"].expires_at_ms > 111);
+    }
+
+    #[test]
+    fn replacing_a_lease_cannot_reset_the_items_provider_budget() {
+        let (_dir, mut session, mut ledger) = fixture(1);
+        ledger
+            .charge_provider_request(&mut session, "worker-one", "one", 20)
+            .unwrap();
+        ledger
+            .settle(
+                &mut session,
+                "worker-one",
+                ResourceUsage::default(),
+                BudgetCompletion::Completed,
+                30,
+            )
+            .unwrap();
+        ledger
+            .open_lease(&mut session, lease("two", 1), 40)
+            .unwrap();
+        ledger
+            .reserve(&mut session, admission("worker-two", "two"), 50)
+            .unwrap();
+        assert_eq!(
+            ledger
+                .committed_usage(Some("two"))
+                .unwrap()
+                .network_requests,
+            1
+        );
+        assert!(matches!(
+            ledger.charge_provider_request(&mut session, "worker-two", "two", 60),
+            Err(GovernanceError::WorkerStopped(_))
+        ));
+        assert_eq!(
+            ledger.snapshot.provider_requests,
+            BTreeMap::from([("one".into(), 1)])
+        );
+        assert!(ledger.snapshot.revoked_leases.contains_key("two"));
+        assert_eq!(ledger.committed_usage(None).unwrap().network_requests, 1);
+        WorkerBudgetLedger::restore_existing(&mut session).unwrap();
+    }
+
+    #[test]
+    fn independent_items_share_the_host_counter_but_not_each_others_limit() {
+        let (_dir, mut session, mut ledger) = fixture(1);
+        ledger
+            .charge_provider_request(&mut session, "worker-one", "one", 20)
+            .unwrap();
+        ledger
+            .settle(
+                &mut session,
+                "worker-one",
+                ResourceUsage::default(),
+                BudgetCompletion::Completed,
+                30,
+            )
+            .unwrap();
+        let mut other = lease("two", 1);
+        other.blueprint_item = "PA05".into();
+        ledger.open_lease(&mut session, other, 40).unwrap();
+        ledger
+            .reserve(&mut session, admission("worker-two", "two"), 50)
+            .unwrap();
+        ledger
+            .charge_provider_request(&mut session, "worker-two", "two", 60)
+            .unwrap();
+        assert_eq!(ledger.committed_usage(None).unwrap().network_requests, 2);
+        assert_eq!(
+            ledger
+                .committed_usage(Some("one"))
+                .unwrap()
+                .network_requests,
+            1
+        );
+        assert_eq!(
+            ledger
+                .committed_usage(Some("two"))
+                .unwrap()
+                .network_requests,
+            1
+        );
+    }
+
+    #[test]
+    fn recovered_snapshots_reject_counter_rollback_removal_and_invalid_keys() {
+        for change in [
+            "rollback",
+            "remove",
+            "missing_field",
+            "zero",
+            "unknown_lease",
+        ] {
+            let (_dir, mut session, mut ledger) = fixture(3);
+            for now in [20, 21] {
+                ledger
+                    .charge_provider_request(&mut session, "worker-one", "one", now)
+                    .unwrap();
+            }
+            let mut corrupted = session.events().last().unwrap().clone();
+            match change {
+                "rollback" => corrupted["snapshot"]["provider_requests"]["one"] = json!(1),
+                "remove" => corrupted["snapshot"]["provider_requests"] = json!({}),
+                "missing_field" => {
+                    corrupted["snapshot"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("provider_requests");
+                }
+                "zero" => corrupted["snapshot"]["provider_requests"]["one"] = json!(0),
+                "unknown_lease" => corrupted["snapshot"]["provider_requests"]["missing"] = json!(1),
+                _ => unreachable!(),
+            }
+            session.append_event(corrupted).unwrap();
+            assert!(
+                matches!(
+                    WorkerBudgetLedger::restore_existing(&mut session),
+                    Err(GovernanceError::InvalidSnapshot(_))
+                ),
+                "{change}"
+            );
+        }
+    }
+
+    #[test]
+    fn old_snapshots_without_provider_counts_remain_readable() {
+        let (_dir, mut session, mut ledger) = fixture(2);
+        ledger
+            .settle(
+                &mut session,
+                "worker-one",
+                ResourceUsage::default(),
+                BudgetCompletion::Completed,
+                20,
+            )
+            .unwrap();
+        let mut legacy = session.events().last().unwrap().clone();
+        legacy["snapshot"]
+            .as_object_mut()
+            .unwrap()
+            .remove("provider_requests");
+        session.append_event(legacy).unwrap();
+        let restored = WorkerBudgetLedger::restore_existing(&mut session).unwrap();
+        assert!(restored.snapshot.provider_requests.is_empty());
+        assert_eq!(restored.committed_usage(None).unwrap().network_requests, 0);
+    }
+
+    #[test]
+    fn failed_provider_counter_journal_write_does_not_admit_in_memory() {
+        let (dir, mut session, mut ledger) = fixture(2);
+        let before = snapshot(&ledger);
+        let sequence = session.next_sequence();
+        let mut writer =
+            SessionStore::open_existing_writable(dir.path().join("provider.jsonl")).unwrap();
+        writer.append_event(json!({"type":"other_writer"})).unwrap();
+        assert!(matches!(
+            ledger.charge_provider_request(&mut session, "worker-one", "one", 20),
+            Err(GovernanceError::Session(_))
+        ));
+        assert_eq!(snapshot(&ledger), before);
+        assert_eq!(session.next_sequence(), sequence);
+        assert_eq!(ledger.committed_usage(None).unwrap().network_requests, 0);
+    }
 }

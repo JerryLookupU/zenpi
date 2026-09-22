@@ -1,0 +1,17 @@
+# Synthetic test PKI only. Never install this CA into a system trust store.
+[req]
+distinguished_name = dn
+prompt = no
+[dn]
+CN = zenpi explicit transport fixture
+[ca]
+basicConstraints = critical,CA:TRUE
+keyUsage = critical,keyCertSign,cRLSign
+subjectKeyIdentifier = hash
+[leaf]
+basicConstraints = critical,CA:FALSE
+keyUsage = critical,digitalSignature,keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = DNS:localhost,IP:127.0.0.1,DNS:chatgpt.com
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid,issuer

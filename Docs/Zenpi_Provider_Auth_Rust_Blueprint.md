@@ -1,7 +1,8 @@
 # zenpi 认证、模型与协议 Rust 蓝图
 
-> 唯一 Rust 设计定稿，2026-09-22。本 PR 只改文档，不表示下述接口已经实现或通过运行时验收。
+> 唯一 Rust 设计定稿，2026-09-22。原文档 PR #11 不含运行时实现；用户已另行授权 Rust 实施和迁移修复。
 > 本文合并认证 SPEC、转换清单和验收合同；不替换既有执行蓝图、任务状态或历史验收收据。
+> 当前实现及增量验证以[实施记录](Zenpi_Provider_Auth_Implementation.md)为准；设计定稿不等于功能已验收。
 
 ```yaml
 schemaVersion: design-blueprint/v1
@@ -15,7 +16,7 @@ canonicalFor: provider-auth-protocol-rust-design
 mode: extension
 researchMode: targeted
 chosenDirection: one-provider-file-shared-protocols-port-current-pi-auth
-constraints: [docs-only-now, no-js-runtime, one-agent-loop, one-retry-owner, no-implicit-broker]
+constraints: [incremental-module-tests, no-js-runtime, one-agent-loop, one-retry-owner, no-implicit-broker]
 zenpiCommit: 38f15d4e1263fdf981bca7bdd85ea06ec47c9bed
 piCommit: 4c8eb393c73220c742e75745df210335aedc020e
 ohMyPiCommit: 260eaa35fe3480ef1090641547fefde2ad879113
@@ -153,17 +154,18 @@ OMP [KnownApi / RUNNER_APIS](https://github.com/can1357/oh-my-pi/blob/260eaa35fe
 
 ## 2. zenpi 当前审阅结果
 
-以下是固定 HEAD 的事实；阅读了源码/测试，但本轮未执行 Cargo 测试。
+以下是设计审阅时固定 zenpiCommit 的事实；当时阅读了源码/测试但未执行 Cargo 测试。
+后续迁移与实际验证见实施记录；下表的历史源码链接固定到该提交，不随文件提取失效。
 
 | 优先级 | 事实与源码 | 必须补齐 |
 |---|---|---|
-| P1 | [Agent::set_model](../src/core.rs#L1071) 只改模型；[backend_from_effective](../src/core.rs#L6029) 启动时固定 endpoint/key/wire | 跨 profile 原子切换整连接，不能只改模型名/标题 |
-| P1 | [run](../src/core.rs#L6376) 在 host 启动前创建 backend，缺认证即失败 | 首次无凭据 TUI 要有独立引导，不能假设现有路径已支持 |
-| P1 | [backend](../src/backend.rs#L557) 长期缓存 key；生产未统一接上 issue_secret_handle | 每请求 resolve + SecretHandle，覆盖续接/摘要/重试 |
-| P1 | [发送头](../src/backend.rs#L1244) 仅区分 Google key 和 Bearer，包括 Anthropic | header policy 独立于 wire，原生 Anthropic/DeepSeek Messages 核验 x-api-key |
-| P1 | [active_attachments](../src/core.rs#L3995) 只保留当前 turn，完成即清；journal 只留引用/hash | 工具续接可用不等于跨 turn/重启重放 |
-| P2 | [profile 状态](../src/config.rs#L1375) 未完整反映 env/默认 URL；host doctor 用默认配置 | 状态从当前 owner 有效连接快照投影 |
-| P2 | [TUI zone model](../src/tui.rs#L12515) 可能先改显示，实际请求仍取 self.model | Core Applied 后才改 UI；zone 偏好不等于独立认证路由 |
+| P1 | [Agent::set_model](https://github.com/weiyangzen/zenpi/blob/38f15d4e1263fdf981bca7bdd85ea06ec47c9bed/src/core.rs#L1071) 只改模型；[backend_from_effective](https://github.com/weiyangzen/zenpi/blob/38f15d4e1263fdf981bca7bdd85ea06ec47c9bed/src/core.rs#L6029) 启动时固定 endpoint/key/wire | 跨 profile 原子切换整连接，不能只改模型名/标题 |
+| P1 | [run](https://github.com/weiyangzen/zenpi/blob/38f15d4e1263fdf981bca7bdd85ea06ec47c9bed/src/core.rs#L6376) 在 host 启动前创建 backend，缺认证即失败 | 首次无凭据 TUI 要有独立引导，不能假设现有路径已支持 |
+| P1 | [backend](https://github.com/weiyangzen/zenpi/blob/38f15d4e1263fdf981bca7bdd85ea06ec47c9bed/src/backend.rs#L557) 长期缓存 key；生产未统一接上 issue_secret_handle | 每请求 resolve + SecretHandle，覆盖续接/摘要/重试 |
+| P1 | [发送头](https://github.com/weiyangzen/zenpi/blob/38f15d4e1263fdf981bca7bdd85ea06ec47c9bed/src/backend.rs#L1244) 仅区分 Google key 和 Bearer，包括 Anthropic | header policy 独立于 wire，原生 Anthropic/DeepSeek Messages 核验 x-api-key |
+| P1 | [active_attachments](https://github.com/weiyangzen/zenpi/blob/38f15d4e1263fdf981bca7bdd85ea06ec47c9bed/src/core.rs#L3995) 只保留当前 turn，完成即清；journal 只留引用/hash | 工具续接可用不等于跨 turn/重启重放 |
+| P2 | [profile 状态](https://github.com/weiyangzen/zenpi/blob/38f15d4e1263fdf981bca7bdd85ea06ec47c9bed/src/config.rs#L1375) 未完整反映 env/默认 URL；host doctor 用默认配置 | 状态从当前 owner 有效连接快照投影 |
+| P2 | [TUI zone model](https://github.com/weiyangzen/zenpi/blob/38f15d4e1263fdf981bca7bdd85ea06ec47c9bed/src/tui.rs#L12515) 可能先改显示，实际请求仍取 self.model | Core Applied 后才改 UI；zone 偏好不等于独立认证路由 |
 | P2 | Core 按逻辑调用计 NetworkRequests，Backend 内可重试 | 每个物理 HTTP（含刷新）重新准入 |
 
 复用：Backend/CompletionRequest/ProviderEvent/Completion、精确 provider/model 目录、Chat 流、Anthropic/Google 原生适配、取消 transport、session、SecretHandle、Governance。
@@ -174,7 +176,7 @@ Responses 当前主要逐行解析，还需补完整 SSE framing；不能拿 Cha
 | 名称 | 控制什么 | 不得混同 |
 |---|---|---|
 | 模型/provider 认证 | API key、ChatGPT OAuth、账号与 endpoint | 用户所说 Codex/agent 订阅登录属于这里 |
-| Agent/worker 授权 | 工具、文件、网络、预算、lease | 继续由 [admit_blueprint_worker](../src/core.rs#L1465)、security/governance 管理，登录不扩权 |
+| Agent/worker 授权 | 工具、文件、网络、预算、lease | 继续由 [admit_blueprint_worker](../src/core.rs)、security/governance 管理，登录不扩权 |
 | 远端主机认证 | SSH identity 与主机 allow-list | [cluster.rs](../src/cluster.rs) 继续独立管理；有凭据不代表获准 dispatch |
 
 UI 分开显示“连接账号”和“Agent 权限”。模型或插件不能发起登录/导入/撤销/授信 endpoint。
@@ -249,28 +251,28 @@ Codex OAuth 在 auth/codex.rs；Codex Responses 差异在共享 responses.rs 的
 
 ### 3.2 每个文件的函数职责
 
-下表除标“现有”外均是拟议接口；命名用于后续实现对照，不是假装已有代码。
+下表是职责合同，已实施部分按实际接口名称收敛；“现有”指原基线已有能力。逐项接线/验证状态以实施记录为准，不能将此表当作全部功能已可用的声明。
 
 | 文件 | 类型 / 函数 | 输入 -> 输出与禁止事项 |
 |---|---|---|
-| backend.rs | 现有 complete_with_control；新增 complete_with_request_control、内部 apply_auth | 请求 -> 事件/结果；唯一重试；发送前借用 SecretHandle，不公开 token getter |
-| providers/mod.rs | ProviderDefinition、provider_definition | provider ID -> 静态定义；未知 provider 需显式兼容配置，不猜品牌 |
+| backend.rs | 现有 complete_with_control；from_connection、complete_with_request_control、complete_openai | 请求 -> 事件/结果；唯一重试；发送前在受控头部构造闭包借用 SecretHandle，不公开 token getter |
+| providers/mod.rs | ProviderDefinition、get_provider_definition | provider ID -> 静态定义；未知 provider 需显式兼容配置，不猜品牌 |
 | providers/registry.rs | 现有 ModelRegistry/ModelDescriptor | 模型能力/来源/digest；不保存凭据 |
-| providers/connection.rs | resolve_connection、resolve_model_route、validate_destination、connection_status | 配置 -> validated route；不登录、不改 session |
+| providers/connection.rs | resolve_connection、validate_model_routes、validate_destination、revalidate_route_auth | 配置 -> validated route；最终地址/身份/目的地授权重校验；不登录、不改 session |
 | providers/openai.rs | definition、routes | API key、Responses/Chat 的服务规则，不管理 ChatGPT token |
 | providers/codex.rs | definition、routes、validate_options | 固定 OAuth 目的地、Codex dialect/能力；不做 code exchange |
 | providers/deepseek.rs | definition、routes、map_reasoning、validate_options | 三 wire、header/字段/能力差异；不复制 encoder，不任意 extraBody 覆盖安全字段 |
 | providers/anthropic.rs | definition、routes | 原生 API key/header/endpoint 规则；不内置第三方 Claude 订阅 token |
 | providers/google.rs | definition、routes | Gemini API key/endpoint 规则；不把 GCP ADC 当普通 key |
-| protocols/mod.rs | encode_request、read_response | 有限 wire 分发，共用现有 BackendError/ProviderEvent |
+| protocols/mod.rs | encode_request/read_response；encode_request_for_route/read_response_for_route | 有限 wire 分发；显式路由校验能力/dialect/终态，共用现有 BackendError/ProviderEvent |
 | protocols/content.rs | content_parts、validate_content、validate_media_scope | 已验证 Turn/内容 -> 有序视图和能力检查；不读取文件、不持 ToolContext、不隐式丢图片 |
 | protocols/chat.rs | encode_request、read_stream | 现有 Chat body/SSE/tool/reasoning；保留兼容测试，不读秘密 |
 | protocols/responses.rs | encode_request、reduce_event、read_stream、map_call_id | 共用 Responses；Codex/DeepSeek dialect 明确能力差异，不到处判断域名 |
 | protocols/anthropic.rs | 现有编码/历史验证/流函数 | 原生 Messages 内容、tool_use/result、签名语义 |
 | protocols/google.rs | 现有 endpoint/编码/历史验证/流函数 | 原生 Gemini parts/function/signature 语义 |
 | auth/mod.rs | AuthBinding、AuthStatus、AuthError、AuthInteraction、LoginState/Outcome | binding 只有引用；状态不含 token/登录 URL；challenge 仅给可信发起宿主 |
-| auth/store.rs | read、list_status、modify、revoke、with_refresh_lock | credential ID + expected_revision -> 快照/提交；不做 HTTP/key command |
-| auth/resolve.rs | resolve_for_request、refresh_if_needed、recover_unauthorized、revoke_credential | 凭据生命周期；不重发推理、不选择另一个账号 |
+| auth/store.rs | metadata、read_committed、list_status、modify(Revoke)、lock_refresh/begin_refresh/finish_refresh | credential ID + expected_revision -> 快照/提交；不做 HTTP/key command，刷新借用还需 guard/ticket |
+| auth/resolve.rs | AuthResolver::initial_identity/resolve/recover_unauthorized/final_preflight | 非秘密初始身份、每请求短时句柄与最终撤销检查；初始 InFlight 由首次 resolve 等待 peer，不误报需重新登录；不重发推理、不选择另一个账号 |
 | auth/codex.rs | begin_browser_login、begin_device_login、poll_device_login、exchange_code、refresh_token、parse_token_response | typed flow/token；有界 HTTP/取消；不改默认 profile |
 | auth/callback.rs | bind_loopback、wait_callback_or_manual、validate_callback | 注册 URI/state -> 一次 code/拒绝/取消；关闭 listener 并 join |
 | tui/bootstrap.rs | run_auth_bootstrap | 未配置 -> 选定连接或退出；不启动 Agent/资源 runner |
@@ -818,30 +820,28 @@ max_retries=0 可预刷新，不在响应 401 后重发。semantic compaction �
 ### 8.3 每次物理 HTTP 准入
 
 ```rust
-pub enum RequestEvent {
-    BeforeHttpSend { kind: HttpSendKind, attempt_id: String },
-    Provider(ProviderEvent),
-}
-pub enum HttpSendKind { Inference, TokenRefresh }
+pub enum HttpRequestKind { Inference, AuthRefresh }
 pub struct RequestControl<'a> {
-    pub scope: &'a RequestScope,
+    pub scope: RequestScope,
     pub cancelled: &'a dyn Fn() -> bool,
-    pub deadline: std::time::Instant,
-    pub dispatch: &'a mut dyn FnMut(RequestEvent) -> Result<(), BackendError>,
+    pub deadline: Option<std::time::Instant>,
+    pub before_send: &'a mut dyn FnMut(HttpRequestKind, &RequestScope) -> Result<(), BackendError>,
 }
 // Backend trait 新方法的形状；所有公开签名涉及的类型也必须公开，但不含秘密。
 fn complete_with_request_control(
     &self,
     request: CompletionRequest<'_>,
     control: &mut RequestControl<'_>,
+    sink: &mut dyn FnMut(ProviderEvent) -> Result<(), BackendError>,
 ) -> Result<Completion, BackendError>;
 ```
 
-一个 dispatch 同步回调串行传发送准入与 provider 事件，避免两个闭包同时可变借用 Session owner；BeforeHttpSend 不写成模型 ProviderEvent，不触发“已交付内容禁止重放”。
+实施校正（2026-09-22）：复用既有 sink，不新增 RequestEvent 分发枚举。before_send 与 sink 仍同步串行；Core 经既有 InputPump 的短时 Session 借用记账，保持一个 owner/writer，不在闭包中持有跨调用的可变借用。before_send 不是模型 ProviderEvent，不触发“已交付内容禁止重放”。
+deadline 取既有全局 wall、原 worker admission wall、lease 剩余时间的最小值；无配置期限的兼容低层调用可以为 None，不能给 worker 重置或延长期限。等待 HTTP/backoff 时也检查当前 gate 撤销，不只在下一次 send 检查。
 共用 control，但必须分两条顺序，不能要求 refresh 在取得新凭据后才准入：
 
-- TokenRefresh：marker 持久化 -> 核对 attempt/revision/identity、取消与期限 -> dispatch(BeforeHttpSend(TokenRefresh)) -> 固定 token endpoint HTTP -> CAS 提交。不发放 refresh token 的公共 SecretHandle。
-- Inference：取得已提交凭据/SecretHandle -> 最终取消/身份/撤销/期限预检 -> dispatch(BeforeHttpSend(Inference)) -> 注头发送。
+- TokenRefresh：marker 持久化 -> 核对 attempt/revision/identity、取消与期限 -> control.before_send(AuthRefresh) -> 固定 token endpoint HTTP -> CAS 提交。不发放 refresh token 的公共 SecretHandle。
+- Inference：取得已提交凭据/SecretHandle -> 最终取消/身份/撤销/期限预检 -> control.before_send(Inference) -> 注头发送。
 
 两者均经既有 Governance/Session owner，拒绝则不开 socket；刷新若尚未发送可按7.3清 marker。旧外层逻辑网络计数移入此钩子，不双重扣费。
 refresh 计网络次数、不计模型轮次/input tokens；锁等待和 peer 复用不计 send。独立登录 CLI 使用自身有界网络预算。
@@ -851,6 +851,7 @@ refresh 计网络次数、不计模型轮次/input tokens；锁等待和 peer �
 RequestScope 为公开非秘密类型、字段/构造受可信宿主约束，由 control 携带；backend 必须与已验证 route/执行 owner 比较，不因调用者填了摘要就信任。
 不让 control 回调临时选择当前项目凭据；一个操作不能因 refresh 换 scope。
 不新建 scheduler/账本；认证线程不能直接写 SessionStore。取消覆盖 callback/device sleep/锁等待/HTTP/backoff。
+worker 的 HTTP admission 次数累加在既有 WorkerBudgetLedger、原 lease/item 下；wall/concurrency 仍由原 worker admission 持有，不能伪造零时长 reservation/提前 settlement，也不放宽通用 reservation 校验。计数持久化后不回退；旧快照缺字段按零读取，已有计数被后续快照删除则拒绝恢复。
 
 错误至少区分 auth_login_required、auth_revoked、auth_mode_mismatch、auth_destination_denied、auth_refresh_uncertain、auth_storage_failed、auth_lock_timeout、provider_unsupported_capability、provider_permission_denied、provider_usage_limit。
 保留已有 BackendError code；不靠显示文案分类。HTTP 错误限长/白名单/脱敏，request ID 去控制字符；debug 不绕过保护。

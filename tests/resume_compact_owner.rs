@@ -1,3 +1,5 @@
+mod support;
+
 use std::{
     io::Cursor,
     sync::{Arc, Mutex},
@@ -26,6 +28,7 @@ fn json_lines(bytes: &[u8]) -> Vec<serde_json::Value> {
 struct CaptureBackend(Arc<Mutex<Vec<String>>>);
 
 impl Backend for CaptureBackend {
+    crate::support::controlled_local_backend!();
     fn complete(&self, request: CompletionRequest<'_>) -> Result<Completion, BackendError> {
         if request
             .metadata

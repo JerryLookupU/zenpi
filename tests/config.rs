@@ -8,6 +8,303 @@ use zenpi::config::{
 };
 use zenpi::core::parse_args;
 
+fn explicit_config(text: &str) -> ConfigFile {
+    let config: ConfigFile = toml::from_str(text).unwrap();
+    config.validate().unwrap();
+    config
+}
+
+#[test]
+fn explicit_binding_ignores_ambient_credentials_and_route_environment() {
+    let config = explicit_config(
+        "provider='deepseek'\nmodel='deepseek-flash'\nwire_api='responses'\nauth_method='api_key'\nauth_ref='shared-key'",
+    );
+    let mut auth = AuthFile::default();
+    auth.set_openai_api_key("synthetic-file-key").unwrap();
+    let environment = BTreeMap::from([
+        ("ZENPI_API_KEY".into(), "synthetic-env-key".into()),
+        ("OPENAI_API_KEY".into(), "synthetic-openai-key".into()),
+        ("ZENPI_PROVIDER".into(), "wrong-provider".into()),
+        ("ZENPI_BACKEND".into(), "echo".into()),
+        ("ZENPI_WIRE_API".into(), "chat".into()),
+        ("ZENPI_BASE_URL".into(), "https://wrong.example/v1".into()),
+        (
+            "OPENAI_BASE_URL".into(),
+            "https://also-wrong.example/v1".into(),
+        ),
+    ]);
+    let resolved = resolve(&ConfigOverrides::default(), &config, &auth, &environment).unwrap();
+    assert_eq!(resolved.backend, "openai");
+    assert_eq!(resolved.provider.as_deref(), Some("deepseek"));
+    assert_eq!(resolved.wire_api.as_deref(), Some("responses"));
+    assert!(resolved.base_url.is_none());
+    assert_eq!(resolved.auth_method.as_deref(), Some("api_key"));
+    assert_eq!(resolved.auth_ref.as_deref(), Some("shared-key"));
+    assert_eq!(resolved.credential_source, CredentialSource::None);
+    assert!(resolved.api_key.is_none());
+    assert!(!format!("{resolved:?}").contains("synthetic-"));
+    let error = resolve(
+        &ConfigOverrides {
+            api_key: Some("synthetic-cli-secret".into()),
+            ..Default::default()
+        },
+        &config,
+        &auth,
+        &environment,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("conflicts"));
+    assert!(!error.to_string().contains("synthetic-cli-secret"));
+}
+
+#[test]
+fn absent_and_named_legacy_method_keep_existing_precedence() {
+    let mut config: ConfigFile = toml::from_str("provider='configured'\nmodel='configured-model'\nbase_url='https://configured.test/v1'\nauth_env='CUSTOM_KEY'").unwrap();
+    let mut auth = AuthFile::default();
+    auth.set_openai_api_key("synthetic-file").unwrap();
+    let environment = BTreeMap::from([
+        ("ZENPI_API_KEY".into(), "synthetic-env".into()),
+        ("ZENPI_PROVIDER".into(), "env-provider".into()),
+        ("ZENPI_WIRE_API".into(), "chat".into()),
+        (
+            "ZENPI_BASE_URL".into(),
+            "https://environment.test/v1".into(),
+        ),
+    ]);
+    for method in [None, Some("legacy_api_key".to_owned())] {
+        config.auth_method = method;
+        let r = resolve(&ConfigOverrides::default(), &config, &auth, &environment).unwrap();
+        assert_eq!(r.api_key.as_deref(), Some("synthetic-env"));
+        assert_eq!(r.provider.as_deref(), Some("env-provider"));
+        assert_eq!(r.base_url.as_deref(), Some("https://environment.test/v1"));
+        assert_eq!(r.wire_api.as_deref(), Some("chat"));
+        let r = resolve(
+            &ConfigOverrides {
+                api_key: Some("synthetic-cli".into()),
+                ..Default::default()
+            },
+            &config,
+            &auth,
+            &environment,
+        )
+        .unwrap();
+        assert_eq!(r.api_key.as_deref(), Some("synthetic-cli"));
+    }
+}
+
+#[test]
+fn explicit_auth_configuration_rejects_conflicts_without_resolving_secrets() {
+    for text in [
+        "auth_method='unknown'",
+        "auth_ref='cred'",
+        "auth_header='bearer'",
+        "auth_method='legacy_api_key'\nauth_ref='cred'",
+        "[[model_routes]]\nmodel='model'\nwire_api='responses'",
+        "provider='openai'\nwire_api='responses'\nauth_method='api_key'",
+        "provider='openai'\nwire_api='responses'\nauth_method='api_key'\nauth_ref='../cred'",
+        "provider='openai'\nwire_api='responses'\nauth_method='api_key'\nauth_ref='cred'\nauth_env='CUSTOM_KEY'",
+        "provider='openai'\nwire_api='responses'\nauth_method='api_key'\nauth_ref='cred'\nrequires_openai_auth=false",
+        "provider='openai'\nauth_method='api_key'\nauth_ref='cred'",
+        "provider='openai-codex'\nauth_method='api_key'\nauth_ref='cred'",
+        "provider='openai'\nwire_api='responses'\nauth_method='oauth'\nauth_ref='cred'",
+        "provider='openai-codex'\nauth_method='oauth'\nauth_ref='cred'\nauth_header='bearer'",
+        "provider='openai-codex'\nwire_api='responses'\nauth_method='oauth'\nauth_ref='cred'",
+        "provider='openai-codex'\nauth_method='oauth'\nauth_ref='cred'\nbase_url='https://chatgpt.com'",
+        "provider='openai'\nwire_api='responses'\nauth_method='api_key'\nauth_ref='cred'\nauth_header='x_api_key'",
+    ] {
+        let c: ConfigFile = toml::from_str(text).unwrap();
+        assert!(c.validate().is_err(), "accepted {text}");
+    }
+}
+
+#[test]
+fn codex_unique_wire_and_anonymous_local_binding_are_explicit() {
+    let codex =
+        explicit_config("provider='openai-codex'\nauth_method='oauth'\nauth_ref='codex-account'");
+    let c = resolve(
+        &ConfigOverrides::default(),
+        &codex,
+        &AuthFile::default(),
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    assert_eq!(c.wire_api.as_deref(), Some("openai_codex_responses"));
+    assert!(c.model.is_none() && c.api_key.is_none());
+    for base in [
+        "http://127.0.0.1:9999/v1",
+        "http://localhost:9999/v1",
+        "http://[::1]:9999/v1",
+    ] {
+        let config = explicit_config(&format!(
+            "provider='local'\nwire_api='chat'\nbase_url='{base}'\nauth_method='none'"
+        ));
+        let c = resolve(
+            &ConfigOverrides::default(),
+            &config,
+            &AuthFile::default(),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert!(!c.requires_openai_auth);
+        assert!(c.api_key.is_none());
+    }
+    for extra in [
+        "base_url='https://remote.test/v1'",
+        "base_url='http://remote.test/v1'",
+        "base_url='http://127.1/v1'",
+        "base_url='http://127.0.0.1/v1'\nauth_ref='cred'",
+        "base_url='http://127.0.0.1/v1'\nauth_env='KEY'",
+    ] {
+        let c: ConfigFile = toml::from_str(&format!(
+            "provider='local'\nwire_api='chat'\nauth_method='none'\n{extra}"
+        ))
+        .unwrap();
+        assert!(c.validate().is_err(), "{extra}");
+    }
+}
+
+#[test]
+fn deepseek_three_profiles_and_exact_routes_round_trip_without_secrets() {
+    let c = explicit_config(
+        r#"
+default_profile='chat'
+[profiles.chat]
+provider='deepseek'
+model='deepseek-flash'
+wire_api='chat'
+base_url='https://api.deepseek.com'
+auth_method='api_key'
+auth_ref='shared-deepseek'
+[[profiles.chat.model_routes]]
+model='deepseek-v4-pro'
+wire_api='responses'
+[profiles.responses]
+provider='deepseek'
+model='deepseek-flash'
+wire_api='responses'
+auth_method='api_key'
+auth_ref='shared-deepseek'
+[profiles.messages]
+provider='deepseek'
+model='deepseek-flash'
+wire_api='anthropic_messages'
+base_url='https://api.deepseek.com/anthropic/v1'
+auth_method='api_key'
+auth_ref='shared-deepseek'
+auth_header='x_api_key'
+"#,
+    );
+    let serialized = toml::to_string(&c).unwrap();
+    assert!(!serialized.contains("api_key ="));
+    assert_eq!(toml::from_str::<ConfigFile>(&serialized).unwrap(), c);
+    for (name, wire) in [
+        ("chat", "chat_completions"),
+        ("responses", "responses"),
+        ("messages", "anthropic_messages"),
+    ] {
+        let r = resolve(
+            &ConfigOverrides {
+                profile: Some(name.into()),
+                ..Default::default()
+            },
+            &c,
+            &AuthFile::default(),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert_eq!(r.wire_api.as_deref(), Some(wire));
+        assert_eq!(r.auth_ref.as_deref(), Some("shared-deepseek"));
+        assert!(r.api_key.is_none());
+    }
+    let (_, flat) = c.selected_profile(Some("chat")).unwrap();
+    assert_eq!(flat.model_routes.len(), 1);
+    assert_eq!(flat.model_routes[0].model, "deepseek-v4-pro");
+    let mut duplicate = flat.clone();
+    duplicate
+        .model_routes
+        .push(duplicate.model_routes[0].clone());
+    assert!(duplicate.validate().is_err());
+    let mut invalid = flat;
+    invalid.model_routes[0].base_url = Some("https://api.deepseek.com/v1".into());
+    assert!(invalid.validate().is_err());
+}
+
+#[test]
+fn explicit_cli_route_overrides_are_revalidated_and_model_override_is_allowed() {
+    let c = explicit_config(
+        "provider='deepseek'\nmodel='old'\nwire_api='responses'\nauth_method='api_key'\nauth_ref='cred'",
+    );
+    let r = resolve(
+        &ConfigOverrides {
+            model: Some("new".into()),
+            ..Default::default()
+        },
+        &c,
+        &AuthFile::default(),
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    assert_eq!(r.model.as_deref(), Some("new"));
+    for overrides in [
+        ConfigOverrides {
+            base_url: Some("https://evil.test".into()),
+            ..Default::default()
+        },
+        ConfigOverrides {
+            wire_api: Some("openai_codex_responses".into()),
+            ..Default::default()
+        },
+        ConfigOverrides {
+            backend: Some("echo".into()),
+            ..Default::default()
+        },
+        ConfigOverrides {
+            timeout_seconds: Some(3601),
+            ..Default::default()
+        },
+    ] {
+        assert!(resolve(&overrides, &c, &AuthFile::default(), &BTreeMap::new()).is_err());
+    }
+}
+
+#[test]
+fn explicit_doctor_is_unresolved_and_never_reads_legacy_auth_or_codex_fallback() {
+    let temp = tempdir().unwrap();
+    write_codex_fixture(temp.path(), "synthetic-codex-secret");
+    let paths = ConfigPaths::for_home(temp.path());
+    fs::create_dir_all(&paths.root).unwrap();
+    fs::write(
+        &paths.config,
+        "provider='openai-codex'\nauth_method='oauth'\nauth_ref='codex-account'\n",
+    )
+    .unwrap();
+    // Invalid legacy JSON proves this explicit diagnostic path does not open it.
+    fs::write(&paths.auth, "not legacy JSON").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_zenpi"))
+        .args(["config", "doctor", "--json"])
+        .env_clear()
+        .env("HOME", temp.path())
+        .env("ZENPI_HOME", &paths.root)
+        .env("CODEX_HOME", temp.path().join(".codex"))
+        .env("OPENAI_API_KEY", "synthetic-ambient-secret")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let status: serde_json::Value =
+        serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+            panic!(
+                "{error}; stderr={}",
+                String::from_utf8_lossy(&output.stderr)
+            )
+        });
+    assert_eq!(status["auth_method"], "oauth");
+    assert_eq!(status["auth_binding_state"], "unresolved");
+    assert_eq!(status["api_key_present"], false);
+    assert_eq!(status["wire_api"], "openai_codex_responses");
+    assert!(status["model"].is_null());
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("synthetic-"));
+}
+
 fn write_codex_fixture(home: &Path, key: &str) {
     let codex = home.join(".codex");
     fs::create_dir_all(&codex).unwrap();
@@ -93,6 +390,10 @@ fn effective_config_can_issue_policy_bound_secret_handle() {
         model: Some("fixture".into()),
         base_url: Some("https://example.test/v1".into()),
         wire_api: Some("chat".into()),
+        auth_method: None,
+        auth_ref: None,
+        auth_header: None,
+        model_routes: Vec::new(),
         api_key: Some("secret-config-key".into()),
         credential_source: CredentialSource::AuthFile,
         model_reasoning_effort: None,

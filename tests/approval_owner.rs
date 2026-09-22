@@ -1,3 +1,5 @@
+mod support;
+
 use std::{
     sync::{
         Arc,
@@ -25,6 +27,7 @@ struct ApprovalBackend {
 }
 
 impl Backend for ApprovalBackend {
+    crate::support::controlled_local_backend!();
     fn complete(&self, _: CompletionRequest<'_>) -> Result<Completion, BackendError> {
         match self.calls.fetch_add(1, Ordering::SeqCst) {
             0 => Ok(Completion {
@@ -404,6 +407,7 @@ fn host_emergency_cancel_denies_pending_approval_without_a_write() {
 fn host_emergency_cancel_stops_and_reaps_an_already_allowed_command() {
     struct CommandBackend;
     impl Backend for CommandBackend {
+        crate::support::controlled_local_backend!();
         fn complete(&self, _: CompletionRequest<'_>) -> Result<Completion, BackendError> {
             let mut completion = Completion::text("");
             completion.tool_calls.push(ToolCall { id: "process".into(), name: "run_command".into(), arguments: serde_json::json!({

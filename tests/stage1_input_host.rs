@@ -1,4 +1,6 @@
 use serde_json::{Map, Value, json};
+mod support;
+
 use std::{
     io::Write,
     sync::{
@@ -134,6 +136,7 @@ struct RecordingBackend {
     controls: Arc<Controls>,
 }
 impl Backend for RecordingBackend {
+    crate::support::controlled_local_backend!();
     fn complete(&self, request: CompletionRequest<'_>) -> Result<Completion, BackendError> {
         let n = self.calls.fetch_add(1, Ordering::AcqRel);
         self.seen
@@ -605,6 +608,7 @@ struct PausedBackend {
     seen: Requests,
 }
 impl Backend for PausedBackend {
+    crate::support::controlled_local_backend!();
     fn complete(&self, _: CompletionRequest<'_>) -> Result<Completion, BackendError> {
         unreachable!()
     }
@@ -689,6 +693,7 @@ struct CancelBeforeDelta {
     started: mpsc::Sender<()>,
 }
 impl Backend for CancelBeforeDelta {
+    crate::support::controlled_local_backend!();
     fn complete(&self, _: CompletionRequest<'_>) -> Result<Completion, BackendError> {
         unreachable!()
     }
@@ -767,6 +772,7 @@ fn explicit_shutdown_can_cancel_after_admission_before_any_provider_delta() {
 
 struct CaptureOnly(Requests);
 impl Backend for CaptureOnly {
+    crate::support::controlled_local_backend!();
     fn complete(&self, request: CompletionRequest<'_>) -> Result<Completion, BackendError> {
         if request
             .metadata
@@ -1330,6 +1336,7 @@ fn input_receipts_remain_responsive_during_tool_approval() {
         seen: Requests,
     }
     impl Backend for NeedsApproval {
+        crate::support::controlled_local_backend!();
         fn complete(&self, request: CompletionRequest<'_>) -> Result<Completion, BackendError> {
             self.seen
                 .lock()

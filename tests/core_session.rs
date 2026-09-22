@@ -1,3 +1,5 @@
+mod support;
+
 use serde_json::{Map, Value, json};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tempfile::tempdir;
@@ -12,6 +14,7 @@ use zenpi::{
 
 struct FailingBackend;
 impl Backend for FailingBackend {
+    crate::support::controlled_local_backend!();
     fn complete(&self, _: CompletionRequest<'_>) -> Result<Completion, BackendError> {
         Err(BackendError::Transport("offline".into()))
     }
@@ -20,6 +23,7 @@ impl Backend for FailingBackend {
 struct SlowBackend;
 
 impl Backend for SlowBackend {
+    crate::support::controlled_local_backend!();
     fn complete(&self, _: CompletionRequest<'_>) -> Result<Completion, BackendError> {
         std::thread::sleep(std::time::Duration::from_millis(25));
         Ok(Completion::text("must not persist"))
@@ -77,6 +81,7 @@ fn agent_live_owner_api_claims_and_completes_a_mailbox_request() {
 }
 
 impl Backend for ToolLoopBackend {
+    crate::support::controlled_local_backend!();
     fn complete(&self, request: CompletionRequest<'_>) -> Result<Completion, BackendError> {
         let call = self.calls.fetch_add(1, Ordering::SeqCst);
         if call == 0 {
@@ -105,6 +110,7 @@ struct WriteToolBackend {
 }
 
 impl Backend for WriteToolBackend {
+    crate::support::controlled_local_backend!();
     fn complete(&self, _: CompletionRequest<'_>) -> Result<Completion, BackendError> {
         if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
             Ok(Completion {
@@ -533,6 +539,7 @@ fn generic_unknown_outcome_warns_but_allows_explicit_local_shell() {
 fn user_shell_is_local_and_persists_next_turn_context() {
     struct ContextBackend;
     impl Backend for ContextBackend {
+        crate::support::controlled_local_backend!();
         fn complete(&self, request: CompletionRequest<'_>) -> Result<Completion, BackendError> {
             let shell = request
                 .turns
@@ -916,6 +923,7 @@ struct ScriptedToolBackend {
 }
 
 impl Backend for ScriptedToolBackend {
+    crate::support::controlled_local_backend!();
     fn complete(&self, _: CompletionRequest<'_>) -> Result<Completion, BackendError> {
         self.requests.fetch_add(1, Ordering::SeqCst);
         Ok(self

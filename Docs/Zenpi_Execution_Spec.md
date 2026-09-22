@@ -114,6 +114,22 @@ automatic migration or creation of account state during legacy config reads.
 5000-client support is a measured service capability, not a promise of 5000
 simultaneous model streams or of low total RSS across 5000 CLI processes.
 
+### 1.2 Provider/auth foundation dependencies (2026-09-22)
+
+The Rust implementation explicitly depends on already-locked packages;
+the lockfile changes only the root package's direct dependency list.
+
+| Dependency | Reason | Cost and boundary |
+|---|---|---|
+| `getrandom = "0.2"` (locked `0.2.17`) | OS-backed randomness for credential identities and refresh attempt IDs | Existing transitive dependency; no new service, runtime, or fallback PRNG |
+| `url = "2.5"` (locked `2.5.8`) | Parse and normalize destinations before credential authorization | Existing transitive dependency; no network discovery or ad hoc URL parser |
+| Test-only `rustls = "0.23"` (locked `0.23.43`, defaults off, ring/std/tls12) | Local HTTPS fixtures capture credential headers without relaxing production HTTPS or certificate checks | Already used by ureq; no new package/version, no production dependency or TLS bypass; upstream MSRV 1.71 is below this crate's 1.88 |
+
+Module-level verification and remaining production integration are recorded
+in the [implementation ledger](Zenpi_Provider_Auth_Implementation.md).
+These declarations do not imply that OAuth login or request authentication
+has been connected to either runtime mode.
+
 ## 2. Lean b3ehive subset
 
 The following b3ehive concepts are first-class zenpi data, not an external

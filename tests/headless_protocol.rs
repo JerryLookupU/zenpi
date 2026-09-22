@@ -1,5 +1,7 @@
 use serde_json::Value;
 use std::io::Cursor;
+mod support;
+
 use std::{
     fs,
     io::{Read, Write},
@@ -447,6 +449,7 @@ struct ReconnectCrashBackend {
     marker: PathBuf,
 }
 impl Backend for ReconnectCrashBackend {
+    crate::support::controlled_local_backend!();
     fn complete(&self, _: CompletionRequest<'_>) -> Result<Completion, BackendError> {
         fs::write(&self.marker, b"provider entered").unwrap();
         thread::sleep(Duration::from_secs(30));
@@ -648,6 +651,7 @@ struct BurstSteerBackend {
 struct SlowEofBackend;
 
 impl Backend for SlowEofBackend {
+    crate::support::controlled_local_backend!();
     fn complete(&self, _: CompletionRequest<'_>) -> Result<Completion, BackendError> {
         thread::sleep(Duration::from_millis(400));
         Ok(Completion::text("drained after eof"))
@@ -663,6 +667,7 @@ struct EofApprovalBackend {
 }
 
 impl Backend for EofApprovalBackend {
+    crate::support::controlled_local_backend!();
     fn complete(&self, _: CompletionRequest<'_>) -> Result<Completion, BackendError> {
         if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
             Ok(Completion {
@@ -692,6 +697,7 @@ impl Backend for EofApprovalBackend {
 }
 
 impl Backend for BurstSteerBackend {
+    crate::support::controlled_local_backend!();
     fn complete(&self, _: CompletionRequest<'_>) -> Result<Completion, BackendError> {
         Ok(Completion::text("unused"))
     }

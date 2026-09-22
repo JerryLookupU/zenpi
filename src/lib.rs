@@ -1,6 +1,7 @@
 //! Shared zenpi library. The binary exposes only TUI and headless modes.
 
 pub mod approval;
+pub(crate) mod auth;
 pub mod b3;
 pub mod backend;
 pub mod cluster;
@@ -25,6 +26,7 @@ pub mod persona;
 pub mod project_workspace;
 pub mod prompt_templates;
 pub mod protocol;
+pub(crate) mod protocols;
 pub mod providers;
 pub mod pty_shell;
 pub mod render;

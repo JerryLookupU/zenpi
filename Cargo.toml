@@ -16,6 +16,7 @@ dev-fixtures = []
 [dependencies]
 base64 = "0.23"
 crossterm = { version = "0.29", features = ["bracketed-paste"] }
+getrandom = "0.2"
 httpdate = "1.0"
 ignore = "0.4"
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
@@ -27,11 +28,13 @@ toml = "0.9"
 unicode-width = "0.2"
 unicode-segmentation = "=1.13.3"
 ureq = { version = "3.4", default-features = true, features = ["json"] }
+url = "2.5"
 yaml_serde = "0.10"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [dev-dependencies]
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tempfile = "3.23"
 
 [[example]]

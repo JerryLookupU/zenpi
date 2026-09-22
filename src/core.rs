@@ -401,6 +401,7 @@ impl AgentError {
 
 /// Shared state machine used by both runtime modes.
 pub struct Agent {
+    request_owner_id: String,
     output_store: crate::tool_output::SessionOutputStore,
     input_port: crate::input_queue::InputPort,
     project_overrides: crate::config::ConfigOverrides,
@@ -517,10 +518,88 @@ impl Agent {
         run(guard.agent)
     }
 
+    fn provider_request_scope(
+        &self,
+        operation_id: &str,
+        purpose: crate::backend::RequestPurpose,
+    ) -> Result<crate::backend::RequestScope, AgentError> {
+        let route = self.backend.request_binding(self.model.as_deref())?;
+        let gate = self
+            .tools
+            .as_ref()
+            .map(|runtime| runtime.context.checked_policy_evidence())
+            .transpose()
+            .map_err(AgentError::Tool)?
+            .flatten();
+        let binding = self
+            .tools
+            .as_ref()
+            .and_then(|runtime| runtime.worker_binding.as_ref());
+        if let Some(gate) = gate.as_ref() {
+            let binding = binding.ok_or_else(|| {
+                AgentError::InvalidTurn(
+                    "provider request requires the original worker binding".into(),
+                )
+            })?;
+            validate_worker_gate_binding(binding, gate)?;
+        }
+        Ok(crate::backend::RequestScope {
+            owner_id: self.request_owner_id.clone(),
+            session_id: self.session.session_id().to_owned(),
+            operation_id: operation_id.to_owned(),
+            purpose,
+            route_digest: route.route_digest,
+            identity_scope: route.identity_scope,
+            policy_digest: gate.as_ref().map(|gate| gate.policy_digest.clone()),
+            lease_id: gate.map(|gate| gate.lease_id),
+        })
+    }
+
+    fn provider_request_deadline(
+        &self,
+        scope: &crate::backend::RequestScope,
+    ) -> Option<std::time::Instant> {
+        let mut remaining_ms = self.governance.as_ref().map(|ledger| {
+            ledger
+                .limits()
+                .max_wall_ms
+                .saturating_sub(ledger.usage().wall_ms)
+        });
+        if scope.lease_id.is_some() {
+            let now_ms = unix_time_ms();
+            if let Some(binding) = self
+                .tools
+                .as_ref()
+                .and_then(|runtime| runtime.worker_binding.as_ref())
+            {
+                let lease_remaining = binding.expires_at_ms.saturating_sub(now_ms);
+                remaining_ms =
+                    Some(remaining_ms.map_or(lease_remaining, |value| value.min(lease_remaining)));
+            }
+            if let Some(admission) = self
+                .worker_admission_operation
+                .as_ref()
+                .and_then(|id| self.worker_budget.as_ref()?.operations().get(id))
+            {
+                let wall_remaining = admission
+                    .reservation
+                    .resources
+                    .wall_ms
+                    .saturating_sub(now_ms.saturating_sub(admission.reserved_at_ms));
+                remaining_ms =
+                    Some(remaining_ms.map_or(wall_remaining, |value| value.min(wall_remaining)));
+            }
+        }
+        remaining_ms.and_then(|millis| {
+            std::time::Instant::now().checked_add(std::time::Duration::from_millis(millis))
+        })
+    }
+
     pub fn new(session: SessionStore, backend: Box<dyn Backend>) -> Self {
         let model = backend.model().map(str::to_owned);
         let recovered = session.interrupted_operations();
         let mut agent = Self {
+            request_owner_id: next_id("request-owner"),
             output_store: crate::tool_output::SessionOutputStore::default(),
             input_port: crate::input_queue::InputPort::new(session.session_id()),
             project_overrides: crate::config::ConfigOverrides::default(),
@@ -2035,6 +2114,10 @@ impl Agent {
             ));
         }
         let operation_id = next_id("semantic-compaction");
+        let request_scope = self.provider_request_scope(
+            &operation_id,
+            crate::backend::RequestPurpose::SemanticCompaction,
+        )?;
         let mut request_turn = Turn::new(
             format!("summary-{}", self.session.next_sequence()),
             TurnRole::User,
@@ -2067,8 +2150,8 @@ impl Agent {
         ledger
             .persist(&mut self.session)
             .map_err(|e| AgentError::Governance(e.to_string()))?;
-        // Check the whole request against a candidate budget before publishing
-        // any reservation; a rejected request must not partly consume quotas.
+        // Reserve the summary's token/cost ceiling together. HTTP admission is
+        // charged separately, only when the backend actually starts a send.
         let mut candidate =
             crate::governance::BudgetLedger::restore(&self.session, ledger.limits())
                 .map_err(|e| AgentError::Governance(e.to_string()))?;
@@ -2080,9 +2163,10 @@ impl Agent {
             .and_then(|_| {
                 candidate.charge(crate::governance::ResourceKind::OutputTokens, output_limit)
             })
-            .and_then(|_| candidate.charge(crate::governance::ResourceKind::NetworkRequests, 1))
             .and_then(|_| candidate.reserve_summary_cost(quote))
-            .and_then(|_| candidate.persist(&mut self.session))
+            .map_err(|e| AgentError::Governance(e.to_string()))?;
+        candidate
+            .persist(&mut self.session)
             .map_err(|e| AgentError::Governance(e.to_string()))?;
         self.governance = Some(candidate);
         if cancelled() {
@@ -2114,12 +2198,46 @@ impl Agent {
             Some(limit) => request.with_max_output_tokens(limit),
             None => request,
         };
+        let deadline = self.provider_request_deadline(&request_scope);
         let pump =
             crate::input_queue::InputPump::new(&mut self.session, self.input_port.clone(), &scope);
         let mut streamed_bytes = 0usize;
+        let mut admission_error = None;
+        let mut before_send = |_kind, actual_scope: &crate::backend::RequestScope| {
+            let result = pump.with_session(|session| {
+                admit_provider_send(
+                    session,
+                    &mut self.governance,
+                    &mut self.worker_budget,
+                    self.worker_admission_operation.as_deref(),
+                    self.tools.as_ref(),
+                    actual_scope,
+                    &request_scope,
+                )
+            });
+            result.map_err(|error| {
+                admission_error = Some(error);
+                BackendError::AdmissionDenied("provider request denied by owner".into())
+            })
+        };
+        let request_cancelled = || {
+            pump.poll(
+                cancelled()
+                    || self
+                        .tools
+                        .as_ref()
+                        .is_some_and(|runtime| runtime.context.checked_policy_evidence().is_err()),
+            )
+        };
+        let mut control = crate::backend::RequestControl {
+            cancelled: &request_cancelled,
+            deadline,
+            scope: request_scope.clone(),
+            before_send: &mut before_send,
+        };
         let response =
             self.backend
-                .complete_with_control(request, &|| pump.poll(cancelled()), &mut |event| {
+                .complete_with_request_control(request, &mut control, &mut |event| {
                     if let ProviderEvent::TextDelta { delta } = event {
                         streamed_bytes = streamed_bytes.saturating_add(delta.len());
                         if streamed_bytes > crate::context::MAX_SUMMARY_BYTES {
@@ -2133,6 +2251,9 @@ impl Agent {
         let pump_result = pump.finish();
         let outcome = (|| -> Result<PreparedContext, AgentError> {
             pump_result?;
+            if let Some(error) = admission_error {
+                return Err(error);
+            }
             let response = response?;
             let actual_cost = response
                 .usage
@@ -2665,6 +2786,7 @@ impl Agent {
     /// Settle an admitted Blueprint worker only after its host has observed a
     /// terminal outcome and reaped all owned children. Unknown effects remain
     /// reserved in the durable ledger and are never implicitly retried.
+    /// Provider send admissions are already charged; exclude them from actual.
     pub fn settle_blueprint_worker(
         &mut self,
         operation_id: &str,
@@ -2675,9 +2797,13 @@ impl Agent {
         let ledger = self.worker_budget.as_mut().ok_or_else(|| {
             AgentError::Governance("worker budget ledger is not configured".into())
         })?;
-        ledger
+        let directive = ledger
             .settle(&mut self.session, operation_id, actual, completion, now_ms)
-            .map_err(|error| AgentError::Governance(error.to_string()))
+            .map_err(|error| AgentError::Governance(error.to_string()))?;
+        if self.worker_admission_operation.as_deref() == Some(operation_id) {
+            self.worker_admission_operation = None;
+        }
+        Ok(directive)
     }
 
     /// Renew an admitted worker lease through the host-owned durable ledger.
@@ -3969,7 +4095,8 @@ impl Agent {
                 }
             };
             if let Some(governance) = self.governance.as_mut() {
-                governance
+                let mut candidate = governance.clone();
+                candidate
                     .charge(
                         crate::governance::ResourceKind::InputTokens,
                         prepared
@@ -3977,13 +4104,11 @@ impl Agent {
                             .input_tokens
                             .saturating_add(instruction_tokens),
                     )
-                    .and_then(|_| {
-                        governance.charge(crate::governance::ResourceKind::NetworkRequests, 1)
-                    })
                     .map_err(|error| AgentError::Governance(error.to_string()))?;
-                governance
+                candidate
                     .persist(&mut self.session)
                     .map_err(|error| AgentError::Governance(error.to_string()))?;
+                *governance = candidate;
             }
             let request = CompletionRequest::new(
                 turn_id,
@@ -3997,20 +4122,64 @@ impl Agent {
                 Some(limit) => request.with_max_output_tokens(limit),
                 None => request,
             };
+            let purpose = if prepared
+                .turns
+                .last()
+                .is_some_and(|turn| turn.role == TurnRole::Tool)
+            {
+                crate::backend::RequestPurpose::ToolContinuation
+            } else {
+                crate::backend::RequestPurpose::Turn
+            };
+            let request_scope = self.provider_request_scope(turn_id, purpose)?;
+            let deadline = self.provider_request_deadline(&request_scope);
             let pump = crate::input_queue::InputPump::new(
                 &mut self.session,
                 self.input_port.clone(),
                 turn_id,
             );
-            let completion = self.backend.complete_with_control(
-                request,
-                &|| pump.poll(is_cancelled()),
-                &mut |event| {
-                    provider_sink(event)?;
-                    Ok(())
-                },
-            );
+            let mut admission_error = None;
+            let mut before_send = |_kind, actual_scope: &crate::backend::RequestScope| {
+                let result = pump.with_session(|session| {
+                    admit_provider_send(
+                        session,
+                        &mut self.governance,
+                        &mut self.worker_budget,
+                        self.worker_admission_operation.as_deref(),
+                        self.tools.as_ref(),
+                        actual_scope,
+                        &request_scope,
+                    )
+                });
+                result.map_err(|error| {
+                    admission_error = Some(error);
+                    BackendError::AdmissionDenied("provider request denied by owner".into())
+                })
+            };
+            let request_cancelled = || {
+                pump.poll(
+                    is_cancelled()
+                        || self.tools.as_ref().is_some_and(|runtime| {
+                            runtime.context.checked_policy_evidence().is_err()
+                        }),
+                )
+            };
+            let mut control = crate::backend::RequestControl {
+                cancelled: &request_cancelled,
+                deadline,
+                scope: request_scope.clone(),
+                before_send: &mut before_send,
+            };
+            let completion =
+                self.backend
+                    .complete_with_request_control(request, &mut control, &mut |event| {
+                        provider_sink(event)?;
+                        Ok(())
+                    });
             pump.finish()?;
+            if let Some(error) = admission_error {
+                return Err(error);
+            }
             let mut completion = completion.map_err(AgentError::from)?;
             if let Some(usage) = completion.usage
                 && let Some(governance) = self.governance.as_mut()
@@ -5095,36 +5264,8 @@ impl Agent {
                 _ => crate::session::OperationOutcome::Failed,
             },
         )?;
-        if evidence.worker_binding.is_some()
-            && invocation.outcome != ToolInvocationOutcome::UnknownOutcome
-            && let Some(admission_operation) = self.worker_admission_operation.clone()
-        {
-            let ledger = self.worker_budget.as_mut().ok_or_else(|| {
-                AgentError::Governance("worker budget ledger disappeared before settlement".into())
-            })?;
-            ledger
-                .settle(
-                    &mut self.session,
-                    &admission_operation,
-                    crate::governance::ResourceUsage {
-                        concurrency: 0,
-                        processes: 1,
-                        ..Default::default()
-                    },
-                    match invocation.outcome {
-                        ToolInvocationOutcome::Succeeded => {
-                            crate::governance::BudgetCompletion::Completed
-                        }
-                        ToolInvocationOutcome::Cancelled => {
-                            crate::governance::BudgetCompletion::Cancelled
-                        }
-                        _ => crate::governance::BudgetCompletion::Failed,
-                    },
-                    crate::session::unix_time_ms(),
-                )
-                .map_err(|error| AgentError::Governance(error.to_string()))?;
-            self.worker_admission_operation = None;
-        }
+        // A tool result is not a worker terminal outcome. The host settles the
+        // original admission only after the whole worker and its children end.
         Ok(())
     }
 
@@ -5540,6 +5681,82 @@ impl Agent {
 pub struct ProcessResult {
     pub submission: TurnSubmission,
     pub assistant: Option<Turn>,
+}
+
+fn admit_provider_send(
+    session: &mut SessionStore,
+    governance: &mut Option<crate::governance::BudgetLedger>,
+    worker_budget: &mut Option<crate::governance::WorkerBudgetLedger>,
+    worker_admission: Option<&str>,
+    runtime: Option<&ToolRuntime>,
+    scope: &crate::backend::RequestScope,
+    expected: &crate::backend::RequestScope,
+) -> Result<(), AgentError> {
+    if scope != expected || session.session_id() != scope.session_id {
+        return Err(AgentError::Recovery(
+            "provider request scope changed after preparation".into(),
+        ));
+    }
+    let gate = runtime
+        .map(|runtime| runtime.context.checked_policy_evidence())
+        .transpose()
+        .map_err(AgentError::Tool)?
+        .flatten();
+    // Correlation metadata alone is not a worker grant. Only the compiled,
+    // live gate can bind a request to the worker's policy and lease.
+    let binding = gate
+        .as_ref()
+        .and_then(|_| runtime.and_then(|runtime| runtime.worker_binding.as_ref()));
+    match (binding, gate.as_ref()) {
+        (Some(binding), Some(gate)) => {
+            validate_worker_gate_binding(binding, gate)?;
+            if scope.policy_digest.as_deref() != Some(binding.policy_digest.as_str())
+                || scope.lease_id.as_deref() != Some(binding.lease_id.as_str())
+            {
+                return Err(AgentError::Recovery("provider worker scope changed".into()));
+            }
+        }
+        (None, None) if scope.policy_digest.is_none() && scope.lease_id.is_none() => {}
+        _ => {
+            return Err(AgentError::InvalidTurn(
+                "provider request has no live worker grant".into(),
+            ));
+        }
+    }
+    let mut candidate = governance.clone();
+    if let Some(ledger) = candidate.as_mut() {
+        ledger
+            .ensure_within_limits()
+            .and_then(|_| ledger.charge(crate::governance::ResourceKind::NetworkRequests, 1))
+            .map_err(|error| AgentError::Governance(error.to_string()))?;
+    }
+    if let Some(binding) = binding {
+        let ledger = worker_budget.as_mut().ok_or_else(|| {
+            AgentError::Governance("provider worker budget is unavailable".into())
+        })?;
+        let now_ms = unix_time_ms();
+        ledger
+            .active_lease(
+                &binding.lease_id,
+                &binding.policy_digest,
+                &binding.item_id,
+                now_ms,
+            )
+            .map_err(|error| AgentError::Governance(error.to_string()))?;
+        let admission = worker_admission.ok_or_else(|| {
+            AgentError::Governance("provider worker admission is unavailable".into())
+        })?;
+        ledger
+            .charge_provider_request(session, admission, &binding.lease_id, now_ms)
+            .map_err(|error| AgentError::Governance(error.to_string()))?;
+    }
+    if let Some(ledger) = candidate.as_mut() {
+        ledger
+            .persist(session)
+            .map_err(|error| AgentError::Governance(error.to_string()))?;
+    }
+    *governance = candidate;
+    Ok(())
 }
 
 fn unix_time_ms() -> u64 {
@@ -6029,6 +6246,28 @@ fn make_backend(options: &CliOptions) -> Result<Box<dyn Backend>, ZenpiError> {
 fn backend_from_effective(
     effective: crate::config::EffectiveConfig,
 ) -> Result<Box<dyn Backend>, ZenpiError> {
+    if let Some(connection) = effective.provider_connection(1)? {
+        let paths = crate::config::ConfigPaths::discover()?;
+        let store = crate::auth::store::CredentialStore::new(std::path::absolute(paths.auth)?)
+            .map_err(|error| ZenpiError::Message(error.to_string()))?;
+        let registry =
+            crate::providers::registry::ModelRegistry::with_overrides(&effective.model_overrides)
+                .map_err(|error| ZenpiError::Message(error.to_string()))?;
+        let model = effective
+            .model
+            .ok_or_else(|| ZenpiError::arguments("explicit connection requires a model"))?;
+        let backend = OpenAiCompatibleBackend::from_connection(
+            connection,
+            store,
+            registry,
+            model,
+            effective.model_reasoning_effort,
+            effective.model_verbosity,
+            std::time::Duration::from_secs(effective.timeout_seconds.unwrap_or(120)),
+        )?
+        .with_max_retries(effective.max_retries.unwrap_or(2))?;
+        return Ok(Box::new(backend));
+    }
     if !matches!(
         effective.backend.as_str(),
         "openai" | "anthropic" | "google"

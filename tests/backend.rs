@@ -11,8 +11,9 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 use tempfile::tempdir;
 use zenpi::backend::{
-    AttachmentKind, Backend, BackendError, CompletionRequest, InputAttachment,
-    OpenAiCompatibleBackend, OpenAiWireApi, ProviderCapabilities, ProviderEvent,
+    AttachmentKind, Backend, BackendError, Completion, CompletionRequest, EchoBackend,
+    HttpRequestKind, InputAttachment, OpenAiCompatibleBackend, OpenAiWireApi, ProviderCapabilities,
+    ProviderEvent, RequestControl, RequestPurpose, RequestScope,
 };
 use zenpi::core::{Agent, Turn, TurnInputRequest, TurnRole};
 use zenpi::session::SessionStore;
@@ -1069,4 +1070,543 @@ fn read_request_body(stream: &mut TcpStream) -> Result<Value, String> {
     }
     serde_json::from_slice(&request[header_end..header_end + content_length])
         .map_err(|error| error.to_string())
+}
+
+fn request_scope(backend: &dyn Backend) -> RequestScope {
+    let binding = backend.request_binding(None).unwrap();
+    RequestScope {
+        owner_id: "owner-fixture".into(),
+        session_id: "session-fixture".into(),
+        operation_id: "operation-fixture".into(),
+        purpose: RequestPurpose::Turn,
+        route_digest: binding.route_digest,
+        identity_scope: binding.identity_scope,
+        policy_digest: None,
+        lease_id: Some("lease-fixture".into()),
+    }
+}
+
+fn accept_admitted(listener: &TcpListener) -> TcpStream {
+    listener.set_nonblocking(true).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                stream.set_nonblocking(false).unwrap();
+                return stream;
+            }
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline =>
+            {
+                thread::sleep(Duration::from_millis(5));
+            }
+            Err(error) => panic!("admitted request was not received: {error}"),
+        }
+    }
+}
+
+#[test]
+fn request_control_default_rejects_legacy_dispatch_without_admission() {
+    struct Legacy(AtomicUsize);
+    impl Backend for Legacy {
+        fn complete(&self, _: CompletionRequest<'_>) -> Result<Completion, BackendError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(Completion::text("legacy"))
+        }
+        fn complete_with_control(
+            &self,
+            _: CompletionRequest<'_>,
+            _: &dyn Fn() -> bool,
+            _: &mut dyn FnMut(ProviderEvent) -> Result<(), BackendError>,
+        ) -> Result<Completion, BackendError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(Completion::text("custom"))
+        }
+    }
+    let backend = Legacy(AtomicUsize::new(0));
+    let admitted = AtomicUsize::new(0);
+    let result = backend.complete_with_request_control(
+        CompletionRequest::new("operation-fixture", &[], None, &[]),
+        &mut RequestControl {
+            cancelled: &|| false,
+            deadline: None,
+            scope: request_scope(&backend),
+            before_send: &mut |kind, _| {
+                assert_eq!(kind, HttpRequestKind::Inference);
+                admitted.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        },
+        &mut |_| panic!("unsupported controlled backend must not emit events"),
+    );
+    assert!(
+        matches!(result, Err(BackendError::Configuration(message)) if message == "controlled_request_unsupported")
+    );
+    assert_eq!(backend.0.load(Ordering::SeqCst), 0);
+    assert_eq!(admitted.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        backend
+            .complete(CompletionRequest::new("legacy", &[], None, &[]))
+            .unwrap()
+            .content,
+        "legacy"
+    );
+    assert_eq!(
+        backend
+            .complete_with_control(
+                CompletionRequest::new("legacy", &[], None, &[]),
+                &|| false,
+                &mut |_| Ok(())
+            )
+            .unwrap()
+            .content,
+        "custom"
+    );
+    assert_eq!(backend.0.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn echo_request_control_checks_cancel_and_deadline_without_http_admission() {
+    let backend = EchoBackend;
+    let turns = [Turn::new("user", TurnRole::User, "local echo")];
+    for case in ["ready", "cancelled", "expired", "cancelled_by_sink"] {
+        let cancelled = AtomicBool::new(case == "cancelled");
+        let admitted = AtomicUsize::new(0);
+        let mut events = Vec::new();
+        let result = backend.complete_with_request_control(
+            CompletionRequest::new("operation-fixture", &turns, None, &[]),
+            &mut RequestControl {
+                cancelled: &|| cancelled.load(Ordering::SeqCst),
+                deadline: (case == "expired").then(Instant::now),
+                scope: request_scope(&backend),
+                before_send: &mut |_, _| {
+                    admitted.fetch_add(1, Ordering::SeqCst);
+                    Err(BackendError::AdmissionDenied(
+                        "local echo cannot send HTTP".into(),
+                    ))
+                },
+            },
+            &mut |event| {
+                events.push(event);
+                if case == "cancelled_by_sink" {
+                    cancelled.store(true, Ordering::SeqCst);
+                }
+                Ok(())
+            },
+        );
+        match case {
+            "ready" => {
+                assert_eq!(result.unwrap().content, "local echo");
+                assert!(matches!(
+                    events.as_slice(),
+                    [
+                        ProviderEvent::TextDelta { .. },
+                        ProviderEvent::Completed { .. }
+                    ]
+                ));
+            }
+            "expired" => {
+                assert!(matches!(result, Err(BackendError::DeadlineExceeded)));
+                assert!(events.is_empty());
+            }
+            _ => {
+                assert!(matches!(result, Err(BackendError::Cancelled)));
+                assert_eq!(events.len(), usize::from(case == "cancelled_by_sink"));
+            }
+        }
+        assert_eq!(admitted.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[test]
+fn invalid_cancelled_expired_or_denied_requests_never_open_a_socket() {
+    for case in ["invalid", "cancelled", "expired", "wrong_scope", "denied"] {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let backend = retry_backend(listener.local_addr().unwrap().port(), 3);
+        let mut scope = request_scope(&backend);
+        if case == "wrong_scope" {
+            scope.route_digest.push('x');
+        }
+        let admitted = AtomicUsize::new(0);
+        let turns = [Turn::new("user", TurnRole::User, "fixture")];
+        let mut request = CompletionRequest::new("operation-fixture", &turns, None, &[]);
+        if case == "invalid" {
+            request.max_output_tokens = Some(0);
+        }
+        let result = backend.complete_with_request_control(
+            request,
+            &mut RequestControl {
+                cancelled: &|| case == "cancelled",
+                deadline: (case == "expired").then(Instant::now),
+                scope,
+                before_send: &mut |_, _| {
+                    admitted.fetch_add(1, Ordering::SeqCst);
+                    // Even an accidentally retryable hook error must not retry admission.
+                    Err(BackendError::Transport("admission fixture rejected".into()))
+                },
+            },
+            &mut |_| panic!("no provider event expected"),
+        );
+        let error = result.unwrap_err();
+        assert!(!error.is_retryable(), "{case}: {error}");
+        assert_eq!(
+            admitted.load(Ordering::SeqCst),
+            usize::from(case == "denied")
+        );
+        assert!(
+            matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+        );
+    }
+}
+
+#[test]
+fn every_physical_retry_is_admitted_under_the_same_frozen_scope() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let backend = retry_backend(listener.local_addr().unwrap().port(), 2);
+    let server = thread::spawn(move || {
+        for attempt in 0..2 {
+            let mut stream = accept_admitted(&listener);
+            read_headers(&mut stream).unwrap();
+            if attempt == 0 {
+                stream
+                    .write_all(
+                        b"HTTP/1.1 503 Retry\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .unwrap();
+            } else {
+                write_sse_completion(&mut stream, "admitted retry").unwrap();
+            }
+        }
+    });
+    let scope = request_scope(&backend);
+    let expected = scope.clone();
+    let mut observed = Vec::new();
+    let turns = [Turn::new("user", TurnRole::User, "fixture")];
+    let completion = backend
+        .complete_with_request_control(
+            CompletionRequest::new("operation-fixture", &turns, None, &[]),
+            &mut RequestControl {
+                cancelled: &|| false,
+                deadline: None,
+                scope,
+                before_send: &mut |kind, scope| {
+                    assert_eq!(kind, HttpRequestKind::Inference);
+                    observed.push(scope.clone());
+                    Ok(())
+                },
+            },
+            &mut |_| Ok(()),
+        )
+        .unwrap();
+    server.join().unwrap();
+    assert_eq!(completion.content, "admitted retry");
+    assert_eq!(observed, vec![expected.clone(), expected]);
+}
+
+#[test]
+fn retry_admission_denial_stops_before_the_second_socket() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let backend = retry_backend(listener.local_addr().unwrap().port(), 3);
+    let server = thread::spawn(move || {
+        let mut stream = accept_admitted(&listener);
+        read_headers(&mut stream).unwrap();
+        stream
+            .write_all(b"HTTP/1.1 503 Retry\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        listener
+    });
+    let admitted = AtomicUsize::new(0);
+    let turns = [Turn::new("user", TurnRole::User, "fixture")];
+    let result = backend.complete_with_request_control(
+        CompletionRequest::new("operation-fixture", &turns, None, &[]),
+        &mut RequestControl {
+            cancelled: &|| false,
+            deadline: None,
+            scope: request_scope(&backend),
+            before_send: &mut |_, _| {
+                if admitted.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Ok(())
+                } else {
+                    Err(BackendError::AdmissionDenied(
+                        "fixture quota exhausted".into(),
+                    ))
+                }
+            },
+        },
+        &mut |_| Ok(()),
+    );
+    assert!(matches!(result, Err(BackendError::AdmissionDenied(_))));
+    assert_eq!(admitted.load(Ordering::SeqCst), 2);
+    let listener = server.join().unwrap();
+    assert!(
+        matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+    );
+}
+
+#[test]
+fn provider_event_prevents_retry_after_a_truncated_response() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let backend = retry_backend(listener.local_addr().unwrap().port(), 3);
+    let server = thread::spawn(move || {
+        let mut stream = accept_admitted(&listener);
+        read_headers(&mut stream).unwrap();
+        let partial = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n";
+        write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{partial}", partial.len() + 100).unwrap();
+        listener
+    });
+    let admitted = AtomicUsize::new(0);
+    let mut events = Vec::new();
+    let turns = [Turn::new("user", TurnRole::User, "fixture")];
+    let result = backend.complete_with_request_control(
+        CompletionRequest::new("operation-fixture", &turns, None, &[]),
+        &mut RequestControl {
+            cancelled: &|| false,
+            deadline: None,
+            scope: request_scope(&backend),
+            before_send: &mut |_, _| {
+                admitted.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        },
+        &mut |event| {
+            events.push(event);
+            Ok(())
+        },
+    );
+    assert!(result.is_err());
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, ProviderEvent::TextDelta { .. }))
+    );
+    assert_eq!(admitted.load(Ordering::SeqCst), 1);
+    let listener = server.join().unwrap();
+    assert!(
+        matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+    );
+}
+
+#[test]
+fn request_deadline_interrupts_pending_headers_without_retry() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let backend = retry_backend(listener.local_addr().unwrap().port(), 3);
+    let server = thread::spawn(move || {
+        let mut stream = accept_admitted(&listener);
+        read_headers(&mut stream).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut byte = [0];
+        assert!(matches!(stream.read(&mut byte), Ok(0) | Err(_)));
+    });
+    let admitted = AtomicUsize::new(0);
+    let turns = [Turn::new("user", TurnRole::User, "fixture")];
+    let started = Instant::now();
+    let result = backend.complete_with_request_control(
+        CompletionRequest::new("operation-fixture", &turns, None, &[]),
+        &mut RequestControl {
+            cancelled: &|| false,
+            deadline: Some(started + Duration::from_millis(150)),
+            scope: request_scope(&backend),
+            before_send: &mut |_, _| {
+                admitted.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        },
+        &mut |_| Ok(()),
+    );
+    assert!(
+        matches!(result, Err(BackendError::DeadlineExceeded)),
+        "{result:?}"
+    );
+    assert!(started.elapsed() < Duration::from_secs(2));
+    assert_eq!(admitted.load(Ordering::SeqCst), 1);
+    server.join().unwrap();
+}
+
+#[test]
+fn legacy_request_binding_tracks_route_but_never_key_material() {
+    let first = OpenAiCompatibleBackend::new(
+        "https://example.test/v1",
+        Some("first-key-fixture".into()),
+        "fixture",
+    )
+    .unwrap();
+    let second = OpenAiCompatibleBackend::new(
+        "https://example.test/v1",
+        Some("other-key-fixture".into()),
+        "fixture",
+    )
+    .unwrap();
+    let binding = first.request_binding(None).unwrap();
+    assert_eq!(binding, second.request_binding(None).unwrap());
+    assert!(binding.identity_scope.starts_with("legacy:"));
+    assert_ne!(
+        binding,
+        first.request_binding(Some("another-model")).unwrap()
+    );
+    let other = OpenAiCompatibleBackend::new("https://other.test/v1", None, "fixture").unwrap();
+    assert_ne!(binding, other.request_binding(None).unwrap());
+    let responses = OpenAiCompatibleBackend::new_with_wire_api(
+        "https://example.test/v1",
+        None,
+        "fixture",
+        OpenAiWireApi::Responses,
+    )
+    .unwrap();
+    assert_ne!(binding, responses.request_binding(None).unwrap());
+}
+
+#[test]
+fn scoped_secret_is_borrowed_only_for_the_matching_admitted_backend_route() {
+    use zenpi::security::{SecretHandle, SecretScope};
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+    let template = OpenAiCompatibleBackend::new_with_wire_api(
+        &url,
+        None,
+        "mock-model",
+        OpenAiWireApi::Responses,
+    )
+    .unwrap();
+    let binding = template.request_binding(None).unwrap();
+    let policy = "a".repeat(64);
+    let (secret, _revoke) = SecretHandle::new_scoped(
+        "scoped-backend-fixture",
+        &policy,
+        SecretScope {
+            route_digest: binding.route_digest,
+            identity_scope: binding.identity_scope,
+        },
+        u64::MAX,
+    )
+    .unwrap();
+    let backend = OpenAiCompatibleBackend::new_with_secret_handle_and_settings(
+        &url,
+        secret,
+        &policy,
+        "mock-model",
+        OpenAiWireApi::Responses,
+        None,
+        None,
+    )
+    .unwrap();
+    let server = thread::spawn(move || {
+        let mut stream = accept_admitted(&listener);
+        let request = read_headers(&mut stream).unwrap();
+        assert_eq!(
+            header_value(&request, "authorization").unwrap(),
+            "Bearer scoped-backend-fixture"
+        );
+        write_sse_completion(&mut stream, "scoped").unwrap();
+    });
+    let admitted = AtomicUsize::new(0);
+    let mut scope = request_scope(&backend);
+    scope.policy_digest = Some(policy);
+    let turns = [Turn::new("user", TurnRole::User, "fixture")];
+    let result = backend
+        .complete_with_request_control(
+            CompletionRequest::new("operation-fixture", &turns, None, &[]),
+            &mut RequestControl {
+                cancelled: &|| false,
+                deadline: None,
+                scope,
+                before_send: &mut |_, _| {
+                    admitted.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                },
+            },
+            &mut |_| Ok(()),
+        )
+        .unwrap();
+    assert_eq!(result.content, "scoped");
+    assert_eq!(admitted.load(Ordering::SeqCst), 1);
+    server.join().unwrap();
+}
+
+#[test]
+fn governed_redirects_never_contact_a_second_origin_or_retry() {
+    for status in [302, 307] {
+        let source = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let destination = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        destination.set_nonblocking(true).unwrap();
+        let location = format!(
+            "http://127.0.0.1:{}/stolen",
+            destination.local_addr().unwrap().port()
+        );
+        let backend = retry_backend(source.local_addr().unwrap().port(), 3);
+        let server = thread::spawn(move || {
+            let mut stream = accept_admitted(&source);
+            read_headers(&mut stream).unwrap();
+            write!(stream, "HTTP/1.1 {status} Redirect\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+            source
+        });
+        let admitted = AtomicUsize::new(0);
+        let turns = [Turn::new("user", TurnRole::User, "fixture")];
+        let result = backend.complete_with_request_control(
+            CompletionRequest::new("operation-fixture", &turns, None, &[]),
+            &mut RequestControl {
+                cancelled: &|| false,
+                deadline: None,
+                scope: request_scope(&backend),
+                before_send: &mut |_, _| {
+                    admitted.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                },
+            },
+            &mut |_| panic!("redirects must not publish provider events"),
+        );
+        assert!(
+            matches!(result, Err(BackendError::HttpStatus { status: actual, .. }) if actual == status),
+            "{result:?}"
+        );
+        assert_eq!(admitted.load(Ordering::SeqCst), 1);
+        let source = server.join().unwrap();
+        for listener in [&source, &destination] {
+            assert!(
+                matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+            );
+        }
+    }
+}
+
+#[test]
+fn semantic_compaction_scope_disables_inference_retry_without_metadata() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let backend = retry_backend(listener.local_addr().unwrap().port(), 3);
+    let server = thread::spawn(move || {
+        let mut stream = accept_admitted(&listener);
+        read_headers(&mut stream).unwrap();
+        stream
+            .write_all(b"HTTP/1.1 503 Retry\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        listener
+    });
+    let mut scope = request_scope(&backend);
+    scope.purpose = RequestPurpose::SemanticCompaction;
+    let admitted = AtomicUsize::new(0);
+    let turns = [Turn::new("user", TurnRole::User, "fixture")];
+    let result = backend.complete_with_request_control(
+        CompletionRequest::new("operation-fixture", &turns, None, &[]),
+        &mut RequestControl {
+            cancelled: &|| false,
+            deadline: None,
+            scope,
+            before_send: &mut |_, _| {
+                admitted.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        },
+        &mut |_| Ok(()),
+    );
+    assert!(matches!(
+        result,
+        Err(BackendError::HttpStatus { status: 503, .. })
+    ));
+    assert_eq!(admitted.load(Ordering::SeqCst), 1);
+    let listener = server.join().unwrap();
+    assert!(
+        matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+    );
 }

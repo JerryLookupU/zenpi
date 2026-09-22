@@ -13,6 +13,26 @@ use zenpi::{
 struct UsageBackend;
 
 impl Backend for UsageBackend {
+    fn complete_with_request_control(
+        &self,
+        request: CompletionRequest<'_>,
+        control: &mut zenpi::backend::RequestControl<'_>,
+        sink: &mut dyn FnMut(zenpi::backend::ProviderEvent) -> Result<(), BackendError>,
+    ) -> Result<Completion, BackendError> {
+        // Synthetic admission exercises accounting without opening a socket.
+        control.before_send(zenpi::backend::HttpRequestKind::Inference)?;
+        let result = self.complete_with_control(
+            request,
+            &|| control.check_cancelled().is_err(),
+            &mut |event| {
+                control.check_cancelled()?;
+                sink(event)
+            },
+        );
+        control.check_cancelled()?;
+        result
+    }
+
     fn complete(&self, _request: CompletionRequest<'_>) -> Result<Completion, BackendError> {
         Ok(Completion {
             content: "budgeted".into(),

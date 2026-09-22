@@ -1,3 +1,5 @@
+mod support;
+
 use std::{cell::Cell, fs, path::Path};
 use tempfile::tempdir;
 use zenpi::skills::{MAX_SKILL_FILE_BYTES, SkillError, SkillInvocation, SkillScope, SkillSet};
@@ -586,6 +588,7 @@ mod model_tools {
     }
     struct NamesBackend(Arc<Mutex<Vec<String>>>);
     impl Backend for NamesBackend {
+        crate::support::controlled_local_backend!();
         fn complete(&self, request: CompletionRequest<'_>) -> Result<Completion, BackendError> {
             *self.0.lock().unwrap() = request.tools.iter().map(|tool| tool.name.clone()).collect();
             Ok(Completion::text("ok"))

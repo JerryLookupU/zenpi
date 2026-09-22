@@ -1,5 +1,7 @@
 #![cfg(unix)]
 
+mod support;
+
 use std::{
     io::{self, Write},
     sync::{
@@ -33,6 +35,7 @@ struct FloodBackend {
 }
 
 impl Backend for FloodBackend {
+    crate::support::controlled_local_backend!();
     fn complete(&self, _: CompletionRequest<'_>) -> Result<Completion, BackendError> {
         Ok(Completion::text("unused"))
     }

@@ -17,7 +17,29 @@ struct SecretMaterial {
     value: Mutex<Vec<u8>>,
     policy_digest: String,
     expires_at_ms: Option<u64>,
+    scope: Option<SecretScope>,
     revoked: std::sync::atomic::AtomicBool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SecretScope {
+    pub route_digest: String,
+    pub identity_scope: String,
+}
+
+impl SecretScope {
+    fn validate(&self) -> Result<(), SecretError> {
+        for value in [&self.route_digest, &self.identity_scope] {
+            if value.is_empty()
+                || value.len() > 2048
+                || value.chars().any(char::is_whitespace)
+                || value.chars().any(char::is_control)
+            {
+                return Err(SecretError::InvalidScope);
+            }
+        }
+        Ok(())
+    }
 }
 
 impl std::fmt::Debug for SecretMaterial {
@@ -72,6 +94,12 @@ pub enum SecretError {
     RevokedOrExpired,
     #[error("secret handle policy digest mismatch")]
     PolicyMismatch,
+    #[error("secret handle scope is invalid")]
+    InvalidScope,
+    #[error("secret handle requires route and identity verification")]
+    ScopeRequired,
+    #[error("secret handle route or identity scope mismatch")]
+    ScopeMismatch,
 }
 
 impl SecretHandle {
@@ -82,8 +110,44 @@ impl SecretHandle {
         value: impl Into<String>,
         policy_digest: impl Into<String>,
     ) -> Result<(Self, SecretRevocation), SecretError> {
-        let value = value.into();
-        let policy_digest = policy_digest.into();
+        Self::new_material(value.into(), policy_digest.into(), None, None)
+    }
+
+    pub fn new_scoped(
+        value: impl Into<String>,
+        policy_digest: impl Into<String>,
+        scope: SecretScope,
+        expires_at_ms: u64,
+    ) -> Result<(Self, SecretRevocation), SecretError> {
+        Self::new_scoped_at(
+            value.into(),
+            policy_digest.into(),
+            scope,
+            expires_at_ms,
+            now_ms(),
+        )
+    }
+
+    fn new_scoped_at(
+        value: String,
+        policy_digest: String,
+        scope: SecretScope,
+        expires_at_ms: u64,
+        now: u64,
+    ) -> Result<(Self, SecretRevocation), SecretError> {
+        scope.validate()?;
+        if expires_at_ms <= now {
+            return Err(SecretError::RevokedOrExpired);
+        }
+        Self::new_material(value, policy_digest, Some(scope), Some(expires_at_ms))
+    }
+
+    fn new_material(
+        value: String,
+        policy_digest: String,
+        scope: Option<SecretScope>,
+        expires_at_ms: Option<u64>,
+    ) -> Result<(Self, SecretRevocation), SecretError> {
         if value.is_empty() || value.len() > MAX_SECRET_BYTES || value.chars().any(char::is_control)
         {
             return Err(SecretError::Invalid);
@@ -92,7 +156,8 @@ impl SecretHandle {
         let material = Arc::new(SecretMaterial {
             value: Mutex::new(value.into_bytes()),
             policy_digest,
-            expires_at_ms: None,
+            expires_at_ms,
+            scope,
             revoked: std::sync::atomic::AtomicBool::new(false),
         });
         register_secret(&material);
@@ -109,19 +174,53 @@ impl SecretHandle {
     /// comparison is constant-time for equal-length values and fail-closed for
     /// malformed input.
     pub fn verify_policy_digest(&self, expected: &str) -> Result<(), SecretError> {
+        self.verify_policy_at(expected, now_ms())
+    }
+
+    fn verify_policy_at(&self, expected: &str, now: u64) -> Result<(), SecretError> {
         validate_policy_digest(expected)?;
         if !constant_time_equal(self.policy_digest().as_bytes(), expected.as_bytes()) {
             return Err(SecretError::PolicyMismatch);
         }
         if self.0.revoked.load(std::sync::atomic::Ordering::Acquire)
-            || self
-                .0
-                .expires_at_ms
-                .is_some_and(|expiry| now_ms() >= expiry)
+            || self.0.expires_at_ms.is_some_and(|expiry| now >= expiry)
         {
             return Err(SecretError::RevokedOrExpired);
         }
         Ok(())
+    }
+
+    pub fn verify_scope(
+        &self,
+        expected_policy_digest: &str,
+        expected: &SecretScope,
+    ) -> Result<(), SecretError> {
+        self.verify_scope_at(expected_policy_digest, expected, now_ms())
+    }
+
+    fn verify_scope_at(
+        &self,
+        policy: &str,
+        expected: &SecretScope,
+        now: u64,
+    ) -> Result<(), SecretError> {
+        self.verify_policy_at(policy, now)?;
+        expected.validate()?;
+        let actual = self.0.scope.as_ref().ok_or(SecretError::ScopeRequired)?;
+        if !constant_time_equal(
+            actual.route_digest.as_bytes(),
+            expected.route_digest.as_bytes(),
+        ) || !constant_time_equal(
+            actual.identity_scope.as_bytes(),
+            expected.identity_scope.as_bytes(),
+        ) {
+            return Err(SecretError::ScopeMismatch);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn is_scoped(&self) -> bool {
+        self.0.scope.is_some()
     }
 
     /// Borrow the secret only inside this crate's host adapter.  No public API
@@ -131,12 +230,38 @@ impl SecretHandle {
         expected_policy_digest: &str,
         f: impl FnOnce(&str) -> T,
     ) -> Result<T, SecretError> {
-        self.verify_policy_digest(expected_policy_digest)?;
+        self.borrow_secret(expected_policy_digest, None, &now_ms, f)
+    }
+
+    pub(crate) fn with_scoped_secret<T>(
+        &self,
+        expected_policy_digest: &str,
+        expected_scope: &SecretScope,
+        f: impl FnOnce(&str) -> T,
+    ) -> Result<T, SecretError> {
+        self.borrow_secret(expected_policy_digest, Some(expected_scope), &now_ms, f)
+    }
+
+    fn borrow_secret<T>(
+        &self,
+        policy: &str,
+        scope: Option<&SecretScope>,
+        clock: &dyn Fn() -> u64,
+        f: impl FnOnce(&str) -> T,
+    ) -> Result<T, SecretError> {
+        let verify = || match scope {
+            Some(scope) => self.verify_scope_at(policy, scope, clock()),
+            None if self.is_scoped() => Err(SecretError::ScopeRequired),
+            None => self.verify_policy_at(policy, clock()),
+        };
+        verify()?;
         let value = self
             .0
             .value
             .lock()
             .map_err(|_| SecretError::RevokedOrExpired)?;
+        // A waiting borrower must not outlive a revoke or expiry while queued.
+        verify()?;
         let value = std::str::from_utf8(&value).map_err(|_| SecretError::RevokedOrExpired)?;
         Ok(f(value))
     }
@@ -215,6 +340,7 @@ pub(crate) fn register_secret_value(value: &str) {
         value: Mutex::new(value.as_bytes().to_vec()),
         policy_digest: "0".repeat(64),
         expires_at_ms: Some(now_ms().saturating_add(REGISTERED_SECRET_TTL_MS)),
+        scope: None,
         revoked: std::sync::atomic::AtomicBool::new(false),
     });
     let Ok(mut registry) = legacy_secret_registry().lock() else {
@@ -504,4 +630,118 @@ fn redact_url_credentials(value: &str) -> String {
         remaining = &remaining[authority_end..];
     }
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    fn scope() -> SecretScope {
+        SecretScope {
+            route_digest: "r".repeat(64),
+            identity_scope: "identity-fixture".into(),
+        }
+    }
+
+    fn scoped(expiry: u64) -> (SecretHandle, SecretRevocation) {
+        SecretHandle::new_scoped_at(
+            "scope-fixture-secret".into(),
+            "a".repeat(64),
+            scope(),
+            expiry,
+            100,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn scoped_handle_checks_exact_expiry_and_rejects_legacy_borrow() {
+        let (handle, _) = scoped(200);
+        assert!(
+            handle
+                .verify_scope_at(&"a".repeat(64), &scope(), 199)
+                .is_ok()
+        );
+        assert_eq!(
+            handle.verify_scope_at(&"a".repeat(64), &scope(), 200),
+            Err(SecretError::RevokedOrExpired)
+        );
+        assert_eq!(
+            handle.with_secret(&"a".repeat(64), |_| ()),
+            Err(SecretError::ScopeRequired)
+        );
+        assert!(matches!(
+            SecretHandle::new_scoped_at("fixture".into(), "a".repeat(64), scope(), 100, 100),
+            Err(SecretError::RevokedOrExpired)
+        ));
+    }
+
+    #[test]
+    fn scoped_handle_rejects_route_identity_and_policy_changes() {
+        let (handle, _) = scoped(200);
+        let mut wrong = scope();
+        wrong.route_digest.push('x');
+        assert_eq!(
+            handle.verify_scope_at(&"a".repeat(64), &wrong, 101),
+            Err(SecretError::ScopeMismatch)
+        );
+        wrong = scope();
+        wrong.identity_scope.push('x');
+        assert_eq!(
+            handle.verify_scope_at(&"a".repeat(64), &wrong, 101),
+            Err(SecretError::ScopeMismatch)
+        );
+        assert_eq!(
+            handle.verify_scope_at(&"b".repeat(64), &scope(), 101),
+            Err(SecretError::PolicyMismatch)
+        );
+    }
+
+    #[test]
+    fn borrower_rechecks_expiry_with_clock_inside_the_value_lock() {
+        let (handle, _) = scoped(200);
+        let calls = Cell::new(0);
+        let clock = || {
+            calls.set(calls.get() + 1);
+            if calls.get() == 1 { 199 } else { 200 }
+        };
+        let borrowed = Cell::new(false);
+        let result = handle.borrow_secret(&"a".repeat(64), Some(&scope()), &clock, |_| {
+            borrowed.set(true)
+        });
+        assert_eq!(result, Err(SecretError::RevokedOrExpired));
+        assert_eq!(calls.get(), 2);
+        assert!(!borrowed.get());
+    }
+
+    #[test]
+    fn waiting_borrower_rechecks_revocation_after_acquiring_value_lock() {
+        let (handle, revoke) = scoped(200);
+        let lock = handle.0.value.lock().unwrap();
+        let borrower = handle.clone();
+        let (checked, ready) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let clock = || {
+                checked.send(()).unwrap();
+                101
+            };
+            borrower.borrow_secret(&"a".repeat(64), Some(&scope()), &clock, |_| ())
+        });
+        ready
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        revoke.revoke();
+        drop(lock);
+        assert_eq!(worker.join().unwrap(), Err(SecretError::RevokedOrExpired));
+    }
+
+    #[test]
+    fn successful_scoped_borrow_stays_bounded_to_the_callback() {
+        let (handle, _) = scoped(200);
+        let length = handle
+            .borrow_secret(&"a".repeat(64), Some(&scope()), &|| 101, str::len)
+            .unwrap();
+        assert_eq!(length, "scope-fixture-secret".len());
+    }
 }

@@ -845,6 +845,9 @@ impl<'a> InputPump<'a> {
         }
         cancelled
     }
+    pub fn with_session<T>(&self, action: impl FnOnce(&mut SessionStore) -> T) -> T {
+        action(&mut self.session.borrow_mut())
+    }
     pub fn finish(self) -> Result<(), crate::core::AgentError> {
         match self.failure.into_inner() {
             Some(error) => Err(crate::core::AgentError::Recovery(error)),

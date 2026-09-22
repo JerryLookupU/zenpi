@@ -1,4 +1,6 @@
-use zenpi::security::{SecretError, SecretHandle, child_environment, redact_json, redact_text};
+use zenpi::security::{
+    SecretError, SecretHandle, SecretScope, child_environment, redact_json, redact_text,
+};
 
 const FIXTURE_SECRET: &str = "sk-fixture-secret-123456";
 
@@ -115,4 +117,51 @@ fn active_secret_handles_are_redacted_without_explicit_secret_lists() {
     let text = format!("tool returned {FIXTURE_SECRET}");
     assert!(!redact_text(&text, &[]).contains(FIXTURE_SECRET));
     drop(handle);
+}
+
+#[test]
+fn scoped_handle_verifies_public_scope_without_exposing_material() {
+    let policy = "d".repeat(64);
+    let scope = SecretScope {
+        route_digest: "route-fixture".into(),
+        identity_scope: "account-fixture".into(),
+    };
+    let (handle, revoke) = SecretHandle::new_scoped(
+        "scoped-public-secret-fixture",
+        &policy,
+        scope.clone(),
+        u64::MAX,
+    )
+    .unwrap();
+    handle.verify_scope(&policy, &scope).unwrap();
+    let mut other = scope.clone();
+    other.identity_scope = "other-account".into();
+    assert_eq!(
+        handle.verify_scope(&policy, &other),
+        Err(SecretError::ScopeMismatch)
+    );
+    assert!(!format!("{handle:?} {revoke:?}").contains("scoped-public-secret-fixture"));
+    revoke.revoke();
+    assert_eq!(
+        handle.verify_scope(&policy, &scope),
+        Err(SecretError::RevokedOrExpired)
+    );
+}
+
+#[test]
+fn scoped_handle_rejects_expired_or_unbounded_scope_input() {
+    let scope = SecretScope {
+        route_digest: "route-fixture".into(),
+        identity_scope: "account-fixture".into(),
+    };
+    assert!(matches!(
+        SecretHandle::new_scoped("fixture", "a".repeat(64), scope.clone(), 0),
+        Err(SecretError::RevokedOrExpired)
+    ));
+    let mut invalid = scope;
+    invalid.route_digest.clear();
+    assert!(matches!(
+        SecretHandle::new_scoped("fixture", "a".repeat(64), invalid, u64::MAX),
+        Err(SecretError::InvalidScope)
+    ));
 }

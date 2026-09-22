@@ -5,10 +5,19 @@ use std::{
     io::Read,
 };
 
-use super::{
-    BackendError, Completion, MAX_RESPONSE_BYTES, ProviderEvent, ToolCall,
-    is_recv_body_poll_timeout, parse_tool_call, parse_usage,
+use super::content::{
+    attachment_source, attachment_turn_matches, attachments_for_context, strip_internal_turn_ids,
 };
+use super::{
+    emit_completion_events, extract_annotations, is_recv_body_poll_timeout, parse_tool_call,
+    parse_usage, read_bounded_json_body,
+};
+use crate::backend::{
+    AttachmentKind, BackendError, Completion, CompletionRequest, MAX_RESPONSE_BYTES, ProviderEvent,
+    RequestAttachment,
+};
+use crate::core::{Turn, TurnRole};
+use crate::tools::ToolCall;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -22,7 +31,7 @@ const MAX_REASONING_DETAILS: usize = 128;
 /// never become visible deltas, and only a successful terminal publishes history.
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct Reasoning {
+struct Reasoning {
     field: Option<String>,
     text: String,
     details: Vec<Value>,
@@ -83,7 +92,7 @@ impl Reasoning {
         Ok(())
     }
 
-    pub(super) fn fold(&mut self, delta: &Value) -> Result<Option<String>, BackendError> {
+    fn fold(&mut self, delta: &Value) -> Result<Option<String>, BackendError> {
         let mut selected = None;
         // Preserve strict typing even for aliases after the selected one.
         for field in ["reasoning_content", "reasoning", "reasoning_text"] {
@@ -151,7 +160,7 @@ impl Reasoning {
         Ok(selected.map(|(_, text)| text.to_owned()))
     }
 
-    pub(super) fn annotate(
+    fn annotate(
         mut self,
         provider: &str,
         model: &str,
@@ -260,7 +269,7 @@ fn history(
     Ok(found)
 }
 
-pub(super) fn validate_history(
+pub(crate) fn validate_history(
     turn: &crate::core::Turn,
     provider: &str,
     model: &str,
@@ -269,7 +278,7 @@ pub(super) fn validate_history(
     history(turn, provider, model, wire).map(|_| ())
 }
 
-pub(super) fn replay(
+fn replay(
     turn: &crate::core::Turn,
     provider: &str,
     model: &str,
@@ -346,7 +355,7 @@ fn completed_call(
     Ok(call)
 }
 
-pub(super) fn validate_json(payload: &Value) -> Result<Vec<ToolCall>, BackendError> {
+fn validate_json(payload: &Value) -> Result<Vec<ToolCall>, BackendError> {
     if payload.get("error").is_some()
         || payload.get("status").is_some_and(|v| v != "completed")
         || payload
@@ -619,7 +628,7 @@ impl Stream {
     }
 }
 
-pub(super) fn read(
+fn read(
     body: &mut ureq::Body,
     provider: &str,
     model: &str,
@@ -698,4 +707,257 @@ pub(super) fn read(
         return Err(invalid("Chat stream ended in a partial SSE frame"));
     }
     state.finish(provider, model, sink)
+}
+
+pub(super) fn encode_request(
+    request: &CompletionRequest<'_>,
+    model: &str,
+    provider: &str,
+) -> Result<Value, BackendError> {
+    if request
+        .attachments
+        .iter()
+        .any(|attachment| attachment.input.kind == AttachmentKind::File)
+    {
+        return Err(BackendError::Configuration(
+            "Chat Completions adapter does not support file attachments".into(),
+        ));
+    }
+    let mut messages: Vec<Value> = request
+        .turns
+        .iter()
+        .map(|turn| chat_message(turn, provider, model))
+        .collect::<Result<_, _>>()?;
+    let attachments = attachments_for_context(request.turns, request.attachments);
+    apply_chat_attachments(&mut messages, &attachments)?;
+    strip_internal_turn_ids(&mut messages);
+    let mut body = json!({
+        "model": model,
+        "messages": messages,
+        "stream": true,
+        "stream_options": { "include_usage": true },
+    });
+    if !request.tools.is_empty() {
+        body["tools"] = Value::Array(
+            request
+                .tools
+                .iter()
+                .map(|tool| {
+                    json!({
+                        "type": "function",
+                        "function": {
+                            "name": tool.name,
+                            "description": tool.description,
+                            "parameters": tool.input_schema,
+                        }
+                    })
+                })
+                .collect(),
+        );
+        body["tool_choice"] = json!("auto");
+    }
+    if let Some(instructions) = request.instructions {
+        messages.insert(0, json!({"role":"system", "content": instructions}));
+        body["messages"] = Value::Array(messages);
+    }
+    if let Some(metadata) = request.metadata {
+        body["metadata"] = metadata.clone();
+    }
+    Ok(body)
+}
+
+pub(super) fn read_response(
+    body: &mut ureq::Body,
+    sse: bool,
+    provider: &str,
+    model: &str,
+    cancelled: &dyn Fn() -> bool,
+    sink: &mut dyn FnMut(ProviderEvent) -> Result<(), BackendError>,
+) -> Result<Completion, BackendError> {
+    if sse {
+        return read(body, provider, model, cancelled, sink);
+    }
+    let payload = read_bounded_json_body(body, cancelled)?;
+    let tool_calls = validate_json(&payload)?;
+    let content = match extract_content(&payload) {
+        Ok(content) => content,
+        Err(BackendError::InvalidResponse(_))
+            if !tool_calls.is_empty()
+                && payload["choices"][0]["message"]
+                    .get("content")
+                    .is_none_or(Value::is_null) =>
+        {
+            String::new()
+        }
+        Err(error) => return Err(error),
+    };
+    if content.trim().is_empty() && tool_calls.is_empty() {
+        return Err(BackendError::EmptyResponse);
+    }
+    let mut completion = Completion {
+        content,
+        usage: payload.get("usage").and_then(parse_usage),
+        model: payload
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        tool_calls,
+        response_id: payload.get("id").and_then(Value::as_str).map(str::to_owned),
+        refusal: extract_chat_refusal(&payload),
+        annotations: extract_annotations(&payload),
+    };
+    let mut reasoning = Reasoning::default();
+    let mut delta = reasoning.fold(&payload["choices"][0]["message"])?;
+    reasoning.annotate(provider, model, &mut completion.annotations)?;
+    if let Some(reason) = payload["choices"][0]["finish_reason"].as_str() {
+        completion
+            .annotations
+            .push(json!({"type":"chat_finish_reason", "finish_reason":reason}));
+    }
+    emit_completion_events(&completion, &mut |event| {
+        if cancelled() {
+            return Err(BackendError::Cancelled);
+        }
+        if !matches!(event, ProviderEvent::ResponseCreated { .. })
+            && let Some(delta) = delta.take()
+        {
+            sink(ProviderEvent::ReasoningDelta { delta })?;
+            if cancelled() {
+                return Err(BackendError::Cancelled);
+            }
+        }
+        sink(event)
+    })?;
+    Ok(completion)
+}
+
+fn chat_message(turn: &Turn, provider: &str, model: &str) -> Result<Value, BackendError> {
+    let role = match turn.role {
+        TurnRole::System => "system",
+        TurnRole::User => "user",
+        TurnRole::Assistant => "assistant",
+        TurnRole::Tool => "tool",
+    };
+    let mut message = json!({
+        "role": role,
+        "content": turn.content,
+        "_zenpi_turn_id": turn.id,
+    });
+    if turn.role == TurnRole::Tool {
+        if let Some(call_id) = turn
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("tool_call_id"))
+        {
+            message["tool_call_id"] = call_id.clone();
+        }
+    } else if turn.role == TurnRole::Assistant
+        && let Some(calls) = turn
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("tool_calls"))
+    {
+        message["tool_calls"] = Value::Array(
+            calls
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|item| {
+                    json!({
+                        "type": "function",
+                        "id": item.get("id"),
+                        "function": {
+                            "name": item.get("name"),
+                            "arguments": item.get("arguments").map_or_else(|| "{}".into(), Value::to_string),
+                        }
+                    })
+                })
+                .collect(),
+        );
+    }
+    replay(turn, provider, model, &mut message)?;
+    Ok(message)
+}
+
+fn apply_chat_attachments(
+    messages: &mut [Value],
+    attachments: &[&RequestAttachment],
+) -> Result<(), BackendError> {
+    for attachment in attachments {
+        attachment.input.validate()?;
+        if attachment.input.kind != AttachmentKind::Image {
+            return Err(BackendError::Configuration(
+                "Chat Completions accepts image attachments only".into(),
+            ));
+        }
+        let message = messages
+            .iter_mut()
+            .rev()
+            .find(|message| {
+                message.get("role").and_then(Value::as_str) == Some("user")
+                    && attachment_turn_matches(message, &attachment.turn_id)
+                    && message.get("content").is_some()
+            })
+            .ok_or_else(|| {
+                BackendError::InvalidResponse("attachment has no corresponding user message".into())
+            })?;
+        let text = message
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let content = message
+            .get_mut("content")
+            .ok_or_else(|| BackendError::InvalidResponse("message content missing".into()))?;
+        let parts = if let Value::Array(parts) = content {
+            parts
+        } else {
+            *content = Value::Array(vec![json!({"type":"text", "text": text})]);
+            content.as_array_mut().ok_or_else(|| {
+                BackendError::InvalidResponse("message content is not an array".into())
+            })?
+        };
+        parts.push(json!({
+            "type": "image_url",
+            "image_url": { "url": attachment_source(attachment)? },
+        }));
+    }
+    Ok(())
+}
+
+fn extract_content(payload: &Value) -> Result<String, BackendError> {
+    let choice = payload
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|choices| choices.first())
+        .ok_or_else(|| BackendError::InvalidResponse("missing choices[0]".into()))?;
+    let content = choice
+        .get("message")
+        .and_then(|message| message.get("content"))
+        .or_else(|| choice.get("text"));
+    match content {
+        Some(Value::String(text)) => Ok(text.clone()),
+        Some(Value::Array(parts)) => Ok(parts
+            .iter()
+            .filter_map(|part| part.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("")),
+        Some(other) => Err(BackendError::InvalidResponse(format!(
+            "completion content must be a string or text parts, got {other}"
+        ))),
+        None => Err(BackendError::InvalidResponse(
+            "missing completion content".into(),
+        )),
+    }
+}
+
+fn extract_chat_refusal(payload: &Value) -> Option<String> {
+    payload
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.get("message"))
+        .and_then(|message| message.get("refusal"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
 }

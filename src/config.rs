@@ -24,9 +24,12 @@ use thiserror::Error;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 
+use crate::auth::AuthBinding;
 use crate::layout::{
     LayoutError, LayoutModel, LayoutPreferences, MAX_LAYOUT_PREFERENCES_BYTES, TabId,
 };
+use crate::providers::connection::{ModelRoute, ProviderConnection, validate_model_routes};
+use crate::providers::{AuthHeaderPolicy, EndpointRule, Protocol, get_provider_definition};
 use crate::security::{SecretHandle, SecretRevocation};
 use crate::view_model::ZoneModels;
 
@@ -62,6 +65,14 @@ pub struct ProviderProfile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_env: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_method: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_header: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub model_routes: Vec<ModelRoute>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_reasoning_effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_verbosity: Option<String>,
@@ -86,6 +97,10 @@ impl ProviderProfile {
             base_url: config.base_url.clone(),
             wire_api: config.wire_api.clone(),
             auth_env: config.auth_env.clone(),
+            auth_method: config.auth_method.clone(),
+            auth_ref: config.auth_ref.clone(),
+            auth_header: config.auth_header.clone(),
+            model_routes: config.model_routes.clone(),
             model_reasoning_effort: config.model_reasoning_effort.clone(),
             model_verbosity: config.model_verbosity.clone(),
             timeout_seconds: config.timeout_seconds,
@@ -104,6 +119,10 @@ impl ProviderProfile {
             base_url: self.base_url,
             wire_api: self.wire_api,
             auth_env: self.auth_env,
+            auth_method: self.auth_method,
+            auth_ref: self.auth_ref,
+            auth_header: self.auth_header,
+            model_routes: self.model_routes,
             model_reasoning_effort: self.model_reasoning_effort,
             model_verbosity: self.model_verbosity,
             timeout_seconds: self.timeout_seconds,
@@ -243,6 +262,14 @@ pub struct ConfigFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_env: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_method: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_header: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub model_routes: Vec<ModelRoute>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_reasoning_effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_verbosity: Option<String>,
@@ -330,7 +357,131 @@ impl ConfigFile {
                 "base_url must be an http or https URL without query or fragment".into(),
             ));
         }
+        self.connection_settings(None, 0)?;
         Ok(())
+    }
+
+    fn connection_settings(
+        &self,
+        profile: Option<&str>,
+        config_revision: u64,
+    ) -> Result<Option<ProviderConnection>, ConfigError> {
+        let method = self.auth_method.as_deref().unwrap_or("legacy_api_key");
+        if method == "legacy_api_key" {
+            if self.auth_ref.is_some()
+                || self.auth_header.is_some()
+                || !self.model_routes.is_empty()
+            {
+                return Err(ConfigError::Invalid(
+                    "legacy authentication does not accept auth_ref, auth_header or model_routes"
+                        .into(),
+                ));
+            }
+            return Ok(None);
+        }
+        if !matches!(method, "api_key" | "oauth" | "none") {
+            return Err(ConfigError::Invalid("unknown auth_method".into()));
+        }
+        if self.auth_env.is_some() {
+            return Err(ConfigError::Invalid(
+                "auth_env is only valid for legacy authentication".into(),
+            ));
+        }
+        let provider = self.provider.as_deref().ok_or_else(|| {
+            ConfigError::Invalid("explicit authentication requires provider".into())
+        })?;
+        crate::providers::registry::validate_identity(
+            provider,
+            self.model.as_deref().unwrap_or("config-validation"),
+        )
+        .map_err(|_| ConfigError::Invalid("invalid explicit provider/model identity".into()))?;
+        let definition = get_provider_definition(provider);
+        let protocol = match self.wire_api.as_deref() {
+            Some(wire) => Protocol::parse(wire).map_err(config_backend_error)?,
+            None => definition
+                .filter(|d| d.routes.len() == 1)
+                .map(|d| d.routes[0].protocol)
+                .ok_or_else(|| {
+                    ConfigError::Invalid(
+                        "explicit connection requires wire_api when provider has no unique route"
+                            .into(),
+                    )
+                })?,
+        };
+        let credential_id = || {
+            let id = self.auth_ref.as_deref().ok_or_else(|| {
+                ConfigError::Invalid("api_key/oauth authentication requires auth_ref".into())
+            })?;
+            validate_profile_name(id)
+                .map_err(|_| ConfigError::Invalid("invalid auth_ref".into()))?;
+            Ok::<_, ConfigError>(id.to_owned())
+        };
+        let auth = match method {
+            "api_key" => AuthBinding::StoredApiKey {
+                credential_id: credential_id()?,
+            },
+            "oauth" => AuthBinding::CodexOAuth {
+                credential_id: credential_id()?,
+            },
+            "none" => {
+                if self.auth_ref.is_some() || self.auth_header.is_some() {
+                    return Err(ConfigError::Invalid(
+                        "anonymous authentication cannot have auth_ref or auth_header".into(),
+                    ));
+                }
+                AuthBinding::Anonymous
+            }
+            _ => unreachable!(),
+        };
+        if method != "none" && self.requires_openai_auth == Some(false) {
+            return Err(ConfigError::Invalid(
+                "explicit credential binding cannot disable authentication".into(),
+            ));
+        }
+        if method == "oauth" && (provider != "openai-codex" || self.auth_header.is_some()) {
+            return Err(ConfigError::Invalid(
+                "OAuth requires the Codex provider without header overrides".into(),
+            ));
+        }
+        let header_policy = self
+            .auth_header
+            .as_deref()
+            .map(AuthHeaderPolicy::parse)
+            .transpose()
+            .map_err(config_backend_error)?;
+        validate_model_routes(&self.model_routes).map_err(config_backend_error)?;
+        let connection = ProviderConnection {
+            profile: profile.unwrap_or("default").into(),
+            provider: provider.into(),
+            protocol,
+            base_url: self.base_url.clone(),
+            auth,
+            header_policy,
+            config_revision,
+            model_routes: self.model_routes.clone(),
+        };
+        validate_configured_route(
+            &connection,
+            protocol,
+            self.base_url.as_deref(),
+            self.backend.as_deref(),
+        )?;
+        for route in &self.model_routes {
+            let protocol = route
+                .wire_api
+                .as_deref()
+                .map(Protocol::parse)
+                .transpose()
+                .map_err(config_backend_error)?
+                .unwrap_or(protocol);
+            validate_configured_route(
+                &connection,
+                protocol,
+                route.base_url.as_deref().or(self.base_url.as_deref()),
+                self.backend.as_deref(),
+            )?;
+        }
+        Ok(Some(connection))
     }
 
     pub fn selected_profile(
@@ -354,6 +505,175 @@ impl ConfigFile {
         flat.zone_models = self.zone_models.clone();
         Ok((Some(name.to_owned()), flat))
     }
+}
+
+fn explicit_auth(method: Option<&str>) -> bool {
+    method.is_some_and(|method| method != "legacy_api_key")
+}
+
+fn config_backend_error(error: crate::backend::BackendError) -> ConfigError {
+    ConfigError::Invalid(error.to_string())
+}
+
+fn validate_configured_route(
+    connection: &ProviderConnection,
+    protocol: Protocol,
+    configured_base: Option<&str>,
+    backend: Option<&str>,
+) -> Result<(), ConfigError> {
+    if backend == Some("echo")
+        || backend == Some("anthropic") && protocol != Protocol::AnthropicMessages
+        || backend == Some("google") && protocol != Protocol::GoogleGenerativeAi
+    {
+        return Err(ConfigError::Invalid(
+            "backend does not match explicit connection protocol".into(),
+        ));
+    }
+    let definition = get_provider_definition(&connection.provider);
+    let rule = definition
+        .unwrap_or(&crate::providers::CUSTOM)
+        .routes
+        .iter()
+        .find(|rule| rule.protocol == protocol)
+        .ok_or_else(|| ConfigError::Invalid("unsupported explicit provider protocol".into()))?;
+    if matches!(connection.auth, AuthBinding::CodexOAuth { .. })
+        != (protocol == Protocol::OpenAiCodexResponses)
+    {
+        return Err(ConfigError::Invalid(
+            "Codex wire and OAuth binding must be selected together".into(),
+        ));
+    }
+    let base = match rule.endpoint {
+        EndpointRule::Fixed(endpoint) => {
+            if configured_base.is_some() {
+                return Err(ConfigError::Invalid(
+                    "fixed OAuth service rejects base_url overrides".into(),
+                ));
+            }
+            endpoint
+        }
+        EndpointRule::PrefixAndOperation {
+            default_prefix,
+            canonical_prefix,
+            ..
+        } => {
+            let base = configured_base.or(default_prefix).ok_or_else(|| {
+                ConfigError::Invalid("custom connection requires base_url".into())
+            })?;
+            validate_model_routes(&[ModelRoute {
+                model: "config-validation".into(),
+                wire_api: None,
+                base_url: Some(base.into()),
+            }])
+            .map_err(config_backend_error)?;
+            if canonical_prefix
+                .is_some_and(|canonical| base.strip_suffix('/').unwrap_or(base) != canonical)
+            {
+                return Err(ConfigError::Invalid(
+                    "noncanonical builtin API prefix; use an explicitly scoped custom provider"
+                        .into(),
+                ));
+            }
+            base
+        }
+    };
+    let url =
+        url::Url::parse(base).map_err(|_| ConfigError::Invalid("invalid connection URL".into()))?;
+    if matches!(connection.auth, AuthBinding::Anonymous) {
+        let loopback = match url.host() {
+            Some(url::Host::Domain("localhost")) => true,
+            Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+            Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+            _ => false,
+        };
+        if definition.is_some() || url.scheme() != "http" || !loopback {
+            return Err(ConfigError::Invalid(
+                "none authentication requires an explicit custom loopback HTTP connection".into(),
+            ));
+        }
+    } else {
+        if url.scheme() != "https" {
+            return Err(ConfigError::Invalid(
+                "explicit credentials require HTTPS".into(),
+            ));
+        }
+        if let Some(header) = connection.header_policy
+            && !rule.allowed_headers.contains(&header)
+        {
+            return Err(ConfigError::Invalid(
+                "auth_header is not permitted by the service route".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_project_auth_sources(
+    user: &ConfigFile,
+    project: &toml::Value,
+) -> Result<(), ConfigError> {
+    fn check(source: &toml::value::Table, existing_explicit: bool) -> Result<(), ConfigError> {
+        if source
+            .get("auth_method")
+            .and_then(toml::Value::as_str)
+            .is_some_and(|m| m != "legacy_api_key")
+        {
+            return Err(ConfigError::Invalid(
+                "project config cannot introduce explicit authentication".into(),
+            ));
+        }
+        if existing_explicit
+            && [
+                "backend",
+                "provider",
+                "wire_api",
+                "base_url",
+                "auth_method",
+                "auth_ref",
+                "auth_header",
+                "auth_env",
+                "model_routes",
+                "requires_openai_auth",
+                "supports_websockets",
+            ]
+            .iter()
+            .any(|key| source.contains_key(*key))
+        {
+            return Err(ConfigError::Invalid(
+                "project config cannot rebind an approved explicit connection".into(),
+            ));
+        }
+        Ok(())
+    }
+    let table = project
+        .as_table()
+        .ok_or_else(|| ConfigError::Invalid("project config must be a table".into()))?;
+    if let Some(target) = table.get("default_profile").and_then(toml::Value::as_str) {
+        let (_, current) = user.selected_profile(None)?;
+        let target_explicit = user
+            .profiles
+            .get(target)
+            .is_some_and(|profile| explicit_auth(profile.auth_method.as_deref()));
+        if explicit_auth(current.auth_method.as_deref()) || target_explicit {
+            return Err(ConfigError::Invalid(
+                "project config cannot select or change explicit authentication profiles".into(),
+            ));
+        }
+    }
+    check(table, explicit_auth(user.auth_method.as_deref()))?;
+    if let Some(profiles) = table.get("profiles").and_then(toml::Value::as_table) {
+        for (name, source) in profiles {
+            if let Some(source) = source.as_table() {
+                check(
+                    source,
+                    user.profiles
+                        .get(name)
+                        .is_some_and(|p| explicit_auth(p.auth_method.as_deref())),
+                )?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// JSON auth storage is intentionally a map so pairing preserves credentials
@@ -487,6 +807,10 @@ pub struct EffectiveConfig {
     pub model: Option<String>,
     pub base_url: Option<String>,
     pub wire_api: Option<String>,
+    pub auth_method: Option<String>,
+    pub auth_ref: Option<String>,
+    pub auth_header: Option<String>,
+    pub model_routes: Vec<ModelRoute>,
     pub api_key: Option<String>,
     pub credential_source: CredentialSource,
     pub model_reasoning_effort: Option<String>,
@@ -503,6 +827,42 @@ pub struct EffectiveConfig {
 }
 
 impl EffectiveConfig {
+    /// Prepare only a non-secret connection. Destination grants and credential
+    /// state are checked later by the connection/auth request boundary.
+    pub(crate) fn provider_connection(
+        &self,
+        config_revision: u64,
+    ) -> Result<Option<ProviderConnection>, ConfigError> {
+        if !explicit_auth(self.auth_method.as_deref()) {
+            if self.auth_ref.is_some()
+                || self.auth_header.is_some()
+                || !self.model_routes.is_empty()
+            {
+                return Err(ConfigError::Invalid(
+                    "legacy authentication does not accept explicit connection fields".into(),
+                ));
+            }
+            return Ok(None);
+        }
+        let flat = ConfigFile {
+            backend: Some(self.backend.clone()),
+            provider: self.provider.clone(),
+            model: self.model.clone(),
+            base_url: self.base_url.clone(),
+            wire_api: self.wire_api.clone(),
+            auth_method: self.auth_method.clone(),
+            auth_ref: self.auth_ref.clone(),
+            auth_header: self.auth_header.clone(),
+            model_routes: self.model_routes.clone(),
+            timeout_seconds: self.timeout_seconds,
+            max_retries: self.max_retries,
+            requires_openai_auth: Some(self.requires_openai_auth),
+            ..ConfigFile::default()
+        };
+        flat.validate_flat()?;
+        flat.connection_settings(self.profile.as_deref(), config_revision)
+    }
+
     /// Effective model for one TUI zone. Discussion and arch prefer an explicit
     /// zone override; the worker pool and any zone without an override use the
     /// resolved global `model`.
@@ -546,6 +906,10 @@ impl std::fmt::Debug for EffectiveConfig {
             .field("model", &self.model)
             .field("base_url", &self.base_url)
             .field("wire_api", &self.wire_api)
+            .field("auth_method", &self.auth_method)
+            .field("auth_ref", &self.auth_ref)
+            .field("auth_header", &self.auth_header)
+            .field("model_routes", &self.model_routes)
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
             .field("credential_source", &self.credential_source)
             .field("model_reasoning_effort", &self.model_reasoning_effort)
@@ -575,20 +939,31 @@ pub fn resolve(
         .or_else(|| environment.get("ZENPI_PROFILE").map(String::as_str));
     let (profile, selected) = config.selected_profile(requested_profile)?;
     let config = &selected;
+    let explicit = explicit_auth(config.auth_method.as_deref());
+    if explicit && overrides.api_key.is_some() {
+        return Err(ConfigError::Invalid(
+            "explicit authentication conflicts with a command-line API key".into(),
+        ));
+    }
+    let route_environment = |name: &str| {
+        (!explicit)
+            .then(|| environment.get(name).map(String::as_str))
+            .flatten()
+    };
     let backend = choose(
         overrides.backend.as_deref(),
-        environment.get("ZENPI_BACKEND").map(String::as_str),
+        route_environment("ZENPI_BACKEND"),
         config.backend.as_deref(),
         "openai",
     );
     let provider = choose_optional(
         overrides.provider.as_deref(),
-        environment.get("ZENPI_PROVIDER").map(String::as_str),
+        route_environment("ZENPI_PROVIDER"),
         config.provider.as_deref(),
     );
     let wire_api = choose_optional(
         overrides.wire_api.as_deref(),
-        environment.get("ZENPI_WIRE_API").map(String::as_str),
+        route_environment("ZENPI_WIRE_API"),
         config.wire_api.as_deref(),
     );
     let anthropic = backend == "anthropic"
@@ -627,18 +1002,15 @@ pub fn resolve(
     );
     let base_url = choose_optional(
         overrides.base_url.as_deref(),
-        environment
-            .get("ZENPI_BASE_URL")
-            .or_else(|| {
-                environment.get(if google {
-                    "GEMINI_BASE_URL"
-                } else if anthropic {
-                    "ANTHROPIC_BASE_URL"
-                } else {
-                    "OPENAI_BASE_URL"
-                })
+        route_environment("ZENPI_BASE_URL").or_else(|| {
+            route_environment(if google {
+                "GEMINI_BASE_URL"
+            } else if anthropic {
+                "ANTHROPIC_BASE_URL"
+            } else {
+                "OPENAI_BASE_URL"
             })
-            .map(String::as_str),
+        }),
         config.base_url.as_deref(),
     )
     .or_else(|| google.then(|| "https://generativelanguage.googleapis.com/v1beta".into()));
@@ -670,9 +1042,15 @@ pub fn resolve(
                 .and_then(|value| value.parse().ok())
         })
         .or(config.max_retries);
-    let requires_openai_auth = config.requires_openai_auth.unwrap_or(true);
+    let requires_openai_auth = if explicit {
+        config.auth_method.as_deref() != Some("none")
+    } else {
+        config.requires_openai_auth.unwrap_or(true)
+    };
     let supports_websockets = config.supports_websockets.unwrap_or(false);
-    let (api_key, credential_source) = if let Some(key) = overrides.api_key.clone() {
+    let (api_key, credential_source) = if explicit {
+        (None, CredentialSource::None)
+    } else if let Some(key) = overrides.api_key.clone() {
         (Some(key), CredentialSource::CommandLine)
     } else if let Some(key) = environment
         .get("ZENPI_API_KEY")
@@ -718,13 +1096,17 @@ pub fn resolve(
     if let Some(key) = &api_key {
         crate::security::register_secret_value(key);
     }
-    Ok(EffectiveConfig {
+    let mut effective = EffectiveConfig {
         profile,
         backend,
         provider,
         model,
         base_url,
         wire_api,
+        auth_method: config.auth_method.clone(),
+        auth_ref: config.auth_ref.clone(),
+        auth_header: config.auth_header.clone(),
+        model_routes: config.model_routes.clone(),
         api_key,
         credential_source,
         model_reasoning_effort,
@@ -735,7 +1117,11 @@ pub fn resolve(
         supports_websockets,
         model_overrides: config.model_overrides.clone(),
         zone_models: config.zone_models.clone(),
-    })
+    };
+    if explicit && let Some(connection) = effective.provider_connection(0)? {
+        effective.wire_api = Some(connection.protocol.as_str().into());
+    }
+    Ok(effective)
 }
 
 /// Resolve the files in the default `~/.zenpi` directory using the current
@@ -772,7 +1158,9 @@ pub fn load_workspace_config(
                     "project config exceeds 256 KiB".into(),
                 ));
             }
-            let project: ConfigFile = toml::from_str(&text)?;
+            let project_source: toml::Value = toml::from_str(&text)?;
+            validate_project_auth_sources(&config, &project_source)?;
+            let project: ConfigFile = project_source.try_into()?;
             let mut merged =
                 serde_json::to_value(&config).map_err(|e| ConfigError::Invalid(e.to_string()))?;
             let overlay =
@@ -817,7 +1205,6 @@ pub fn resolve_workspace(
 ) -> Result<EffectiveConfig, ConfigError> {
     let paths = ConfigPaths::discover()?;
     let mut config = load_workspace_config(&paths, workspace)?;
-    let mut auth = load_auth(&paths)?;
     // A fresh zenpi install should work with the provider the user already
     // configured for Codex. This fallback is read-only; `config import-codex`
     // remains the explicit persistence command.
@@ -827,6 +1214,12 @@ pub fn resolve_workspace(
         .as_deref()
         .or(environment_profile.as_deref());
     let environment = text_environment();
+    let (_, selected) = config.selected_profile(requested_profile)?;
+    // Explicit connections never consult legacy credentials or Codex fallback.
+    if explicit_auth(selected.auth_method.as_deref()) {
+        return resolve(overrides, &config, &AuthFile::default(), &environment);
+    }
+    let mut auth = load_auth(&paths)?;
     let initial = resolve(overrides, &config, &auth, &environment)?;
     if initial.backend == "openai"
         && !initial.wire_api.as_deref().is_some_and(|v| {
@@ -988,6 +1381,10 @@ fn import_codex_from_root(codex_root: impl AsRef<Path>) -> Result<CodexImport, C
         base_url,
         wire_api,
         auth_env: Some(OPENAI_API_KEY.into()),
+        auth_method: None,
+        auth_ref: None,
+        auth_header: None,
+        model_routes: Vec::new(),
         model_reasoning_effort,
         model_verbosity,
         timeout_seconds,
@@ -1176,7 +1573,15 @@ pub struct ProfileSummary {
 
 pub fn list_profiles(paths: &ConfigPaths) -> Result<Vec<ProfileSummary>, ConfigError> {
     let config = load_config(paths)?;
-    let auth = load_auth(paths)?;
+    let auth = if config
+        .profiles
+        .values()
+        .all(|p| explicit_auth(p.auth_method.as_deref()))
+    {
+        AuthFile::default()
+    } else {
+        load_auth(paths)?
+    };
     let mut profiles = Vec::with_capacity(config.profiles.len());
     for (name, profile) in &config.profiles {
         profiles.push(ProfileSummary {
@@ -1186,7 +1591,8 @@ pub fn list_profiles(paths: &ConfigPaths) -> Result<Vec<ProfileSummary>, ConfigE
             model: profile.model.clone(),
             base_url: profile.base_url.as_deref().map(redacted_endpoint),
             wire_api: profile.wire_api.clone(),
-            api_key_present: auth.api_key_for_profile(Some(name)).is_some(),
+            api_key_present: !explicit_auth(profile.auth_method.as_deref())
+                && auth.api_key_for_profile(Some(name)).is_some(),
         });
     }
     Ok(profiles)
@@ -1234,7 +1640,7 @@ impl ConfigSummary {
             .changed
             .map_or_else(String::new, |value| format!(" changed={value}"));
         format!(
-            "zenpi {operation}:{changed} profile={profile} backend={backend} provider={provider} model={model} base_url={base_url} wire_api={wire_api} api_key={key}",
+            "zenpi {operation}:{changed} profile={profile} backend={backend} provider={provider} model={model} base_url={base_url} wire_api={wire_api} api_key={key} auth_binding={auth_binding}",
             operation = self.operation,
             changed = changed,
             profile = self.status.profile.as_deref().unwrap_or("default"),
@@ -1249,6 +1655,11 @@ impl ConfigSummary {
                 .as_deref()
                 .unwrap_or("-"),
             wire_api = self.status.wire_api.as_deref().unwrap_or("-"),
+            auth_binding = self
+                .status
+                .auth_binding_state
+                .as_deref()
+                .unwrap_or("legacy"),
             key = if self.status.api_key_present {
                 match self.status.api_key_source {
                     CredentialSource::CommandLine => "present(command_line)",
@@ -1288,6 +1699,10 @@ pub struct ConfigStatus {
     pub model: Option<String>,
     pub base_url: Option<String>,
     pub wire_api: Option<String>,
+    pub auth_method: Option<String>,
+    pub auth_ref: Option<String>,
+    pub auth_header: Option<String>,
+    pub auth_binding_state: Option<String>,
     pub api_key_present: bool,
     pub api_key_source: CredentialSource,
     pub requires_openai_auth: bool,
@@ -1299,7 +1714,8 @@ impl ConfigStatus {
     /// selected provider. This is deliberately local-only: it does not claim
     /// that the endpoint is reachable or that the credential has quota.
     pub fn is_ready(&self) -> bool {
-        (!self.requires_openai_auth || self.api_key_present)
+        !explicit_auth(self.auth_method.as_deref())
+            && (!self.requires_openai_auth || self.api_key_present)
             && self.base_url.is_some()
             && self.model.is_some()
     }
@@ -1350,7 +1766,8 @@ pub fn model_catalog_in_workspace(
             },
             workspace,
         )?;
-        let configured = resolved.model.is_some()
+        let configured = !explicit_auth(resolved.auth_method.as_deref())
+            && resolved.model.is_some()
             && resolved.base_url.is_some()
             && (!resolved.requires_openai_auth || resolved.api_key.is_some());
         let descriptor = metadata(
@@ -1372,7 +1789,15 @@ pub fn model_catalog_in_workspace(
         .map(str::to_owned)
         .or_else(|| env::var("ZENPI_PROFILE").ok())
         .or_else(|| config.default_profile.clone());
-    let auth = load_auth(&paths)?;
+    let auth = if config
+        .profiles
+        .values()
+        .all(|p| explicit_auth(p.auth_method.as_deref()))
+    {
+        AuthFile::default()
+    } else {
+        load_auth(&paths)?
+    };
     config
         .profiles
         .iter()
@@ -1397,7 +1822,8 @@ pub fn model_catalog_in_workspace(
                         .is_some_and(|v| matches!(v, "anthropic_messages" | "anthropic-messages")))
                 .then(|| "anthropic".into())
             });
-            let configured = profile_config.model.is_some()
+            let configured = !explicit_auth(profile_config.auth_method.as_deref())
+                && profile_config.model.is_some()
                 && profile_config.base_url.is_some()
                 && (!profile_config.requires_openai_auth.unwrap_or(true) || api_key_present);
             Ok(ModelCatalogEntry {
@@ -1428,7 +1854,8 @@ pub fn doctor_value(profile: Option<&str>) -> Result<Value, ConfigError> {
     checks.insert("config_file".to_owned(), status.config_exists);
     checks.insert(
         "auth".to_owned(),
-        !status.requires_openai_auth || status.api_key_present,
+        !explicit_auth(status.auth_method.as_deref())
+            && (!status.requires_openai_auth || status.api_key_present),
     );
     checks.insert("endpoint".to_owned(), status.base_url.is_some());
     checks.insert("model".to_owned(), status.model.is_some());
@@ -1443,6 +1870,10 @@ pub fn doctor_value(profile: Option<&str>) -> Result<Value, ConfigError> {
         "model": status.model,
         "base_url": status.base_url.as_deref().map(redacted_endpoint),
         "wire_api": status.wire_api,
+        "auth_method": status.auth_method,
+        "auth_ref": status.auth_ref,
+        "auth_header": status.auth_header,
+        "auth_binding_state": status.auth_binding_state,
         "api_key_present": status.api_key_present,
         "api_key_source": status.api_key_source,
         "requires_openai_auth": status.requires_openai_auth,
@@ -1453,6 +1884,37 @@ pub fn doctor_value(profile: Option<&str>) -> Result<Value, ConfigError> {
 
 pub fn status(paths: &ConfigPaths) -> Result<ConfigStatus, ConfigError> {
     status_for_profile(paths, None)
+}
+
+fn diagnostic_route(
+    effective: &EffectiveConfig,
+) -> Result<(Option<String>, Option<String>), ConfigError> {
+    let Some(connection) = effective.provider_connection(0)? else {
+        return Ok((effective.wire_api.clone(), effective.base_url.clone()));
+    };
+    let selected = connection
+        .model_routes
+        .iter()
+        .find(|route| Some(route.model.as_str()) == effective.model.as_deref());
+    let protocol = selected
+        .and_then(|r| r.wire_api.as_deref())
+        .map(Protocol::parse)
+        .transpose()
+        .map_err(config_backend_error)?
+        .unwrap_or(connection.protocol);
+    let base = selected
+        .and_then(|r| r.base_url.clone())
+        .or(connection.base_url);
+    let base = base.or_else(|| {
+        get_provider_definition(&connection.provider)
+            .and_then(|d| d.routes.iter().find(|r| r.protocol == protocol))
+            .and_then(|r| match r.endpoint {
+                EndpointRule::Fixed(url) => Some(url),
+                EndpointRule::PrefixAndOperation { default_prefix, .. } => default_prefix,
+            })
+            .map(str::to_owned)
+    });
+    Ok((Some(protocol.as_str().into()), base))
 }
 
 pub fn status_for_profile(
@@ -1471,8 +1933,15 @@ pub fn status_for_profile(
         })?
     } else {
         let config = load_config(paths)?;
-        let auth = load_auth(paths)?;
         let environment = text_environment();
+        let (_, selected) = config.selected_profile(
+            profile.or_else(|| environment.get("ZENPI_PROFILE").map(String::as_str)),
+        )?;
+        let auth = if explicit_auth(selected.auth_method.as_deref()) {
+            AuthFile::default()
+        } else {
+            load_auth(paths)?
+        };
         resolve(
             &ConfigOverrides {
                 profile: profile.map(str::to_owned),
@@ -1483,6 +1952,15 @@ pub fn status_for_profile(
             &environment,
         )?
     };
+    let (wire_api, base_url) = diagnostic_route(&resolved)?;
+    let auth_binding_state = explicit_auth(resolved.auth_method.as_deref()).then(|| {
+        if resolved.auth_method.as_deref() == Some("none") {
+            "anonymous_pending_route"
+        } else {
+            "unresolved"
+        }
+        .to_owned()
+    });
     Ok(ConfigStatus {
         profile: resolved.profile,
         config_exists,
@@ -1490,8 +1968,12 @@ pub fn status_for_profile(
         backend: resolved.backend,
         provider: resolved.provider,
         model: resolved.model,
-        base_url: resolved.base_url,
-        wire_api: resolved.wire_api,
+        base_url,
+        wire_api,
+        auth_method: resolved.auth_method,
+        auth_ref: resolved.auth_ref,
+        auth_header: resolved.auth_header,
+        auth_binding_state,
         api_key_present: resolved.api_key.is_some(),
         api_key_source: resolved.credential_source,
         requires_openai_auth: resolved.requires_openai_auth,
