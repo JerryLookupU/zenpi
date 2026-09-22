@@ -1,0 +1,11 @@
+{
+  "item_id": "OC-040",
+  "source_path": "packages/opencode/src/tool/grep.ts",
+  "source_hash": "f7bbab8ae3fabfe3dd78b5728a283a56bff318d5b1f278d15d1c637227ff660f",
+  "target_artifact": "Docs/learn/opencode_runtime/files/packages/opencode/src/tool/grep.ts_learn.md",
+  "artifact_bytes": 14161,
+  "artifact_sha256": "4565bc8e87e8b1fe807265ed13b7ae63aa6679fa02ca56824ef3b2e8699a368d",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-22T09:32:15Z"
+}

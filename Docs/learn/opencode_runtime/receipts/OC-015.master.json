@@ -1,0 +1,11 @@
+{
+  "item_id": "OC-015",
+  "source_path": "packages/opencode/src/session/llm/native-request.ts",
+  "source_hash": "ee47e4430d7bb959f0ef672ca40ad9a45acd5ca4e0df72548e01825da3208432",
+  "target_artifact": "Docs/learn/opencode_runtime/files/packages/opencode/src/session/llm/native-request.ts_learn.md",
+  "artifact_bytes": 10658,
+  "artifact_sha256": "a6859d2218ae6d2fc6e35bf77730fcbe73f809c9d725ac4e55867219b5689c99",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-22T06:19:41Z"
+}

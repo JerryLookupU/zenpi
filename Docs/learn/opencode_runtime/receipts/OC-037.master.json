@@ -1,0 +1,11 @@
+{
+  "item_id": "OC-037",
+  "source_path": "packages/opencode/src/tool/edit.ts",
+  "source_hash": "f84d9d242137e1f18ce912188efb7a97b71bf4f255e0a69f16a1fe9d1ff236d4",
+  "target_artifact": "Docs/learn/opencode_runtime/files/packages/opencode/src/tool/edit.ts_learn.md",
+  "artifact_bytes": 21909,
+  "artifact_sha256": "f15aa6f8ed6f668f01c1bdf29ee4656d2d6c8cf71e648c3871ae9b9dfc10023d",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-22T09:31:57Z"
+}

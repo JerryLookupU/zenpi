@@ -1,0 +1,11 @@
+{
+  "item_id": "OC-001",
+  "source_path": "packages/opencode/src/agent/agent.ts",
+  "source_hash": "e781c571d584fa996200e320f14c2735e32968256b8db194391e7c06aed7433e",
+  "target_artifact": "Docs/learn/opencode_runtime/files/packages/opencode/src/agent/agent.ts_learn.md",
+  "artifact_bytes": 13786,
+  "artifact_sha256": "1e2c7b158c00ac4110a300131bcc1bb61f9c5833f05e08fd21c8bf6be4a178ca",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-22T06:13:31Z"
+}

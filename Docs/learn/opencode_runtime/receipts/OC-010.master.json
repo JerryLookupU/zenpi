@@ -1,0 +1,11 @@
+{
+  "item_id": "OC-010",
+  "source_path": "packages/opencode/src/provider/transform.ts",
+  "source_hash": "c07d49e48dd2478ad2813a10805781a72551db2fd847b7df994cc854bf654c16",
+  "target_artifact": "Docs/learn/opencode_runtime/files/packages/opencode/src/provider/transform.ts_learn.md",
+  "artifact_bytes": 16623,
+  "artifact_sha256": "1f2bedc58805d915d1d34fa097b1fa426e3d72b5b91e0d814c2ae18bd96d5a2f",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-22T06:20:01Z"
+}

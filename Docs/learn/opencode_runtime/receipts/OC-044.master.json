@@ -1,0 +1,11 @@
+{
+  "item_id": "OC-044",
+  "source_path": "packages/opencode/src/tool/mcp-websearch.ts",
+  "source_hash": "44cec72f6a8995ff172bc774e4a2e689fd1aa77fb9cfb9575d66a0e4bab24a88",
+  "target_artifact": "Docs/learn/opencode_runtime/files/packages/opencode/src/tool/mcp-websearch.ts_learn.md",
+  "artifact_bytes": 10430,
+  "artifact_sha256": "492de6a34819b40b048ff490cfb6899ba36455ef618079e5925e6a487438f1fa",
+  "attempts": 2,
+  "validated_by": "master",
+  "validated_at": "2026-09-22T06:46:54Z"
+}

@@ -1,0 +1,11 @@
+{
+  "item_id": "OC-038",
+  "source_path": "packages/opencode/src/tool/external-directory.ts",
+  "source_hash": "b86477bd434aef57caf9fb1d3d72249be37c66e299aa1a864a601e1600e36bda",
+  "target_artifact": "Docs/learn/opencode_runtime/files/packages/opencode/src/tool/external-directory.ts_learn.md",
+  "artifact_bytes": 10863,
+  "artifact_sha256": "624292bd925f461a4684bf4f64d4d652e9917ab1004bf2a7e6707f95306e7362",
+  "attempts": 2,
+  "validated_by": "master",
+  "validated_at": "2026-09-22T09:33:47Z"
+}

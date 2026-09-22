@@ -1,0 +1,11 @@
+{
+  "item_id": "OC-003",
+  "source_path": "packages/opencode/src/permission/arity.ts",
+  "source_hash": "4200d3074fa8b6b6a63100fa93deb201be16f92c655721401d47c2ca0a109832",
+  "target_artifact": "Docs/learn/opencode_runtime/files/packages/opencode/src/permission/arity.ts_learn.md",
+  "artifact_bytes": 8127,
+  "artifact_sha256": "a627dec865473df8f37c2eb2a3e7828cfcbae1045c6a850db11d8f25ddc32467",
+  "attempts": 2,
+  "validated_by": "master",
+  "validated_at": "2026-09-22T06:18:54Z"
+}

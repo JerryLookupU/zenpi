@@ -1,0 +1,11 @@
+{
+  "item_id": "OC-036",
+  "source_path": "packages/opencode/src/tool/code-mode.ts",
+  "source_hash": "9a95ddba2ea9ef15c9276ee07cf88bf729b11ade6619ed03c5c8690b46e402aa",
+  "target_artifact": "Docs/learn/opencode_runtime/files/packages/opencode/src/tool/code-mode.ts_learn.md",
+  "artifact_bytes": 13373,
+  "artifact_sha256": "2a56157a54a86df13ce6f567fed01ef48f25ac84c25c7d1b1aeeb6121dcefac9",
+  "attempts": 2,
+  "validated_by": "master",
+  "validated_at": "2026-09-22T08:56:08Z"
+}

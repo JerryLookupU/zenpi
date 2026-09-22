@@ -1,0 +1,11 @@
+{
+  "item_id": "OC-051",
+  "source_path": "packages/opencode/src/tool/shell/id.ts",
+  "source_hash": "5e6dc20d9147234224af97a222784e1e2c55e17873fcc8425e9be39b7f0a2b91",
+  "target_artifact": "Docs/learn/opencode_runtime/files/packages/opencode/src/tool/shell/id.ts_learn.md",
+  "artifact_bytes": 9662,
+  "artifact_sha256": "04c892c4640b758df841e6d1275fd7c8d3b0d34a8016cc6f64310a86e9d1c7dc",
+  "attempts": 2,
+  "validated_by": "master",
+  "validated_at": "2026-09-22T06:53:32Z"
+}

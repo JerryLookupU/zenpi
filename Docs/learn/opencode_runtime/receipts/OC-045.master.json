@@ -1,0 +1,11 @@
+{
+  "item_id": "OC-045",
+  "source_path": "packages/opencode/src/tool/plan.ts",
+  "source_hash": "cbe103563700b770bf77ef9fd6ea3b1e97eed6aa996a8ce28342ff0ce6ee3719",
+  "target_artifact": "Docs/learn/opencode_runtime/files/packages/opencode/src/tool/plan.ts_learn.md",
+  "artifact_bytes": 10600,
+  "artifact_sha256": "1669085c2d82c45a78bc50cd563637b5ffa0ede87ebbdd5768f7b5d5b0d43e13",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-22T06:45:38Z"
+}

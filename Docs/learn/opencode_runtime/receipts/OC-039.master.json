@@ -1,0 +1,11 @@
+{
+  "item_id": "OC-039",
+  "source_path": "packages/opencode/src/tool/glob.ts",
+  "source_hash": "a5069377ae916495a72be319d218878136fc13f18551f3e16981d8c692c68a4a",
+  "target_artifact": "Docs/learn/opencode_runtime/files/packages/opencode/src/tool/glob.ts_learn.md",
+  "artifact_bytes": 13769,
+  "artifact_sha256": "4e14d5bb887cf69370e1a7e1604e4bb300b23d71dd4f4de242a3294bac4d9847",
+  "attempts": 2,
+  "validated_by": "master",
+  "validated_at": "2026-09-22T09:00:40Z"
+}

@@ -1,0 +1,11 @@
+{
+  "item_id": "OC-048",
+  "source_path": "packages/opencode/src/tool/registry.ts",
+  "source_hash": "a8b24a6d58a80c42307e251905dbaa4f25ca0724569b1e531e412da934ab00fe",
+  "target_artifact": "Docs/learn/opencode_runtime/files/packages/opencode/src/tool/registry.ts_learn.md",
+  "artifact_bytes": 13514,
+  "artifact_sha256": "4b8cbf330e3d97b6d39bf1e5d37d01c5f7916ffaba88858ce39a360d36bfb737",
+  "attempts": 2,
+  "validated_by": "master",
+  "validated_at": "2026-09-22T09:05:30Z"
+}

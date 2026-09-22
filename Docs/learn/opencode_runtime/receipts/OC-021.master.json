@@ -1,0 +1,11 @@
+{
+  "item_id": "OC-021",
+  "source_path": "packages/opencode/src/session/overflow.ts",
+  "source_hash": "fa0d52e8a59b737e8129d6473f9f6416567cd765c6068f854e4ea0dd3d351d10",
+  "target_artifact": "Docs/learn/opencode_runtime/files/packages/opencode/src/session/overflow.ts_learn.md",
+  "artifact_bytes": 9892,
+  "artifact_sha256": "8848661ad3846f56889e424a973717000f7d9857b56a0cd1732c3cf64f06b58b",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-22T06:28:41Z"
+}

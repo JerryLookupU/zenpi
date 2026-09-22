@@ -1,0 +1,11 @@
+{
+  "item_id": "OC-009",
+  "source_path": "packages/opencode/src/provider/provider.ts",
+  "source_hash": "77216c71fd0079da036ac25af516a29ee45f58b52e7c63987065ca97583ee364",
+  "target_artifact": "Docs/learn/opencode_runtime/files/packages/opencode/src/provider/provider.ts_learn.md",
+  "artifact_bytes": 21246,
+  "artifact_sha256": "a346a396e118c13b579b0514d983c87577325b2ff963f3f4ba2e4d82c0b0d57a",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-22T06:18:29Z"
+}

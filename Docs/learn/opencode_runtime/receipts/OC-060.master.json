@@ -1,0 +1,11 @@
+{
+  "item_id": "OC-060",
+  "source_path": "packages/opencode/src/tool/websearch.ts",
+  "source_hash": "edb175726b7830d242f59417ce6961f44d39e500bccc068bf2dddbf61d5ca92a",
+  "target_artifact": "Docs/learn/opencode_runtime/files/packages/opencode/src/tool/websearch.ts_learn.md",
+  "artifact_bytes": 12493,
+  "artifact_sha256": "75ece4437ebfb713c1a20812caf29468c0769ef4fb8b422857fe32b0f83d9288",
+  "attempts": 2,
+  "validated_by": "master",
+  "validated_at": "2026-09-22T07:03:19Z"
+}

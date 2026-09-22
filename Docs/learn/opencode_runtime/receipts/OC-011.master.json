@@ -1,0 +1,11 @@
+{
+  "item_id": "OC-011",
+  "source_path": "packages/opencode/src/session/compaction.ts",
+  "source_hash": "8d478570a7e4ad32b746030d4f86a1c673949b1e2259bd716b3885d99283289a",
+  "target_artifact": "Docs/learn/opencode_runtime/files/packages/opencode/src/session/compaction.ts_learn.md",
+  "artifact_bytes": 16046,
+  "artifact_sha256": "3919f09007d52532ce6f54da83f81558d65d8c8440cdb419783f7e0df174bc84",
+  "attempts": 2,
+  "validated_by": "master",
+  "validated_at": "2026-09-22T08:52:58Z"
+}

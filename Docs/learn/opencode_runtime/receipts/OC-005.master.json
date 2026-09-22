@@ -1,0 +1,11 @@
+{
+  "item_id": "OC-005",
+  "source_path": "packages/opencode/src/permission/index.ts",
+  "source_hash": "5b9e4aa65290a39363722b9fae4c68080188d8ed76896afa0d96cd9dbfd2821d",
+  "target_artifact": "Docs/learn/opencode_runtime/files/packages/opencode/src/permission/index.ts_learn.md",
+  "artifact_bytes": 14841,
+  "artifact_sha256": "70a9069b5ae9cad7211ed99ef9d575cfa80d1d92a01a22a9481d5aac80c0d820",
+  "attempts": 2,
+  "validated_by": "master",
+  "validated_at": "2026-09-22T06:21:08Z"
+}

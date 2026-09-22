@@ -1,0 +1,11 @@
+{
+  "item_id": "OC-055",
+  "source_path": "packages/opencode/src/tool/todo.ts",
+  "source_hash": "f18fdedc754e0842660a968fa225ed961fb516a544eb04209d8b44c7673df270",
+  "target_artifact": "Docs/learn/opencode_runtime/files/packages/opencode/src/tool/todo.ts_learn.md",
+  "artifact_bytes": 10633,
+  "artifact_sha256": "58abcd4a8081347d866d82ff859ec7016176fe81448fb6ed6b51ad26de787337",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-22T06:56:52Z"
+}

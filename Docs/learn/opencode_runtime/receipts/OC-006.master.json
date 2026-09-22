@@ -1,0 +1,11 @@
+{
+  "item_id": "OC-006",
+  "source_path": "packages/opencode/src/provider/auth.ts",
+  "source_hash": "7331fda8558fe517aa5a69a8aa78dcbb80af719f43caf16c8960f9c5ad7a0d2e",
+  "target_artifact": "Docs/learn/opencode_runtime/files/packages/opencode/src/provider/auth.ts_learn.md",
+  "artifact_bytes": 11114,
+  "artifact_sha256": "cf616e9c9ed664ad7baca9b9499352f4a67083d122b453acb2209e013373bbf6",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-22T06:19:27Z"
+}

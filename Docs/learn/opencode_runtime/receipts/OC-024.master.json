@@ -1,0 +1,11 @@
+{
+  "item_id": "OC-024",
+  "source_path": "packages/opencode/src/session/reminders.ts",
+  "source_hash": "cb684f1b13330966c6d8b07b2279bb5e0f060211597fd8da172c591dfc7f8cd7",
+  "target_artifact": "Docs/learn/opencode_runtime/files/packages/opencode/src/session/reminders.ts_learn.md",
+  "artifact_bytes": 12602,
+  "artifact_sha256": "f6a4e3cc3810c9b19d039d65ff021cfb6f4b706b47a6bf67ce10a8af33aeacc0",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-22T06:23:44Z"
+}

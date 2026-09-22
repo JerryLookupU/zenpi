@@ -1,0 +1,11 @@
+{
+  "item_id": "OC-058",
+  "source_path": "packages/opencode/src/tool/truncation-dir.ts",
+  "source_hash": "790159a022386c68212056a39571f53c9874d11079b0572d57c207f1cd1d9155",
+  "target_artifact": "Docs/learn/opencode_runtime/files/packages/opencode/src/tool/truncation-dir.ts_learn.md",
+  "artifact_bytes": 7893,
+  "artifact_sha256": "ff10016a995e5c7c328763c5d8b0919e2452c8d70b2de0e0abbddbb11468968a",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-22T09:01:46Z"
+}
