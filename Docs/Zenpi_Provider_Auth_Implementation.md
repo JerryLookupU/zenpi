@@ -107,10 +107,10 @@ API key 解析优先级仍为显式 override > ZENPI_API_KEY > OPENAI_API_KEY > 
 | PA06 | PA03/PA04/PA05 | auth/resolve：每请求鉴权、5分钟预刷新、同身份401恢复、撤销 | C02/C12 / A07-A10/A16 | resolver27条及 HTTPS 集成14条通过；已接生产请求，初始在途刷新/终态分类也已验证；不代表 live OAuth 资格或登录 CLI 完成 | verified |
 | PA07 | PA02/PA03/PA05 | config/core CLI：auth list/add/doctor/revoke、import-codex 明确来源/边界、默认值兼容 | C15 / A01/A17 | 命令已落地并经合成凭据端到端验证；legacy 写回并入同一稳定锁；**真实 OAuth 登录与真实服务调用仍未验证** | verified |
 | PA08 | PA01/PA02/PA04/PA06 | Codex/DeepSeek request dialect、headers/SSE/tools/reasoning/错误；唯一推理重试 | C09/C14 / A11-A13/A16 | route-aware codec/headers 与唯一401重试循环已接线，HTTPS14条/协议15条测试通过；opaque history 仍待 PA12 | implementing |
-| PA09 | PA02/PA06/PA08 | Core/session 原子连接选择、owner/queue 栅栏、scope、选择事件恢复 | C15 / A18/A19 | set_model 只换模型，backend 启动固定 | pending |
-| PA10 | PA07/PA09 | TUI bootstrap/auth 任务/菜单；复用宿主状态机，迟到 callback/取消 | C15 / A17 | 缺凭据在 TUI 前失败 | pending |
-| PA11 | PA09 | protocol/headless v2 connection 控制/capability/回执/replay；无秘密 JSONL | C15 / A18/A19 | 新 connection 控制未实现 | pending |
-| PA12 | PA01/PA02/PA09/PA11 | 有序内容 DTO、ToolResult、Core 物化、协议映射、journal/compact/resume | C10/C15 / A14/A15/A19 | 当前附件不等于跨 turn 恢复；工具 Value 会文本化 | pending |
+| PA09 | PA02/PA06/PA08 | Core/session 原子连接选择、owner/queue 栅栏、scope、选择事件恢复 | C15 / A18/A19 | `Agent::select_connection` 已落地：owner/phase/队列/附件/审批/worker/未决 operation 栅栏 → revision 复核 → 候选校验 → 单条 durable 事件 → infallible swap；拒绝不改运行状态。恢复拒绝把保存的选择套到另一个 profile/credential 上。**TUI/headless 的宿主接线分属 PA10/PA11** | verified |
+| PA10 | PA07/PA09 | TUI bootstrap/auth 任务/菜单；复用宿主状态机，迟到 callback/取消 | C15 / A17 | 缺凭据在 TUI 前失败；`tui/bootstrap.rs`、`/auth`、`/login`、`/profile` 均未实现 | pending |
+| PA11 | PA09 | protocol/headless v2 connection 控制/capability/回执/replay；无秘密 JSONL | C15 / A18/A19 | `connection_v1`/`ordered_content_v1` 已在 status 声明；`type:"connection"` 的 select/status 严格校验、data/error 互斥、request ID 幂等复用既有 replay cache；**ordered_content_v1 的行为面仍待 PA12** | verified |
+| PA12 | PA01/PA02/PA09/PA11 | 有序内容 DTO、ToolResult、Core 物化、协议映射、journal/compact/resume | C10/C15 / A14/A15/A19 | 当前附件不等于跨 turn 恢复；工具 Value 会文本化；`zenpi_content_v1`/`InputContentPart`/typed ToolResult 尚未实现 | pending |
 | PA13 | PA07-PA12 | 路径链路调试文档、命令再核查、用户真实调试与版本收据 | P6 / A20 | 只在实际命令落地后成文，不给未实现命令标可用 | pending |
 
 PA01 可先完成 native 提取再迁 Chat/Responses；PA02 可先完成定义/路由再接 config。阶段性证据分行记录，不提前将整行标 verified。
@@ -450,3 +450,61 @@ namespace 恒取自磁盘实时值，调用方快照里的同名键会被剥离�
 属蓝图 A20 / P6 live gate）；真实 provider 请求与刷新；TUI/headless 入口；Windows 的凭据持久化
 （按蓝图 §7.2 在未验收前 fail closed）。`config add auth codex` 的浏览器打开动作在功能验收中**未执行**
 （唯一一次误触发生在参数吞噬缺陷修复前，见上表第 3 行；未完成授权，未产生凭据）。
+
+### 6.9 PA09/PA11 收据：原子选择与 headless 连接控制
+
+本批只做 PA09 与 PA11，并在结束后跑了一轮受影响 target 的回归。
+PA10/PA12/PA13 仍未实现，任务表按实际状态标注。
+
+PA09 的契约顺序（`Agent::select_connection`）：owner 标签 → phase → 队列/附件/审批/worker/未决 operation 栅栏 →
+`expected_selection_revision` 复核 → 候选 backend 的 model 与 history 校验 → **一条** durable `model_selected` →
+不可失败的 swap。任何一步拒绝都不改变运行中的 backend、model、journal 与 UI。
+现有 `model_selected` 被扩展而非新建第二条事件：`model`/`descriptor`/`digest`/`reasoning_effort` 语义不变，
+新增字段全部 `serde(default)`，旧 writer 的事件仍按旧行为恢复。
+选择 revision 取该 session 最后一条选择事件的序号，它不是配置 revision、也不是 credential revision。
+
+PA11 的契约：capability 声明在既有 status 响应内，不新增启动握手；
+`connection` 命令与 prompt/approval/tree/attachment 严格互斥；拒绝带 typed code 且**不带 data**；
+request ID 幂等复用既有 replay cache（重复 ID 返回原提交快照，同 ID 不同 body 为 `request_id_conflict`）；
+session 写入失败在 I/O 类错误下报 `connection_commit_uncertain`，不冒充 applied 或 rejected。
+
+本批发现并修复的真实缺陷：
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| 每次 select 都会被 `connection_owner_mismatch` 拒绝 | Agent 只有内部 `request_owner_id`（不透明、每进程生成），协议侧 owner 是 `discussion`/`arch`，两者从不相等 | Agent 新增 `owner_label`，arch owner 在 `project_workspace` 里标注；选择按标签核对 |
+| PA11 提交后 `session_recovery` 目标失败 | PA09 的测试仍传内部 owner id | 改传 `owner_label()`；由提交后的回归扫描发现并单独修复提交 |
+
+| 命令 | 结果 |
+|---|---|
+| rtk cargo test --locked --offline --test session_recovery | exit0；45 passed（PA09 新增 6 条） |
+| rtk cargo test --locked --offline --test headless_protocol | exit0；45 passed（PA11 新增 2 条） |
+| rtk cargo test --locked --offline --test stage1_reasoning_owner | exit0；5 passed；旧选择/effort 行为未变 |
+| rtk cargo test --locked --offline --test stage1_model_registry | exit0；16 passed |
+| rtk cargo test --locked --offline --test stage1_semantic_compaction | exit0；16 passed、2 ignored（既有 helper） |
+| rtk cargo test --locked --offline --test stage1_host | exit0；7 passed |
+| rtk cargo test --locked --offline --test tui_interaction | exit0；51 passed |
+| rtk cargo test --locked --offline --test stage1_input_queue | exit0；17 passed、1 ignored |
+| rtk cargo test --locked --offline --test backend / provider_admission / explicit_runtime / security | exit0；26 / 12 / 2 / 10 passed |
+| rtk cargo test --locked --offline --test headless_event_budget / headless_input_shutdown / headless_domain_owner / headless_project_workspace | exit0；1 / 3 / 7 / 13 passed |
+
+**未验证项**：TUI 侧的选择与登录引导（PA10 未实现）；ordered_content_v1 的实际内容通路（PA12 未实现，
+本轮只声明了 capability）；真实服务调用与真实 OAuth 登录（A20 live gate）。
+
+### 6.10 与 pi-rs 的对照结论
+
+按用户要求对照了 `https://github.com/jshachm/pi-rs`（一个 Pi 的 Rust 移植）。结论是**它比 zenpi 小得多**
+（9.6k 行 / 66 文件 vs 108k 行 / 100 文件），在蓝图覆盖的 7 个领域里有 5 个几乎为空：
+无 OAuth PKCE/device/refresh/锁/事务（`auth/storage.rs` 仅 168 行的内存 HashMap）、无 Responses/Codex/DeepSeek wire、
+8 个 provider 的流式全部返回 "Streaming not implemented"、无 headless/JSONL、无重试（`tokio-retry` 声明未用）、
+内容模型只有扁平 `Text|Image`。因此它**不能当作 zenpi 的遗漏基准**。
+
+它确有而 zenpi 没有的，集中在蓝图之外的旁路产品能力，按价值排序：
+主题/配色系统（zenpi `grep -i theme src/` 零命中）、sandbox + `epkg` 工具、
+Moonshot/Groq/Mistral 的内置默认端点（zenpi 用 `custom` profile 已可打通）、会话 label/书签事件、
+`-c/--continue` 这类便利旗标。这些都不在 PA00-PA13 范围内，未纳入本轮。
+
+对照中发现的**真实蓝图内缺口**：蓝图 §8.3 要求错误至少区分
+`provider_unsupported_capability`/`provider_permission_denied`/`provider_usage_limit`。
+本批只补齐了后两者的来源（403/429 的 `BackendError::code()` 映射，401 映射为 `auth_login_required`）；
+`provider_unsupported_capability` 需要在 `protocols/mod.rs` 的十余处能力拒绝点逐一区分，属 PA08 剩余工作，未做。
