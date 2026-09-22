@@ -1587,7 +1587,7 @@ mod connection_selection {
     }
 
     fn apply(agent: &mut Agent, model: &str) -> ConnectionSelectionOutcome {
-        let owner = agent.request_owner_id().to_owned();
+        let owner = agent.owner_label().to_owned();
         agent
             .select_connection(ConnectionSelection {
                 owner_id: owner,
@@ -1678,7 +1678,7 @@ mod connection_selection {
         let records = record_count(&agent);
 
         // Planned against a revision that has since moved.
-        let owner = agent.request_owner_id().to_owned();
+        let owner = agent.owner_label().to_owned();
         let outcome = agent
             .select_connection(ConnectionSelection {
                 owner_id: owner.clone(),
@@ -1759,7 +1759,7 @@ mod connection_selection {
 
         // The candidate backend is well formed; the model the caller asked it
         // to serve is not, so the selection is refused before the journal.
-        let owner = agent.request_owner_id().to_owned();
+        let owner = agent.owner_label().to_owned();
         let revision = agent.selection_revision();
         let outcome = agent
             .select_connection(ConnectionSelection {
