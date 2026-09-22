@@ -4662,8 +4662,13 @@ fn run_async_stdio<R: io::Read + Send + 'static, W: Write>(
                         agent.register_live_owner(replay.owner_epoch, cwd, now)?;
                     }
                     pool.refresh_owner_context(&id, &agent);
-                    access.insert(id, (agent.input_port(), agent.approval_coordinator()));
                 }
+            }
+            // Control handles are published when an owner is created, so a busy
+            // owner stays answerable: taking its execution lock is not a
+            // precondition for draining or answering its approval requests.
+            for (id, control) in pool.control_handles() {
+                access.insert(id, (control.input_port, control.approval));
             }
             let project = pool.active_context().clone();
             if let Some((port, coordinator)) = access.get(&project.project_id) {

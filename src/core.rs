@@ -544,6 +544,11 @@ pub struct Agent {
     output_store: crate::tool_output::SessionOutputStore,
     input_port: crate::input_queue::InputPort,
     project_overrides: crate::config::ConfigOverrides,
+    /// Whether this owner was prepared with `--auto` (ZS1-180).  Recorded as
+    /// its own value rather than inferred from the approval mode: "the user
+    /// asked for a blanket allow" and "this owner happens not to prompt" are
+    /// different facts, and only the first may spread to other owners.
+    auto_approve: bool,
     backend: Box<dyn Backend>,
     session: SessionStore,
     phase: AgentPhase,
@@ -752,6 +757,7 @@ impl Agent {
             output_store: crate::tool_output::SessionOutputStore::default(),
             input_port: crate::input_queue::InputPort::new(session.session_id()),
             project_overrides: crate::config::ConfigOverrides::default(),
+            auto_approve: false,
             backend,
             session,
             phase: AgentPhase::Idle,
@@ -892,6 +898,13 @@ impl Agent {
         self.project_overrides.clone()
     }
 
+    /// True when this owner was prepared under `--auto` (ZS1-180).  Read this
+    /// instead of inspecting the approval mode: a `Never` mode says the owner
+    /// does not prompt, which is not the same statement.
+    pub fn auto_approve(&self) -> bool {
+        self.auto_approve
+    }
+
     pub fn prepare_project_with_options(
         session_path: &Path,
         cwd: &Path,
@@ -941,6 +954,7 @@ impl Agent {
             },
             ..ApprovalPolicy::default()
         });
+        agent.auto_approve = auto_approve;
         Ok(agent)
     }
 
@@ -5321,15 +5335,35 @@ impl Agent {
             }
         };
         evidence.prohibition_gate_enforced = worker_preflight;
-        let approval = if runtime.policy.allows(definition.side_effect) {
-            runtime.approval_policy.decide_after_preflight(
+        let approval_source = if runtime.policy.allows(definition.side_effect) {
+            runtime.approval_policy.decide_after_preflight_source(
                 definition.side_effect,
                 &call.name,
                 worker_preflight,
             )
         } else {
-            Some(ApprovalDecision::Deny)
+            Some((ApprovalDecision::Deny, "side_effect_denied"))
         };
+        let approval = approval_source.map(|(decision, _)| decision);
+        // A policy that decides on its own never reaches a host, so without
+        // this record the journal cannot say why the side effect ran.  The
+        // worker-preflight allow is left out: it already writes the
+        // `approval_resolved` record that names its gate digest.
+        if let Some((decision, source)) = approval_source
+            && source != crate::approval::WORKER_PREFLIGHT_SOURCE
+        {
+            self.session.append_event(serde_json::json!({
+                "type": "authorization_decided",
+                "turn_id": turn_id,
+                "call_id": call.id,
+                "tool": call.name,
+                "side_effect": definition.side_effect,
+                "origin": runtime.context.origin(),
+                "policy_digest": evidence.policy_digest,
+                "decision": decision,
+                "source": source,
+            }))?;
+        }
         if approval == Some(ApprovalDecision::Deny) {
             return Ok(PreparedTool::Rejected(tool_failure(
                 call,
@@ -5412,6 +5446,7 @@ impl Agent {
                     }),
                     "decision": accepted.response.decision,
                     "remember": accepted.response.remember,
+                    "source": crate::approval::HOST_ANSWER_SOURCE,
                     "execution": evidence,
                 }))
             }).map_err(|error| match error {
@@ -5423,16 +5458,6 @@ impl Agent {
                     .approval_policy
                     .remember(call.name.clone(), response.decision);
             }
-            self.session.append_event(serde_json::json!({
-                "type": "approval_consumed",
-                "request_id": response.request_id,
-                "turn_id": turn_id,
-                "call_id": call.id,
-                "tool": call.name,
-                "decision": response.decision,
-                "remember": response.remember,
-                "execution": evidence,
-            }))?;
             if response.decision == ApprovalDecision::Deny {
                 // ZS1-182: operator feedback travels to the model as the
                 // denial reason so it can correct course.
@@ -5452,6 +5477,19 @@ impl Agent {
                     ToolInvocationOutcome::Denied,
                 )));
             }
+            // Only an approval hands out a permit, so only an approval
+            // consumes one.  A denial has nothing to consume, and recording
+            // one would claim the call was allowed through.
+            self.session.append_event(serde_json::json!({
+                "type": "approval_consumed",
+                "request_id": response.request_id,
+                "turn_id": turn_id,
+                "call_id": call.id,
+                "tool": call.name,
+                "decision": response.decision,
+                "remember": response.remember,
+                "execution": evidence,
+            }))?;
             approved_preview = preview;
         }
         if approval == Some(ApprovalDecision::Allow) && worker_preflight {
@@ -5463,7 +5501,7 @@ impl Agent {
                 "tool": call.name,
                 "decision": "allow",
                 "remember": false,
-                "source": "worker_allow_after_preflight",
+                "source": crate::approval::WORKER_PREFLIGHT_SOURCE,
                 "policy_digest": evidence.policy_digest,
                 "execution": evidence,
             }))?;

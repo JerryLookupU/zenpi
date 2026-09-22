@@ -671,6 +671,20 @@ pub enum HotZone {
     Shell,
 }
 
+impl HotZone {
+    /// Short name for user-facing feedback, matching the footer's zone table.
+    pub fn label(self) -> &'static str {
+        match self {
+            HotZone::None => "无热区",
+            HotZone::Conversation => "Conversation",
+            HotZone::Resources => "Resources",
+            HotZone::Arch => "Arch",
+            HotZone::Gantt => "Gantt",
+            HotZone::Shell => "Shell",
+        }
+    }
+}
+
 /// Which transcript receives host feedback while a command runs. The two left
 /// prompts are independent (ZS1-165), so a slash command launched from the arch
 /// console reports into the arch transcript and never the discussion one.
@@ -1259,12 +1273,23 @@ impl TuiState {
     }
 
     pub fn present_approval(&mut self, request: crate::approval::ApprovalRequest) {
+        let project = self.active_project().to_owned();
+        self.present_approval_for(project, request);
+    }
+
+    /// File a request under the project whose owner raised it.  A host that
+    /// tracks several owners at once must not attribute them all to whichever
+    /// tab happens to be active when the request is drained.
+    pub fn present_approval_for(
+        &mut self,
+        project: String,
+        request: crate::approval::ApprovalRequest,
+    ) {
         if let Err(error) = request.validate() {
             self.push_message(MessageRole::Error, format!("Invalid approval: {error}"));
             return;
         }
         let can_focus = self.directory_picker.is_none() && self.transcript_browser.is_none();
-        let project = self.active_project().to_owned();
         let view = self.approval_views.entry(project).or_default();
         if view
             .requests
@@ -1546,12 +1571,10 @@ impl TuiState {
             KeyCode::Home => view.scroll = 0,
             KeyCode::End => view.scroll = usize::MAX,
             KeyCode::Enter => {
-                if !view.allow {
-                    // A bare Enter on a not-yet-allowed request opens the
-                    // reject-feedback stage instead of silently denying.
-                    view.stage = ApprovalStage::RejectMessage;
-                    return Some(TuiAction::Redraw);
-                }
+                // Enter confirms the current selection in one press.  Denial
+                // is the default selection, so a bare Enter denies; leaving a
+                // note for the model is an explicit choice (`n`), not a step
+                // every denial has to walk through first.
                 let r = &view.requests[view.index];
                 view.stage = ApprovalStage::Select;
                 return Some(TuiAction::RespondApproval {
@@ -1673,7 +1696,12 @@ impl TuiState {
                     view.message
                 ),
                 ApprovalStage::Select => {
-                    format!("y allow · n deny · r remember · Enter confirm · {remember}")
+                    // Name the selection Enter would commit: "confirm" alone
+                    // leaves the user guessing which way the key goes.
+                    format!(
+                        "Enter {} now · y allow · n deny with a note · r remember · {remember}",
+                        if view.allow { "ALLOW" } else { "DENY" }
+                    )
                 }
             }
         };
@@ -1693,6 +1721,36 @@ impl TuiState {
 }
 
 /// Exact host correlation; coordinator remains the atomic decision authority.
+/// One control handle per live owner, keyed by owner.  Refreshed from the pool
+/// rather than discovered through an owner's execution lock, so a coordinator
+/// stays reachable while its owner runs -- which is exactly when it has a
+/// request to answer.
+fn owner_controls(
+    pool: &crate::project_workspace::ProjectOwnerPool,
+) -> std::collections::BTreeMap<String, crate::project_workspace::OwnerControl> {
+    pool.control_handles()
+        .into_iter()
+        .filter(|(_, control)| control.approval.is_some())
+        .collect()
+}
+
+/// The coordinator currently holding `request_id` pending for `project`.  A
+/// project can have both a discussion owner and an arch owner, and a request
+/// carries no owner key, so the pending request itself is the only reliable
+/// link back to the coordinator that must answer it.
+fn coordinator_holding(
+    approvals: &std::collections::BTreeMap<String, crate::project_workspace::OwnerControl>,
+    project: &str,
+    request_id: &str,
+) -> Option<crate::approval::ApprovalCoordinator> {
+    approvals
+        .values()
+        .filter(|control| control.project == project)
+        .filter_map(|control| control.approval.as_ref())
+        .find(|coordinator| coordinator.is_pending(request_id))
+        .cloned()
+}
+
 pub fn respond_tui_approval(
     state: &mut TuiState,
     coordinator: &crate::approval::ApprovalCoordinator,
@@ -2780,6 +2838,10 @@ pub struct TuiState {
     submitted_pastes: VecDeque<SubmittedPaste>,
     cursor: usize,
     status: String,
+    /// Short-lived line the footer shows ahead of the hot-zone hint.  A key
+    /// that was refused has to say so where the user is actually looking, and
+    /// `status` alone never reaches the production renderer.
+    footer_notice: Option<(String, Instant)>,
     busy: bool,
     scroll: usize,
     history: VecDeque<String>,
@@ -3014,6 +3076,7 @@ impl TuiState {
             submitted_pastes: VecDeque::new(),
             cursor: 0,
             status: "Ready".into(),
+            footer_notice: None,
             busy: false,
             scroll: 0,
             history: VecDeque::new(),
@@ -4642,6 +4705,18 @@ impl TuiState {
         }
     }
 
+    /// Record the approval mode this project should be rebound with.
+    /// `bind_agent_to_active_project` reapplies the stored mode whenever the
+    /// tab changes, so a slash command that only edits the live policy has its
+    /// choice silently reverted on the next switch.
+    pub fn set_project_approval_mode(&mut self, mode: crate::approval::ApprovalMode) {
+        let name = self.active_project().to_owned();
+        let mut metadata = self.project_metadata(&name).cloned().unwrap_or_default();
+        metadata.approval_mode = mode;
+        self.set_project_metadata(name, metadata);
+        self.dirty = true;
+    }
+
     pub fn set_active_project_metadata(&mut self, metadata: ProjectTabMetadata) {
         let name = self.active_project().to_owned();
         self.set_project_metadata(name, metadata);
@@ -5393,9 +5468,34 @@ impl TuiState {
     pub fn set_status(&mut self, status: impl Into<String>) {
         let status = bound_text(status.into());
         if self.status != status {
+            // The production renderer draws the footer and nothing else, so a
+            // status that is not echoed there is a status nobody ever sees.
+            // The two values the footer already renders are left alone; every
+            // other one is posted as a short-lived notice so it cannot
+            // displace the hot-zone hint forever.
+            if status != "Ready"
+                && status != "Project closed"
+                && !status.starts_with("Project ready · ")
+            {
+                self.footer_notice = Some((status.clone(), Instant::now()));
+            }
             self.status = status;
             self.dirty = true;
         }
+    }
+
+    /// Show a short line in the footer for a few seconds.  Used where a key is
+    /// refused, but doing nothing visible would read as a dropped keystroke.
+    pub fn notice_footer(&mut self, notice: impl Into<String>) {
+        self.footer_notice = Some((bound_text(notice.into()), Instant::now()));
+        self.dirty = true;
+    }
+
+    fn live_footer_notice(&self) -> Option<&str> {
+        self.footer_notice
+            .as_ref()
+            .filter(|(_, at)| at.elapsed() < Duration::from_secs(4))
+            .map(|(text, _)| text.as_str())
     }
 
     pub fn set_busy(&mut self, busy: bool) {
@@ -8303,8 +8403,14 @@ impl TuiState {
                             // Pasted slash text remains literal until a deliberate later key.
                             self.palette_dismissed = true;
                         }
-                        // Navigation zones have no text target.
-                        HotZone::Resources | HotZone::Gantt | HotZone::None => {}
+                        // Navigation zones have no text target. Dropping the
+                        // paste without a word looks like a broken terminal.
+                        zone @ (HotZone::Resources | HotZone::Gantt | HotZone::None) => {
+                            self.notice_footer(format!(
+                                "{} 不接受粘贴 · Tab 切换区域",
+                                zone.label()
+                            ));
+                        }
                     }
                 }
                 TuiAction::None
@@ -8784,7 +8890,16 @@ impl TuiState {
                     self.focus_previous_workspace_pane();
                     return TuiAction::Redraw;
                 }
-                _ => {}
+                _ => {
+                    // Swallowing the key silently reads as a dead terminal.
+                    // Say which pane owns the keys and how to leave it; the
+                    // return value stays `None` so the explicit-action shape
+                    // callers depend on is unchanged.
+                    self.notice_footer(format!(
+                        "{} 不接受普通输入 · Tab 切换区域 · Esc 返回",
+                        zone.label()
+                    ));
+                }
             }
             return TuiAction::None;
         }
@@ -10124,6 +10239,7 @@ impl TuiState {
         } else {
             None
         };
+        let footer_notice = self.live_footer_notice().map(|notice| format!(" {notice}"));
         let text = truncate_to_width(
             if let Some(warning) = unsaved.as_deref() {
                 warning
@@ -10133,6 +10249,8 @@ impl TuiState {
                 hint
             } else if let Some(status) = project_status.as_deref() {
                 status
+            } else if let Some(notice) = footer_notice.as_deref() {
+                notice
             } else if self.adjacent_paste().is_some() {
                 " Alt-Enter expand paste · Left/Right move · Backspace/Delete remove · Enter send "
             } else {
@@ -12741,13 +12859,18 @@ pub fn dispatch_slash_command(
         }
         SlashCommand::Yolo { enabled } => {
             if let Some(agent) = agent.as_deref_mut() {
-                let mut policy = agent.configured_approval_policy().unwrap_or_default();
-                policy.mode = if enabled {
+                let mode = if enabled {
                     crate::approval::ApprovalMode::Never
                 } else {
                     crate::approval::ApprovalMode::ReadOnly
                 };
+                let mut policy = agent.configured_approval_policy().unwrap_or_default();
+                policy.mode = mode;
                 agent.set_approval_policy(policy);
+                // Write the choice where rebinding reads it.  Editing only the
+                // live policy let the next project switch revert it.
+                state.set_project_approval_mode(mode);
+                state.set_auto_approve(enabled);
                 state.push_message(
                     MessageRole::System,
                     format!("yolo {}", if enabled { "on" } else { "off" }),
@@ -12765,13 +12888,17 @@ pub fn dispatch_slash_command(
                 );
             } else {
                 if let Some(agent) = agent.as_deref_mut() {
-                    let mut policy = agent.configured_approval_policy().unwrap_or_default();
-                    policy.mode = match mode.as_str() {
+                    let chosen = match mode.as_str() {
                         "ask" => crate::approval::ApprovalMode::ReadOnly,
                         "always" => crate::approval::ApprovalMode::Always,
                         _ => crate::approval::ApprovalMode::Never,
                     };
+                    let mut policy = agent.configured_approval_policy().unwrap_or_default();
+                    policy.mode = chosen;
                     agent.set_approval_policy(policy);
+                    // Durable for the same reason `/yolo` is: this project is
+                    // rebound with the stored mode on every tab change.
+                    state.set_project_approval_mode(chosen);
                     state.push_message(MessageRole::System, format!("approval mode: {mode}"));
                 } else {
                     state.push_message(MessageRole::Error, "approval requires an idle owner");
@@ -16365,10 +16492,11 @@ pub fn run_async_with_profile(
     let mut session_browser_host = SessionBrowserHost::new()?;
     let mut editor = ExternalEditorHost::capture_startup();
     let mut shared = Arc::new(Mutex::new(agent));
-    let mut approval = shared
-        .lock()
-        .ok()
-        .and_then(|agent| agent.approval_coordinator());
+    // Every live owner's control handle, refreshed from the pool each pass.
+    // One owner's request must never be missed because another owner was
+    // submitted to most recently.
+    let mut approvals: std::collections::BTreeMap<String, crate::project_workspace::OwnerControl> =
+        std::collections::BTreeMap::new();
     let worker_state = Arc::clone(&shared);
     // Keep provider events bounded independently of the transcript. A slow
     // terminal must not turn an unbounded stream into unbounded memory.
@@ -17013,11 +17141,18 @@ pub fn run_async_with_profile(
                     scheduler.request();
                 }
             }
-            if let Some(coordinator) = approval.as_ref() {
+            approvals = owner_controls(&project_host.pool);
+            if !approvals.is_empty() {
+                // A request is stale only when no live owner still holds it:
+                // the owner that raised it need not be the one most recently
+                // submitted to, or even the active tab.
                 let stale: Vec<_> = pending_approvals
                     .iter()
                     .filter(|r: &&crate::approval::ApprovalRequest| {
-                        !coordinator.is_pending(&r.request_id)
+                        !approvals
+                            .values()
+                            .filter_map(|control| control.approval.as_ref())
+                            .any(|coordinator| coordinator.is_pending(&r.request_id))
                     })
                     .cloned()
                     .collect();
@@ -17025,8 +17160,20 @@ pub fn run_async_with_profile(
                     state.retire_approval_request(&request);
                     pending_approvals.retain(|r| !TuiState::same_approval_request(r, &request));
                 }
-                for request in coordinator.drain_pending() {
-                    state.present_approval(request.clone());
+                let mut drained = Vec::new();
+                for control in approvals.values() {
+                    let Some(coordinator) = control.approval.as_ref() else {
+                        continue;
+                    };
+                    drained.extend(
+                        coordinator
+                            .drain_pending()
+                            .into_iter()
+                            .map(|request| (control.project.clone(), request)),
+                    );
+                }
+                for (project, request) in drained {
+                    state.present_approval_for(project, request.clone());
                     let preview = request.preview.as_ref().map(|preview| {
                         let text = format!("\n\nProposed change:\n{}", preview.display_text());
                         let block = match preview {
@@ -17309,11 +17456,6 @@ pub fn run_async_with_profile(
                 if let Ok(agent) = owner.try_lock() {
                     input_controls.remember_owner(state.active_project(), &agent);
                 }
-                approval = owner
-                    .try_lock()
-                    .ok()
-                    .and_then(|agent| agent.approval_coordinator())
-                    .or(approval.clone());
                 let submitted_text = SubmittedInput {
                     text: request.text.clone(),
                     paste,
@@ -17487,13 +17629,12 @@ pub fn run_async_with_profile(
                         allow,
                         remember,
                     } => {
-                        let result = approval
-                            .as_ref()
+                        let result = coordinator_holding(&approvals, &project, &request_id)
                             .ok_or(crate::approval::ApprovalError::UnknownRequest)
                             .and_then(|owner| {
                                 respond_tui_approval(
                                     &mut state,
-                                    owner,
+                                    &owner,
                                     active_job_project.as_deref(),
                                     (&project, &request_id, &turn_id, &call_id),
                                     (allow, remember),
@@ -17955,12 +18096,14 @@ pub fn run_async_with_profile(
                                         .as_ref()
                                         .ok_or(crate::approval::ApprovalError::UnknownRequest)
                                         .and_then(|request| {
-                                            let coordinator = approval.as_ref().ok_or(
-                                                crate::approval::ApprovalError::UnknownRequest,
-                                            )?;
+                                            let coordinator =
+                                                coordinator_holding(&approvals, &project, &id)
+                                                    .ok_or(
+                                                    crate::approval::ApprovalError::UnknownRequest,
+                                                )?;
                                             respond_tui_approval(
                                                 &mut state,
-                                                coordinator,
+                                                &coordinator,
                                                 active_job_project.as_deref(),
                                                 (&project, &id, &request.turn_id, &request.call_id),
                                                 (
@@ -18062,8 +18205,12 @@ pub fn run_async_with_profile(
                                                 cancel_result,
                                                 Err(crate::runtime::SubmitError::QueueFull)
                                             ) {
-                                                if let Some(approval) = approval.as_ref() {
-                                                    approval.emergency_cancel();
+                                                for control in approvals.values() {
+                                                    if let Some(approval) =
+                                                        control.approval.as_ref()
+                                                    {
+                                                        approval.emergency_cancel();
+                                                    }
                                                 }
                                                 pending_approvals.clear();
                                                 state.clear_activity_approvals();
@@ -18131,11 +18278,6 @@ pub fn run_async_with_profile(
                                         input_controls
                                             .remember_owner(state.active_project(), &agent);
                                     }
-                                    approval = owner
-                                        .try_lock()
-                                        .ok()
-                                        .and_then(|agent| agent.approval_coordinator())
-                                        .or(approval.clone());
                                     let submitted_text = state.bind_submitted_input(text.clone());
                                     match runner.try_submit(request) {
                                         Ok(id) => {
@@ -18278,11 +18420,6 @@ pub fn run_async_with_profile(
                                         input_controls
                                             .remember_owner(state.active_project(), &agent);
                                     }
-                                    approval = owner
-                                        .try_lock()
-                                        .ok()
-                                        .and_then(|agent| agent.approval_coordinator())
-                                        .or(approval.clone());
                                     let submitted_text =
                                         state.bind_submitted_input(request.text.clone());
                                     match runner.try_submit(request) {
@@ -18337,8 +18474,10 @@ pub fn run_async_with_profile(
                                 // The cancel command is admitted (or the
                                 // worker is already closed), so no approval
                                 // from this turn can be answered safely.
-                                if let Some(approval) = approval.as_ref() {
-                                    approval.emergency_cancel();
+                                for control in approvals.values() {
+                                    if let Some(approval) = control.approval.as_ref() {
+                                        approval.emergency_cancel();
+                                    }
                                 }
                                 pending_approvals.clear();
                                 state.clear_activity_approvals();
@@ -18355,8 +18494,10 @@ pub fn run_async_with_profile(
                         pending_inputs.cancel(&mut state);
                         if let Some(id) = active_job {
                             let _ = runner.try_cancel(id);
-                            if let Some(approval) = approval.as_ref() {
-                                approval.emergency_cancel();
+                            for control in approvals.values() {
+                                if let Some(approval) = control.approval.as_ref() {
+                                    approval.emergency_cancel();
+                                }
                             }
                             pending_approvals.clear();
                             state.clear_activity_approvals();

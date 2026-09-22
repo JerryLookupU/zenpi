@@ -401,6 +401,28 @@ impl NewSessionPlan {
 
 /// Actual project runtimes shared by TUI and the owned JSONL host. View labels
 /// never enter this map; every key comes from canonical ProjectWorkspace IDs.
+/// The handles a host needs to drive one owner: its input mailbox and its
+/// approval coordinator.  Both are cheap clones, and both are published when
+/// the owner is created rather than discovered later through the owner's
+/// execution lock.  That is what keeps a busy owner answerable -- an owner
+/// blocked on an approval still holds its own `Mutex<Agent>`, so a host that
+/// had to take that lock to reach the coordinator could never answer it.
+#[derive(Debug, Clone)]
+pub struct OwnerControl {
+    /// The project this owner answers for.  Arch owners get their own key in
+    /// the control table but still belong to their project, so a host
+    /// attributes their requests to the right tab.
+    pub project: String,
+    pub input_port: crate::input_queue::InputPort,
+    pub approval: Option<crate::approval::ApprovalCoordinator>,
+}
+
+/// Key for an arch owner's control entry.  Project owners are keyed by project
+/// id, so arch owners need a key that cannot collide with one.
+fn arch_owner_key(id: &str) -> String {
+    format!("arch:{id}")
+}
+
 pub struct ProjectOwnerPool {
     workspace: ProjectWorkspace,
     owners:
@@ -419,6 +441,8 @@ pub struct ProjectOwnerPool {
     session_root: PathBuf,
     initial_session: (String, PathBuf),
     contexts: std::collections::BTreeMap<String, ProjectContext>,
+    /// Control handles per project owner, kept in step with `owners`.
+    control: std::collections::BTreeMap<String, OwnerControl>,
     checkpoint: Option<(PathBuf, Option<Vec<u8>>)>,
 }
 impl ProjectOwnerPool {
@@ -447,15 +471,22 @@ impl ProjectOwnerPool {
                 .map_err(|e| e.to_string())?
                 .join(session)
         };
-        let auto_approve = owner
-            .approval_policy()
-            .is_some_and(|policy| policy.mode == crate::approval::ApprovalMode::Never);
+        // An explicit value, never inferred from the approval mode: an owner
+        // that happens not to prompt is not the same fact as a user asking for
+        // a blanket allow, and only the second may spread to other owners.
+        let auto_approve = owner.auto_approve();
+        let control = OwnerControl {
+            project: id.clone(),
+            input_port: owner.input_port(),
+            approval: owner.approval_coordinator(),
+        };
         Ok(Self {
             workspace,
             owners: [(id.clone(), std::sync::Arc::clone(&agent))].into(),
             arch_owners: std::collections::BTreeMap::new(),
             initial_session: (id.clone(), session.clone()),
             contexts: [(id.clone(), ProjectContext::from_agent(&id, &owner))].into(),
+            control: [(id.clone(), control)].into(),
             checkpoint: None,
             sessions: [(id, session.clone())].into(),
             overrides: owner.project_overrides(),
@@ -664,8 +695,16 @@ impl ProjectOwnerPool {
         agent
             .set_owner_label("arch")
             .map_err(|error| error.to_string())?;
+        // Registered like any other owner: a host has to be able to drain and
+        // answer this lane's approvals without taking its execution lock.
+        let control = OwnerControl {
+            project: id.to_owned(),
+            input_port: agent.input_port(),
+            approval: agent.approval_coordinator(),
+        };
         let handle = std::sync::Arc::new(std::sync::Mutex::new(agent));
         self.arch_owners.insert(id.to_owned(), handle.clone());
+        self.control.insert(arch_owner_key(id), control);
         Ok(handle)
     }
 
@@ -688,6 +727,20 @@ impl ProjectOwnerPool {
             .iter()
             .map(|(id, owner)| (id.clone(), owner.clone()))
             .collect()
+    }
+    /// Control handles for every project owner, keyed by project id.  Unlike
+    /// [`Self::owner_handles`] these need no lock, so they stay reachable
+    /// while an owner is running or waiting for an approval.
+    pub fn control_handles(&self) -> Vec<(String, OwnerControl)> {
+        self.control
+            .iter()
+            .map(|(id, control)| (id.clone(), control.clone()))
+            .collect()
+    }
+    /// Control handles for one project owner.  `None` means no owner is
+    /// published under that id -- it never means the owner is busy.
+    pub fn control(&self, id: &str) -> Option<OwnerControl> {
+        self.control.get(id).cloned()
     }
     pub fn active(&self) -> std::sync::Arc<std::sync::Mutex<crate::core::Agent>> {
         self.owner(
@@ -768,6 +821,10 @@ impl ProjectOwnerPool {
             keep
         });
         self.contexts.retain(|id, _| self.owners.contains_key(id));
+        // An arch owner carries its own key but answers for its project, so
+        // retention follows the project, not the key.
+        self.control
+            .retain(|_, control| self.owners.contains_key(&control.project));
         self.arch_owners.retain(|key, owner| {
             let keep = self.owners.contains_key(key);
             if !keep && let Ok(mut agent) = owner.try_lock() {
@@ -778,6 +835,16 @@ impl ProjectOwnerPool {
         if let Some(agent) = prepared {
             self.contexts
                 .insert(id.clone(), ProjectContext::from_agent(&id, &agent));
+            // Published here, while the owner is still exclusively ours, so a
+            // host never has to take its execution lock to reach it later.
+            self.control.insert(
+                id.clone(),
+                OwnerControl {
+                    project: id.clone(),
+                    input_port: agent.input_port(),
+                    approval: agent.approval_coordinator(),
+                },
+            );
             self.owners
                 .insert(id, std::sync::Arc::new(std::sync::Mutex::new(agent)));
         }

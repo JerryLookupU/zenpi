@@ -998,19 +998,98 @@ fn rejected_resume_checkpoint_keeps_actual_owner_and_host_usable() {
 }
 
 #[test]
-fn auto_approval_propagates_to_project_and_arch_owners() {
+fn auto_approval_propagates_only_from_an_explicit_auto_owner() {
     let root = tempdir().unwrap();
-    let mut pool = ProjectOwnerPool::new(Arc::new(Mutex::new(agent(root.path())))).unwrap();
+    // An owner that merely happens not to prompt is not a blanket allow.  This
+    // is the whole point of recording `--auto` as its own value: any future
+    // path that sets `Never` for its own reasons must not silently arm every
+    // owner in the pool.
+    let plain = ProjectOwnerPool::new(Arc::new(Mutex::new(agent(root.path())))).unwrap();
+    assert!(
+        !plain.auto_approve(),
+        "a Never mode on its own must not mark the pool as auto"
+    );
+    // ZS1-180: the explicit choice still reaches every owner the pool prepares.
+    let prepared = Agent::prepare_project_with_approval(
+        &root.path().join("auto.jsonl"),
+        root.path(),
+        Default::default(),
+        true,
+        true,
+    )
+    .unwrap();
+    let mut pool = ProjectOwnerPool::new(Arc::new(Mutex::new(prepared))).unwrap();
     assert!(
         pool.auto_approve(),
-        "a Never root owner marks the whole pool as auto"
+        "an explicitly prepared auto root marks the whole pool"
     );
     let id = pool.workspace().active().unwrap().id().as_str().to_owned();
     let arch = pool.arch_agent(&id).unwrap();
+    assert!(arch.lock().unwrap().auto_approve());
     assert_eq!(
         arch.lock().unwrap().approval_policy().unwrap().mode,
         ApprovalMode::Never
     );
+}
+
+#[test]
+fn owner_control_handles_stay_reachable_while_the_owner_is_busy() {
+    let root = tempdir().unwrap();
+    let owner = Arc::new(Mutex::new(agent(root.path())));
+    let pool = ProjectOwnerPool::new(Arc::clone(&owner)).unwrap();
+    let id = pool.workspace().active().unwrap().id().as_str().to_owned();
+    // Hold the execution lock on the owner's behalf. An owner is in this
+    // state for the whole of its turn, including while it waits for an
+    // approval, so reaching its coordinator must not need this lock.
+    let busy = owner.lock().unwrap();
+    assert!(
+        owner.try_lock().is_err(),
+        "the owner is busy, so the execution lock is unavailable"
+    );
+    let control = pool
+        .control(&id)
+        .expect("control handles are published before the owner can run");
+    assert!(
+        control.approval.is_some(),
+        "a prepared owner always has a coordinator"
+    );
+    assert_eq!(pool.control_handles().len(), 1);
+    drop(busy);
+}
+
+#[test]
+fn arch_lane_publishes_its_own_control_handles_for_the_same_project() {
+    let root = tempdir().unwrap();
+    let mut pool = ProjectOwnerPool::new(Arc::new(Mutex::new(agent(root.path())))).unwrap();
+    let id = pool.workspace().active().unwrap().id().as_str().to_owned();
+    let arch = pool.arch_agent(&id).unwrap();
+    let controls = pool.control_handles();
+    assert_eq!(
+        controls.len(),
+        2,
+        "the arch lane publishes a handle of its own"
+    );
+    assert!(
+        controls.iter().all(|(_, control)| control.project == id),
+        "an arch request still belongs to the project it was raised for"
+    );
+    let coordinators = controls
+        .iter()
+        .filter_map(|(_, control)| control.approval.as_ref())
+        .collect::<Vec<_>>();
+    assert_eq!(coordinators.len(), 2);
+    assert!(
+        coordinators
+            .iter()
+            .all(|coordinator| !coordinator.has_pending()),
+        "a freshly prepared pair has nothing waiting"
+    );
+    // The arch owner holds its execution lock for the whole of its turn, which
+    // is exactly when a host has to be able to answer it.
+    let busy = arch.lock().unwrap();
+    assert!(arch.try_lock().is_err());
+    assert_eq!(pool.control_handles().len(), 2);
+    drop(busy);
 }
 
 #[test]

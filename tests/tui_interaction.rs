@@ -1394,6 +1394,42 @@ fn no_hot_zone_blocks_text_and_tab_restores_a_zone() {
     assert_ne!(state.hot_zone(), HotZone::None);
 }
 
+/// A refused key used to vanish without a trace, which reads as a dead
+/// terminal.  It has to say so somewhere the production renderer actually
+/// draws -- the footer, not `status`, which only the legacy host renders.
+#[test]
+fn a_key_refused_by_the_hot_zone_says_so_in_the_footer() {
+    let mut state = TuiState::default();
+    assert!(state.set_hot_zone(HotZone::None));
+    // A fresh backend per frame: reusing one leaves cells from the previous
+    // frame between the wide glyphs of the next.
+    let footer = |state: &mut TuiState| {
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal
+            .draw(|frame| state.render_bentobox(frame, "zenpi"))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        // The renderer pads every wide glyph with a space, so compare on the
+        // text with its spacing removed.
+        (0..buffer.area.height)
+            .flat_map(|y| (0..buffer.area.width).map(move |x| (x, y)))
+            .map(|(x, y)| buffer[(x, y)].symbol())
+            .collect::<String>()
+            .replace(' ', "")
+    };
+    assert!(
+        footer(&mut state).contains("无热区"),
+        "the zone hint is what the footer shows before anything is refused"
+    );
+    let _ = state.handle_key(key(KeyCode::Char('q')));
+    let line = footer(&mut state);
+    assert!(
+        line.contains("不接受普通输入"),
+        "a dropped key has to say so: {line:?}"
+    );
+    assert_eq!(state.input(), "", "the draft stays untouched");
+}
+
 #[test]
 fn resources_zone_owns_navigation_and_esc_leaves_to_no_hot_zone() {
     let mut state = TuiState::default();
