@@ -101,11 +101,11 @@ API key 解析优先级仍为显式 override > ZENPI_API_KEY > OPENAI_API_KEY > 
 | PA00 | 无 | 本文 RTK、命令/源码核查、导入基线 | P0 / A01 | 命令与源码核查完成；3条 Codex 导入功能测试通过 | verified |
 | PA01 | PA00 | 协议提取：backend、protocols、原 providers/anthropic/google；保留兼容入口，不改 Agent Loop | C13 / A03/A12 | 四 wire 已接共享编解码；75条集成+3条单元通过；不代表 Codex 新 dialect 完成 | verified |
 | PA02 | PA00 | 静态 provider 定义、connection 路由与 config 字段；一 provider 一定义文件 | C08/C14 / A01-A03/A13 | 显式配置已接 Core/backend factory，匿名配置到生产 headless 的功能链路已测；凭据路由/跨模型验收见6.6 | implementing |
-| PA03 | PA00 | auth/mod/store：私有 DTO、文件事务、稳定 OS 锁、CAS/tombstone/刷新 marker | C01/C03/C11 / A08-A10 | 存储模块24条测试通过；登录库与请求 resolver 已消费，legacy writer 事务协调仍是 PA07 合并门 | implementing |
+| PA03 | PA00 | auth/mod/store：私有 DTO、文件事务、稳定 OS 锁、CAS/tombstone/刷新 marker | C01/C03/C11 / A08-A10 | 存储模块30条测试通过；登录库、请求 resolver 与 legacy writer 均已消费同一把稳定锁，合并门已闭合 | verified |
 | PA04 | PA01/PA02 | security SecretHandle expiry/scope；Backend RequestControl 与每 HTTP 准入 | C12/C15 / A03/A16 | 已接两个 Core 请求入口、每个 HTTP retry 和 PA06 刷新准入；scope/期限/撤销/预算已测，动态选择 scope 待 PA09 | implementing |
-| PA05 | PA03 | auth/codex/callback：PKCE、浏览器/manual/device、取消/限长/提交 | C04-C07 / A04-A07 | 登录库与 callback 共23条测试通过；尚无 CLI/TUI 入口，不代表用户可登录 | implementing |
+| PA05 | PA03 | auth/codex/callback：PKCE、浏览器/manual/device、取消/限长/提交 | C04-C07 / A04-A07 | 登录库与 callback 共23条测试通过；CLI 入口已由 PA07 接上，但**未经真实账号验证**，不代表用户可登录 | implementing |
 | PA06 | PA03/PA04/PA05 | auth/resolve：每请求鉴权、5分钟预刷新、同身份401恢复、撤销 | C02/C12 / A07-A10/A16 | resolver27条及 HTTPS 集成14条通过；已接生产请求，初始在途刷新/终态分类也已验证；不代表 live OAuth 资格或登录 CLI 完成 | verified |
-| PA07 | PA02/PA03/PA05 | config/core CLI：auth list/add/doctor/revoke、import-codex 明确来源/边界、默认值兼容 | C15 / A01/A17 | 仅 legacy 配置/导入/撤销；新命令不存在 | pending |
+| PA07 | PA02/PA03/PA05 | config/core CLI：auth list/add/doctor/revoke、import-codex 明确来源/边界、默认值兼容 | C15 / A01/A17 | 命令已落地并经合成凭据端到端验证；legacy 写回并入同一稳定锁；**真实 OAuth 登录与真实服务调用仍未验证** | verified |
 | PA08 | PA01/PA02/PA04/PA06 | Codex/DeepSeek request dialect、headers/SSE/tools/reasoning/错误；唯一推理重试 | C09/C14 / A11-A13/A16 | route-aware codec/headers 与唯一401重试循环已接线，HTTPS14条/协议15条测试通过；opaque history 仍待 PA12 | implementing |
 | PA09 | PA02/PA06/PA08 | Core/session 原子连接选择、owner/queue 栅栏、scope、选择事件恢复 | C15 / A18/A19 | set_model 只换模型，backend 启动固定 | pending |
 | PA10 | PA07/PA09 | TUI bootstrap/auth 任务/菜单；复用宿主状态机，迟到 callback/取消 | C15 / A17 | 缺凭据在 TUI 前失败 | pending |
@@ -139,6 +139,9 @@ PA01 可先完成 native 提取再迁 Chat/Responses；PA02 可先完成定义/�
 | PA00/PA07 | rtk cargo test --locked --offline --test config pairing_imports_codex_and_is_idempotent_without_leaking_key -- --exact | 现有；需执行1条，验证字节幂等/权限/脱敏 |
 | PA00/PA07 | rtk cargo test --locked --offline --test config cli_import_honors_codex_home_as_the_profile_root -- --exact | 现有；隔离 CODEX_HOME，不访问用户源 |
 | PA00/PA07 | rtk cargo test --locked --offline --test config codex_import_ignores_unrelated_nested_credentials -- --exact | 现有；不得复制 OAuth token |
+| PA07 | rtk cargo test --locked --offline --lib config::legacy_lock_tests | 新 filter；legacy 写回与 refresh 串行、不覆盖最新 namespace、no-op 不写盘 |
+| PA07 | rtk cargo test --locked --offline --test config | 新增命令端到端：临时 HOME 内合成 key 的 add/list/doctor/revoke；不含真实凭据 |
+| PA07 | rtk cargo test --locked --offline --lib providers::connection | 登录 grant 与请求路由同源，Codex/非 HTTPS/未知 header 拒绝 |
 | PA01 | rtk cargo test --locked --offline --test stage1_anthropic；对应 stage1_gemini/stage1_chat_stream/backend | 仅迁移涉及的 target；检查 body/headers/history/SSE，不跑全库 |
 | PA02 | rtk cargo test --locked --offline --lib providers::connection；--test config --test stage1_project_config | 路由24条；两个配置 target 32条；端点/auth/能力拒绝零网络 |
 | PA03 | rtk cargo test --locked --offline --lib auth::store | filter 已有22条（含1个子进程 helper）；覆盖子进程锁/落盘故障/CAS/保留 legacy 字段 |
@@ -350,9 +353,9 @@ parent 与另一 worker 对最终 Core/账本/worker 结算调用链只读复核
 
 上述 binary 测试首次1 passed/1 failed：fixture 对 stream=true 返回普通 JSON，被严格 route codec 拒绝；改为合法 SSE 后重跑通过。强化 auth_not_configured 断言后又定位 fixture 的目录0700与 macOS临时路径canonicalize要求，修 fixture 而非放宽存储校验；最后2/2通过。
 provider_admission 原100ms总预算在并行 fsync 压力下会在 socket 前过期，造成11/12；改为1s预算/2.5s服务端延迟，仍严格断言2.2s内中断、仅1次物理发送，最终12/12。HTTPS fixture 的 Proxy 借用编译错误、临时权限与 SSE字段问题也在各自模块修复重跑，不算通过证据。
-测试结果按命令列出，不把 helper、重复回归累计为独立用户场景。PA07 和 PA09-PA13 尚未实现；CLI/TUI 登录管理、原子连接选择、headless connection_v1、有序多模态恢复及真实调试文档仍待后续。未读用户真实凭据、未联系真实 OAuth/模型服务、未手动运行全量或 smoke 测试。
+测试结果按命令列出，不把 helper、重复回归累计为独立用户场景。本批当时 PA07 与 PA09-PA13 尚未实现；PA07 已在 §6.8 完成，PA09-PA13 仍未实现：TUI 登录管理、原子连接选择、headless connection_v1、有序多模态恢复及真实调试文档仍待后续。未读用户真实凭据、未联系真实 OAuth/模型服务、未手动运行全量或 smoke 测试。
 
-PA07 的额外合并门：现有 config::save_auth/write_auth_if_changed/revoke 仍是 legacy 整文件写回，尚未与新 CredentialStore 的事务锁协调。引入真实创建凭据的管理命令前必须把 legacy 根字段更新也纳入同一稳定锁并保留最新 namespace，测试 import/revoke 与 refresh 并发；禁止通过旧 binary 或手工 token 导入绕过此门。当前没有自动创建新凭据的生产 CLI，不能把库验收当用户 OAuth 部署就绪。现有 CI 的 clippy -D warnings/全量检查也未在本轮本地运行，仍有未接登录入口的 dead-code warnings。
+PA07 的额外合并门（**已在 §6.8 闭合**）：config::save_auth/write_auth_if_changed/revoke 当时仍是 legacy 整文件写回，未与 CredentialStore 的事务锁协调。闭合方式是把 legacy 根字段更新纳入同一稳定锁并保留最新 namespace，并以 import/revoke 与 refresh 并发的用例固定；仍禁止通过旧 binary 或手工 token 导入绕过该门。引入管理命令后仍不能把库验收当用户 OAuth 部署就绪：真实登录/服务调用属 A20 live gate。本轮已本地运行 clippy（104 warnings → 42），但未运行 CI 的全量 -D warnings 门。
 
 远端核查：git fetch origin main 成功，main 没有本地尚未取得的新提交。当前实现分支基于文档提交1b8d7c6；原文档 PR #11 仍 OPEN，因此实现 PR 对 main 的 diff 暂包含其两个文档提交，需说明依赖，不能宣称已有文档合并。
 
@@ -362,3 +365,88 @@ PA07 的额外合并门：现有 config::save_auth/write_auth_if_changed/revoke 
 已创建 [实现 PR #12](https://github.com/weiyangzen/zenpi/pull/12)，并以 `gh pr view` 核实 `OPEN`、`isDraft=true`、base=`main`、head=`feat/provider-auth-rust`、head owner=`JerryLookupU`。
 原 [文档 PR #11](https://github.com/weiyangzen/zenpi/pull/11) 未修改。PR 描述已明确文档依赖、增量验证、现有警告和上述合并门；未标 ready、未合并、未宣称完整蓝图完成或正式部署就绪。
 本节及任务表的状态同步仅记录交付，不改变 Rust 行为，也不将历史阶段收据改写为当前功能承诺。
+
+### 6.8 PA07 收据：管理命令与合并门
+
+本批只做 PA07，不推进 PA09-PA13。工作树起点是 11:02 中断时留下的两个零调用函数
+（`auth::store::update_legacy`、`providers::connection::api_key_destination`），两者都由本批接线。
+
+交付的命令面（`zenpi --help` 可见）：
+
+```text
+zenpi config auth list [--json]
+zenpi config add auth apikey BASE_URL PROVIDER --stdin [--wire W] [--header H] [--alias NAME] [--model NAME]
+zenpi config add auth codex [EMAIL] [--alias NAME] [--model NAME] [--device | --no-browser]
+zenpi config doctor --profile NAME [--json]
+zenpi pair revoke --profile NAME --yes [--json]
+```
+
+行为边界（均以代码与测试固定，不是承诺）：
+
+- key 只从 stdin 读，没有接受 key 的 argv 形式；授权 URL/device code 只写 stderr，不进 journal、日志或 status JSON。
+- `config add` **不**改 `default_profile`；切换后续启动默认仍只由 `config use` 完成。
+- 别名冲突不覆盖：别名已指向另一个 credential 时拒绝，要求先 `pair revoke`。
+- credential 与 profile 分两个文件提交，回执分别携带 `credential_committed`/`profile_bound`；
+  credential 成功而绑定失败时返回该 credential ID 与 `binding_error`，并明确不是认证失败。
+- `pair revoke --profile` 解析该 profile 的整个 credential，先列出全部受影响 profile，
+  回执写 `local_revoked=true` / `remote_revoked=false`；**解绑不是该命令的同义词**，
+  绑定保留，操作者据此看到连接为何失效。
+- `list`/`doctor` 本地只读：不 refresh、不 probe、不执行 key command。
+  显式绑定的状态取自存储的非秘密快照（ready/expired/revoking/uncertain/login_required/revoked/unconfigured），
+  `is_ready()` 不再凭字段齐全宣称 ready。
+- 内置多协议 provider（DeepSeek 三路由）在添加一个 key 时**按路由分别授权**并逐条显示，
+  不合并成一个更宽的路径前缀；内置名不得指向其它服务。
+- 未知 provider 名按显式 custom 处理：必须给出协议、header 与 base URL，缺一拒绝。
+
+本批发现并修复的真实缺陷（由功能验收而非单测发现）：
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| `config auth list` 在尚无状态目录时报 `UnsafePath` | store 逐段 `O_NOFOLLOW` 打开，`/var`、`/tmp` 是符号链接；只对已存在目录 canonicalize 不够 | 新增 `resolve_existing_prefix`：解析最深的已存在祖先再拼回其余段 |
+| `config add auth apikey` 不认 `--model` / `--json` / `--profile` | 三级子命令未进入组标志白名单 | 补齐白名单，并禁止 auth 命令接受 `--profile`（它会覆盖位置参数） |
+| `config add auth codex --json` **静默启动真实登录并尝试打开浏览器** | 未知标志被位置参数臂吞掉，成了可选 EMAIL | 位置参数臂拒绝以 `-` 开头的值；`--json` 现已明确报错 |
+| 内置多路由 provider 无法绑定 profile | 绑定未记录 `base_url`，且三路由的 canonical 前缀不同 | 按路由各自取定义端点；仅非内置 provider 记录 base URL |
+
+合并门（实施记录第 355 行）已闭合：`save_auth`、`import_codex_profile`、`pair_from_codex`、`revoke`
+不再整文件重写，全部经 `CredentialStore::update_legacy` 在同一把稳定锁内改 legacy 根字段；
+namespace 恒取自磁盘实时值，调用方快照里的同名键会被剥离并被 store 拒绝写入。
+新旧行为的差异由 5 条 `config::legacy_lock_tests` 固定——它们在修复前的实现上**全部失败**
+（其中 `legacy_write_preserves_a_credential_committed_after_its_snapshot` 直接复现凭据被回退到旧 token）。
+
+| 命令 | 结果 |
+|---|---|
+| rtk cargo test --locked --offline --lib config::legacy_lock_tests | exit0；5 passed / 341 filtered |
+| rtk cargo test --locked --offline --test config | exit0；31 passed（原25 + 新6），1 suite |
+| rtk cargo test --locked --offline --lib auth::store | exit0；30 passed / 315 filtered |
+| rtk cargo test --locked --offline --lib auth::（mod/codex/callback/resolve/store） | exit0；83 passed / 263 filtered |
+| rtk cargo test --locked --offline --lib providers::connection | exit0；36 passed / 310 filtered；新增登录 grant 与请求路由同源断言 |
+| rtk cargo test --locked --offline --lib auth::tests | exit0；3 passed；api-key 凭据形状与多路由授权组 |
+| rtk cargo test --locked --offline --test config pairing_imports_codex_and_is_idempotent_without_leaking_key -- --exact | exit0；1 passed / 30 filtered |
+| rtk cargo test --locked --offline --test config cli_import_honors_codex_home_as_the_profile_root -- --exact | exit0；1 passed / 30 filtered |
+| rtk cargo test --locked --offline --test config codex_import_ignores_unrelated_nested_credentials -- --exact | exit0；1 passed / 30 filtered |
+| rtk cargo test --locked --offline --test stage1_project_config | exit0；7 passed |
+| rtk cargo test --locked --offline --test security | exit0；10 passed |
+| rtk cargo test --locked --offline --test backend | exit0；26 passed |
+| rtk cargo test --locked --offline --test provider_admission | exit0；12 passed |
+| rtk cargo test --locked --offline --test explicit_runtime | exit0；2 passed |
+| rtk cargo test --locked --offline --test stage1_model_registry | exit0；16 passed |
+| rtk cargo test --locked --offline --test stage1_gemini | exit0；19 passed |
+| rtk proxy rustfmt --edition 2024 --check（本批 6 个改动文件） | exit0；不全仓格式化 |
+| rtk proxy git diff --check | exit0 |
+| cargo clippy --all-targets --all-features | 104 warnings → **42 warnings**；登录流程的整簇 dead code 由本批接线消除，剩余为 PA10/PA11 宿主待消费的接口，不用 `allow(dead_code)` 掩盖 |
+
+功能验收（生产 binary + 临时 HOME + 合成 key，零真实凭据、零真实服务调用）：
+
+| 步骤 | 观察 |
+|---|---|
+| `config auth list --json`（无状态目录） | 输出 `[]`，exit0，且**不创建** `~/.zenpi` |
+| `config add auth apikey https://api.deepseek.com deepseek --stdin --model deepseek-flash` | exit0；credential 落盘 0600；三条路由分别授权（`/chat/completions`、`/responses`、`/anthropic/v1/messages`）；stdout/stderr 均无 key |
+| `config list` / `config auth list` | profile 指向 credential，`auth list` 报 `state=ready profiles=deepseek` |
+| `config doctor --profile deepseek --json` | `auth_binding_state=ready`，exit0；撤销后为 `revoked`，exit1 |
+| `pair revoke --profile deepseek --yes` | `local_revoked=true remote_revoked=false`，列出受影响 profile；auth.json 保留 tombstone，state 转 `revoked` |
+| 错误路径 | 非 HTTPS、未知 header、未知 provider 缺协议、空 key、codex 走 apikey、未知子命令、`--device --no-browser` 同用：全部 exit1 且不回显 key |
+
+**未验证项**（不得据此宣称可用）：真实 OAuth 登录（browser/device 两条流程的代码路径已接，但从未对真实账号运行，
+属蓝图 A20 / P6 live gate）；真实 provider 请求与刷新；TUI/headless 入口；Windows 的凭据持久化
+（按蓝图 §7.2 在未验收前 fail closed）。`config add auth codex` 的浏览器打开动作在功能验收中**未执行**
+（唯一一次误触发生在参数吞噬缺陷修复前，见上表第 3 行；未完成授权，未产生凭据）。

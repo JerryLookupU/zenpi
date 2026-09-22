@@ -8,9 +8,10 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     env,
+    io::{BufRead, IsTerminal, Write},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize};
@@ -5851,6 +5852,17 @@ pub struct CliOptions {
     pub command_value2: Option<String>,
     pub retain_newest: Option<usize>,
     pub older_than_seconds: Option<u64>,
+    /// `--alias NAME` for the auth management commands.
+    pub alias: Option<String>,
+    /// `--stdin` for `config add auth apikey`: the key is read from standard
+    /// input rather than the argument list.
+    pub stdin: bool,
+    /// `--device` / `--no-browser` for `config add auth codex`.
+    pub device: bool,
+    pub no_browser: bool,
+    /// `--wire` / `--header` narrow which route an added API key authorizes.
+    pub wire_api: Option<String>,
+    pub auth_header: Option<String>,
     pub json: bool,
     pub yes: bool,
     pub help: bool,
@@ -5862,6 +5874,9 @@ pub enum CliCommand {
     ConfigDoctor,
     ConfigList,
     ConfigUse,
+    ConfigAuthList,
+    ConfigAddAuthCodex,
+    ConfigAddAuthApikey,
     PairImportCodex,
     PairStatus,
     PairRevoke,
@@ -5894,11 +5909,387 @@ impl Default for CliOptions {
             command_value2: None,
             retain_newest: None,
             older_than_seconds: None,
+            alias: None,
+            stdin: false,
+            device: false,
+            no_browser: false,
+            wire_api: None,
+            auth_header: None,
             json: false,
             yes: false,
             help: false,
         }
     }
+}
+
+/// Read one API key from standard input.
+///
+/// Keys are never taken from the argument list: argv is visible to other
+/// processes and lands in shell history.  Nothing read here is echoed, logged,
+/// or included in an error message.
+fn read_api_key_from_stdin() -> Result<String, ZenpiError> {
+    if std::io::stdin().is_terminal() {
+        eprint!("paste the API key, then press enter: ");
+        let _ = std::io::stderr().flush();
+    }
+    let mut line = String::new();
+    let read = std::io::stdin()
+        .lock()
+        .read_line(&mut line)
+        .map_err(|_| ZenpiError::arguments("could not read the API key from standard input"))?;
+    if read == 0 {
+        return Err(ZenpiError::arguments(
+            "no API key on standard input; pass it with --stdin",
+        ));
+    }
+    let key = line.trim_end_matches(['\n', '\r']).to_owned();
+    if key.trim().is_empty() {
+        return Err(ZenpiError::arguments("the supplied API key is empty"));
+    }
+    Ok(key)
+}
+
+fn print_auth_add_report(
+    report: &crate::config::AuthAddReport,
+    json: bool,
+) -> Result<(), ZenpiError> {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(report)
+                .map_err(|error| ZenpiError::Message(error.to_string()))?
+        );
+        return Ok(());
+    }
+    // Human output goes to stderr so stdout stays machine-readable.
+    eprintln!(
+        "stored {} ({}) for {}; profile `{}` {}",
+        report.credential_id,
+        report.kind,
+        report.provider,
+        report.alias,
+        if report.profile_bound {
+            "bound"
+        } else {
+            "NOT bound"
+        }
+    );
+    for destination in &report.destinations {
+        eprintln!(
+            "  authorized: {}{} protocols={} headers={}",
+            destination.origin,
+            destination.path_prefix,
+            destination.protocols.join(","),
+            destination.headers.join(",")
+        );
+    }
+    Ok(())
+}
+
+fn login_state_label(state: crate::auth::LoginState) -> &'static str {
+    match state {
+        crate::auth::LoginState::Preparing => "preparing login",
+        crate::auth::LoginState::AwaitingAuthorization => "waiting for authorization",
+        crate::auth::LoginState::Exchanging => "exchanging the authorization code",
+        crate::auth::LoginState::Committing => "storing the credential",
+        crate::auth::LoginState::Succeeded => "login succeeded",
+        crate::auth::LoginState::Cancelled => "login cancelled",
+        crate::auth::LoginState::Failed => "login failed",
+        crate::auth::LoginState::CommitUncertain => "credential commit is uncertain",
+    }
+}
+
+/// One event from the login flow, handed to the terminal host.
+enum CliLoginEvent {
+    Browser {
+        flow_id: crate::auth::LoginFlowId,
+        prompt_id: u64,
+        url: String,
+        manual: crate::auth::callback::ManualSubmission,
+    },
+    Device {
+        flow_id: crate::auth::LoginFlowId,
+        prompt_id: u64,
+        uri: &'static str,
+        code: String,
+    },
+    Notice(crate::auth::LoginState),
+    Dismissed,
+    Pasted(String),
+    Finished(Box<crate::auth::LoginOutcome>),
+}
+
+/// Open a URL in the platform browser.  Best effort: a missing opener never
+/// fails a login, because the URL is printed either way.
+fn open_browser(url: &str) {
+    #[cfg(target_os = "macos")]
+    let opener = "open";
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let opener = "xdg-open";
+    #[cfg(windows)]
+    let opener = "explorer";
+    let _ = std::process::Command::new(opener)
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+}
+
+/// Forward pasted redirect URIs to the login flow.  The thread ends at EOF, so
+/// a non-interactive stdin simply never supplies a manual code.
+fn spawn_stdin_reader(sender: std::sync::mpsc::Sender<CliLoginEvent>) {
+    std::thread::spawn(move || {
+        let mut reader = std::io::BufReader::new(std::io::stdin());
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => return,
+                Ok(_) => {
+                    if sender.send(CliLoginEvent::Pasted(line.clone())).is_err() {
+                        return;
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// Drive one interactive Codex login from the terminal.
+///
+/// The authorization URL and any device code are written to stderr only; they
+/// never reach a journal, a log, or a status response.  The flow runs on a
+/// worker thread so the loopback callback keeps being pumped while this thread
+/// waits for a pasted redirect URI.
+///
+/// Cancellation is the process's own SIGINT — exiting closes the callback
+/// listener — and `LoginControl` bounds the whole flow to 15 minutes.
+fn run_cli_codex_login(
+    paths: &crate::config::ConfigPaths,
+    device: bool,
+    no_browser: bool,
+    alias: Option<&str>,
+    model: Option<&str>,
+) -> Result<(), ZenpiError> {
+    let store = crate::config::credential_store(paths, true)?;
+    let credential_id = crate::auth::store::CredentialStore::new_credential_id()
+        .map_err(|error| ZenpiError::Message(error.to_string()))?;
+    let (sender, receiver) = std::sync::mpsc::channel::<CliLoginEvent>();
+
+    let worker_sender = sender.clone();
+    let worker_id = credential_id.clone();
+    let worker = std::thread::spawn(move || {
+        let credential_id = worker_id;
+        let cancelled = || false;
+        let mut admission = |_kind: crate::auth::AuthHttpKind| Ok(());
+        let mut interaction = |event: crate::auth::AuthInteraction| {
+            let converted = match event {
+                crate::auth::AuthInteraction::Notify { state, .. } => CliLoginEvent::Notice(state),
+                crate::auth::AuthInteraction::Prompt {
+                    flow_id,
+                    prompt_id,
+                    prompt,
+                } => match prompt {
+                    crate::auth::AuthPrompt::Browser {
+                        authorization_url,
+                        manual,
+                    } => CliLoginEvent::Browser {
+                        flow_id,
+                        prompt_id,
+                        url: authorization_url,
+                        manual,
+                    },
+                    crate::auth::AuthPrompt::Device {
+                        verification_uri,
+                        user_code,
+                    } => CliLoginEvent::Device {
+                        flow_id,
+                        prompt_id,
+                        uri: verification_uri,
+                        code: user_code,
+                    },
+                },
+                crate::auth::AuthInteraction::CancelPrompt { .. } => CliLoginEvent::Dismissed,
+            };
+            // A closed receiver means the host gave up: fail the interaction
+            // rather than blocking the flow forever.
+            worker_sender
+                .send(converted)
+                .map_err(|_| crate::auth::AuthError::InteractionFailed)
+        };
+        let mut control = crate::auth::LoginControl::new(
+            &cancelled,
+            Instant::now() + Duration::from_secs(15 * 60),
+            MAX_CLI_LOGIN_SENDS,
+            &mut admission,
+            &mut interaction,
+        );
+        let request = crate::auth::LoginRequest {
+            store: &store,
+            credential_id: &credential_id,
+            expected_revision: None,
+        };
+        let outcome = if device {
+            crate::auth::codex::begin_device_login()
+                .and_then(|flow| crate::auth::codex::login_device(flow, request, &mut control))
+        } else {
+            crate::auth::codex::begin_browser_login()
+                .and_then(|flow| crate::auth::codex::login_browser(flow, request, &mut control))
+        };
+        let _ = worker_sender.send(CliLoginEvent::Finished(Box::new(outcome)));
+    });
+
+    let stdin = (!device).then(|| spawn_stdin_reader(sender.clone()));
+    // The manual code is only meaningful for the prompt that is currently open.
+    let mut pending = None;
+    let outcome = loop {
+        let Ok(event) = receiver.recv() else {
+            break Err(crate::auth::AuthError::LoginFailed);
+        };
+        match event {
+            CliLoginEvent::Browser {
+                flow_id,
+                prompt_id,
+                url,
+                manual,
+            } => {
+                eprintln!("authorize this login to continue:\n  {url}");
+                if !no_browser {
+                    open_browser(&url);
+                }
+                eprintln!(
+                    "if the browser did not complete it, paste the redirect URL here and press enter"
+                );
+                pending = Some((flow_id, prompt_id, manual));
+            }
+            CliLoginEvent::Device { uri, code, .. } => {
+                eprintln!("open {uri} and enter code: {code}");
+            }
+            CliLoginEvent::Notice(state) => eprintln!("{}", login_state_label(state)),
+            CliLoginEvent::Dismissed => pending = None,
+            CliLoginEvent::Pasted(line) => {
+                if let Some((flow_id, prompt_id, manual)) = &pending {
+                    match manual.submit(flow_id, *prompt_id, line.trim()) {
+                        Ok(()) => pending = None,
+                        // A late paste after the browser won is not an error the
+                        // user needs to see; anything else is worth reporting.
+                        Err(crate::auth::AuthError::StalePrompt) => {}
+                        Err(error) => eprintln!("the pasted code was rejected: {error}"),
+                    }
+                }
+            }
+            CliLoginEvent::Finished(result) => break *result,
+        }
+    };
+    let _ = stdin;
+    let _ = worker.join();
+
+    outcome.map_err(|error| ZenpiError::Message(format!("login failed: {error}")))?;
+
+    let alias = alias.unwrap_or("codex");
+    let binding = crate::config::bind_credential_profile(
+        paths,
+        alias,
+        "openai-codex",
+        model,
+        None,
+        "oauth",
+        &credential_id,
+        None,
+        None,
+    );
+    if let Err(error) = binding {
+        return Err(ZenpiError::Message(format!(
+            "credential {credential_id} was stored but profile `{alias}` was not bound: {error}"
+        )));
+    }
+    eprintln!("stored {credential_id}; profile `{alias}` bound");
+    Ok(())
+}
+
+/// HTTP sends one CLI login may make.  The browser flow needs a single code
+/// exchange; the device flow polls, so it needs a bounded budget rather than a
+/// single attempt.
+const MAX_CLI_LOGIN_SENDS: u32 = 256;
+
+/// Resolve the third selector token of `config auth …` / `config add auth …`.
+/// Returns `None` for the two-level commands, leaving their arguments alone.
+fn nested_command(
+    group: &str,
+    action: &str,
+    args: &mut std::iter::Peekable<impl Iterator<Item = String>>,
+) -> Result<Option<CliCommand>, ZenpiError> {
+    match (group, action) {
+        ("config", "auth") => {
+            let selector = args
+                .next()
+                .ok_or_else(|| ZenpiError::arguments("config auth requires an action"))?;
+            match selector.as_str() {
+                "list" => Ok(Some(CliCommand::ConfigAuthList)),
+                _ => Err(ZenpiError::arguments(format!(
+                    "unknown config auth action `{selector}`"
+                ))),
+            }
+        }
+        ("config", "add") => {
+            let target = args
+                .next()
+                .ok_or_else(|| ZenpiError::arguments("config add requires a target"))?;
+            if target != "auth" {
+                return Err(ZenpiError::arguments(format!(
+                    "unknown config add target `{target}`"
+                )));
+            }
+            let method = args
+                .next()
+                .ok_or_else(|| ZenpiError::arguments("config add auth requires codex or apikey"))?;
+            match method.as_str() {
+                "codex" => Ok(Some(CliCommand::ConfigAddAuthCodex)),
+                "apikey" => Ok(Some(CliCommand::ConfigAddAuthApikey)),
+                _ => Err(ZenpiError::arguments(format!(
+                    "unknown config add auth method `{method}`"
+                ))),
+            }
+        }
+        _ => Ok(None),
+    }
+}
+
+fn is_auth_add(command: Option<CliCommand>) -> bool {
+    matches!(
+        command,
+        Some(CliCommand::ConfigAddAuthCodex | CliCommand::ConfigAddAuthApikey)
+    )
+}
+
+fn lookup_command(group: &str, action: &str) -> Result<CliCommand, ZenpiError> {
+    Ok(match (group, action) {
+        ("config", "import-codex") => CliCommand::ConfigImportCodex,
+        ("config", "doctor") => CliCommand::ConfigDoctor,
+        ("config", "list") => CliCommand::ConfigList,
+        ("config", "use") => CliCommand::ConfigUse,
+        ("pair", "import-codex") => CliCommand::PairImportCodex,
+        ("pair", "status") => CliCommand::PairStatus,
+        ("pair", "revoke") => CliCommand::PairRevoke,
+        ("session", "list") => CliCommand::SessionList,
+        ("session", "inspect") => CliCommand::SessionInspect,
+        ("session", "fork") => CliCommand::SessionFork,
+        ("session", "export") => CliCommand::SessionExport,
+        ("session", "import") => CliCommand::SessionImport,
+        ("session", "gc") => CliCommand::SessionGc,
+        ("extension", "list") => CliCommand::ExtensionList,
+        ("extension", "install") => CliCommand::ExtensionInstall,
+        ("extension", "remove") => CliCommand::ExtensionRemove,
+        ("extension", "disable") => CliCommand::ExtensionDisable,
+        ("extension", "enable") => CliCommand::ExtensionEnable,
+        ("extension", "upgrade") => CliCommand::ExtensionUpgrade,
+        _ => {
+            return Err(ZenpiError::arguments(format!(
+                "unknown {group} action `{action}`"
+            )));
+        }
+    })
 }
 
 pub fn parse_args<I, S>(args: I) -> Result<CliOptions, ZenpiError>
@@ -5918,32 +6309,13 @@ where
         let action = args
             .next()
             .ok_or_else(|| ZenpiError::arguments(format!("{group} requires an action")))?;
-        options.command = Some(match (group.as_str(), action.as_str()) {
-            ("config", "import-codex") => CliCommand::ConfigImportCodex,
-            ("config", "doctor") => CliCommand::ConfigDoctor,
-            ("config", "list") => CliCommand::ConfigList,
-            ("config", "use") => CliCommand::ConfigUse,
-            ("pair", "import-codex") => CliCommand::PairImportCodex,
-            ("pair", "status") => CliCommand::PairStatus,
-            ("pair", "revoke") => CliCommand::PairRevoke,
-            ("session", "list") => CliCommand::SessionList,
-            ("session", "inspect") => CliCommand::SessionInspect,
-            ("session", "fork") => CliCommand::SessionFork,
-            ("session", "export") => CliCommand::SessionExport,
-            ("session", "import") => CliCommand::SessionImport,
-            ("session", "gc") => CliCommand::SessionGc,
-            ("extension", "list") => CliCommand::ExtensionList,
-            ("extension", "install") => CliCommand::ExtensionInstall,
-            ("extension", "remove") => CliCommand::ExtensionRemove,
-            ("extension", "disable") => CliCommand::ExtensionDisable,
-            ("extension", "enable") => CliCommand::ExtensionEnable,
-            ("extension", "upgrade") => CliCommand::ExtensionUpgrade,
-            _ => {
-                return Err(ZenpiError::arguments(format!(
-                    "unknown {group} action `{action}`"
-                )));
-            }
-        });
+        // `config auth …` and `config add auth …` carry a third selector token
+        // before the flags.
+        if let Some(command) = nested_command(&group, &action, &mut args)? {
+            options.command = Some(command);
+        } else {
+            options.command = Some(lookup_command(&group, &action)?);
+        }
         while let Some(argument) = args.next() {
             match argument.as_str() {
                 "--json"
@@ -5952,6 +6324,8 @@ where
                         Some(
                             CliCommand::ConfigDoctor
                                 | CliCommand::ConfigList
+                                | CliCommand::ConfigAuthList
+                                | CliCommand::ConfigAddAuthApikey
                                 | CliCommand::PairStatus
                                 | CliCommand::SessionList
                                 | CliCommand::SessionInspect
@@ -5961,6 +6335,50 @@ where
                 {
                     options.json = true;
                 }
+                "--alias" if is_auth_add(options.command) => {
+                    options.alias = Some(
+                        args.next()
+                            .ok_or_else(|| ZenpiError::arguments("--alias requires a name"))?,
+                    );
+                }
+                "--stdin" if options.command == Some(CliCommand::ConfigAddAuthApikey) => {
+                    options.stdin = true;
+                }
+                "--wire" if is_auth_add(options.command) => {
+                    options.wire_api = Some(
+                        args.next()
+                            .ok_or_else(|| ZenpiError::arguments("--wire requires a protocol"))?,
+                    );
+                }
+                "--header" if is_auth_add(options.command) => {
+                    options.auth_header = Some(
+                        args.next()
+                            .ok_or_else(|| ZenpiError::arguments("--header requires a policy"))?,
+                    );
+                }
+                "--device" if options.command == Some(CliCommand::ConfigAddAuthCodex) => {
+                    options.device = true;
+                }
+                "--no-browser" if options.command == Some(CliCommand::ConfigAddAuthCodex) => {
+                    options.no_browser = true;
+                }
+                // Positional values for the auth commands must not swallow an
+                // unrecognized flag: a stray `--json` would silently become a
+                // login's optional email and start a real flow.
+                value
+                    if is_auth_add(options.command)
+                        && !value.starts_with('-')
+                        && options.command_value.is_none() =>
+                {
+                    options.command_value = Some(value.to_owned());
+                }
+                value
+                    if options.command == Some(CliCommand::ConfigAddAuthApikey)
+                        && !value.starts_with('-')
+                        && options.command_value2.is_none() =>
+                {
+                    options.command_value2 = Some(value.to_owned());
+                }
                 "--yes"
                     if matches!(
                         options.command,
@@ -5969,10 +6387,25 @@ where
                 {
                     options.yes = true;
                 }
-                "--profile" => {
+                "--json" if options.command == Some(CliCommand::PairRevoke) => {
+                    options.json = true;
+                }
+                // The auth management commands take their profile from
+                // --alias and their own positional arguments; --profile would
+                // silently overwrite one of them.
+                "--profile"
+                    if !is_auth_add(options.command)
+                        && options.command != Some(CliCommand::ConfigAuthList) =>
+                {
                     options.command_value = Some(
                         args.next()
                             .ok_or_else(|| ZenpiError::arguments("--profile requires a name"))?,
+                    );
+                }
+                "--model" if is_auth_add(options.command) => {
+                    options.model = Some(
+                        args.next()
+                            .ok_or_else(|| ZenpiError::arguments("--model requires a name"))?,
                     );
                 }
                 value
@@ -6072,6 +6505,26 @@ where
             && options.command_value.is_none()
         {
             return Err(ZenpiError::arguments("session inspect requires PATH"));
+        }
+        if options.command == Some(CliCommand::ConfigAddAuthApikey) {
+            if options.command_value.is_none() || options.command_value2.is_none() {
+                return Err(ZenpiError::arguments(
+                    "config add auth apikey requires BASE_URL and PROVIDER",
+                ));
+            }
+            if !options.stdin {
+                return Err(ZenpiError::arguments(
+                    "config add auth apikey requires --stdin; keys are never taken from the argument list",
+                ));
+            }
+        }
+        if options.command == Some(CliCommand::ConfigAddAuthCodex)
+            && options.device
+            && options.no_browser
+        {
+            return Err(ZenpiError::arguments(
+                "--device and --no-browser select different login flows",
+            ));
         }
         if matches!(
             options.command,
@@ -6369,6 +6822,13 @@ fn print_help() {
     println!("zenpi config import-codex [--profile NAME]");
     println!("zenpi config doctor [--profile NAME] [--json]");
     println!("zenpi config list [--json] | config use NAME");
+    println!("zenpi config auth list [--json]");
+    println!(
+        "zenpi config add auth apikey BASE_URL PROVIDER --stdin [--wire W] [--header H] [--alias NAME] [--model NAME]"
+    );
+    println!(
+        "zenpi config add auth codex [EMAIL] [--alias NAME] [--model NAME] [--device | --no-browser]"
+    );
     println!("zenpi pair import-codex|status|revoke --yes [--profile NAME]");
     println!("zenpi session list [--json] | inspect PATH [--json]");
     println!("zenpi session fork|export|import SOURCE DESTINATION");
@@ -6395,6 +6855,79 @@ pub fn run() -> Result<(), ZenpiError> {
                     None => crate::config::import_codex()?,
                 };
                 println!("{}", summary.display());
+                Ok(())
+            }
+            CliCommand::ConfigAuthList => {
+                let paths = crate::config::ConfigPaths::discover()?;
+                let entries = crate::config::auth_list(&paths)?;
+                if options.json {
+                    println!(
+                        "{}",
+                        serde_json::to_string(&entries)
+                            .map_err(|error| ZenpiError::Message(error.to_string()))?
+                    );
+                } else if entries.is_empty() {
+                    println!("no stored credentials");
+                } else {
+                    for entry in &entries {
+                        println!(
+                            "{} provider={} kind={} state={} revision={} expires_at={} profiles={}",
+                            entry.credential_id,
+                            entry.provider,
+                            entry.kind,
+                            entry.state,
+                            entry.revision,
+                            display_option(
+                                entry
+                                    .expires_at_ms
+                                    .map(|value| value.to_string())
+                                    .as_deref()
+                            ),
+                            if entry.profiles.is_empty() {
+                                "-".to_owned()
+                            } else {
+                                entry.profiles.join(",")
+                            }
+                        );
+                    }
+                }
+                Ok(())
+            }
+            CliCommand::ConfigAddAuthApikey => {
+                let base_url = options.command_value.clone().unwrap_or_default();
+                let provider = options.command_value2.clone().unwrap_or_default();
+                // Read the key before touching anything on disk: a cancelled or
+                // empty read must not leave a credential behind.
+                let key = read_api_key_from_stdin()?;
+                let paths = crate::config::ConfigPaths::discover()?;
+                let report = crate::config::add_auth_apikey(
+                    &paths,
+                    &base_url,
+                    &provider,
+                    options.wire_api.as_deref(),
+                    options.auth_header.as_deref(),
+                    key,
+                    options.alias.as_deref(),
+                    options.model.as_deref(),
+                )?;
+                print_auth_add_report(&report, options.json)?;
+                if let Some(error) = &report.binding_error {
+                    return Err(ZenpiError::Message(format!(
+                        "credential {} was stored but profile `{}` was not bound: {error}",
+                        report.credential_id, report.alias
+                    )));
+                }
+                Ok(())
+            }
+            CliCommand::ConfigAddAuthCodex => {
+                let paths = crate::config::ConfigPaths::discover()?;
+                run_cli_codex_login(
+                    &paths,
+                    options.device,
+                    options.no_browser,
+                    options.alias.as_deref(),
+                    options.model.as_deref(),
+                )?;
                 Ok(())
             }
             CliCommand::ConfigDoctor | CliCommand::PairStatus => {
@@ -6463,9 +6996,48 @@ pub fn run() -> Result<(), ZenpiError> {
             }
             CliCommand::PairRevoke => {
                 let paths = crate::config::ConfigPaths::discover()?;
-                let changed = crate::config::revoke(&paths, options.command_value.as_deref())?;
-                println!("revoked={changed}");
-                Ok(())
+                let Some(profile) = options.command_value.as_deref() else {
+                    // The legacy root key is not owned by any profile.
+                    let changed = crate::config::revoke(&paths, None)?;
+                    println!("revoked={changed} local_revoked=true remote_revoked=false");
+                    return Ok(());
+                };
+                match crate::config::profile_credential(&paths, profile)? {
+                    Some(_) => {
+                        let receipt = crate::config::revoke_credential(&paths, profile)?;
+                        if options.json {
+                            println!(
+                                "{}",
+                                serde_json::to_string(&receipt)
+                                    .map_err(|error| ZenpiError::Message(error.to_string()))?
+                            );
+                        } else {
+                            // The scope is what --yes confirmed, so it is shown
+                            // rather than summarised as a count.
+                            eprintln!(
+                                "revoking credential {} affects profiles: {}",
+                                receipt.credential_id,
+                                receipt.profiles.join(", ")
+                            );
+                            println!(
+                                "credential={} local_revoked={} remote_revoked={} profiles={}",
+                                receipt.credential_id,
+                                receipt.local_revoked,
+                                receipt.remote_revoked,
+                                receipt.profiles.join(",")
+                            );
+                        }
+                        // Unbinding the profiles is deliberately not part of
+                        // this command; the binding is how the operator sees
+                        // why the connection stopped working.
+                        Ok(())
+                    }
+                    None => {
+                        let changed = crate::config::revoke(&paths, Some(profile))?;
+                        println!("revoked={changed} local_revoked=true remote_revoked=false");
+                        Ok(())
+                    }
+                }
             }
             CliCommand::SessionList => {
                 let paths = crate::config::ConfigPaths::discover()?;
