@@ -5686,6 +5686,7 @@ impl TuiState {
     /// drill-down and leaving to the explicit no-hot-zone state.
     fn resources_zone_key(&mut self, key: KeyEvent) -> bool {
         match key.code {
+            KeyCode::Char('z') if key.modifiers.is_empty() => self.open_resources_zoom(),
             KeyCode::Up => self.move_resource_block(-1),
             KeyCode::Down => self.move_resource_block(1),
             KeyCode::PageUp => self.move_resource_block(-8),
@@ -11159,19 +11160,34 @@ impl TuiState {
                 stdio: None,
             },
         ];
-        let mut worker_index = 0usize;
-        for tab in self.subtabs() {
-            for slot in 0..usize::from(tab.concurrency.max(1)) {
-                let stdio = workers
-                    .get(worker_index)
-                    .map(|row| (row.input.clone(), row.output.clone()));
+        if workers.is_empty() {
+            // No live headless worker for this session: show the configured
+            // worktree worker count so the matrix still reflects the plan.
+            for tab in self.subtabs() {
+                for slot in 0..usize::from(tab.concurrency.max(1)) {
+                    slots.push(WorkerSlot {
+                        label: format!("{}\u{b7}{}", tab.name, slot + 1),
+                        kind: WorkerSlotKind::Worktree,
+                        worktree: tab.name.clone(),
+                        stdio: None,
+                    });
+                }
+            }
+        } else {
+            // A running swarm is the truth: one square per live headless
+            // worker, carrying its request in/out excerpts.
+            for row in workers {
+                let session_name = std::path::Path::new(&row.session)
+                    .file_stem()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or(row.session.as_str())
+                    .to_owned();
                 slots.push(WorkerSlot {
-                    label: format!("{}\u{b7}{}", tab.name, slot + 1),
+                    label: format!("w{}", row.pid),
                     kind: WorkerSlotKind::Worktree,
-                    worktree: tab.name.clone(),
-                    stdio,
+                    worktree: session_name,
+                    stdio: Some((row.input.clone(), row.output.clone())),
                 });
-                worker_index += 1;
             }
         }
         slots

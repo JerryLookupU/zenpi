@@ -1590,3 +1590,24 @@ fn arch_lane_shows_the_thinking_animation() {
     state.set_master_busy(false);
     assert!(state.thinking_frame().is_none());
 }
+
+#[test]
+fn swarm_sized_worker_matrix_renders_the_16x32_tier_with_square_tiles() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = observation_state(&dir, 510);
+    // 2 masters + 510 live workers = 512 squares -> tier 16x32.
+    state.open_resources_zoom();
+    assert_eq!(state.resources_zoom_worker_count(), 512);
+    let mut terminal = Terminal::new(TestBackend::new(240, 80)).unwrap();
+    terminal
+        .draw(|f| state.render_bentobox(f, "zenpi"))
+        .unwrap();
+    let (columns, rows, _cell) = state.resources_zoom_grid_shape().expect("grid rendered");
+    assert_eq!((columns, rows), (32, 16), "512 workers use the 16x32 tier");
+    assert!(state.resources_zoom_tiles_square(), "every tile is square");
+    // The Resources hot zone opens the observation mode with `z`.
+    let mut hot = TuiState::default();
+    assert!(hot.set_hot_zone(HotZone::Resources));
+    let _ = hot.handle_key(key(KeyCode::Char('z')));
+    assert!(hot.resources_zoom_open(), "z opens the worker matrix");
+}

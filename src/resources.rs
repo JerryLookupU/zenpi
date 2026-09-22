@@ -41,7 +41,10 @@ pub const MAX_BAR_WIDTH: usize = 24;
 /// Number of headless processes retained in one footprint summary. A host with
 /// more workers reports `truncated` instead of growing the snapshot without
 /// bound.
-pub const MAX_HEADLESS_FOOTPRINT_ROWS: usize = 64;
+/// The single-machine design target is ~1500 agentic workers, so the matrix
+/// and gate keep every live worker up to 2048 rows (raised from 64 when the
+/// Resources worker-square matrix needed the full swarm).
+pub const MAX_HEADLESS_FOOTPRINT_ROWS: usize = 2_048;
 /// Hard ceiling for a programmatic CPU budget, expressed as a percentage of one
 /// logical CPU. This is not a realistic target; it only keeps a hostile or
 /// accidental policy from disabling the gate entirely.
