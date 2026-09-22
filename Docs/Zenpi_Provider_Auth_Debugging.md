@@ -44,11 +44,17 @@ target/release/zenpi --help
 
 ```sh
 export ZENPI_HOME="$(mktemp -d)/.zenpi"     # 状态目录
-export CODEX_HOME="$(mktemp -d)/.codex"     # 仅导入时需要
+export CODEX_HOME="$(mktemp -d)/.codex"     # 导入时读它；不设置会回退到真实 ~/.codex
 Z=./target/release/zenpi
 ```
 
-`ZENPI_HOME` 优先于 `HOME`；`config import-codex` 读 `CODEX_HOME`，未设置时读 `~/.codex`。
+**两个容易踩的坑**：
+
+1. `ZENPI_HOME` 只重定向 zenpi 自己的状态目录。**未设置 `CODEX_HOME` 时，读取会回退到真实的 `~/.codex`**——
+   做隔离复现时一定要把它一起指向临时目录，否则你以为在用测试配置，实际用的是本机 Codex 配置。
+2. zenpi 的状态目录必须是**属主私有**的：目录 `0700`、`auth.json` `0600`。权限不对时的报错是
+   `credential store: credential store path or permissions are unsafe`——这是 fail closed，不是 bug。
+   `config` 的各条命令会自动把目录收紧到 0700；手工造 fixture 时要自己 `chmod`。
 
 ---
 
@@ -202,6 +208,16 @@ $Z pair revoke --profile deepseek --yes --json
 
 headless 是当前唯一**完整可用**的宿主入口。
 
+headless 在启动时**必须先有一条可用连接**，否则 fail closed：
+`no provider URL configured; run zenpi config import-codex ...`。
+所以先绑定一个 profile 并把它设为默认：
+
+```sh
+printf '<key>\n' | $Z config add auth apikey https://api.deepseek.com deepseek \
+    --stdin --model deepseek-flash
+$Z config use deepseek
+```
+
 ### 5.1 先看 capability，再发命令
 
 ```sh
@@ -230,6 +246,7 @@ printf '%s\n' \
 | `success:true, data.outcome:"applied"` | 已提交；`data.selection` 是提交的快照 |
 | `success:false, code:"connection_busy"` | owner 不空闲，或队列/附件/审批/未决操作还在 |
 | `success:false, code:"connection_stale"` | `expected_selection_revision` 已过期（先 `status` 拿最新值再重发） |
+| `success:false, code:"connection_owner_mismatch"` | `owner` 不是本会话的属主（只接受 `discussion` / `arch`） |
 | `success:false, code:"connection_commit_uncertain"` | 落盘结果不明；**不要重做**，同 ID 重发只会核对 |
 
 拒绝一律**不带 `data`**：失败时不要从错误文字猜账号，用 `status` 取现状。
@@ -245,12 +262,21 @@ printf '%s\n' \
 
 DeepSeek 一个 key 授权三条路由，但 profile 一次只选一条 wire：
 
+**每条路由要用它自己的规范前缀**，不能都用服务根地址：
+
 ```sh
 $Z config add auth apikey https://api.deepseek.com deepseek \
     --stdin --wire responses --alias ds-responses --model deepseek-flash
-$Z config add auth apikey https://api.deepseek.com deepseek \
+
+# Messages 路由挂在 /anthropic/v1 下，用根地址会报
+# "noncanonical builtin API prefix; use an explicitly scoped custom provider"
+$Z config add auth apikey https://api.deepseek.com/anthropic/v1 deepseek \
     --stdin --wire anthropic_messages --alias ds-anthropic --model deepseek-flash
 ```
+
+内置 provider 的规范前缀来自它的定义文件（`src/providers/deepseek.rs`）。
+报 `noncanonical builtin API prefix` 时，**不要**改用 `custom` 绕过——那会让授权范围跟着你的输入走；
+正确做法是照着定义文件填规范前缀。
 
 - **能力按路由不同**：`structured_output` 只在 Responses 路由为真；JSON mode 与 JSON Schema 是两回事，
   Chat 路由不会因为接受 schema 就真的支持它。

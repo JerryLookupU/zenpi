@@ -108,10 +108,10 @@ API key 解析优先级仍为显式 override > ZENPI_API_KEY > OPENAI_API_KEY > 
 | PA07 | PA02/PA03/PA05 | config/core CLI：auth list/add/doctor/revoke、import-codex 明确来源/边界、默认值兼容 | C15 / A01/A17 | 命令已落地并经合成凭据端到端验证；legacy 写回并入同一稳定锁；**真实 OAuth 登录与真实服务调用仍未验证** | verified |
 | PA08 | PA01/PA02/PA04/PA06 | Codex/DeepSeek request dialect、headers/SSE/tools/reasoning/错误；唯一推理重试 | C09/C14 / A11-A13/A16 | route-aware codec/headers 与唯一401重试循环已接线，HTTPS14条/协议15条测试通过；opaque history 仍待 PA12 | implementing |
 | PA09 | PA02/PA06/PA08 | Core/session 原子连接选择、owner/queue 栅栏、scope、选择事件恢复 | C15 / A18/A19 | `Agent::select_connection` 已落地：owner/phase/队列/附件/审批/worker/未决 operation 栅栏 → revision 复核 → 候选校验 → 单条 durable 事件 → infallible swap；拒绝不改运行状态。恢复拒绝把保存的选择套到另一个 profile/credential 上。**TUI/headless 的宿主接线分属 PA10/PA11** | verified |
-| PA10 | PA07/PA09 | TUI bootstrap/auth 任务/菜单；复用宿主状态机，迟到 callback/取消 | C15 / A17 | 缺凭据在 TUI 前失败；`tui/bootstrap.rs`、`/auth`、`/login`、`/profile` 均未实现 | pending |
+| PA10 | PA07/PA09 | TUI bootstrap/auth 任务/菜单；复用宿主状态机，迟到 callback/取消 | C15 / A17 | 缺凭据在 TUI 前失败；`tui/bootstrap.rs`、`/auth`、`/login`、`/profile` 均未实现——**这是本蓝图唯一未开工的子任务** | pending |
 | PA11 | PA09 | protocol/headless v2 connection 控制/capability/回执/replay；无秘密 JSONL | C15 / A18/A19 | `connection_v1`/`ordered_content_v1` 已在 status 声明；`type:"connection"` 的 select/status 严格校验、data/error 互斥、request ID 幂等复用既有 replay cache；**ordered_content_v1 的行为面仍待 PA12** | verified |
 | PA12 | PA01/PA02/PA09/PA11 | 有序内容 DTO、ToolResult、Core 物化、协议映射、journal/compact/resume | C10/C15 / A14/A15/A19 | **部分完成**：`zenpi_content_v1` 有序 DTO、`InputContentPart` 公共输入、逐 turn 有序快照落盘、采纳时的跨账号/限额/版本校验、`ToolResult::Success` 可选 typed content 均已落地并测试。**协议编码侧未接线**：编码器仍只发 `turn.content`，typed content 不会到达模型；headless `prompt.content` 的 v2 有序输入入口也未实现 | implementing |
-| PA13 | PA07-PA12 | 路径链路调试文档、命令再核查、用户真实调试与版本收据 | P6 / A20 | 只在实际命令落地后成文，不给未实现命令标可用 | pending |
+| PA13 | PA07-PA12 | 路径链路调试文档、命令再核查、用户真实调试与版本收据 | P6 / A20 | `Docs/Zenpi_Provider_Auth_Debugging.md` 已交付；文中命令均在 release binary 上实跑过，未实现项（TUI 引导、有序内容输入、工具 typed content 送达）显式标注 | verified |
 
 PA01 可先完成 native 提取再迁 Chat/Responses；PA02 可先完成定义/路由再接 config。阶段性证据分行记录，不提前将整行标 verified。
 第一批允许 PA01/PA02 的不重叠文件与 PA03 并行；依赖方以真实模块 API 集成，不复制另一套 enum/store/loop。
@@ -508,3 +508,22 @@ Moonshot/Groq/Mistral 的内置默认端点（zenpi 用 `custom` profile 已可�
 `provider_unsupported_capability`/`provider_permission_denied`/`provider_usage_limit`。
 本批只补齐了后两者的来源（403/429 的 `BackendError::code()` 映射，401 映射为 `auth_login_required`）；
 `provider_unsupported_capability` 需要在 `protocols/mod.rs` 的十余处能力拒绝点逐一区分，属 PA08 剩余工作，未做。
+
+### 6.11 PA13 收据：调试文档
+
+`Docs/Zenpi_Provider_Auth_Debugging.md` 已交付。文中每条命令、每个输出字段都在本分支的
+release binary 上实跑确认过；未实现的项在文档开头单独列表，不靠"未标注"蒙混。
+
+写文档的过程本身发现并修复了两个真实缺陷，这是它没白写的原因：
+
+| 缺陷 | 触发方式 | 处理 |
+|---|---|---|
+| `connection_snapshot` 写在固有 impl 里 | 通过 `&dyn Backend` 调用时解析到 trait 默认实现，显式连接一律被报成 `legacy`：选择快照为空、恢复的冲突检查形同虚设、有序内容的 media scope 退化到 legacy | 移进 `impl Backend for …`；单独的提交与回归 |
+| `backend_from_effective` 用 `std::path::absolute` | store 逐段 `O_NOFOLLOW`，macOS 上 `/var` 是符号链接，导致**任何临时 HOME 下显式连接都启动不了**（`auth_storage_failed`） | 改用 `config::credential_store`，与各 config 命令同一路径解析 |
+
+文档中另外记录了三个只有实跑才会遇到的坑：未设置 `CODEX_HOME` 时会回退到真实 `~/.codex`；
+状态目录必须 0700 / `auth.json` 0600（否则 `unsafe` fail closed）；
+DeepSeek 的 Messages 路由要用它自己的规范前缀 `https://api.deepseek.com/anthropic/v1`，
+用根地址会被 `noncanonical builtin API prefix` 拒绝（**不要**改用 `custom` 绕过）。
+
+**剩余**：PA10（TUI bootstrap 与 `/auth`/`/login`/`/profile`）仍未开工。
