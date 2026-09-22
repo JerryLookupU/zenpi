@@ -700,7 +700,7 @@ mod tests {
                 request_id: request.request_id.clone(),
                 decision: ApprovalDecision::Allow,
                 remember: false,
-                    message: None,
+                message: None,
             })
             .unwrap();
         assert_eq!(join.join().unwrap().unwrap(), ApprovalDecision::Allow);
@@ -740,7 +740,7 @@ mod tests {
                 request_id: request.request_id.clone(),
                 decision: ApprovalDecision::Allow,
                 remember: true,
-                    message: None,
+                message: None,
             })
             .unwrap();
         assert!(matches!(
@@ -748,7 +748,7 @@ mod tests {
                 request_id: request.request_id.clone(),
                 decision: ApprovalDecision::Deny,
                 remember: false,
-                    message: None,
+                message: None,
             }),
             Err(ApprovalError::UnknownRequest)
         ));

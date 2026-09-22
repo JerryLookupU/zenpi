@@ -1427,3 +1427,14 @@ fn auto_flag_parses_and_rejects_inline_values() {
     let options = parse_args(["--session", "x.jsonl"]).unwrap();
     assert!(!options.auto);
 }
+
+#[test]
+fn max_tool_iterations_flag_is_bounded_and_defaults_high() {
+    let options = parse_args(["--auto"]).unwrap();
+    assert_eq!(options.max_tool_iterations, 1000);
+    let options = parse_args(["--max-tool-iterations", "2500"]).unwrap();
+    assert_eq!(options.max_tool_iterations, 2500);
+    assert!(parse_args(["--max-tool-iterations", "0"]).is_err());
+    assert!(parse_args(["--max-tool-iterations", "10001"]).is_err());
+    assert!(parse_args(["--max-tool-iterations", "many"]).is_err());
+}
