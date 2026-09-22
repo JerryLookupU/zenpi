@@ -1610,3 +1610,25 @@ fn semantic_compaction_scope_disables_inference_retry_without_metadata() {
         matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
     );
 }
+
+#[test]
+fn retry_backoff_jitter_is_bounded_and_monotonic() {
+    use std::time::Duration;
+    use zenpi::backend::jittered_retry_delay;
+
+    let base = Duration::from_millis(800);
+    for nanos in [0u64, 1, 12345, 999_999_999, u64::MAX] {
+        let delay = jittered_retry_delay(base, nanos);
+        assert!(delay >= base, "jitter never shortens the backoff");
+        assert!(
+            delay <= base + Duration::from_millis(201),
+            "jitter stays within +25%: {delay:?}"
+        );
+    }
+    assert_eq!(
+        jittered_retry_delay(Duration::ZERO, 7),
+        jittered_retry_delay(Duration::ZERO, 7),
+        "pure function"
+    );
+    assert!(jittered_retry_delay(Duration::ZERO, 7) >= Duration::ZERO);
+}

@@ -1,0 +1,11 @@
+{
+  "item_id": "OC-041",
+  "source_path": "packages/opencode/src/tool/invalid.ts",
+  "source_hash": "2cc8ba3e9e2422a12eaeec33433ff143fdd27876b98268b9217d0245fed5c0f8",
+  "target_artifact": "Docs/learn/opencode_runtime/files/packages/opencode/src/tool/invalid.ts_learn.md",
+  "artifact_bytes": 11260,
+  "artifact_sha256": "1c5a742886e71645e94c1b5efbfc5ec8abe1bff9df1ee38e9268f29f6fde56d7",
+  "attempts": 2,
+  "validated_by": "master",
+  "validated_at": "2026-09-22T06:39:44Z"
+}

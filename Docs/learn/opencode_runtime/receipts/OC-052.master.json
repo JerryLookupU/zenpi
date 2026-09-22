@@ -1,0 +1,10 @@
+{
+  "item_id": "OC-052",
+  "source_path": "packages/opencode/src/tool/shell/prompt.ts",
+  "source_hash": "f3c6bdb216a9df2dd871d3a786b2abe3a20ea3e44b9121ce0610c648256fb2b6",
+  "target_artifact": "Docs/learn/opencode_runtime/files/packages/opencode/src/tool/shell/prompt.ts_learn.md",
+  "artifact_bytes": 18000,
+  "artifact_sha256": "b6e1523716ecdfa9896b2d52b9de1edce59480a433086f6999bf9c4f7e4a172c",
+  "validated_by": "master",
+  "validated_at": "2026-09-22T09:39:36Z"
+}

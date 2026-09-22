@@ -1,0 +1,11 @@
+{
+  "item_id": "OC-054",
+  "source_path": "packages/opencode/src/tool/task.ts",
+  "source_hash": "db09fa5868ad3ecfdd83aa2bb7243f85e9e2cd13d0b19fd6f307f7a337b2b36e",
+  "target_artifact": "Docs/learn/opencode_runtime/files/packages/opencode/src/tool/task.ts_learn.md",
+  "artifact_bytes": 15014,
+  "artifact_sha256": "3b25366bd1706495fb63dd005538a7447b1494a6e17ad88f2c11be604cb7dd40",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-22T06:47:01Z"
+}

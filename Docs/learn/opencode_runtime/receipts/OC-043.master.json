@@ -1,0 +1,11 @@
+{
+  "item_id": "OC-043",
+  "source_path": "packages/opencode/src/tool/lsp.ts",
+  "source_hash": "993e1316f12a44cde46eb8af34868a1ea2077a6e4ec749c25ec8b913a2e46da5",
+  "target_artifact": "Docs/learn/opencode_runtime/files/packages/opencode/src/tool/lsp.ts_learn.md",
+  "artifact_bytes": 10401,
+  "artifact_sha256": "0e156873432ed16a4b0faafd64fdb11ff304542215dd3cfc0d11924c6f20c103",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-22T06:38:55Z"
+}

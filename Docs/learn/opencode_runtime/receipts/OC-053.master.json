@@ -1,0 +1,11 @@
+{
+  "item_id": "OC-053",
+  "source_path": "packages/opencode/src/tool/skill.ts",
+  "source_hash": "629ada0c0a0135cb003429aec233aeb165f0b98a2bd5171986bc319c11af3c07",
+  "target_artifact": "Docs/learn/opencode_runtime/files/packages/opencode/src/tool/skill.ts_learn.md",
+  "artifact_bytes": 8466,
+  "artifact_sha256": "f5a354f903549ce4f7f03297a7d7c817d6228738c3a2707700a46831364f55ad",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-22T06:52:13Z"
+}

@@ -1,0 +1,11 @@
+{
+  "item_id": "OC-002",
+  "source_path": "packages/opencode/src/agent/subagent-permissions.ts",
+  "source_hash": "c3bbbd4ea8f076c9da07f5dd242bb07581bd8744b602e3e23deb02ea87601e6c",
+  "target_artifact": "Docs/learn/opencode_runtime/files/packages/opencode/src/agent/subagent-permissions.ts_learn.md",
+  "artifact_bytes": 10747,
+  "artifact_sha256": "756509d44f6c9fdfae41e20a01af75b75effe2bdd709cdcaa63dd8b80715c986",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-22T06:32:04Z"
+}

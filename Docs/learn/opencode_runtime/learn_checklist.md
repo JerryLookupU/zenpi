@@ -5,9 +5,9 @@ Derived ledger for subset `opencode_agent_runtime` (61 source files, 8 folders).
 
 - [x] Subset decision recorded (`subset_decision.md`) and manifest locked (61 rows, sha256 per row)
 - [x] Route decision recorded (`route_decision.md`)
-- [ ] All 61 file notes produced at `files/<source_path>_learn.md`
-- [ ] All 8 folder artifacts produced at `<source_dir>/current_folder_learn.md`
-- [ ] `file_learn_index.tsv` covers every manifest row
-- [ ] `folder_learn_index.tsv` covers every represented folder
-- [ ] Receipts present for every item (worker + master)
-- [ ] Zero `[ ]`, zero `[_]` in the manifest at completion
+- [x] All 61 file notes produced at `files/<source_path>_learn.md`
+- [x] All 7 folder artifacts produced at `<source_dir>/current_folder_learn.md`
+- [x] `file_learn_index.tsv` covers every manifest row
+- [x] `folder_learn_index.tsv` covers every represented folder
+- [x] Receipts present for every item (worker + master)
+- [x] Zero `[ ]`, zero `[_]` in the manifest at completion

@@ -1314,6 +1314,13 @@ impl OpenAiCompatibleBackend {
     }
 }
 
+/// Bounded jitter for provider retry backoff: at most +25% of the base delay.
+/// Pure so the swarm-resilience behavior is unit-testable.
+pub fn jittered_retry_delay(base: Duration, jitter_nanos: u64) -> Duration {
+    let span = base.as_millis().max(1) as u64 / 4 + 1;
+    base + Duration::from_millis(jitter_nanos % span)
+}
+
 fn normalize_endpoint(
     mut endpoint: String,
     wire_api: OpenAiWireApi,
@@ -2060,7 +2067,14 @@ impl Backend for OpenAiCompatibleBackend {
                 }) => Duration::from_millis(*milliseconds),
                 _ => Duration::ZERO,
             };
-            let delay = exponential.max(retry_after);
+            // Add bounded jitter so a large swarm does not retry in lockstep
+            // (opencode-style resilience; the cap keeps the delay bounded).
+            let base = exponential.max(retry_after);
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.subsec_nanos() as u64)
+                .unwrap_or(0);
+            let delay = jittered_retry_delay(base, nanos);
             let deadline = std::time::Instant::now() + delay;
             while std::time::Instant::now() < deadline {
                 control.check_cancelled()?;

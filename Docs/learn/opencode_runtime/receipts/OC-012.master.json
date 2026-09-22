@@ -1,0 +1,11 @@
+{
+  "item_id": "OC-012",
+  "source_path": "packages/opencode/src/session/instruction.ts",
+  "source_hash": "fee79c023eae44f720d4d600f334a987ad5f7615c4a008a20c89131a92684a8f",
+  "target_artifact": "Docs/learn/opencode_runtime/files/packages/opencode/src/session/instruction.ts_learn.md",
+  "artifact_bytes": 15556,
+  "artifact_sha256": "43c0bf48f539fa8182a3800e8e469589330917ce8a5448da650c12c17e9d6a4b",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-22T06:31:43Z"
+}

@@ -1,0 +1,11 @@
+{
+  "item_id": "OC-014",
+  "source_path": "packages/opencode/src/session/llm/ai-sdk.ts",
+  "source_hash": "3d2e653811abaf230b3fea9a54049499d1be2c09dabe017ed4eb99918ee7def5",
+  "target_artifact": "Docs/learn/opencode_runtime/files/packages/opencode/src/session/llm/ai-sdk.ts_learn.md",
+  "artifact_bytes": 12627,
+  "artifact_sha256": "53aa8b8b3a829f04e40e79566a1fe34efb67e8f2c51d4d1a013b079c8bd9a7c3",
+  "attempts": 2,
+  "validated_by": "master",
+  "validated_at": "2026-09-22T06:29:45Z"
+}

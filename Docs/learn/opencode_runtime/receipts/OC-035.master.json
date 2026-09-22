@@ -1,0 +1,11 @@
+{
+  "item_id": "OC-035",
+  "source_path": "packages/opencode/src/tool/apply_patch.ts",
+  "source_hash": "9bc5a1384a5e1b1cdd21943cb529dcde6e5e596706dee2111ccdb999d6b0ba22",
+  "target_artifact": "Docs/learn/opencode_runtime/files/packages/opencode/src/tool/apply_patch.ts_learn.md",
+  "artifact_bytes": 10393,
+  "artifact_sha256": "b89dbdab217e221eb76c21121f49e2d33844732637b0d980a4a8ba532cb1125b",
+  "attempts": 2,
+  "validated_by": "master",
+  "validated_at": "2026-09-22T09:01:27Z"
+}

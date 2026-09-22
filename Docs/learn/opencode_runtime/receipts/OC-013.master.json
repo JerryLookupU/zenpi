@@ -1,0 +1,11 @@
+{
+  "item_id": "OC-013",
+  "source_path": "packages/opencode/src/session/llm.ts",
+  "source_hash": "5f1dcfb734853e39760e4dd05470f0c7d8752fc5dcc64e118c065149602e402d",
+  "target_artifact": "Docs/learn/opencode_runtime/files/packages/opencode/src/session/llm.ts_learn.md",
+  "artifact_bytes": 14792,
+  "artifact_sha256": "eb6632d90c60dae1b16436f274f0ec12eb57dc28e64cacdaf4af5f31abb8482f",
+  "attempts": 2,
+  "validated_by": "master",
+  "validated_at": "2026-09-22T06:22:20Z"
+}

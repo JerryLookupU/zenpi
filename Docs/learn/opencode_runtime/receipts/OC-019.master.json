@@ -1,0 +1,11 @@
+{
+  "item_id": "OC-019",
+  "source_path": "packages/opencode/src/session/message-v2.ts",
+  "source_hash": "bfeb41e03e3788c83d3a031cce0aa1cf19a82c024a09e2a6aadbebb7a3d40d53",
+  "target_artifact": "Docs/learn/opencode_runtime/files/packages/opencode/src/session/message-v2.ts_learn.md",
+  "artifact_bytes": 19608,
+  "artifact_sha256": "f26e076cef5fdec1655e632d51a264211bd6aa3958da41ef142f038755910f57",
+  "attempts": 2,
+  "validated_by": "master",
+  "validated_at": "2026-09-22T06:22:19Z"
+}

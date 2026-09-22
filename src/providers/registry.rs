@@ -55,10 +55,28 @@ pub enum FieldSource {
     Conservative { version: String },
 }
 
+/// Lifecycle label of one catalog model (ZS1-186). Built-ins and unknown
+/// models are `Active`; overrides may mark alpha/beta/deprecated so a selected
+/// model's metadata change is visible through the descriptor digest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelStatus {
+    Alpha,
+    Beta,
+    Deprecated,
+    Active,
+}
+
+fn default_model_status() -> ModelStatus {
+    ModelStatus::Active
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelDescriptor {
     pub provider: String,
     pub id: String,
+    #[serde(default = "default_model_status")]
+    pub status: ModelStatus,
     pub context_window: u64,
     pub max_output_tokens: u64,
     pub capabilities: ProviderCapabilities,
@@ -127,6 +145,8 @@ pub struct ModelOverride {
     pub provider: String,
     pub id: String,
     pub version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<ModelStatus>,
     pub context_window: Option<u64>,
     pub max_output_tokens: Option<u64>,
     pub text: Option<bool>,
@@ -317,6 +337,7 @@ impl ModelRegistry {
                     }
                 };
             }
+            field!(status);
             field!(context_window);
             field!(max_output_tokens);
             macro_rules! capability {
@@ -385,6 +406,7 @@ fn unknown(provider: &str, id: &str) -> ModelDescriptor {
     ModelDescriptor {
         provider: provider.into(),
         id: id.into(),
+        status: default_model_status(),
         context_window: UNKNOWN_CONTEXT_WINDOW,
         max_output_tokens: UNKNOWN_MAX_OUTPUT,
         // Provider openness: an uncatalogued model defaults to the wire's

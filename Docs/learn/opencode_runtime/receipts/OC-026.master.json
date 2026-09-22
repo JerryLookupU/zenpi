@@ -1,0 +1,11 @@
+{
+  "item_id": "OC-026",
+  "source_path": "packages/opencode/src/session/revert.ts",
+  "source_hash": "c7e578bc0e8d01e551a06ce91a611c974e2e0e6ce59c5f6578922ba162536879",
+  "target_artifact": "Docs/learn/opencode_runtime/files/packages/opencode/src/session/revert.ts_learn.md",
+  "artifact_bytes": 11738,
+  "artifact_sha256": "c8e8ae28e4643da6786230caa2c04dca1c075c05f4cf812b22a5a3dcd7f7f3c1",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-22T08:51:37Z"
+}

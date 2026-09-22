@@ -1,0 +1,11 @@
+{
+  "item_id": "OC-007",
+  "source_path": "packages/opencode/src/provider/error.ts",
+  "source_hash": "eb04a3e8ec37aa50342a74d4d51b25d671fd30f032b170a0e9be9e0d32c0ddb4",
+  "target_artifact": "Docs/learn/opencode_runtime/files/packages/opencode/src/provider/error.ts_learn.md",
+  "artifact_bytes": 13931,
+  "artifact_sha256": "a5943e82f00947732f1b899eaed956e9004a40579f5cb987cd9d922e1f0043f4",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-22T06:17:53Z"
+}

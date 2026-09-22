@@ -580,6 +580,10 @@ pub struct Agent {
     live_owners: crate::session::LiveSessionRegistry,
 }
 
+/// ZS1-187: identical repeated calls allowed per turn before the excess is
+/// denied (opencode uses the same 5-call threshold).
+const DOOM_LOOP_THRESHOLD: usize = 5;
+
 struct ToolRuntime {
     registry: std::sync::Arc<ToolRegistry>,
     sequential: bool,
@@ -589,6 +593,8 @@ struct ToolRuntime {
     approval_policy: ApprovalPolicy,
     configured_approval_policy: ApprovalPolicy,
     worker_binding: Option<WorkerExecutionBinding>,
+    /// ZS1-187: identical (tool, arguments) calls seen in the current turn.
+    doom_loop_counts: std::collections::BTreeMap<String, usize>,
 }
 
 impl std::fmt::Debug for Agent {
@@ -1900,6 +1906,7 @@ impl Agent {
                 .with_remembered_events(self.session.events()),
             configured_approval_policy: ApprovalPolicy::default(),
             worker_binding: None,
+            doom_loop_counts: std::collections::BTreeMap::new(),
         });
     }
 
@@ -1917,6 +1924,7 @@ impl Agent {
                     .with_remembered_events(self.session.events()),
                 configured_approval_policy: ApprovalPolicy::default(),
                 worker_binding: None,
+                doom_loop_counts: std::collections::BTreeMap::new(),
             });
         }
     }
@@ -4510,6 +4518,10 @@ impl Agent {
         F: Fn() -> bool,
         E: FnMut(ProviderEvent) -> Result<(), BackendError>,
     {
+        // ZS1-187: doom-loop counting is per turn, never across turns.
+        if let Some(runtime) = self.tools.as_mut() {
+            runtime.doom_loop_counts.clear();
+        }
         if self
             .extensions
             .as_ref()
@@ -5249,6 +5261,29 @@ impl Agent {
                 "tool denied by skill policy",
                 ToolInvocationOutcome::Denied,
             )));
+        }
+        // ZS1-187: a model that repeats the same call with the same arguments
+        // is stuck; deny the excess repetitions with a stable reason instead
+        // of letting the turn burn its whole iteration budget.
+        {
+            let signature = format!(
+                "{}\u{0}{}",
+                call.name,
+                serde_json::to_string(&call.arguments).unwrap_or_default()
+            );
+            let count = runtime
+                .doom_loop_counts
+                .entry(signature)
+                .and_modify(|count| *count += 1)
+                .or_insert(1);
+            if *count > DOOM_LOOP_THRESHOLD {
+                return Ok(PreparedTool::Rejected(tool_failure(
+                    call,
+                    ToolErrorCode::PolicyDenied,
+                    "doom_loop: repeated identical tool call in this turn",
+                    ToolInvocationOutcome::Denied,
+                )));
+            }
         }
         if let Some(binding) = &runtime.worker_binding {
             binding.validate()?;

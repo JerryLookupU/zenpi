@@ -1,0 +1,11 @@
+{
+  "item_id": "OC-057",
+  "source_path": "packages/opencode/src/tool/truncate.ts",
+  "source_hash": "d3dc9e7402de74a7652ceb9f7796c970efc4958597b51a94fa264697366ccea5",
+  "target_artifact": "Docs/learn/opencode_runtime/files/packages/opencode/src/tool/truncate.ts_learn.md",
+  "artifact_bytes": 11154,
+  "artifact_sha256": "36959f6cc1b151c258cff4b1d44fd83c6edea13e52ca1e2c5b46c84853e320b0",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-22T06:49:23Z"
+}

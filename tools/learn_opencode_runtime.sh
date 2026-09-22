@@ -105,7 +105,8 @@ source_bytes: $bytes
    - \`## 未决问题\`：无法从源确认的点（没有就写“无”）
 3. 信息密集、可核对；不要泛泛而谈，不要整段抄源码，不要写占位符或 TODO。
 4. 只允许写目标笔记文件；不得修改 opencode 源码，也不得修改 zenpi 源码。
-5. 目标笔记至少 1200 字节。
+5. 目标笔记至少 1200 字节（小文件按源码大小放宽）。
+6. 源文件较大时（>16KB），分段写入目标笔记：先写标题与元信息，再用多次追加写入各小节，确保最终覆盖全部行号；不要因为输出长度限制而省略小节。
 PROMPT
   echo "$prompt"
 }
@@ -132,20 +133,26 @@ run_agent() { # prompt out
   esac
 }
 
-validate_artifact() { # target source_path
-  "$PY" - "$REPO_ROOT/$1" "$2" <<'PYEOF'
+validate_artifact() { # target source_path [source_bytes]
+  "$PY" - "$REPO_ROOT/$1" "$2" "${3:-1200}" <<'PYEOF'
 import os, sys
 target, source_path = sys.argv[1], sys.argv[2]
+source_bytes = int(sys.argv[3])
 if not os.path.isfile(target):
     sys.exit(1)
 data = open(target, encoding='utf-8', errors='replace').read()
-if len(data.encode('utf-8')) < 1200:
+# Small re-export/stub sources cannot honestly produce a 1200-byte note.
+min_bytes = max(400, min(1200, source_bytes))
+if len(data.encode('utf-8')) < min_bytes:
     sys.exit(2)
 for needle in ('## 完整行为复盘', '## zenpi Rust 映射', source_path):
     if needle not in data:
         sys.exit(3)
-if 'TODO' in data or '占位' in data:
-    sys.exit(4)
+# Only unfinished-note markers count; source comments may legitimately
+# contain TODO. Placeholder text means the note itself is incomplete.
+for marker in ('待补充', '待填写', 'PLACEHOLDER', '[TODO]', 'TODO: 待', '（占位）'):
+    if marker in data:
+        sys.exit(4)
 PYEOF
 }
 
@@ -182,7 +189,7 @@ worker_cycle() { # item source_path target hash bytes
     attempt=$((attempt + 1))
     run_agent "$prompt" "$out"
     rc=$?
-    if [ "$rc" -eq 0 ] && validate_artifact "$target" "$source_path"; then
+    if [ "$rc" -eq 0 ] && validate_artifact "$target" "$source_path" "$bytes"; then
       write_receipt "$item" "$source_path" "$hash" "$target" "$attempt"
       manifest_set "$item" "[x]"
       echo "[$item] accepted ($attempt attempt(s)) $source_path"

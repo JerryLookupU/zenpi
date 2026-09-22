@@ -1,0 +1,11 @@
+{
+  "item_id": "OC-061",
+  "source_path": "packages/opencode/src/tool/write.ts",
+  "source_hash": "861de91cc67849e138c32a697c8eb1abab8e4912bfd97811ea1866b8e9af4096",
+  "target_artifact": "Docs/learn/opencode_runtime/files/packages/opencode/src/tool/write.ts_learn.md",
+  "artifact_bytes": 9536,
+  "artifact_sha256": "8eefd0d2bb45db3c66326e2a75297b55f049e5766c78d9d8adfb9ab808d19910",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-22T06:57:25Z"
+}

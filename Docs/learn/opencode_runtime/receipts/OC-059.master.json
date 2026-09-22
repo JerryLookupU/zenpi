@@ -1,0 +1,11 @@
+{
+  "item_id": "OC-059",
+  "source_path": "packages/opencode/src/tool/webfetch.ts",
+  "source_hash": "8d9efbad1ffdf8dc29dbac80eb5372ba66a8c80fccaa1606d4e41a9c929a5b6b",
+  "target_artifact": "Docs/learn/opencode_runtime/files/packages/opencode/src/tool/webfetch.ts_learn.md",
+  "artifact_bytes": 9737,
+  "artifact_sha256": "1464e2c6fe6fcf9ac4fc8beb9270c5ff5ce0b8547b92690e6df29f504515dca4",
+  "attempts": 2,
+  "validated_by": "master",
+  "validated_at": "2026-09-22T06:54:20Z"
+}

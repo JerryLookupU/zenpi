@@ -1101,7 +1101,8 @@ fn resources_double_click_opens_the_enlarged_worker_stdio_view() {
         state.resources_zoom_open(),
         "two presses on the same cell open the enlarged view"
     );
-    assert_eq!(state.resources_zoom_worker_count(), 1);
+    // ZS1-185: PM + Arch + the default worktree's one worker.
+    assert_eq!(state.resources_zoom_worker_count(), 3);
     assert_eq!(
         state.resources_zoom_worker_stdio(4321),
         Some((Some("build it"), Some("done 世界")))
@@ -1163,7 +1164,7 @@ fn resources_zoom_skips_workers_from_other_projects() {
         },
     );
     state.open_resources_zoom();
-    assert_eq!(state.resources_zoom_worker_count(), 1);
+    assert_eq!(state.resources_zoom_worker_count(), 3);
     assert!(state.resources_zoom_worker_stdio(1).is_some());
     assert!(state.resources_zoom_worker_stdio(2).is_none());
 }
@@ -1290,38 +1291,30 @@ fn observation_state(dir: &tempfile::TempDir, count: usize) -> TuiState {
 }
 
 #[test]
-fn resources_grid_columns_are_power_of_two_and_fill_the_viewport() {
-    for (workers, width, height) in [
-        (1usize, 100usize, 40usize),
-        (5, 100, 40),
-        (8, 160, 40),
-        (13, 120, 60),
-        (64, 200, 60),
-    ] {
-        let columns = zenpi::tui::grid_columns(workers, width, height);
-        assert!(
-            columns.is_power_of_two(),
-            "{workers} workers in {width}x{height}: columns {columns} must be a power of two"
-        );
-        let rows = workers.div_ceil(columns);
-        let cell = (width / columns).min(height / rows);
-        assert!(cell >= 3);
-        let fill = cell * cell * columns * rows;
-        let mut other = 1usize;
-        while other <= workers.next_power_of_two().min(256) {
-            let other_rows = workers.div_ceil(other);
-            let other_cell = (width / other).min(height / other_rows);
-            if other_cell >= 3 {
-                assert!(
-                    fill >= other_cell * other_cell * other * other_rows,
-                    "{workers} workers in {width}x{height}: {columns} columns must not be beaten by {other}"
-                );
-            }
-            other *= 2;
-        }
+fn resources_worker_grid_uses_fixed_doubling_tiers() {
+    // ZS1-185: 1x2, 2x4, 4x8, ... with rows and columns doubling per tier.
+    assert_eq!(zenpi::tui::worker_grid_tier(1), (1, 2));
+    assert_eq!(zenpi::tui::worker_grid_tier(2), (1, 2));
+    assert_eq!(zenpi::tui::worker_grid_tier(3), (2, 4));
+    assert_eq!(zenpi::tui::worker_grid_tier(8), (2, 4));
+    assert_eq!(zenpi::tui::worker_grid_tier(9), (4, 8));
+    assert_eq!(zenpi::tui::worker_grid_tier(32), (4, 8));
+    assert_eq!(zenpi::tui::worker_grid_tier(33), (8, 16));
+    assert_eq!(zenpi::tui::worker_grid_tier(128), (8, 16));
+    assert_eq!(zenpi::tui::worker_grid_tier(129), (16, 32));
+    assert_eq!(zenpi::tui::worker_grid_tier(512), (16, 32));
+    assert_eq!(zenpi::tui::worker_grid_tier(513), (32, 64));
+    assert_eq!(zenpi::tui::worker_grid_tier(2048), (32, 64));
+    assert_eq!(zenpi::tui::worker_grid_tier(2049), (64, 128));
+    // Beyond the table the doubling continues.
+    assert_eq!(zenpi::tui::worker_grid_tier(32768), (128, 256));
+    assert_eq!(zenpi::tui::worker_grid_tier(32769), (256, 512));
+    for count in [1usize, 2, 3, 9, 33, 129, 513, 2049, 4000] {
+        let (rows, columns) = zenpi::tui::worker_grid_tier(count);
+        assert!(rows * columns >= count);
+        assert!(rows.is_power_of_two() && columns.is_power_of_two());
+        assert_eq!(columns, rows * 2);
     }
-    assert_eq!(zenpi::tui::grid_columns(5, 100, 40), 4);
-    assert_eq!(zenpi::tui::grid_columns(1, 100, 40), 1);
 }
 
 #[test]
@@ -1350,16 +1343,19 @@ fn resources_observation_mode_toggles_and_renders_square_tiles() {
         state.resources_zoom_open(),
         "double-click opens observation mode"
     );
-    assert_eq!(state.resources_zoom_worker_count(), 5);
+    // ZS1-185: PM + Arch + 5 configured worktree workers = 7 slots -> 2x4 tier.
+    assert!(state.set_subtab_concurrency(0, 5));
+    state.refresh_resources_zoom();
+    assert_eq!(state.resources_zoom_worker_count(), 7);
     terminal
         .draw(|f| state.render_bentobox(f, "zenpi"))
         .unwrap();
     let (columns, rows, _cell) = state.resources_zoom_grid_shape().expect("grid rendered");
-    assert!(
-        columns.is_power_of_two(),
-        "columns {columns} must be a power of two"
+    assert_eq!(
+        (columns, rows),
+        (4, 2),
+        "7 workers round up to the 2x4 tier"
     );
-    assert_eq!(rows, 5usize.div_ceil(columns));
     assert!(state.resources_zoom_tiles_square(), "tiles must be square");
 
     // A second double-click on the same overlay cell returns to the pane.
@@ -1593,4 +1589,25 @@ fn arch_lane_shows_the_thinking_animation() {
 
     state.set_master_busy(false);
     assert!(state.thinking_frame().is_none());
+}
+
+#[test]
+fn swarm_sized_worker_matrix_renders_the_16x32_tier_with_square_tiles() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = observation_state(&dir, 510);
+    // 2 masters + 510 live workers = 512 squares -> tier 16x32.
+    state.open_resources_zoom();
+    assert_eq!(state.resources_zoom_worker_count(), 512);
+    let mut terminal = Terminal::new(TestBackend::new(240, 80)).unwrap();
+    terminal
+        .draw(|f| state.render_bentobox(f, "zenpi"))
+        .unwrap();
+    let (columns, rows, _cell) = state.resources_zoom_grid_shape().expect("grid rendered");
+    assert_eq!((columns, rows), (32, 16), "512 workers use the 16x32 tier");
+    assert!(state.resources_zoom_tiles_square(), "every tile is square");
+    // The Resources hot zone opens the observation mode with `z`.
+    let mut hot = TuiState::default();
+    assert!(hot.set_hot_zone(HotZone::Resources));
+    let _ = hot.handle_key(key(KeyCode::Char('z')));
+    assert!(hot.resources_zoom_open(), "z opens the worker matrix");
 }

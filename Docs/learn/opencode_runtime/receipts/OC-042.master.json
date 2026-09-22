@@ -1,0 +1,11 @@
+{
+  "item_id": "OC-042",
+  "source_path": "packages/opencode/src/tool/json-schema.ts",
+  "source_hash": "123ae7e75b54161e54645d14f614700674acb6eb293d8a1249a9de57d84f4dba",
+  "target_artifact": "Docs/learn/opencode_runtime/files/packages/opencode/src/tool/json-schema.ts_learn.md",
+  "artifact_bytes": 11861,
+  "artifact_sha256": "71cf60bac44aebbe75a48574ae9ce47671c3a4de3050319b8448f5b5cad5ea16",
+  "attempts": 2,
+  "validated_by": "master",
+  "validated_at": "2026-09-22T08:59:46Z"
+}

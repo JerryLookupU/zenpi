@@ -2072,6 +2072,65 @@ struct WorkerStdioRow {
     output: Option<String>,
 }
 
+/// One drawn square in the Resources worker matrix (ZS1-185). Masters are the
+/// PM/discussion and Arch sessions; worktree slots come from each worktree's
+/// configured worker concurrency.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WorkerSlotKind {
+    MasterPm,
+    MasterArch,
+    Worktree,
+}
+
+impl WorkerSlotKind {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::MasterPm => "PM master",
+            Self::MasterArch => "Arch master",
+            Self::Worktree => "worktree worker",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct WorkerSlot {
+    label: String,
+    kind: WorkerSlotKind,
+    worktree: String,
+    stdio: Option<(Option<String>, Option<String>)>,
+}
+
+/// Fixed worker-square tiers (ZS1-185): rows x cols double at every tier and
+/// the count is rounded up to the first tier that can hold it.
+pub fn worker_grid_tier(count: usize) -> (usize, usize) {
+    const TIERS: [(usize, usize); 9] = [
+        (1, 2),
+        (2, 4),
+        (4, 8),
+        (8, 16),
+        (16, 32),
+        (32, 64),
+        (64, 128),
+        (128, 256),
+        (256, 512),
+    ];
+    let count = count.max(1);
+    for (rows, columns) in TIERS {
+        if rows.saturating_mul(columns) >= count {
+            return (rows, columns);
+        }
+    }
+    let (mut rows, mut columns) = TIERS[TIERS.len() - 1];
+    while rows.saturating_mul(columns) < count {
+        rows = rows.saturating_mul(2);
+        columns = columns.saturating_mul(2);
+        if rows >= 1 << 20 {
+            break;
+        }
+    }
+    (rows, columns)
+}
+
 /// Enlarged Resources observation mode opened by double-clicking the pane and
 /// closed by double-clicking again. Workers are laid out as square tiles in a
 /// power-of-two column grid that approximates the viewport aspect ratio; the
@@ -2081,6 +2140,9 @@ struct ResourcesZoom {
     selected: usize,
     detail_expanded: bool,
     workers: Vec<WorkerStdioRow>,
+    /// Worker squares for the current session (ZS1-185): PM + Arch + every
+    /// worktree's configured workers.
+    slots: Vec<WorkerSlot>,
     /// Tile rects recorded by the last render so a mouse click can select the
     /// worker under the pointer.
     tile_rects: Vec<Rect>,
@@ -5639,6 +5701,7 @@ impl TuiState {
     /// drill-down and leaving to the explicit no-hot-zone state.
     fn resources_zone_key(&mut self, key: KeyEvent) -> bool {
         match key.code {
+            KeyCode::Char('z') if key.modifiers.is_empty() => self.open_resources_zoom(),
             KeyCode::Up => self.move_resource_block(-1),
             KeyCode::Down => self.move_resource_block(1),
             KeyCode::PageUp => self.move_resource_block(-8),
@@ -11062,11 +11125,11 @@ impl TuiState {
         self.resources_zoom.is_some()
     }
 
-    /// Number of project workers snapshotted into the enlarged Resources view.
+    /// Number of worker squares in the enlarged Resources view (ZS1-185).
     pub fn resources_zoom_worker_count(&self) -> usize {
         self.resources_zoom
             .as_ref()
-            .map(|zoom| zoom.workers.len())
+            .map(|zoom| zoom.slots.len())
             .unwrap_or(0)
     }
 
@@ -11080,15 +11143,69 @@ impl TuiState {
         })
     }
 
-    /// Open the enlarged Resources view and snapshot the local headless workers
-    /// that belong to the active project.
+    /// Open the enlarged Resources view and snapshot the session's worker
+    /// squares (ZS1-185) plus the local headless workers that belong to the
+    /// active project.
     pub fn open_resources_zoom(&mut self) {
         let workers = self.project_worker_rows();
+        let slots = self.build_worker_slots(&workers);
         self.resources_zoom = Some(ResourcesZoom {
             workers,
+            slots,
             ..ResourcesZoom::default()
         });
         self.dirty = true;
+    }
+
+    /// Build the worker-square list for the current session: the two master
+    /// sessions plus one slot per configured worktree worker (ZS1-185).
+    fn build_worker_slots(&self, workers: &[WorkerStdioRow]) -> Vec<WorkerSlot> {
+        let project = self.active_project().to_owned();
+        let mut slots = vec![
+            WorkerSlot {
+                label: "PM".to_owned(),
+                kind: WorkerSlotKind::MasterPm,
+                worktree: project.clone(),
+                stdio: None,
+            },
+            WorkerSlot {
+                label: "Arch".to_owned(),
+                kind: WorkerSlotKind::MasterArch,
+                worktree: project,
+                stdio: None,
+            },
+        ];
+        if workers.is_empty() {
+            // No live headless worker for this session: show the configured
+            // worktree worker count so the matrix still reflects the plan.
+            for tab in self.subtabs() {
+                for slot in 0..usize::from(tab.concurrency.max(1)) {
+                    slots.push(WorkerSlot {
+                        label: format!("{}\u{b7}{}", tab.name, slot + 1),
+                        kind: WorkerSlotKind::Worktree,
+                        worktree: tab.name.clone(),
+                        stdio: None,
+                    });
+                }
+            }
+        } else {
+            // A running swarm is the truth: one square per live headless
+            // worker, carrying its request in/out excerpts.
+            for row in workers {
+                let session_name = std::path::Path::new(&row.session)
+                    .file_stem()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or(row.session.as_str())
+                    .to_owned();
+                slots.push(WorkerSlot {
+                    label: format!("w{}", row.pid),
+                    kind: WorkerSlotKind::Worktree,
+                    worktree: session_name,
+                    stdio: Some((row.input.clone(), row.output.clone())),
+                });
+            }
+        }
+        slots
     }
 
     pub fn close_resources_zoom(&mut self) {
@@ -11097,10 +11214,12 @@ impl TuiState {
         }
     }
 
-    fn refresh_resources_zoom(&mut self) {
+    pub fn refresh_resources_zoom(&mut self) {
         let workers = self.project_worker_rows();
+        let slots = self.build_worker_slots(&workers);
         if let Some(zoom) = self.resources_zoom.as_mut() {
             zoom.workers = workers;
+            zoom.slots = slots;
             zoom.selected = 0;
         }
         self.dirty = true;
@@ -11156,7 +11275,7 @@ impl TuiState {
     pub fn resources_zoom_tiles_square(&self) -> bool {
         self.resources_zoom.as_ref().is_some_and(|zoom| {
             !zoom.tile_rects.is_empty()
-                && zoom.tile_rects.len() == zoom.workers.len()
+                && zoom.tile_rects.len() == zoom.slots.len()
                 && zoom.tile_rects.iter().all(|rect| rect.width == rect.height)
         })
     }
@@ -11168,7 +11287,7 @@ impl TuiState {
         }
         let mut close = false;
         if let Some(zoom) = self.resources_zoom.as_mut() {
-            let count = zoom.workers.len();
+            let count = zoom.slots.len();
             let columns = zoom.grid_shape.map(|shape| shape.0).unwrap_or(1).max(1);
             match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => close = true,
@@ -11205,8 +11324,8 @@ impl TuiState {
             MouseEventKind::ScrollUp => {
                 zoom.selected = zoom.selected.saturating_sub(columns);
             }
-            MouseEventKind::ScrollDown if !zoom.workers.is_empty() => {
-                zoom.selected = (zoom.selected + columns).min(zoom.workers.len() - 1);
+            MouseEventKind::ScrollDown if !zoom.slots.is_empty() => {
+                zoom.selected = (zoom.selected + columns).min(zoom.slots.len() - 1);
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 if double_click {
@@ -11270,7 +11389,7 @@ impl TuiState {
             width: inner.width,
             height: inner.height.saturating_sub(1),
         };
-        let worker_count = zoom.workers.len();
+        let worker_count = zoom.slots.len();
         let detail_height = if worker_count == 0 {
             0
         } else if zoom.detail_expanded {
@@ -11296,32 +11415,29 @@ impl TuiState {
         if worker_count == 0 {
             frame.render_widget(
                 Paragraph::new(format!(
-                    "\u{5f53}\u{524d}\u{9879}\u{76ee}\u{6ca1}\u{6709}\u{5e26} --session \u{7684}\u{672c}\u{5730} headless worker\u{ff08}project {project}\u{ff09}"
+                    "\u{5f53}\u{524d} session \u{6ca1}\u{6709} worker\u{ff08}project {project}\u{ff09}"
                 )),
                 grid,
             );
         } else if grid.width >= 3 && grid.height >= 3 {
-            let columns = grid_columns(
-                worker_count,
-                usize::from(grid.width),
-                usize::from(grid.height),
-            );
-            let rows = worker_count.div_ceil(columns);
-            let cell = (usize::from(grid.width) / columns)
-                .min(usize::from(grid.height) / rows)
+            // ZS1-185: fixed tiers 1x2, 2x4, 4x8, ... with rows and columns
+            // doubling at every tier; the count rounds up to the next tier.
+            let (tier_rows, tier_columns) = worker_grid_tier(worker_count);
+            let cell = (usize::from(grid.width) / tier_columns)
+                .min(usize::from(grid.height) / tier_rows)
                 .max(3);
-            zoom.grid_shape = Some((columns, rows, cell));
-            let used_width = columns * cell;
-            let used_height = rows * cell;
+            zoom.grid_shape = Some((tier_columns, tier_rows, cell));
+            let used_width = tier_columns * cell;
+            let used_height = tier_rows * cell;
             let x0 = grid
                 .x
                 .saturating_add(((usize::from(grid.width).saturating_sub(used_width)) / 2) as u16);
             let y0 = grid.y.saturating_add(
                 ((usize::from(grid.height).saturating_sub(used_height)) / 2) as u16,
             );
-            for (index, worker) in zoom.workers.iter().enumerate() {
-                let column = index % columns;
-                let row = index / columns;
+            for (index, slot) in zoom.slots.iter().enumerate() {
+                let column = index % tier_columns;
+                let row = index / tier_columns;
                 let rect = Rect::new(
                     x0.saturating_add((column * cell) as u16),
                     y0.saturating_add((row * cell) as u16),
@@ -11329,51 +11445,54 @@ impl TuiState {
                     cell as u16,
                 );
                 zoom.tile_rects.push(rect);
+                let accent = match slot.kind {
+                    WorkerSlotKind::MasterPm => Color::Yellow,
+                    WorkerSlotKind::MasterArch => Color::Magenta,
+                    WorkerSlotKind::Worktree => Color::Blue,
+                };
                 let tile = Block::default()
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(if index == zoom.selected {
                         Color::Cyan
                     } else {
-                        Color::DarkGray
+                        accent
                     }))
-                    .title(format!(" {} ", worker.pid));
+                    .title(format!(" {} ", slot.label));
                 let tile_inner = tile.inner(rect);
                 frame.render_widget(tile, rect);
                 if tile_inner.width == 0 || tile_inner.height == 0 {
                     continue;
                 }
                 let text_width = usize::from(tile_inner.width);
-                let session_name = std::path::Path::new(&worker.session)
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or(worker.session.as_str());
                 let mut lines = vec![
-                    truncate_cells(worker.phase.label(), text_width),
-                    truncate_cells(&format!("cpu {:.1}%", worker.cpu_percent), text_width),
-                    truncate_cells(
-                        &format!("rss {}", format_byte_count(worker.resident_bytes)),
-                        text_width,
-                    ),
-                    truncate_cells(session_name, text_width),
-                    truncate_cells(
+                    truncate_cells(&slot.label, text_width),
+                    truncate_cells(slot.kind.label(), text_width),
+                    truncate_cells(&slot.worktree, text_width),
+                ];
+                if usize::from(tile_inner.height) >= 6 {
+                    let (input, output) = slot.stdio.clone().unwrap_or((None, None));
+                    lines.push(truncate_cells(
                         &format!(
                             "i {}",
-                            worker
-                                .input
+                            input
                                 .as_deref()
                                 .map(|text| inline_token(text, text_width.saturating_sub(2)))
                                 .unwrap_or_else(|| "\u{2014}".to_owned())
                         ),
                         text_width,
-                    ),
-                ];
-                if usize::from(tile_inner.height) >= 7
-                    && let Some(output) = worker.output.as_deref()
-                {
-                    lines.push(truncate_cells(
-                        &format!("o {}", inline_token(output, text_width.saturating_sub(2))),
-                        text_width,
                     ));
+                    if usize::from(tile_inner.height) >= 8 {
+                        lines.push(truncate_cells(
+                            &format!(
+                                "o {}",
+                                output
+                                    .as_deref()
+                                    .map(|text| inline_token(text, text_width.saturating_sub(2)))
+                                    .unwrap_or_else(|| "\u{2014}".to_owned())
+                            ),
+                            text_width,
+                        ));
+                    }
                 }
                 let visible: Vec<Line<'_>> = lines
                     .into_iter()
@@ -11384,24 +11503,20 @@ impl TuiState {
             }
         }
         if worker_count > 0 && detail.height >= 2 {
-            let worker = &zoom.workers[zoom.selected.min(worker_count - 1)];
+            let slot = &zoom.slots[zoom.selected.min(worker_count - 1)];
+            let (input, output) = slot.stdio.clone().unwrap_or((None, None));
             let mut lines: Vec<Line<'_>> = vec![Line::from(Span::styled(
                 format!(
-                    " pid {} \u{b7} {} \u{b7} cpu {:.1}% \u{b7} rss {} \u{b7} {}",
-                    worker.pid,
-                    worker.phase.label(),
-                    worker.cpu_percent,
-                    format_byte_count(worker.resident_bytes),
-                    truncate_cells(&worker.session, 80),
+                    " {} \u{b7} {} \u{b7} {}",
+                    slot.label,
+                    slot.kind.label(),
+                    truncate_cells(&slot.worktree, 80),
                 ),
                 Style::default().fg(Color::Cyan),
             ))];
             let width = usize::from(detail.width).saturating_sub(4).max(8);
             let budget = (usize::from(detail.height).saturating_sub(1) / 2).max(1);
-            for (label, value) in [
-                ("i", worker.input.as_deref()),
-                ("o", worker.output.as_deref()),
-            ] {
+            for (label, value) in [("i", input.as_deref()), ("o", output.as_deref())] {
                 match value {
                     Some(text) if !text.trim().is_empty() => {
                         let wrapped = wrap_plain(text, width);
@@ -19408,38 +19523,6 @@ fn read_worker_stdio(path: &str) -> (Option<String>, Option<String>) {
         }
     }
     (input, output)
-}
-
-/// Choose the power-of-two column count for the worker grid (ZS1-175). Cells
-/// stay square (cell size is the smaller of width/columns and height/rows); the
-/// winner maximizes the filled area and then the column/row ratio closest to
-/// the viewport aspect ratio.
-pub fn grid_columns(workers: usize, width: usize, height: usize) -> usize {
-    if workers == 0 || width == 0 || height == 0 {
-        return 1;
-    }
-    let area_ratio = width as f64 / height as f64;
-    let max_columns = workers.next_power_of_two().min(256);
-    let mut best_columns = 1usize;
-    let mut best_fill = 0usize;
-    let mut best_ratio = f64::MAX;
-    let mut columns = 1usize;
-    while columns <= max_columns {
-        let rows = workers.div_ceil(columns);
-        let cell = (width / columns).min(height / rows);
-        if cell >= 3 {
-            let fill = cell * cell * columns * rows;
-            let ratio = columns as f64 / rows as f64;
-            let difference = (ratio - area_ratio).abs();
-            if fill > best_fill || (fill == best_fill && difference < best_ratio) {
-                best_fill = fill;
-                best_ratio = difference;
-                best_columns = columns;
-            }
-        }
-        columns *= 2;
-    }
-    best_columns
 }
 
 /// Compact session id for the header label: keep a recognizable prefix.

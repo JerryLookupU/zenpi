@@ -1,0 +1,10 @@
+{
+  "item_id": "OC-023",
+  "source_path": "packages/opencode/src/session/prompt.ts",
+  "source_hash": "f0c5bc64c0f0e966693d4a57f7ede1e9d6e188b396152f04b55303dc75b9b768",
+  "target_artifact": "Docs/learn/opencode_runtime/files/packages/opencode/src/session/prompt.ts_learn.md",
+  "artifact_bytes": 15243,
+  "artifact_sha256": "55ef2ea353a5e37963e09c3b85a8960feb8c91354e753df786e6041d4069245f",
+  "validated_by": "master",
+  "validated_at": "2026-09-22T09:39:36Z"
+}

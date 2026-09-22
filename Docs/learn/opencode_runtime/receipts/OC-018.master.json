@@ -1,0 +1,11 @@
+{
+  "item_id": "OC-018",
+  "source_path": "packages/opencode/src/session/message-error.ts",
+  "source_hash": "0a57851de3412cff21c9d2c679788fcaf6c835155b567e900b4873a08016f750",
+  "target_artifact": "Docs/learn/opencode_runtime/files/packages/opencode/src/session/message-error.ts_learn.md",
+  "artifact_bytes": 8065,
+  "artifact_sha256": "630217335084d8c7fbf7aba75db2a03dc52ba9bee5ac54f7adda844153401208",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-22T06:20:48Z"
+}
