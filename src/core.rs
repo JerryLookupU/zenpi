@@ -411,6 +411,9 @@ pub struct Agent {
     active_turn_id: Option<String>,
     active_steerable: bool,
     model: Option<String>,
+    /// Bounded tool-iteration budget for one provider turn (ZS1-184). The
+    /// default is 8; long-horizon runs raise it explicitly.
+    max_tool_iterations: usize,
     /// Per-zone model selections for the discussion and arch TUI regions
     /// (ZS1-152). These are validated against the backend before being stored;
     /// the worker pool continues to use the agent's active `model`.
@@ -610,6 +613,7 @@ impl Agent {
             active_steerable: true,
             model,
             zone_models: crate::view_model::ZoneModels::default(),
+            max_tool_iterations: 1000,
             last_error: None,
             events: Vec::new(),
             live_tool_sink: None,
@@ -1495,6 +1499,14 @@ impl Agent {
 
     /// Configure the approval policy and return the coordinator used by a
     /// host to surface/respond to pending side-effect requests.
+    /// Per-turn tool-iteration budget (ZS1-184). Mature coding agents keep
+    /// looping until the model stops, so the default is generous (1000) and
+    /// the hard ceiling is 10000; the budget only exists to stop a runaway
+    /// loop, not to truncate real work.
+    pub fn set_max_tool_iterations(&mut self, iterations: usize) {
+        self.max_tool_iterations = iterations.clamp(1, 10_000);
+    }
+
     pub fn set_approval_policy(&mut self, policy: ApprovalPolicy) -> Option<ApprovalCoordinator> {
         let runtime = self.tools.as_mut()?;
         runtime.approval_policy = policy.with_remembered_events(self.session.events());
@@ -3743,7 +3755,7 @@ impl Agent {
             // write may have persisted a marker. No old attempt is replayed.
             return Err(error);
         }
-        const MAX_TOOL_ITERATIONS: usize = 8;
+        let max_tool_iterations = self.max_tool_iterations;
         self.notify_extensions(
             crate::extension_runtime::HookKind::AgentStart,
             Some(&turn_id),
@@ -3751,7 +3763,7 @@ impl Agent {
             &is_cancelled,
         );
         let completion =
-            self.complete_with_tools(&turn_id, MAX_TOOL_ITERATIONS, &is_cancelled, provider_sink);
+            self.complete_with_tools(&turn_id, max_tool_iterations, &is_cancelled, provider_sink);
         self.notify_extensions(
             crate::extension_runtime::HookKind::AgentEnd,
             Some(&turn_id),
@@ -5874,6 +5886,9 @@ pub struct CliOptions {
     /// policy is `Never`, so side effects still respect the tool policy and
     /// blueprint gates and remain auditable.
     pub auto: bool,
+    /// `--max-tool-iterations N`: per-turn tool budget (ZS1-184), 1..=10000;
+    /// defaults to 1000 so long-horizon turns are not truncated.
+    pub max_tool_iterations: usize,
     pub backend: String,
     pub backend_explicit: bool,
     pub profile: Option<String>,
@@ -5918,6 +5933,7 @@ impl Default for CliOptions {
             session: SessionStore::default_path(),
             session_ref: None,
             auto: false,
+            max_tool_iterations: 1000,
             backend: "openai".into(),
             backend_explicit: false,
             profile: None,
@@ -6182,6 +6198,23 @@ where
                 }
                 options.session = PathBuf::from(value);
             }
+            "--max-tool-iterations" => {
+                let value = inline
+                    .map(str::to_owned)
+                    .or_else(|| args.next())
+                    .ok_or_else(|| {
+                        ZenpiError::arguments("--max-tool-iterations requires a number")
+                    })?;
+                let iterations = value.trim().parse::<usize>().map_err(|_| {
+                    ZenpiError::arguments("--max-tool-iterations must be an integer")
+                })?;
+                if !(1..=10_000).contains(&iterations) {
+                    return Err(ZenpiError::arguments(
+                        "--max-tool-iterations must be between 1 and 10000",
+                    ));
+                }
+                options.max_tool_iterations = iterations;
+            }
             "--auto" => {
                 if inline.is_some() {
                     return Err(ZenpiError::arguments("--auto does not take a value"));
@@ -6403,7 +6436,7 @@ fn backend_from_effective(
 
 fn print_help() {
     println!(
-        "zenpi [--mode tui|headless] [--session PATH | -s NAME|ID] [--auto] [--backend openai|anthropic|google] [--profile NAME] [--model NAME]"
+        "zenpi [--mode tui|headless] [--session PATH | -s NAME|ID] [--auto] [--max-tool-iterations N] [--backend openai|anthropic|google] [--profile NAME] [--model NAME]"
     );
     println!("zenpi config import-codex [--profile NAME]");
     println!("zenpi config doctor [--profile NAME] [--json]");
@@ -6703,6 +6736,7 @@ pub fn run() -> Result<(), ZenpiError> {
         mode: approval_mode,
         ..crate::approval::ApprovalPolicy::default()
     });
+    agent.set_max_tool_iterations(options.max_tool_iterations);
     agent.restore_resources(default_resource_paths(&paths, &env::current_dir()?), || {
         false
     })?;
