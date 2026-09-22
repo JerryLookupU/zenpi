@@ -908,3 +908,39 @@ fn complete_environment_configuration_does_not_borrow_ambient_codex_effort() {
     );
     assert!(String::from_utf8_lossy(&output.stdout).contains("\"success\":true"));
 }
+
+#[test]
+fn model_status_override_changes_digest_and_round_trips() {
+    use zenpi::providers::registry::{ModelOverride, ModelRegistry, ModelStatus};
+
+    let base = ModelRegistry::default()
+        .resolve("openai", "gpt-4.1")
+        .unwrap();
+    assert_eq!(base.status, ModelStatus::Active);
+
+    let entry = override_entry(json!({
+        "provider": "openai",
+        "id": "gpt-4.1",
+        "version": "user-2026-09-22",
+        "status": "deprecated"
+    }));
+    let overridden = ModelRegistry::with_overrides(&[entry])
+        .unwrap()
+        .resolve("openai", "gpt-4.1")
+        .unwrap();
+    assert_eq!(overridden.status, ModelStatus::Deprecated);
+    assert_ne!(
+        base.digest(),
+        overridden.digest(),
+        "status must be part of the descriptor digest"
+    );
+
+    // Unknown lifecycle strings are rejected, never silently defaulted.
+    let bad = serde_json::from_value::<ModelOverride>(json!({
+        "provider": "openai",
+        "id": "gpt-4.1",
+        "version": "v",
+        "status": "yolo"
+    }));
+    assert!(bad.is_err());
+}

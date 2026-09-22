@@ -1124,6 +1124,8 @@ fn unique_tool_calls_cannot_bypass_iteration_limit() {
         .map(|i| tool_completion(&[&format!("call-{i}")]))
         .collect();
     let (mut agent, requests) = scripted_agent(&dir.path().join("limit.jsonl"), completions);
+    // ZS1-184: the default budget is 1000; this test pins an explicit 8.
+    agent.set_max_tool_iterations(8);
     assert!(matches!(
         agent.process_sync("inspect"),
         Err(AgentError::ToolLoopLimit(8))
@@ -1523,4 +1525,68 @@ fn recovery_abandon_all_dedupes_and_resolves_every_pending_operation() {
             .unwrap();
     assert_eq!(again["pending_count"], 0);
     assert!(again["resolved"].as_array().unwrap().is_empty());
+}
+
+struct DoomLoopBackend {
+    calls: AtomicUsize,
+}
+
+impl Backend for DoomLoopBackend {
+    crate::support::controlled_local_backend!();
+    fn complete(&self, _: CompletionRequest<'_>) -> Result<Completion, BackendError> {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        if call < 8 {
+            return Ok(Completion {
+                content: String::new(),
+                usage: None,
+                model: None,
+                tool_calls: vec![ToolCall {
+                    id: format!("call-{call}"),
+                    name: "constant".into(),
+                    arguments: json!({}),
+                }],
+                response_id: None,
+                refusal: None,
+                annotations: Vec::new(),
+            });
+        }
+        Ok(Completion::text("stopped"))
+    }
+}
+
+#[test]
+fn doom_loop_repetition_is_denied_after_the_threshold_and_the_turn_continues() {
+    let workspace = tempdir().unwrap();
+    let session = SessionStore::open(workspace.path().join("doom-loop.jsonl")).unwrap();
+    let mut registry = ToolRegistry::new();
+    registry.register(ConstantTool).unwrap();
+    let context = ToolContext::new(workspace.path()).unwrap();
+    let mut agent = Agent::new(
+        session,
+        Box::new(DoomLoopBackend {
+            calls: AtomicUsize::new(0),
+        }),
+    );
+    agent.set_tools(registry, context, SideEffectPolicy::read_only());
+    agent.set_max_tool_iterations(64);
+
+    let result = agent.process(TurnInputRequest::new("loop")).unwrap();
+    assert_eq!(result.assistant.unwrap().content, "stopped");
+
+    let tool_turns: Vec<&str> = agent
+        .history()
+        .iter()
+        .filter(|turn| turn.role == TurnRole::Tool)
+        .map(|turn| turn.content.as_str())
+        .collect();
+    let successes = tool_turns
+        .iter()
+        .filter(|text| !text.contains("doom_loop"))
+        .count();
+    let denials = tool_turns
+        .iter()
+        .filter(|text| text.contains("doom_loop"))
+        .count();
+    assert_eq!(successes, 5, "the first five identical calls run");
+    assert_eq!(denials, 3, "later identical calls are denied");
 }
