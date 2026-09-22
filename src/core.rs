@@ -6640,7 +6640,7 @@ fn spawn_stdin_reader(sender: std::sync::mpsc::Sender<CliLoginEvent>) {
 ///
 /// Cancellation is the process's own SIGINT — exiting closes the callback
 /// listener — and `LoginControl` bounds the whole flow to 15 minutes.
-fn run_cli_codex_login(
+pub(crate) fn run_cli_codex_login(
     paths: &crate::config::ConfigPaths,
     device: bool,
     no_browser: bool,
@@ -7778,6 +7778,27 @@ pub fn run() -> Result<(), ZenpiError> {
                 Ok(())
             }
         };
+    }
+    // A first run with no usable connection is handled before the host starts:
+    // the interactive host offers login, connection selection, or exit instead
+    // of building an agent that cannot serve anything.  Headless keeps its
+    // fail-closed behaviour (`stable error and exit status`), and anything that
+    // is merely broken still propagates as itself rather than as "not logged
+    // in".
+    if options.mode == RunMode::Tui {
+        let paths = crate::config::ConfigPaths::discover()?;
+        if let crate::tui::bootstrap::AuthGate::NeedsAuth(reason) =
+            crate::tui::bootstrap::auth_gate(&paths, options.profile.as_deref())?
+        {
+            match crate::tui::bootstrap::run_auth_bootstrap(
+                &paths,
+                options.profile.as_deref(),
+                &reason,
+            )? {
+                crate::tui::bootstrap::BootstrapOutcome::Ready => {}
+                crate::tui::bootstrap::BootstrapOutcome::Exited => return Ok(()),
+            }
+        }
     }
     let backend = make_backend(&options)?;
     // `-s NAME|ID` resolves against the cached zenpi sessions; `--session PATH`

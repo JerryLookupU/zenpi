@@ -108,7 +108,7 @@ API key 解析优先级仍为显式 override > ZENPI_API_KEY > OPENAI_API_KEY > 
 | PA07 | PA02/PA03/PA05 | config/core CLI：auth list/add/doctor/revoke、import-codex 明确来源/边界、默认值兼容 | C15 / A01/A17 | 命令已落地并经合成凭据端到端验证；legacy 写回并入同一稳定锁；**真实 OAuth 登录与真实服务调用仍未验证** | verified |
 | PA08 | PA01/PA02/PA04/PA06 | Codex/DeepSeek request dialect、headers/SSE/tools/reasoning/错误；唯一推理重试 | C09/C14 / A11-A13/A16 | route-aware codec/headers 与唯一401重试循环已接线，HTTPS14条/协议15条测试通过；opaque history 仍待 PA12 | implementing |
 | PA09 | PA02/PA06/PA08 | Core/session 原子连接选择、owner/queue 栅栏、scope、选择事件恢复 | C15 / A18/A19 | `Agent::select_connection` 已落地：owner/phase/队列/附件/审批/worker/未决 operation 栅栏 → revision 复核 → 候选校验 → 单条 durable 事件 → infallible swap；拒绝不改运行状态。恢复拒绝把保存的选择套到另一个 profile/credential 上。**TUI/headless 的宿主接线分属 PA10/PA11** | verified |
-| PA10 | PA07/PA09 | TUI bootstrap/auth 任务/菜单；复用宿主状态机，迟到 callback/取消 | C15 / A17 | 缺凭据在 TUI 前失败；`tui/bootstrap.rs`、`/auth`、`/login`、`/profile` 均未实现——**这是本蓝图唯一未开工的子任务** | pending |
+| PA10 | PA07/PA09 | TUI bootstrap/auth 任务/菜单；复用宿主状态机，迟到 callback/取消 | C15 / A17 | **部分完成**：`tui/bootstrap.rs` 的 `auth_gate` + `run_auth_bootstrap` 已接入 TUI 启动前，只捕获明确未配置/需登录，坏 TOML 与权限错误如实抛出；登录复用 CLI 同一个 driver，不建第二套状态机。**未完成**：运行中会话的 `/auth`、`/login`、`/profile` slash 入口，以及受控后台任务登录 + 取消回收 listener；引导界面目前是终端提示而非 ratatui 私有界面 | implementing |
 | PA11 | PA09 | protocol/headless v2 connection 控制/capability/回执/replay；无秘密 JSONL | C15 / A18/A19 | `connection_v1`/`ordered_content_v1` 已在 status 声明；`type:"connection"` 的 select/status 严格校验、data/error 互斥、request ID 幂等复用既有 replay cache；**ordered_content_v1 的行为面仍待 PA12** | verified |
 | PA12 | PA01/PA02/PA09/PA11 | 有序内容 DTO、ToolResult、Core 物化、协议映射、journal/compact/resume | C10/C15 / A14/A15/A19 | **部分完成**：`zenpi_content_v1` 有序 DTO、`InputContentPart` 公共输入、逐 turn 有序快照落盘、采纳时的跨账号/限额/版本校验、`ToolResult::Success` 可选 typed content 均已落地并测试。**协议编码侧未接线**：编码器仍只发 `turn.content`，typed content 不会到达模型；headless `prompt.content` 的 v2 有序输入入口也未实现 | implementing |
 | PA13 | PA07-PA12 | 路径链路调试文档、命令再核查、用户真实调试与版本收据 | P6 / A20 | `Docs/Zenpi_Provider_Auth_Debugging.md` 已交付；文中命令均在 release binary 上实跑过，未实现项（TUI 引导、有序内容输入、工具 typed content 送达）显式标注 | verified |
@@ -527,3 +527,30 @@ DeepSeek 的 Messages 路由要用它自己的规范前缀 `https://api.deepseek
 用根地址会被 `noncanonical builtin API prefix` 拒绝（**不要**改用 `custom` 绕过）。
 
 **剩余**：PA10（TUI bootstrap 与 `/auth`/`/login`/`/profile`）仍未开工。
+
+### 6.12 PA10 收据：TUI 首启引导（部分）
+
+本批只做了 PA10 的**启动前**那一半：未认证时不再先建 Agent 再失败，而是进入
+`tui/bootstrap.rs` 的 `run_auth_bootstrap`——开放登录（browser/device）、选连接、退出，别的什么都不做。
+`auth_gate` 的分级是这块的关键合同：只有 `unconfigured` / `login_required` / `revoked`
+以及"完全没配置过"才进引导；**坏 TOML、权限不安全、凭据存储不可读一律向上抛**，
+不会被伪装成"你没登录"。`expired`/`refreshing`/`uncertain`/`anonymous_pending_route` 也不进引导——
+它们各自有可用的既有路径（请求时刷新，或本就不需要凭据）。
+
+接入点是 TUI 分支里原本就会失败的位置，因此**任何已有可用连接的启动路径完全不受影响**。
+headless 保持 fail closed，不做引导。
+
+| 命令 | 结果 |
+|---|---|
+| rtk cargo test --locked --offline --lib tui::bootstrap | exit0；4 passed / 346 filtered（空装=首启、坏 TOML 向上抛、缺凭据要登录、可用连接不打扰） |
+| rtk cargo test --locked --offline --test tui_interaction | exit0；51 passed |
+| rtk cargo test --locked --offline --test tui_composer | exit0；54 passed |
+| rtk cargo test --locked --offline --test stage1_host | exit0；7 passed |
+| rtk cargo test --locked --offline --test config | exit0；31 passed |
+
+release binary 实跑确认：空装 → 引导菜单（`q` 退出码 0）；已绑定连接 → 不出现引导，直接进 TUI；
+坏 TOML → 报 TOML 解析错误而非"未登录"；headless 空装 → 仍然 fail closed。
+
+**PA10 未完成的部分**（不声称可用）：运行中会话的 `/auth`、`/login`、`/profile` slash 入口；
+由受控后台任务驱动的会话内登录与取消回收 listener；引导界面是终端提示，不是蓝图要求的 TUI 私有界面。
+`tui_interaction` 的 51 条既有用例证明本次改动没有破坏既有 TUI 行为，但不证明上述未实现的部分。
