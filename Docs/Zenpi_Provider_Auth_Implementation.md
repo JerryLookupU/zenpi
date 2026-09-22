@@ -101,12 +101,12 @@ API key 解析优先级仍为显式 override > ZENPI_API_KEY > OPENAI_API_KEY > 
 | PA00 | 无 | 本文 RTK、命令/源码核查、导入基线 | P0 / A01 | 命令与源码核查完成；3条 Codex 导入功能测试通过 | verified |
 | PA01 | PA00 | 协议提取：backend、protocols、原 providers/anthropic/google；保留兼容入口，不改 Agent Loop | C13 / A03/A12 | 四 wire 已接共享编解码；75条集成+3条单元通过；不代表 Codex 新 dialect 完成 | verified |
 | PA02 | PA00 | 静态 provider 定义、connection 路由与 config 字段；一 provider 一定义文件 | C08/C14 / A01-A03/A13 | 显式配置已接 Core/backend factory，匿名配置到生产 headless 的功能链路已测；凭据路由/跨模型验收见6.6 | implementing |
-| PA03 | PA00 | auth/mod/store：私有 DTO、文件事务、稳定 OS 锁、CAS/tombstone/刷新 marker | C01/C03/C11 / A08-A10 | 存储模块22条测试通过；实际登录/请求消费者尚未接入，保持未验收 | implementing |
-| PA04 | PA01/PA02 | security SecretHandle expiry/scope；Backend RequestControl 与每 HTTP 准入 | C12/C15 / A03/A16 | 已接两个 Core 请求入口及每个 HTTP retry，scope/期限/撤销/预算已测；真实 OAuth identity/刷新请求待 PA06 | implementing |
-| PA05 | PA03 | auth/codex/callback：PKCE、浏览器/manual/device、取消/限长/提交 | C04-C07 / A04-A07 | 登录库与 callback 共22条测试通过；尚无 CLI/TUI 入口，不代表用户可登录 | implementing |
+| PA03 | PA00 | auth/mod/store：私有 DTO、文件事务、稳定 OS 锁、CAS/tombstone/刷新 marker | C01/C03/C11 / A08-A10 | 存储模块24条测试通过；登录库与请求 resolver 已消费，legacy writer 事务协调仍是 PA07 合并门 | implementing |
+| PA04 | PA01/PA02 | security SecretHandle expiry/scope；Backend RequestControl 与每 HTTP 准入 | C12/C15 / A03/A16 | 已接两个 Core 请求入口、每个 HTTP retry 和 PA06 刷新准入；scope/期限/撤销/预算已测，动态选择 scope 待 PA09 | implementing |
+| PA05 | PA03 | auth/codex/callback：PKCE、浏览器/manual/device、取消/限长/提交 | C04-C07 / A04-A07 | 登录库与 callback 共23条测试通过；尚无 CLI/TUI 入口，不代表用户可登录 | implementing |
 | PA06 | PA03/PA04/PA05 | auth/resolve：每请求鉴权、5分钟预刷新、同身份401恢复、撤销 | C02/C12 / A07-A10/A16 | resolver27条及 HTTPS 集成14条通过；已接生产请求，初始在途刷新/终态分类也已验证；不代表 live OAuth 资格或登录 CLI 完成 | verified |
 | PA07 | PA02/PA03/PA05 | config/core CLI：auth list/add/doctor/revoke、import-codex 明确来源/边界、默认值兼容 | C15 / A01/A17 | 仅 legacy 配置/导入/撤销；新命令不存在 | pending |
-| PA08 | PA01/PA02/PA04/PA06 | Codex/DeepSeek request dialect、headers/SSE/tools/reasoning/错误；唯一推理重试 | C09/C14 / A11-A13/A16 | route-aware codec/headers 与唯一401重试循环已接线，HTTPS 捕获/协议测试进行中；opaque history 仍待 PA12 | implementing |
+| PA08 | PA01/PA02/PA04/PA06 | Codex/DeepSeek request dialect、headers/SSE/tools/reasoning/错误；唯一推理重试 | C09/C14 / A11-A13/A16 | route-aware codec/headers 与唯一401重试循环已接线，HTTPS14条/协议15条测试通过；opaque history 仍待 PA12 | implementing |
 | PA09 | PA02/PA06/PA08 | Core/session 原子连接选择、owner/queue 栅栏、scope、选择事件恢复 | C15 / A18/A19 | set_model 只换模型，backend 启动固定 | pending |
 | PA10 | PA07/PA09 | TUI bootstrap/auth 任务/菜单；复用宿主状态机，迟到 callback/取消 | C15 / A17 | 缺凭据在 TUI 前失败 | pending |
 | PA11 | PA09 | protocol/headless v2 connection 控制/capability/回执/replay；无秘密 JSONL | C15 / A18/A19 | 新 connection 控制未实现 | pending |
@@ -355,3 +355,10 @@ provider_admission 原100ms总预算在并行 fsync 压力下会在 socket 前�
 PA07 的额外合并门：现有 config::save_auth/write_auth_if_changed/revoke 仍是 legacy 整文件写回，尚未与新 CredentialStore 的事务锁协调。引入真实创建凭据的管理命令前必须把 legacy 根字段更新也纳入同一稳定锁并保留最新 namespace，测试 import/revoke 与 refresh 并发；禁止通过旧 binary 或手工 token 导入绕过此门。当前没有自动创建新凭据的生产 CLI，不能把库验收当用户 OAuth 部署就绪。现有 CI 的 clippy -D warnings/全量检查也未在本轮本地运行，仍有未接登录入口的 dead-code warnings。
 
 远端核查：git fetch origin main 成功，main 没有本地尚未取得的新提交。当前实现分支基于文档提交1b8d7c6；原文档 PR #11 仍 OPEN，因此实现 PR 对 main 的 diff 暂包含其两个文档提交，需说明依赖，不能宣称已有文档合并。
+
+### 6.7 Draft PR 交付收据
+
+2026-09-22：实现提交 `e51452f9e3f6391a8de9512bd5e01589a360a071` 已推送至 `JerryLookupU/zenpi:feat/provider-auth-rust`。
+已创建 [实现 PR #12](https://github.com/weiyangzen/zenpi/pull/12)，并以 `gh pr view` 核实 `OPEN`、`isDraft=true`、base=`main`、head=`feat/provider-auth-rust`、head owner=`JerryLookupU`。
+原 [文档 PR #11](https://github.com/weiyangzen/zenpi/pull/11) 未修改。PR 描述已明确文档依赖、增量验证、现有警告和上述合并门；未标 ready、未合并、未宣称完整蓝图完成或正式部署就绪。
+本节及任务表的状态同步仅记录交付，不改变 Rust 行为，也不将历史阶段收据改写为当前功能承诺。
