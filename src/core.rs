@@ -888,6 +888,19 @@ impl Agent {
         overrides: crate::config::ConfigOverrides,
         echo_fixture: bool,
     ) -> Result<Self, ZenpiError> {
+        Self::prepare_project_with_approval(session_path, cwd, overrides, echo_fixture, false)
+    }
+
+    /// Prepare one project owner with an explicit auto-approval choice
+    /// (ZS1-180). `auto_approve` selects `Never` instead of the default
+    /// `ReadOnly` so `--auto` reaches every project and arch owner.
+    pub fn prepare_project_with_approval(
+        session_path: &Path,
+        cwd: &Path,
+        overrides: crate::config::ConfigOverrides,
+        echo_fixture: bool,
+        auto_approve: bool,
+    ) -> Result<Self, ZenpiError> {
         let cwd = cwd.canonicalize()?;
         let context = ToolContext::new(&cwd).map_err(|e| ZenpiError::Message(e.to_string()))?;
         // Validate project configuration even for the explicit fixture backend.
@@ -911,7 +924,11 @@ impl Agent {
         agent.restore_resources(resource_paths, || false)?;
         agent.configure_extensions(&paths.extensions, || false)?;
         agent.set_approval_policy(ApprovalPolicy {
-            mode: crate::approval::ApprovalMode::ReadOnly,
+            mode: if auto_approve {
+                crate::approval::ApprovalMode::Never
+            } else {
+                crate::approval::ApprovalMode::ReadOnly
+            },
             ..ApprovalPolicy::default()
         });
         Ok(agent)
@@ -5370,10 +5387,21 @@ impl Agent {
                 "execution": evidence,
             }))?;
             if response.decision == ApprovalDecision::Deny {
+                // ZS1-182: operator feedback travels to the model as the
+                // denial reason so it can correct course.
+                let reason = response
+                    .message
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|message| !message.is_empty())
+                    .map_or_else(
+                        || "tool approval denied or cancelled".to_owned(),
+                        |message| format!("tool approval denied: {message}"),
+                    );
                 return Ok(PreparedTool::Rejected(tool_failure(
                     call,
                     ToolErrorCode::PolicyDenied,
-                    "tool approval denied or cancelled",
+                    &reason,
                     ToolInvocationOutcome::Denied,
                 )));
             }
@@ -6420,6 +6448,10 @@ pub struct CliOptions {
     /// `-s NAME|ID`: resolve a cached session by operator name or session id
     /// instead of opening a literal path (ZS1-178).
     pub session_ref: Option<String>,
+    /// `--auto`: auto-allow every approval in every zone (ZS1-180). The
+    /// policy is `Never`, so side effects still respect the tool policy and
+    /// blueprint gates and remain auditable.
+    pub auto: bool,
     pub backend: String,
     pub backend_explicit: bool,
     pub profile: Option<String>,
@@ -6477,6 +6509,7 @@ impl Default for CliOptions {
             mode: RunMode::Tui,
             session: SessionStore::default_path(),
             session_ref: None,
+            auto: false,
             backend: "openai".into(),
             backend_explicit: false,
             profile: None,
@@ -7179,6 +7212,12 @@ where
                 }
                 options.session = PathBuf::from(value);
             }
+            "--auto" => {
+                if inline.is_some() {
+                    return Err(ZenpiError::arguments("--auto does not take a value"));
+                }
+                options.auto = true;
+            }
             "-s" => {
                 let value = inline
                     .map(str::to_owned)
@@ -7414,7 +7453,7 @@ fn backend_from_effective(
 
 fn print_help() {
     println!(
-        "zenpi [--mode tui|headless] [--session PATH | -s NAME|ID] [--backend openai|anthropic|google] [--profile NAME] [--model NAME]"
+        "zenpi [--mode tui|headless] [--session PATH | -s NAME|ID] [--auto] [--backend openai|anthropic|google] [--profile NAME] [--model NAME]"
     );
     println!("zenpi config import-codex [--profile NAME]");
     println!("zenpi config doctor [--profile NAME] [--json]");
@@ -7842,9 +7881,15 @@ pub fn run() -> Result<(), ZenpiError> {
         tool_context,
         crate::tools::SideEffectPolicy::all_builtins(),
     )?;
-    let approval_mode = match options.mode {
-        RunMode::Headless => crate::approval::ApprovalMode::Always,
-        RunMode::Tui => crate::approval::ApprovalMode::ReadOnly,
+    let approval_mode = if options.auto {
+        // ZS1-180: --auto turns every approval into an immediate allow while
+        // keeping the tool policy, blueprint gates and audit events intact.
+        crate::approval::ApprovalMode::Never
+    } else {
+        match options.mode {
+            RunMode::Headless => crate::approval::ApprovalMode::Always,
+            RunMode::Tui => crate::approval::ApprovalMode::ReadOnly,
+        }
     };
     let _ = agent.set_approval_policy(crate::approval::ApprovalPolicy {
         mode: approval_mode,

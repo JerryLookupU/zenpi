@@ -1418,3 +1418,12 @@ fn a_corrupt_credential_store_is_reported_rather_than_read_as_unconfigured() {
     );
     assert!(!stderr.contains("synthetic-"));
 }
+
+#[test]
+fn auto_flag_parses_and_rejects_inline_values() {
+    let options = parse_args(["--auto"]).unwrap();
+    assert!(options.auto);
+    assert!(parse_args(["--auto=yes"]).is_err());
+    let options = parse_args(["--session", "x.jsonl"]).unwrap();
+    assert!(!options.auto);
+}

@@ -413,6 +413,9 @@ pub struct ProjectOwnerPool {
     sessions: std::collections::BTreeMap<String, PathBuf>,
     overrides: crate::config::ConfigOverrides,
     echo_fixture: bool,
+    /// ZS1-180: when the root owner runs with `--auto` (`Never`), every project
+    /// and arch owner is prepared with the same auto-approval policy.
+    auto_approve: bool,
     session_root: PathBuf,
     initial_session: (String, PathBuf),
     contexts: std::collections::BTreeMap<String, ProjectContext>,
@@ -444,6 +447,9 @@ impl ProjectOwnerPool {
                 .map_err(|e| e.to_string())?
                 .join(session)
         };
+        let auto_approve = owner
+            .approval_policy()
+            .is_some_and(|policy| policy.mode == crate::approval::ApprovalMode::Never);
         Ok(Self {
             workspace,
             owners: [(id.clone(), std::sync::Arc::clone(&agent))].into(),
@@ -454,12 +460,18 @@ impl ProjectOwnerPool {
             sessions: [(id, session.clone())].into(),
             overrides: owner.project_overrides(),
             echo_fixture: owner.backend_name() == "echo",
+            auto_approve,
             session_root: session
                 .parent()
                 .ok_or("session has no parent")?
                 .join("projects"),
         })
     }
+    /// True when every owner prepared by this pool auto-approves (ZS1-180).
+    pub fn auto_approve(&self) -> bool {
+        self.auto_approve
+    }
+
     pub fn context(&self, id: &str) -> Option<&ProjectContext> {
         self.contexts.get(id)
     }
@@ -638,11 +650,12 @@ impl ProjectOwnerPool {
                 agent.backend_name() == "echo",
             )
         };
-        let mut agent = crate::core::Agent::prepare_project_with_options(
+        let mut agent = crate::core::Agent::prepare_project_with_approval(
             &arch_session,
             &cwd,
             overrides,
             echo_fixture,
+            self.auto_approve,
         )
         .map_err(|error| error.to_string())?;
         // An arch owner is a separate agent with its own journal, so a
@@ -732,11 +745,12 @@ impl ProjectOwnerPool {
                 None
             } else {
                 Some(
-                    crate::core::Agent::prepare_project_with_options(
+                    crate::core::Agent::prepare_project_with_approval(
                         next_sessions.get(&id).ok_or("missing project session")?,
                         tab.cwd(),
                         self.overrides.clone(),
                         self.echo_fixture,
+                        self.auto_approve,
                     )
                     .map_err(|e| e.to_string())?,
                 )

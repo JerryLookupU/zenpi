@@ -1,0 +1,6 @@
+candidate_id	path_glob	files	bytes	decision
+session	packages/opencode/src/session/**	24	301766	included
+tool	packages/opencode/src/tool/**	27	189072	included
+permission	packages/opencode/src/permission/**	3	14266	included
+provider	packages/opencode/src/provider/**	5	164971	included
+agent	packages/opencode/src/agent/**	2	17971	included

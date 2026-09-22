@@ -117,6 +117,10 @@ pub struct ApprovalResponse {
     pub decision: ApprovalDecision,
     #[serde(default)]
     pub remember: bool,
+    /// Optional operator feedback for a deny (ZS1-182). The model receives it
+    /// as the denial reason so it can correct course instead of retrying.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 /// A process-local rendezvous between the agent worker and its host.  Tool
@@ -424,6 +428,7 @@ impl ApprovalCoordinator {
                             request_id: request_id.clone(),
                             decision: ApprovalDecision::Deny,
                             remember: false,
+                            message: None,
                         },
                     });
                 }
@@ -433,6 +438,7 @@ impl ApprovalCoordinator {
                         request_id,
                         decision: ApprovalDecision::Deny,
                         remember: false,
+                        message: None,
                     },
                 );
             }
@@ -694,6 +700,7 @@ mod tests {
                 request_id: request.request_id.clone(),
                 decision: ApprovalDecision::Allow,
                 remember: false,
+                    message: None,
             })
             .unwrap();
         assert_eq!(join.join().unwrap().unwrap(), ApprovalDecision::Allow);
@@ -733,6 +740,7 @@ mod tests {
                 request_id: request.request_id.clone(),
                 decision: ApprovalDecision::Allow,
                 remember: true,
+                    message: None,
             })
             .unwrap();
         assert!(matches!(
@@ -740,6 +748,7 @@ mod tests {
                 request_id: request.request_id.clone(),
                 decision: ApprovalDecision::Deny,
                 remember: false,
+                    message: None,
             }),
             Err(ApprovalError::UnknownRequest)
         ));

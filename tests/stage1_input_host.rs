@@ -1401,6 +1401,7 @@ fn input_receipts_remain_responsive_during_tool_approval() {
             request_id: approval.request_id,
             decision: ApprovalDecision::Deny,
             remember: false,
+            message: None,
         })
         .unwrap();
     let agent = owner.join().unwrap();
