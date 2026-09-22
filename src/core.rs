@@ -7293,8 +7293,11 @@ fn backend_from_effective(
 ) -> Result<Box<dyn Backend>, ZenpiError> {
     if let Some(connection) = effective.provider_connection(1)? {
         let paths = crate::config::ConfigPaths::discover()?;
-        let store = crate::auth::store::CredentialStore::new(std::path::absolute(paths.auth)?)
-            .map_err(|error| ZenpiError::Message(error.to_string()))?;
+        // The store opens every path component with O_NOFOLLOW, so an ancestor
+        // that is a link (macOS `/var` and `/tmp`) has to be resolved first;
+        // without that, an explicit connection cannot start under any temp
+        // home.  `credential_store` is the same helper the config commands use.
+        let store = crate::config::credential_store(&paths, false)?;
         let registry =
             crate::providers::registry::ModelRegistry::with_overrides(&effective.model_overrides)
                 .map_err(|error| ZenpiError::Message(error.to_string()))?;

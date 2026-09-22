@@ -1112,42 +1112,6 @@ impl OpenAiCompatibleBackend {
         Ok(backend)
     }
 
-    fn connection_snapshot(
-        &self,
-        model: Option<&str>,
-    ) -> Result<Option<ConnectionSnapshot>, BackendError> {
-        let Some(state) = &self.explicit else {
-            return Ok(None);
-        };
-        // The route digest and identity scope are per model, so a snapshot
-        // without a model describes the connection but not a route.
-        let model = model.unwrap_or(self.model.as_str());
-        let route = self.explicit_route(model)?;
-        let (auth_kind, credential_ref) = match &state.connection.auth {
-            AuthBinding::LegacyApiKey => ("legacy_api_key", None),
-            AuthBinding::StoredApiKey { credential_id } => ("api_key", Some(credential_id.clone())),
-            AuthBinding::CodexOAuth { credential_id } => ("oauth", Some(credential_id.clone())),
-            AuthBinding::Anonymous => ("anonymous", None),
-        };
-        Ok(Some(ConnectionSnapshot {
-            profile: state.connection.profile.clone(),
-            provider: state.connection.provider.clone(),
-            protocol: state.connection.protocol.as_str().to_owned(),
-            auth_kind: auth_kind.to_owned(),
-            credential_ref,
-            identity_scope: route
-                .as_ref()
-                .map(|route| route.identity_scope().to_owned())
-                .unwrap_or_default(),
-            route_digest: route
-                .as_ref()
-                .map(|route| route.route_digest().to_owned())
-                .unwrap_or_default(),
-            definition_version: route.as_ref().map_or(0, |route| route.definition_version()),
-            config_revision: state.connection.config_revision,
-        }))
-    }
-
     fn explicit_route(&self, model: &str) -> Result<Option<ValidatedRoute>, BackendError> {
         let Some(state) = &self.explicit else {
             return Ok(None);
@@ -1702,6 +1666,42 @@ impl OpenAiCompatibleBackend {
 }
 
 impl Backend for OpenAiCompatibleBackend {
+    fn connection_snapshot(
+        &self,
+        model: Option<&str>,
+    ) -> Result<Option<ConnectionSnapshot>, BackendError> {
+        let Some(state) = &self.explicit else {
+            return Ok(None);
+        };
+        // The route digest and identity scope are per model, so a snapshot
+        // without a model describes the connection but not a route.
+        let model = model.unwrap_or(self.model.as_str());
+        let route = self.explicit_route(model)?;
+        let (auth_kind, credential_ref) = match &state.connection.auth {
+            AuthBinding::LegacyApiKey => ("legacy_api_key", None),
+            AuthBinding::StoredApiKey { credential_id } => ("api_key", Some(credential_id.clone())),
+            AuthBinding::CodexOAuth { credential_id } => ("oauth", Some(credential_id.clone())),
+            AuthBinding::Anonymous => ("anonymous", None),
+        };
+        Ok(Some(ConnectionSnapshot {
+            profile: state.connection.profile.clone(),
+            provider: state.connection.provider.clone(),
+            protocol: state.connection.protocol.as_str().to_owned(),
+            auth_kind: auth_kind.to_owned(),
+            credential_ref,
+            identity_scope: route
+                .as_ref()
+                .map(|route| route.identity_scope().to_owned())
+                .unwrap_or_default(),
+            route_digest: route
+                .as_ref()
+                .map(|route| route.route_digest().to_owned())
+                .unwrap_or_default(),
+            definition_version: route.as_ref().map_or(0, |route| route.definition_version()),
+            config_revision: state.connection.config_revision,
+        }))
+    }
+
     fn request_binding(&self, model: Option<&str>) -> Result<BackendRequestBinding, BackendError> {
         let model = model.unwrap_or(&self.model);
         if let Some(route) = self.explicit_route(model)? {
