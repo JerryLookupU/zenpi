@@ -4,6 +4,9 @@
 本文只记录执行拆分、命令核查、实现证据和交付状态，不复制另一份设计规格。
 代码起点 `1b8d7c6`，实现分支 `feat/provider-auth-rust`；原 PR #11 保持文档范围。
 
+> **接手/复查请看 [`Zenpi_Provider_Auth_Handoff.md`](Zenpi_Provider_Auth_Handoff.md)**：
+> 本轮改了什么、验证到什么程度、未完成的部分从哪里接手、CI 为什么是红的。
+
 ## 1. RTK 先行规则
 
 已核查本机 `rtk 0.49.0`、Rust `1.96.1`；项目 MSRV 仍为1.88，不因本机编译器升级最低要求。
