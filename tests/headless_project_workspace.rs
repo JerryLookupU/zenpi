@@ -11,7 +11,7 @@ use std::{
 };
 use tempfile::tempdir;
 use zenpi::{
-    approval::{ApprovalMode, ApprovalPolicy},
+    approval::{ApprovalDecision, ApprovalMode, ApprovalPolicy},
     core::Agent,
     project_workspace::ProjectOwnerPool,
     session::SessionStore,
@@ -567,7 +567,18 @@ fn busy_switch_keeps_queued_owners_events_approval_and_tools_in_their_project() 
     let other = root.path().join("same-name");
     fs::create_dir(&other).unwrap();
     let process_cwd = std::env::current_dir().unwrap();
-    let mut wire = Wire::new(agent(root.path()));
+    // The pool marks itself auto-approving when the root owner is `Never`
+    // (ZS1-180) and passes that to every owner it prepares, so a root that
+    // auto-approves never raises the approval this test is about.  Let the
+    // root run its own shell without a prompt, but keep the mode prompting so
+    // a project opened later still asks.
+    let mut root_agent = agent(root.path());
+    root_agent.set_approval_policy(ApprovalPolicy {
+        mode: ApprovalMode::ReadOnly,
+        per_tool: [("user_shell".into(), ApprovalDecision::Allow)].into(),
+        ..Default::default()
+    });
+    let mut wire = Wire::new(root_agent);
     let a = wire.project("a", json!({"action":"list"}))["project"]["project_id"].clone();
     wire.send(json!({"schema_version":2,"type":"user_shell","id":"slow-a","text":"!sleep 0.4; printf original > marker.txt"}));
     loop {
