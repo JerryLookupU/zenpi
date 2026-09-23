@@ -1230,3 +1230,35 @@ fn reliability_permissions_do_not_add_execute_or_propagate_set_id_bits() {
         0o751
     );
 }
+
+#[test]
+fn web_search_env_and_result_formatting_are_bounded() {
+    use zenpi::tools::{format_web_search_results, parse_exa_env};
+
+    assert_eq!(
+        parse_exa_env("export EXA_API_KEY=abc123\n").as_deref(),
+        Some("abc123")
+    );
+    assert_eq!(
+        parse_exa_env("# c\nEXA_API_KEY=\"quoted\"\n").as_deref(),
+        Some("quoted")
+    );
+    assert_eq!(parse_exa_env("OTHER=1\n"), None);
+    assert_eq!(parse_exa_env("EXA_API_KEY=\n"), None);
+    assert_eq!(parse_exa_env("EXA_API_KEY=bad\nkey\n"), Some("bad".into()));
+
+    let raw = serde_json::json!({
+        "results": [
+            {"title": "A", "url": "https://a.example", "text": "x".repeat(2000)},
+            {"title": "B", "url": "https://b.example", "text": "short"},
+            {"title": "", "url": "", "text": ""}
+        ]
+    });
+    let bounded = format_web_search_results(&raw, 5);
+    assert_eq!(bounded["count"], 2);
+    assert_eq!(bounded["results"][0]["title"], "A");
+    assert!(
+        bounded["results"][0]["snippet"].as_str().unwrap().len() <= 600,
+        "snippet stays bounded"
+    );
+}

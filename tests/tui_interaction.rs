@@ -1101,8 +1101,8 @@ fn resources_double_click_opens_the_enlarged_worker_stdio_view() {
         state.resources_zoom_open(),
         "two presses on the same cell open the enlarged view"
     );
-    // ZS1-185: PM + Arch + the default worktree's one worker.
-    assert_eq!(state.resources_zoom_worker_count(), 3);
+    // ZS1-185: a live swarm counts as the matrix (no extra master squares).
+    assert_eq!(state.resources_zoom_worker_count(), 1);
     assert_eq!(
         state.resources_zoom_worker_stdio(4321),
         Some((Some("build it"), Some("done 世界")))
@@ -1164,7 +1164,7 @@ fn resources_zoom_skips_workers_from_other_projects() {
         },
     );
     state.open_resources_zoom();
-    assert_eq!(state.resources_zoom_worker_count(), 3);
+    assert_eq!(state.resources_zoom_worker_count(), 1);
     assert!(state.resources_zoom_worker_stdio(1).is_some());
     assert!(state.resources_zoom_worker_stdio(2).is_none());
 }
@@ -1343,10 +1343,8 @@ fn resources_observation_mode_toggles_and_renders_square_tiles() {
         state.resources_zoom_open(),
         "double-click opens observation mode"
     );
-    // ZS1-185: PM + Arch + 5 configured worktree workers = 7 slots -> 2x4 tier.
-    assert!(state.set_subtab_concurrency(0, 5));
-    state.refresh_resources_zoom();
-    assert_eq!(state.resources_zoom_worker_count(), 7);
+    // ZS1-185: 5 live workers -> 2x4 tier.
+    assert_eq!(state.resources_zoom_worker_count(), 5);
     terminal
         .draw(|f| state.render_bentobox(f, "zenpi"))
         .unwrap();
@@ -1795,9 +1793,9 @@ fn arch_lane_shows_the_thinking_animation() {
 fn swarm_sized_worker_matrix_renders_the_16x32_tier_with_square_tiles() {
     let dir = tempfile::tempdir().unwrap();
     let mut state = observation_state(&dir, 510);
-    // 2 masters + 510 live workers = 512 squares -> tier 16x32.
+    // 510 live workers -> tier 16x32.
     state.open_resources_zoom();
-    assert_eq!(state.resources_zoom_worker_count(), 512);
+    assert_eq!(state.resources_zoom_worker_count(), 510);
     let mut terminal = Terminal::new(TestBackend::new(240, 80)).unwrap();
     terminal
         .draw(|f| state.render_bentobox(f, "zenpi"))
@@ -1810,4 +1808,40 @@ fn swarm_sized_worker_matrix_renders_the_16x32_tier_with_square_tiles() {
     assert!(hot.set_hot_zone(HotZone::Resources));
     let _ = hot.handle_key(key(KeyCode::Char('z')));
     assert!(hot.resources_zoom_open(), "z opens the worker matrix");
+}
+
+#[test]
+fn worker_tiles_are_visually_square_adapt_to_window_and_busy_workers_blink() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = observation_state(&dir, 64);
+    state.open_resources_zoom();
+    assert!(
+        state.resources_zoom_has_busy(),
+        "the fixture workers are busy"
+    );
+
+    let mut wide = Terminal::new(TestBackend::new(240, 80)).unwrap();
+    wide.draw(|f| state.render_bentobox(f, "zenpi")).unwrap();
+    let (_, _, cell_wide) = state.resources_zoom_grid_shape().unwrap();
+    assert!(
+        state.resources_zoom_tiles_square(),
+        "tiles are visually square (2 cells wide per cell of height)"
+    );
+
+    let mut tall = Terminal::new(TestBackend::new(120, 100)).unwrap();
+    tall.draw(|f| state.render_bentobox(f, "zenpi")).unwrap();
+    let (_, _, cell_tall) = state.resources_zoom_grid_shape().unwrap();
+    assert!(state.resources_zoom_tiles_square());
+    assert_ne!(
+        cell_wide, cell_tall,
+        "tile size adapts to the window aspect"
+    );
+
+    let before = state.resources_zoom_blink_on();
+    state.tick();
+    assert_ne!(
+        before,
+        state.resources_zoom_blink_on(),
+        "busy workers blink with the animation tick"
+    );
 }

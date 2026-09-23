@@ -921,3 +921,9 @@ ZS1-128完成判据：逐个Codex交互条目映射实际操作与证据；每�
 来源：`Docs/learn/opencode_runtime/`（opencode agent runtime 61 文件 1:1 学习，`gap_digest.md` 汇总每份笔记的 zenpi Rust 映射）。登记为可执行项：模型状态、doom-loop、权限规则服务、子代理权限、provider 错误分类、LLM 事件粒度、AGENTS.md 指令服务、plan/build reminder、session 运行态、shell arity 审计、agent 目录、provider 认证方法。实现顺序按 Depends 与 ROI 选择；每项独立测试后由主控集成。
 
 验收：逐项实现并补测试，主控集成后 build 到 `zenpi-dev`（本机与 20.214）。3.1.40 追加不改动此前已接受项的字节与义务。
+
+### 3.1.41 Web 搜索与蜂群矩阵（新增 ZS1-198，清单 182 项）
+
+用户要求（2026-09-22）：给 zenpi 补 web search（exa.ai，25 QPS），用于 2048 并发 × 6697 学科的全量蜂群任务；TUI Resources 在有 live worker 时按 worker 数绘制方块矩阵（512→16x32，2048→32x64），并展示每个 headless worker 的请求进出状态。
+
+验收：websearch 工具（含 key 解析与有界输出）、25QPS 代理、紧凑矩阵渲染与测试；本机与 20.214 均 build 并通过测试。3.1.41 追加不改动此前已接受项的字节与义务。
