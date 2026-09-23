@@ -122,3 +122,50 @@ read_tool_output, run_command, search_text, write_file
   resize、退出。
 - 修好之后值得考虑：**工具被关闭时给用户一个可见信号**。这次是全程静默的——
   配置文件写对了、doctor 报 `ready`、会话正常，但模型手上什么都没有。
+
+---
+
+## 6. 后续发现：TUI 仍然不下发工具（未修）
+
+修完上一节之后做对照复验，发现**同一二进制、同一 `ZENPI_HOME`、同一工作区、同一提问**下：
+
+| 路径 | 结果 |
+|---|---|
+| headless | ✅ 列出全部 10 个工具 |
+| **TUI** | ❌ `no write_file tool is available to me in this session` |
+
+并且 TUI 的对话里同时出现：
+
+```
+Shared project workspace could not be restored: working folder I/O:
+No such file or directory (os error 2)
+```
+
+**所以 TUI 有一个 headless 没有的独立问题**，跟 DeepSeek 目录无关（那个已修，headless 侧已验证）。
+
+### 排查线索
+
+1. `core.rs` 里工具列表由两个条件共同决定：
+   `model_tools`（后端能力）× `self.tools`（ToolRuntime 是否存在）。
+   headless 同一后端下 `model_tools` 为真，所以嫌疑集中在 **TUI 路径上 `self.tools` 为 `None`**
+   ——也就是 TUI 实际跑 turn 的那个 agent 没有 `set_tools`。
+2. **`Shared project workspace could not be restored` 那行很可能是同一根因的线索**：
+   项目工作区恢复失败 → owner 准备中断 → 会话落在一个没有 `ToolRuntime` 的 agent 上。
+   本次测试时目标目录已被我删除，属于**受污染的测试环境**——
+   **需要先用完全干净的工作区复现，确认这是真 bug 还是环境残留**，再动手。
+3. 启动路径 `core.rs`（`set_tools_with_resources` 与 `RunMode::Tui` 分支）确实调用了 `set_tools`，
+   所以要查的是**这个 agent 与 TUI 实际使用的是否同一个**——
+   注意 `tui.rs` 里 `shared` 会被 `project_host.active(&state)` 重新指向 pool owner，
+   两者若不一致就会出现"启动时设了、跑的时候没用上"。
+
+### 复现方法
+
+```sh
+mkdir -p /tmp/zh /tmp/ws && chmod 700 /tmp/zh     # 0700 是凭据存储的硬要求
+cp ~/.zenpi/config.toml ~/.zenpi/auth.json /tmp/zh/
+cd /tmp/ws && git init -q && echo ok > README.md
+tmux new-session -d -s zenpi -x 160 -y 45 -c /tmp/ws \
+  "ZENPI_HOME=/tmp/zh TERM=xterm-256color ~/.cargo/bin/zenpi"
+# 在 TUI 里问：List the exact names of the tools you have available
+# headless 同参数对照，应当列出 10 个
+```
