@@ -147,15 +147,23 @@ arch owner 现在也登记进控制表（键 `arch:<id>`，`project` 字段负�
 
 ## 4. 未完成（精确落点，接手从这里开始）
 
-### W6 ratatui 低风险集成 — **未做**
+### W6 ratatui 低风险集成 — **复核后判定三项均不适用**
 
-计划里的两项都**需要单独决策**，本轮没动：
+原先按 `Docs/Zenpi_TUI_Ratatui_Integration.md` §3 列为"低风险可集成"。逐条查源码后**全部不成立**，
+详细论证写进了那份文档的 §6（原表已划掉并注明）。摘要：
 
-- `DefaultTerminal` / `init()` / `restore()` 替换自研 `TerminalGuard`（`src/tui.rs`）——
-  需先确认现有 guard 的额外职责（pty 冒烟夹具）不被吞掉。
-- `ratatui-macros` **需要新增依赖**（不在当前依赖树，已实测 `cargo tree`），与"不新增第三方依赖"
-  的约束冲突，需单独确认。
-- 已实测：`ratatui 0.30.2` → `ratatui-widgets 0.3.2`，widgets 可用。
+1. **边框合并 `MergeStrategy`**——API 确实存在且零新依赖（`Block::merge_borders`，
+   `ratatui::symbols::merge::MergeStrategy` 经 facade 可达），但它**只在同一 cell 被画两次时生效**，
+   而 `src/layout.rs` 的 `visible_rects_non_overlapping()` 保证窗格 rect 互不相交。
+   渲染帧里的 `││` / `┘└` 是两个相邻 cell，不是重叠——**构造性地永远不会触发**。
+2. **`DefaultTerminal` / `init()` / `restore()`**——现有 `TerminalGuard` 比 `ratatui::init()`
+   多做三件事：signal guard（异常退出还原终端）、bracketed paste + mouse capture、
+   外部编辑器的终端状态捕获。换掉是**功能倒退**。
+3. **`ratatui-macros`**——纯语法糖，不修任何缺陷；且 ratatui 0.30.2 要求 `ratatui-macros 0.7.2`
+   而本地缓存只有 0.6.0，启用需联网拉取。
+
+**顺带更正**：那份文档 §1.2 说"绝大多数绘制是手写进 `Buffer`"**是错的**——全文有 20+ 处
+`Block::default()`，bentobox 每个窗格都是 `Block` widget 画的，只是 5 个类型写在了一行 import 里。
 
 ### W8 TUI 线程阻塞点 — **未做**
 

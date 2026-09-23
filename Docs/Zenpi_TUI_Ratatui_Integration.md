@@ -26,8 +26,11 @@
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 ```
 
-- 用到：`text::`(13 处)、`backend::`(10 处)、`style::`(5 处)、`widgets::`(1 行 import)、`layout::`(1 处)。
-- **绝大多数绘制是手写进 `Buffer`**，不是 widget 组合。
+- 用到：`text::`、`backend::`、`style::`、`widgets::`、`layout::`。
+- **窗格是用 `Block` widget 画的**（2026-09-23 更正）：全文有 20+ 处 `Block::default()`，
+  bentobox 的每个窗格（Conversation / Prompt / Arch / Arch prompt / Shell / Resources / Gantt）
+  都是 `Block::default().borders(Borders::ALL).title(..)`。`widgets::` 只有一行 import
+  是因为 Rust 把 5 个类型写在一行里，**不代表 widget 用得少**——原文此处判断有误。
 - `Terminal::new(...)` 直接构造（`tui.rs:16557`、`18411`），**没有用 `ratatui::init()/restore()/run()`**，
   自研了 `TerminalGuard` 做进入/还原。
 - 测试用 `TestBackend`（`tui.rs:20211+`）+ pty 冒烟（`tools/stage1_host_smoke.py`，14 个用例）。
@@ -85,11 +88,13 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 `ratatui`（facade，应用继续用它）/ `ratatui-core`（稳定原语）/ `ratatui-widgets`（内置 widget）/
 `ratatui-crossterm`·`ratatui-termion`·`ratatui-termwiz`（后端）/ `ratatui-macros`（宏）。
 
+> **下表的粗体项已在 2026-09-23 逐条复核，结论见 §6：三项都不适用。** 保留原表以便对照。
+
 | 能力 | 能解决本文哪一条问题 | 风险 / 代价 |
 |---|---|---|
-| **`ratatui::run()` / `init()` / `restore()` + `DefaultTerminal`** | 1.2 的自研 `TerminalGuard`；终端进入/还原的边角（panic 路径、raw mode 残留） | 低。但需先确认现有 guard 的额外职责（比如测试用的 pty 夹具）不被吞掉 |
-| **`ratatui-macros`**：`span!` `line!` `text!` `constraint!` `layout!` | 1.1/2.3 的手写绘制：布局与文本拼装更短、更难写错 | 低。纯语法糖，可逐处替换 |
-| **边框合并 `MergeStrategy`** | BentoBox 相邻窗格的边框重复绘制（视觉噪音，也易与命中区域不一致） | 低-中。需要核对合并后的边框是否影响既有坐标假设 |
+| ~~**`ratatui::run()` / `init()` / `restore()` + `DefaultTerminal`**~~ | 1.2 的自研 `TerminalGuard`；终端进入/还原的边角（panic 路径、raw mode 残留） | **不适用**：现有 `TerminalGuard` 职责更多（见 §6.2），换掉是功能倒退 |
+| ~~**`ratatui-macros`**：`span!` `line!` `text!` `constraint!` `layout!`~~ | 1.1/2.3 的手写绘制：布局与文本拼装更短、更难写错 | **不适用**：纯语法糖；且 ratatui 0.30.2 要求 `ratatui-macros 0.7.2`，本地缓存只有 0.6.0，需联网拉取 |
+| ~~**边框合并 `MergeStrategy`**~~ | BentoBox 相邻窗格的边框重复绘制（视觉噪音，也易与命中区域不一致） | **不适用**：窗格 rect 由布局保证互不重叠，合并永远不会触发（见 §6.1） |
 | **Canvas 新 marker**：`Quadrant`/`Sextant`/`Octant` | 甘特/资源图的粒度 | 低。仅当那些视图想更细 |
 | **`ScrollbarState::get_position()`、`LineGauge` 自定义符号、`Tabs::width`、`List::highlight_symbol` 收 `Into<Line>`** | 资源/列表/标签条的零散交互与显示 | 低。逐处替换 |
 | **`ratatui-core` 独立** | 把 `view_model`/`layout` 这类纯逻辑与 widget 解耦，降低 `tui.rs` 的编译与耦合 | 中。要拆 `tui.rs` 才吃得到 |
@@ -121,3 +126,49 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 - 版本已实测锁定：`ratatui 0.30.2` / `ratatui-core 0.1.2` / `ratatui-widgets 0.3.2` / `ratatui-crossterm 0.1.2`（`Cargo.lock`）。**0.30 已完成拆分**，说明下面那些 widget 能力在本仓库里是可用的，`default-features = false` 关掉的是别的。
 - 但 `features = ["crossterm"]` 之外还开着什么，仍要 `cargo tree -e features -p ratatui` 实测后再动手。
 - pty 冒烟（`tools/stage1_host_smoke.py`）是这套 UI 唯一的端到端网，任何渲染改动都要用它复核。
+
+---
+
+## 6. 复核结论（2026-09-23）：三项推荐都不适用
+
+§3 表格里三处"低风险可集成"逐条查过源码后**全部不成立**。记在这里，免得后来人照着做。
+
+### 6.1 边框合并 `MergeStrategy` —— 结构性不适用
+
+API 确实存在：`ratatui-widgets 0.3.2` 的 `Block::merge_borders(MergeStrategy)`，
+`ratatui::symbols::merge::MergeStrategy` 经 facade 可达（`ratatui-0.30.2/src/lib.rs:517`
+re-export 了 `symbols`），**零新依赖**。
+
+但它**只在同一个 cell 被画两次时才生效**。而 zenpi 的布局保证窗格 rect 互不相交——
+`src/layout.rs` 里就有 `LayoutSnapshot::visible_rects_non_overlapping()`，这是被测试钉住的不变量。
+渲染帧里看到的 `││` / `┘└` 是**两个相邻 cell**各画各的，不是重叠。
+
+要用上它，就得让窗格 rect 彼此重叠一列/一行，那会改动每一个坐标假设：命中测试、
+`block.inner()`、Shell 的 `rows/cols`（`tui.rs` 里 `pane.rect.height - 2`）、
+IME 光标锚点（`pane.rect.x + 1`）……正是 §3 结尾自己警告过"不要整体重写渲染层"的事。
+**结论：不做。**
+
+### 6.2 `DefaultTerminal` / `init()` / `restore()` —— 会功能倒退
+
+现有 `TerminalGuard`（`src/tui.rs` 的 `struct TerminalGuard`）比 `ratatui::init()` 多做三件事：
+
+1. **`terminal_signals::SignalGuard::install()`** —— 异常退出时还原终端。`init()` 没有。
+2. **`EnableBracketedPaste` + `EnableMouseCapture`** —— `init()` 只做 raw mode + alternate screen。
+3. **`external_editor::TerminalState::capture()`** —— 为 Ctrl-G 外部编辑器保存终端状态。
+
+换掉 `TerminalGuard` 等于把这三项一起丢掉。**结论：不做。**
+
+### 6.3 `ratatui-macros` —— 纯语法糖 + 要联网拉新版本
+
+`ratatui 0.30.2` 的 `macros` feature 依赖的是 **`ratatui-macros 0.7.2`**
+（`~/.cargo/registry/src/*/ratatui-0.30.2/Cargo.toml:233`），而本地缓存里只有 `0.6.0`。
+本项目全用 `--locked --offline` 构建，启用它需要先联网 fetch 一次。
+
+它提供的 `span!` / `line!` / `text!` / `constraint!` / `layout!` 是**纯语法糖**，
+不修任何缺陷；替换会触及大量调用点。**结论：不做**（除非将来有别的理由动布局代码）。
+
+### 6.4 那还剩下什么
+
+§4 建议顺序里，真正修掉缺陷的是第 1 项（先修红）与第 4 项（静默丢弃要有反馈），
+两项都已完成；第 5 项（拆文件）仍是最后再谈。
+**渲染层的 ratatui 集成没有可做的项**——这套 UI 已经在用 widget，缺的不是集成度。
