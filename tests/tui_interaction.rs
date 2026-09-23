@@ -1609,3 +1609,39 @@ fn swarm_sized_worker_matrix_renders_the_16x32_tier_with_square_tiles() {
     let _ = hot.handle_key(key(KeyCode::Char('z')));
     assert!(hot.resources_zoom_open(), "z opens the worker matrix");
 }
+
+#[test]
+fn worker_tiles_are_visually_square_adapt_to_window_and_busy_workers_blink() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = observation_state(&dir, 64);
+    state.open_resources_zoom();
+    assert!(
+        state.resources_zoom_has_busy(),
+        "the fixture workers are busy"
+    );
+
+    let mut wide = Terminal::new(TestBackend::new(240, 80)).unwrap();
+    wide.draw(|f| state.render_bentobox(f, "zenpi")).unwrap();
+    let (_, _, cell_wide) = state.resources_zoom_grid_shape().unwrap();
+    assert!(
+        state.resources_zoom_tiles_square(),
+        "tiles are visually square (2 cells wide per cell of height)"
+    );
+
+    let mut tall = Terminal::new(TestBackend::new(120, 100)).unwrap();
+    tall.draw(|f| state.render_bentobox(f, "zenpi")).unwrap();
+    let (_, _, cell_tall) = state.resources_zoom_grid_shape().unwrap();
+    assert!(state.resources_zoom_tiles_square());
+    assert_ne!(
+        cell_wide, cell_tall,
+        "tile size adapts to the window aspect"
+    );
+
+    let before = state.resources_zoom_blink_on();
+    state.tick();
+    assert_ne!(
+        before,
+        state.resources_zoom_blink_on(),
+        "busy workers blink with the animation tick"
+    );
+}
