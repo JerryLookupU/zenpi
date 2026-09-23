@@ -3831,7 +3831,15 @@ impl TuiState {
                     rename.buffer.pop();
                 }
             }
-            KeyCode::Char(character) if !character.is_control() => {
+            // A Ctrl chord arrives as `Char('c')` with CONTROL set, and
+            // `is_control()` is false for it, so without the modifier check
+            // Ctrl-C would be typed into the name as a literal `c`.
+            KeyCode::Char(character)
+                if !character.is_control()
+                    && !key.modifiers.intersects(
+                        KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
+                    ) =>
+            {
                 if let Some(rename) = self.tab_rename.as_mut()
                     && rename.buffer.len() + character.len_utf8() <= 64
                 {
@@ -5800,8 +5808,15 @@ impl TuiState {
     /// Keys owned by the Resources hot zone (ZS1-177): block selection,
     /// drill-down and leaving to the explicit no-hot-zone state.
     fn resources_zone_key(&mut self, key: KeyEvent) -> bool {
+        // Modified keys belong to the global layer. Without this, Ctrl-Up moves
+        // the resource block while Ctrl-Up in every other pane moves focus --
+        // one chord meaning two things depending on which pane happens to be
+        // hot. The same guard `handle_key` applies to the prompt chords.
+        if !key.modifiers.is_empty() {
+            return false;
+        }
         match key.code {
-            KeyCode::Char('z') if key.modifiers.is_empty() => self.open_resources_zoom(),
+            KeyCode::Char('z') => self.open_resources_zoom(),
             KeyCode::Up => self.move_resource_block(-1),
             KeyCode::Down => self.move_resource_block(1),
             KeyCode::PageUp => self.move_resource_block(-8),
@@ -5825,6 +5840,11 @@ impl TuiState {
     /// Keys owned by the Gantt hot zone (ZS1-177): keyboard scrolling mirrors
     /// the wheel/trackpad behavior; Esc leaves to the no-hot-zone state.
     fn gantt_zone_key(&mut self, key: KeyEvent) -> bool {
+        // Same rule as the Resources zone: modified keys go to the global
+        // layer, so a chord never means one thing here and another elsewhere.
+        if !key.modifiers.is_empty() {
+            return false;
+        }
         let scroll = self.pane_scroll.entry(PaneId::Gantt).or_insert(0);
         match key.code {
             KeyCode::Up => *scroll = scroll.saturating_sub(1),
@@ -5911,7 +5931,13 @@ impl TuiState {
                 }
                 self.dirty = true;
             }
-            KeyCode::Char(character) if !character.is_control() => {
+            // Same as the tab rename: a Ctrl chord must not land in the name.
+            KeyCode::Char(character)
+                if !character.is_control()
+                    && !key.modifiers.intersects(
+                        KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
+                    ) =>
+            {
                 if let Some(rename) = self.session_rename.as_mut()
                     && rename.text.len() < crate::session::MAX_SESSION_NAME_BYTES
                 {
@@ -5927,6 +5953,10 @@ impl TuiState {
     /// Keys owned by the SessionList pane. Kept outside the text zones so a
     /// stale discussion draft never steals its navigation.
     fn session_list_zone_key(&mut self, key: KeyEvent) -> Option<TuiAction> {
+        // Modified keys belong to the global layer, matching the other zones.
+        if !key.modifiers.is_empty() {
+            return None;
+        }
         match key.code {
             KeyCode::Up => {
                 self.move_session_browser_cursor(-1);
@@ -8271,17 +8301,7 @@ impl TuiState {
         // Modals own the keyboard before any hot zone: the Shell forward below
         // must never swallow an approval key, and the ordinary-paste buffer
         // must never fill while a picker/browser is open.
-        let modal_active = self.directory_picker.is_some()
-            || self.transcript_browser.is_some()
-            || self.history_search.is_some()
-            || self.goal_edit.is_some()
-            || self.resources_zoom.is_some()
-            || self.subtab_concurrency_edit.is_some()
-            || self.session_rename.is_some()
-            || self
-                .approval_views
-                .get(self.active_project())
-                .is_some_and(|view| view.focused && !view.requests.is_empty());
+        let modal_active = self.modal_active();
         // A hot Shell pane owns raw keystrokes. Forward them here, before the
         // ordinary-paste buffer can divert ASCII characters into the prompt
         // (ZS1-166); control chords the TUI reserves still fall through.
@@ -8423,6 +8443,23 @@ impl TuiState {
         }
     }
 
+    /// Whether a modal owns the keyboard right now. A modal must be consulted
+    /// before any hot zone, or the zone swallows keys the modal is showing.
+    fn modal_active(&self) -> bool {
+        self.directory_picker.is_some()
+            || self.transcript_browser.is_some()
+            || self.history_search.is_some()
+            || self.goal_edit.is_some()
+            || self.resources_zoom.is_some()
+            || self.subtab_concurrency_edit.is_some()
+            || self.session_rename.is_some()
+            || self.tab_rename.is_some()
+            || self
+                .approval_views
+                .get(self.active_project())
+                .is_some_and(|view| view.focused && !view.requests.is_empty())
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) -> TuiAction {
         if key.kind == KeyEventKind::Release {
             return TuiAction::None;
@@ -8480,7 +8517,10 @@ impl TuiState {
         // PTY (ZS1-166) regardless of any discussion draft. Chords the TUI
         // reserves (tabs, pane cycling) return `None` from `key_bytes` and
         // still reach their usual handler.
-        if zone == HotZone::Shell && self.forward_shell_key(key) {
+        // `handle_event_at` already declines the forward while a modal is open.
+        // The same guard belongs here: a picker or browser opened from the
+        // Shell pane would otherwise have its keys typed into the PTY.
+        if zone == HotZone::Shell && !self.modal_active() && self.forward_shell_key(key) {
             return TuiAction::Redraw;
         }
         // ZS1-177: navigation zones own their keys before any text editing.
@@ -8534,20 +8574,22 @@ impl TuiState {
             return TuiAction::Redraw;
         }
         if key.modifiers == KeyModifiers::ALT {
+            // Alt-arrows edit and walk the discussion prompt, so they carry the
+            // same ownership guard as the Ctrl editing chords below.
             match key.code {
-                KeyCode::Left => {
+                KeyCode::Left if zone == HotZone::Conversation => {
                     self.move_word(false);
                     return TuiAction::Redraw;
                 }
-                KeyCode::Right => {
+                KeyCode::Right if zone == HotZone::Conversation => {
                     self.move_word(true);
                     return TuiAction::Redraw;
                 }
-                KeyCode::Up => {
+                KeyCode::Up if zone == HotZone::Conversation => {
                     self.history_move(-1);
                     return TuiAction::Redraw;
                 }
-                KeyCode::Down => {
+                KeyCode::Down if zone == HotZone::Conversation => {
                     self.history_move(1);
                     return TuiAction::Redraw;
                 }
@@ -8740,7 +8782,7 @@ impl TuiState {
                     self.set_status("再按一次 Ctrl-C 强制终止 · Ctrl-D 退出");
                     return TuiAction::None;
                 }
-                KeyCode::Char('u') => {
+                KeyCode::Char('u') if zone == HotZone::Conversation => {
                     let start = self.visible_line_boundary(false);
                     let start = if start == self.cursor && start > 0 {
                         start - 1
@@ -8753,7 +8795,12 @@ impl TuiState {
                     self.dirty = true;
                     return TuiAction::None;
                 }
-                KeyCode::Char('y') => {
+                // Discussion-prompt editing. These chords are consulted before
+                // zone dispatch, so each one carries the same guard the zone
+                // block below states: a non-conversation zone must never edit
+                // the discussion draft. Without it, Ctrl-U in the Resources
+                // pane wipes a draft the user cannot even see.
+                KeyCode::Char('y') if zone == HotZone::Conversation => {
                     self.yank_input();
                     return TuiAction::Redraw;
                 }
@@ -8761,40 +8808,40 @@ impl TuiState {
                     self.begin_history_search();
                     return TuiAction::Redraw;
                 }
-                KeyCode::Char('p') => {
+                KeyCode::Char('p') if zone == HotZone::Conversation => {
                     self.history_move(-1);
                     return TuiAction::Redraw;
                 }
-                KeyCode::Char('n') => {
+                KeyCode::Char('n') if zone == HotZone::Conversation => {
                     self.history_move(1);
                     return TuiAction::Redraw;
                 }
-                KeyCode::Char('a') => {
+                KeyCode::Char('a') if zone == HotZone::Conversation => {
                     self.cursor = self.visible_line_boundary(false);
                     self.preferred_column = None;
                     self.dirty = true;
                     return TuiAction::None;
                 }
-                KeyCode::Char('e') => {
+                KeyCode::Char('e') if zone == HotZone::Conversation => {
                     self.cursor = self.visible_line_boundary(true);
                     self.preferred_column = None;
                     self.dirty = true;
                     return TuiAction::None;
                 }
-                KeyCode::Left if !self.input.is_empty() => {
+                KeyCode::Left if zone == HotZone::Conversation && !self.input.is_empty() => {
                     self.move_word(false);
                     return TuiAction::None;
                 }
-                KeyCode::Right if !self.input.is_empty() => {
+                KeyCode::Right if zone == HotZone::Conversation && !self.input.is_empty() => {
                     self.move_word(true);
                     return TuiAction::None;
                 }
-                KeyCode::Delete => {
+                KeyCode::Delete if zone == HotZone::Conversation => {
                     let end = self.word_boundary(true);
                     self.kill_input_range(self.cursor, end);
                     return TuiAction::Redraw;
                 }
-                KeyCode::Char('k') => {
+                KeyCode::Char('k') if zone == HotZone::Conversation => {
                     let end = self.visible_line_boundary(true);
                     let end = if end == self.cursor && end < self.input.len() {
                         end + 1
@@ -8809,7 +8856,7 @@ impl TuiState {
                         Some(ProjectIntent::Close(self.active_project().to_owned()));
                     return TuiAction::Redraw;
                 }
-                KeyCode::Char('w') | KeyCode::Backspace => {
+                KeyCode::Char('w') | KeyCode::Backspace if zone == HotZone::Conversation => {
                     self.delete_previous_word();
                     return TuiAction::None;
                 }
@@ -8867,7 +8914,7 @@ impl TuiState {
                 // Ctrl-J is the portable terminal spelling of a newline.
                 // Treat Ctrl-Enter the same way because a few terminals send
                 // that pair as `KeyCode::Enter` rather than `Char('j')`.
-                KeyCode::Char('j') | KeyCode::Enter => {
+                KeyCode::Char('j') | KeyCode::Enter if zone == HotZone::Conversation => {
                     self.insert_text("\n");
                     return TuiAction::None;
                 }
