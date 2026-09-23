@@ -1,0 +1,125 @@
+# TUI 真实测试清单（tmux + zenpi + DeepSeek）
+
+**规则**：每项都用 **tmux 真开 zenpi** 测，不是 `cargo test`。测完在方框里打 `x` 并记一行观察结果。
+**进度就写在这个文件里**——上下文被压缩时以本文件为准。
+
+**环境**（每次全新会话都要做，否则会复用陈旧状态）：
+```sh
+# 1) 凭据目录必须 0700，否则 auth_storage_failed
+mkdir -p /tmp/zh && chmod 700 /tmp/zh
+cp ~/.zenpi/config.toml ~/.zenpi/auth.json /tmp/zh/
+# 2) 关键：把陈旧检查点挪开，否则会恢复指向已删目录的会话 → 工作区恢复失败 → 会话降级、工具消失
+mkdir -p /tmp/zenpi-state.bak
+cd ~/.zenpi && mv project-tabs.json layout.json project-workspace.json session.jsonl \
+   project-workspace.lock auth.json.lock /tmp/zenpi-state.bak/ 2>/dev/null
+# 3) 起 TUI
+mkdir -p /tmp/ws && cd /tmp/ws && git init -q && echo ok > README.md
+tmux new-session -d -s zenpi -x 160 -y 45 -c /tmp/ws \
+  "ZENPI_HOME=/tmp/zh TERM=xterm-256color ~/.cargo/bin/zenpi"
+# 读屏 / 发键
+tmux capture-pane -t zenpi -p
+tmux send-keys -t zenpi -l "文本"; tmux send-keys -t zenpi Enter
+tmux send-keys -t zenpi Tab | C-Down | Escape | M-r | C-c
+```
+
+**判据提示**：`tmux capture-pane -t zenpi -p | tail -2` 读 footer 能直接看出当前热区。
+
+---
+
+## 已完成
+
+- [x] **启动 + 渲染** — 7 窗格全部正常；Resources 跑真实 LAN 发现（6 台设备）；Shell 是真实 PTY
+- [x] **真实 DeepSeek 对话** — `● 提问` → `◇ Reasoning: N bytes · collapsed` → `● TUI_OK`
+- [x] **Alt-R 展开推理** — 折叠摘要 → 完整推理文本
+- [x] **多轮上下文** — 模型准确回忆上一轮指令；长行自动折行正常
+- [x] **Tab 切区** — Conversation → Resources → Arch → Gantt → Shell → Conversation，footer 提示逐区准确
+- [x] **Esc / Ctrl-方向键** — Esc 退到"无热区"；Ctrl-Down / Ctrl-Right 移动焦点
+- [x] **无文本区按键反馈** — Gantt 区按普通键显示 `Gantt 不接受普通输入 · Tab 切换区域 · Esc 返回`
+- [x] **TUI 工具下发**（修复 `ed68cd4` 后）— 模型列出全部 10 个工具
+- [x] **审批卡片呈现** — `Tool: write_file · WorkspaceWrite` / `Policy: 4de5f870…` / `Lease: none` / `Path: hello.txt` / `Size: 0 -> 2 bytes` / **完整 diff 预览**
+
+## 待测
+
+### 审批交互（卡片已在屏幕上）
+- [ ] `y` 选中允许 → Enter 提交 → 文件真的被写入
+- [ ] `n` 进入拒绝理由输入 → 输入理由 → Enter 提交拒绝
+- [ ] 裸 Enter 一按确认（当前选择 = 拒绝）
+- [ ] `r` remember → 二次确认阶段 → Enter → 允许并记住
+- [ ] `Tab` / `←` `→` 在多条待审批之间切换
+- [ ] `↑` `↓` `PgUp` `PgDn` `Home` `End` 滚动 diff 预览
+- [ ] `Esc` 失焦（草稿保留），`Alt-A` 重新聚焦
+- [ ] `/` 从审批视图逃回 prompt
+
+### 其他面板与流程
+- [ ] Shell 面板：聚焦后敲命令进 PTY，看输出
+- [ ] Arch 面板：`Alt-M` 切到 arch 提示符，输入并提交
+- [ ] `Ctrl-C` 单次（中断）与双击 `Ctrl-C`（强杀）
+- [ ] `Ctrl-T` 打开目录选择器，`Esc` 退出
+- [ ] `Ctrl-W` 空草稿时关项目 / 有草稿时删词
+- [ ] resize：tmux `resize-window` 后布局是否正常
+- [ ] 退出：`Ctrl-D` 能否干净退出并还原终端
+
+### 编辑和弦（在 Conversation 区）
+- [ ] `Ctrl-U` 删到行首、`Ctrl-W` 删词、`Ctrl-J` 换行、`Ctrl-A`/`Ctrl-E` 行首行尾、`Ctrl-K` 删到行尾、`Ctrl-Y` 粘贴
+- [ ] 同一批和弦在 **Resources/Gantt/无热区** 下**不得**改草稿（本轮修复点）
+
+---
+
+## 已确认的坑（不是应用 bug，是测试环境的）
+
+1. **TUI 总是恢复最近一次会话**，不看 cwd。不清检查点就会看到旧内容，误判成"修复没生效"。
+2. **陈旧检查点指向已删目录**时，TUI 只打印
+   `Shared project workspace could not be restored: working folder I/O`，
+   然后**静默降级**——会话照常可用，但模型手上一个工具都没有。
+   这一条**值得当成真问题修**：降级应当可见，或自动改用当前目录。
+3. 凭据目录不是 `0700` 会直接 `auth_storage_failed` 起不来。
+
+---
+
+## 本轮新增结果
+
+- [x] **审批：`y` 允许** — 卡片 → `y` → Enter → `Approval decision submitted: allow once`
+      → 工具执行 → 文件真的落盘（`/tmp/ws3/hello.txt`，内容 `hi`，2 字节）
+- [x] **审批：`n` 拒绝 + 理由** — `n` 进理由输入 → 输入 `not now` → Enter → 文件**未创建**，
+      且模型明确尊重拒绝：*"an approval denial is a permission decision, and shell-equivalent
+      workarounds would subvert it"*（它拒绝了绕道用 `run_command` 写文件）
+- [x] **审批卡片内容完整** — `Tool` / `Policy` digest / `Lease` / `Path` / `Size: 0 -> 2 bytes` /
+      **完整 unified diff 预览**
+
+## 🔴 确认的 bug（未修完，已回退改动）
+
+### B1｜工作区恢复失败 → 会话静默降级成"没有工具"
+
+**复现**：让 `~/.zenpi/project-workspace.json` 指向一个**已被删除**的目录，然后启动 TUI。
+
+**现象**：只打印一行
+```
+Shared project workspace could not be restored: working folder I/O: No such file or directory
+```
+然后**照常运行**——界面正常、对话正常，但**模型手上一个工具都没有**。
+这是本轮最危险的一条：全程没有任何可见信号，用户会以为工具坏了。
+
+**我尝试的修法**：在 `tui.rs` 的启动路径里，恢复失败就回退到 `std::env::current_dir()`
+（`project_host.apply(&mut state, ProjectIntent::Open(cwd))`），并打一条 `Started in … instead`。
+**回退本身确实触发了**（屏幕上出现了 `● Started in /private/tmp/ws4 instead`），
+但立刻暴露了 B2。
+
+### B2｜回退切工作区后，journal 没有重开
+
+回退生效后的下一条 prompt 直接失败：
+```
+session: session record is invalid: session writer is stale; reopen the journal before retrying
+```
+
+所以正确的修法不只是切目录，**还要把 SessionStore 一起重开/重指向**。
+两个改动必须一起做，只做前者会把"静默降级"换成"响亮地坏掉"。
+
+**结论**：改动已**回退**（`git checkout -- src/tui.rs`）。半个修复比没有更糟——
+它把一种失败换成另一种失败，而且我无法在当轮验证它真的修好了。
+
+### 建议的修法方向
+
+1. 恢复失败时，连同 `SessionStore` 一起重开（参考 `resume_session` / `commit_resumed_session` 的做法）；
+2. 或者更保守：**不要静默继续**——直接以可操作的错误退出，让用户知道工作区没了。
+   这至少不会让人以为工具是坏的。
+3. 无论选哪条，**降级必须可见**。
