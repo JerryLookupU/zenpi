@@ -43,24 +43,25 @@ tmux send-keys -t zenpi Tab | C-Down | Escape | M-r | C-c
 ### 审批交互（卡片已在屏幕上）
 - [ ] `y` 选中允许 → Enter 提交 → 文件真的被写入
 - [ ] `n` 进入拒绝理由输入 → 输入理由 → Enter 提交拒绝
-- [ ] 裸 Enter 一按确认（当前选择 = 拒绝）
-- [ ] `r` remember → 二次确认阶段 → Enter → 允许并记住
+- [x] 裸 Enter 一按确认（当前选择 = 拒绝）— 一次按键即拒绝，`a.txt` 未创建
+- [x] `r` remember → 二次确认阶段 → Enter → 允许并记住（`b.txt` 落盘）
 - [ ] `Tab` / `←` `→` 在多条待审批之间切换
 - [ ] `↑` `↓` `PgUp` `PgDn` `Home` `End` 滚动 diff 预览
 - [ ] `Esc` 失焦（草稿保留），`Alt-A` 重新聚焦
 - [ ] `/` 从审批视图逃回 prompt
 
 ### 其他面板与流程
-- [ ] Shell 面板：聚焦后敲命令进 PTY，看输出
-- [ ] Arch 面板：`Alt-M` 切到 arch 提示符，输入并提交
+- [x] Shell 面板：`echo SHELL_OK_MARKER` → 输出 `SHELL_OK_MARKER` → 新提示符（真实 PTY）
+- [x] Arch 面板：`Alt-M` → footer `Arch console focused · !cmd runs bash · text steers`，独立会话回了 `ARCH_OK`
 - [ ] `Ctrl-C` 单次（中断）与双击 `Ctrl-C`（强杀）
-- [ ] `Ctrl-T` 打开目录选择器，`Esc` 退出
+- [x] `Ctrl-T` 打开 `Open project folder` 模态框（含 `Path:`），`Esc` 退出
 - [ ] `Ctrl-W` 空草稿时关项目 / 有草稿时删词
-- [ ] resize：tmux `resize-window` 后布局是否正常
-- [ ] 退出：`Ctrl-D` 能否干净退出并还原终端
+- [x] resize：`resize-window -x 100 -y 30` 后布局正确重排
+- [x] 退出：`Ctrl-D` 干净退出（注意：**模态框开着时 Ctrl-D 无效**，要先 Esc）
 
 ### 编辑和弦（在 Conversation 区）
-- [ ] `Ctrl-U` 删到行首、`Ctrl-W` 删词、`Ctrl-J` 换行、`Ctrl-A`/`Ctrl-E` 行首行尾、`Ctrl-K` 删到行尾、`Ctrl-Y` 粘贴
+- [x] `Ctrl-W` 删词、`Ctrl-U` 删到行首 —— `alpha beta gamma` → `alpha beta` → 空（Conversation 区实测）
+- [ ] `Ctrl-J` / `Ctrl-A` / `Ctrl-E` / `Ctrl-K` / `Ctrl-Y` 未逐个实测
 - [ ] 同一批和弦在 **Resources/Gantt/无热区** 下**不得**改草稿（本轮修复点）
 
 ---
@@ -123,3 +124,22 @@ session: session record is invalid: session writer is stale; reopen the journal 
 2. 或者更保守：**不要静默继续**——直接以可操作的错误退出，让用户知道工作区没了。
    这至少不会让人以为工具是坏的。
 3. 无论选哪条，**降级必须可见**。
+
+---
+
+## 实测补充（第三轮）
+
+**已通过的完整清单**（tmux 真开 + 真实 DeepSeek）：启动渲染 · 真实对话 · Alt-R · 多轮上下文 ·
+Tab 六区 · Esc/Ctrl-方向键 · 无文本区按键反馈 · TUI 工具下发 · 审批卡片 · **审批 y 允许** ·
+**审批 n 拒绝+理由** · **审批 r remember** · **裸 Enter 一按确认** · **Shell PTY 输入** ·
+**Arch 独立会话** · **Ctrl-T 目录选择器** · **resize** · **Ctrl-D 退出** · **Ctrl-W/Ctrl-U 编辑和弦**
+
+**测试手法上踩的坑（不是应用问题）**：
+1. `Ctrl-Down` 只在**草稿为空**时切焦点；有草稿时不生效——想切区得先清空草稿。
+2. 草稿非空时 `Tab` 走的是 **slash 补全**，不是切区。
+3. **模态框开着时 `Ctrl-D` 不会退出**（按键被模态框消费），要先 `Esc`。
+4. 会话恢复会保留上次的工作区与焦点；不复位会看到旧内容、误判成 bug。
+
+**仍未实测**：审批的多条切换 / 预览滚动 / `Esc` 失焦后 footer 的待审批提示 ·
+`Ctrl-C` 与双击 `Ctrl-C` · `Ctrl-J`/`Ctrl-A`/`Ctrl-E`/`Ctrl-K`/`Ctrl-Y` 逐个 ·
+编辑和弦在非文本区的隔离（已由单测 `a_key_sweep_...` 覆盖，但未在 tmux 里复验）
