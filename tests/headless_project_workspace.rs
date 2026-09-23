@@ -702,6 +702,67 @@ fn shared_checkpoint_rejects_concurrent_stale_writer_and_corrupt_input_atomicall
     assert_eq!(second.workspace(), &before);
 }
 #[test]
+fn failed_workspace_restore_still_adopts_the_checkpoint() {
+    let root = tempdir().unwrap();
+    let one = root.path().join("one");
+    fs::create_dir(&one).unwrap();
+    let mut first = ProjectOwnerPool::new(Arc::new(Mutex::new(agent(root.path())))).unwrap();
+    assert!(!first.restore_checkpoint().unwrap());
+    first.open(Some(&one)).unwrap();
+    let checkpoint = root.path().join("project-workspace.json");
+    let mut saved: Value = serde_json::from_slice(&fs::read(&checkpoint).unwrap()).unwrap();
+    // A session path that cannot load (a directory) fails owner preparation
+    // while the checkpoint itself stays valid.
+    let broken = root.path().join("broken");
+    fs::create_dir(&broken).unwrap();
+    let active = first.workspace().active().unwrap().id().as_str().to_owned();
+    saved["sessions"][active.as_str()] = json!(broken.display().to_string());
+    let stale = serde_json::to_vec(&saved).unwrap();
+    fs::write(&checkpoint, &stale).unwrap();
+
+    let mut second = ProjectOwnerPool::new(Arc::new(Mutex::new(agent(root.path())))).unwrap();
+    assert!(second.restore_checkpoint().is_err());
+    // The failed restore still adopted the checkpoint, so a project change
+    // commits against the stale bytes instead of losing the durable owner.
+    let two = root.path().join("two");
+    fs::create_dir(&two).unwrap();
+    second.open(Some(&two)).unwrap();
+    let rewritten = fs::read(&checkpoint).unwrap();
+    assert_ne!(rewritten, stale);
+    assert!(String::from_utf8_lossy(&rewritten).contains("two"));
+}
+#[test]
+fn arch_new_resets_the_master_session_and_archives_the_journal() {
+    let root = tempdir().unwrap();
+    let mut pool = ProjectOwnerPool::new(Arc::new(Mutex::new(agent(root.path())))).unwrap();
+    let id = pool.active_context().project_id.clone();
+    let before = pool.arch_agent(&id).unwrap();
+    let arch_path = root.path().join("arch.jsonl");
+    assert_eq!(
+        before.lock().unwrap().session().path(),
+        arch_path.as_path()
+    );
+    pool.reset_arch(&id).unwrap();
+    let fresh = pool.arch_agent(&id).unwrap();
+    assert!(!Arc::ptr_eq(&before, &fresh));
+    let fresh = fresh.lock().unwrap();
+    assert_eq!(fresh.session().path(), arch_path.as_path());
+    assert!(fresh.session().turns().is_empty());
+    // The old journal is archived next to the canonical path so a restart
+    // opens the fresh arch.jsonl instead of resurrecting the reset session.
+    let archives = fs::read_dir(root.path())
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with("arch-"))
+        .count();
+    assert_eq!(archives, 1);
+    // The refreshed owner is registered for control like any other lane.
+    assert!(pool.control(&format!("arch:{id}")).is_some());
+    // A second reset on the fresh owner works.
+    drop(fresh);
+    pool.reset_arch(&id).unwrap();
+}
+#[test]
 fn tui_and_jsonl_share_the_checkpoint_and_actual_session_owner() {
     use zenpi::tui::{ProjectIntent, ProjectRuntimeHost, TuiState};
     let root = tempdir().unwrap();
