@@ -1087,6 +1087,7 @@ impl ToolRegistry {
         registry.register_builtin(WriteFileTool)?;
         registry.register_builtin(EditFileTool)?;
         registry.register_builtin(RunCommandTool)?;
+        registry.register_builtin(WebSearchTool)?;
         Ok(registry)
     }
 
@@ -3183,6 +3184,191 @@ fn ignored_directory(path: &Path, file_type: fs::FileType) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
         .is_some_and(|name| matches!(name, ".git" | "target" | "node_modules" | ".venv"))
+}
+
+/// One web search result set is bounded before it reaches the model.
+const WEB_SEARCH_MAX_BYTES: usize = 6_000;
+const WEB_SEARCH_TIMEOUT_SECONDS: u64 = 20;
+/// A local rate-limit proxy queues bursts, so swarms may need a longer wait.
+const WEB_SEARCH_MAX_TIMEOUT_SECONDS: u64 = 300;
+
+/// `websearch` builtin: Exa-backed web search for current facts, papers and
+/// news. Read-only; under `--auto` it runs without approval. The API key is
+/// resolved from `ZENPI_EXA_API_KEY`, then `EXA_API_KEY`, then
+/// `~/.zenpi/exa.env` so a host can configure it without exporting env vars.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WebSearchTool;
+
+impl WebSearchTool {
+    fn invoke_search(
+        &self,
+        query: &str,
+        num_results: usize,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Value, ToolError> {
+        if cancelled() {
+            return Err(ToolError::Cancelled);
+        }
+        let key = exa_api_key().ok_or_else(|| {
+            ToolError::Unsupported(
+                "web search is not configured; set EXA_API_KEY (e.g. ~/.zenpi/exa.env)".into(),
+            )
+        })?;
+        let endpoint = std::env::var("ZENPI_EXA_URL")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "https://api.exa.ai/search".into());
+        let payload = json!({
+            "query": query,
+            "numResults": num_results,
+            "contents": {"text": {"maxCharacters": 800}},
+        });
+        let timeout_seconds = std::env::var("ZENPI_EXA_TIMEOUT_SECONDS")
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .unwrap_or(WEB_SEARCH_TIMEOUT_SECONDS)
+            .clamp(1, WEB_SEARCH_MAX_TIMEOUT_SECONDS);
+        let config = ureq::Agent::config_builder()
+            .timeout_global(Some(Duration::from_secs(timeout_seconds)))
+            .http_status_as_error(false)
+            .build();
+        let agent = ureq::Agent::new_with_config(config);
+        if cancelled() {
+            return Err(ToolError::Cancelled);
+        }
+        let mut response = agent
+            .post(&endpoint)
+            .header("content-type", "application/json")
+            .header("x-api-key", &key)
+            .send(payload.to_string())
+            .map_err(|error| {
+                ToolError::Unsupported(format!("web search request failed: {error}"))
+            })?;
+        let status = response.status();
+        let text = response.body_mut().read_to_string().map_err(|error| {
+            ToolError::Unsupported(format!("web search response failed: {error}"))
+        })?;
+        if !status.is_success() {
+            return Err(ToolError::Unsupported(format!(
+                "web search HTTP {}: {}",
+                status.as_u16(),
+                truncate_line(&text, 200)
+            )));
+        }
+        let value: Value = serde_json::from_str(&text).map_err(|error| {
+            ToolError::Unsupported(format!("web search returned invalid JSON: {error}"))
+        })?;
+        if cancelled() {
+            return Err(ToolError::Cancelled);
+        }
+        Ok(format_web_search_results(&value, num_results))
+    }
+}
+
+impl Tool for WebSearchTool {
+    fn execution_mode(&self) -> ToolExecutionMode {
+        ToolExecutionMode::Parallel
+    }
+
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "websearch".into(),
+            description: "Search the web (Exa) for current information and return bounded title/url/snippet results. Use it for up-to-date facts, papers and news; cite the returned URLs.".into(),
+            input_schema: json!({"type":"object","properties":{
+                "query":{"type":"string"},
+                "num_results":{"type":"integer","minimum":1,"maximum":10,"default":5}},
+                "required":["query"],"additionalProperties":false}),
+            side_effect: ToolSideEffect::ReadOnly,
+        }
+    }
+
+    fn invoke(
+        &self,
+        _context: &ToolContext,
+        arguments: &Map<String, Value>,
+    ) -> Result<Value, ToolError> {
+        self.invoke_cancellable(_context, arguments, &|| false)
+    }
+
+    fn invoke_cancellable(
+        &self,
+        _context: &ToolContext,
+        arguments: &Map<String, Value>,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Value, ToolError> {
+        reject_unknown(arguments, &["query", "num_results"])?;
+        let query = required_string(arguments, "query", 4_096)?;
+        let num_results = bounded_usize(arguments, "num_results", 5, 1, 10)?;
+        self.invoke_search(&query, num_results, cancelled)
+    }
+}
+
+/// Resolve the Exa API key: explicit env vars first, then the user's
+/// `~/.zenpi/exa.env` file.
+pub fn exa_api_key() -> Option<String> {
+    for name in ["ZENPI_EXA_API_KEY", "EXA_API_KEY"] {
+        if let Ok(value) = std::env::var(name) {
+            let value = value.trim();
+            if !value.is_empty() {
+                return Some(value.to_owned());
+            }
+        }
+    }
+    let home = std::env::var_os("HOME")?;
+    let text = fs::read_to_string(PathBuf::from(home).join(".zenpi").join("exa.env")).ok()?;
+    parse_exa_env(&text)
+}
+
+/// Parse `EXA_API_KEY=...` (optionally `export`ed or quoted) from an env file.
+pub fn parse_exa_env(text: &str) -> Option<String> {
+    for line in text.lines() {
+        let line = line.trim();
+        let line = line.strip_prefix("export ").unwrap_or(line);
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim() != "EXA_API_KEY" {
+            continue;
+        }
+        let value = value.trim().trim_matches('"').trim_matches('\'');
+        if !value.is_empty() && !value.chars().any(char::is_control) {
+            return Some(value.to_owned());
+        }
+    }
+    None
+}
+
+/// Bound and normalize an Exa response before it reaches the model.
+pub fn format_web_search_results(value: &Value, num_results: usize) -> Value {
+    let mut results = Vec::new();
+    let mut used = 0usize;
+    if let Some(items) = value.get("results").and_then(Value::as_array) {
+        for item in items.iter().take(num_results.max(1)) {
+            let title = item
+                .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim();
+            let url = item.get("url").and_then(Value::as_str).unwrap_or("").trim();
+            let text = item
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim();
+            if title.is_empty() && url.is_empty() && text.is_empty() {
+                continue;
+            }
+            let snippet = truncate_line(text, 600);
+            let cost = title.len() + url.len() + snippet.len();
+            if used + cost > WEB_SEARCH_MAX_BYTES {
+                break;
+            }
+            used += cost;
+            results.push(json!({"title": title, "url": url, "snippet": snippet}));
+        }
+    }
+    let count = results.len();
+    json!({"results": results, "count": count})
 }
 
 fn truncate_line(line: &str, max_bytes: usize) -> &str {

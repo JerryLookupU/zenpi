@@ -11161,8 +11161,8 @@ impl TuiState {
             },
         ];
         if workers.is_empty() {
-            // No live headless worker for this session: show the configured
-            // worktree worker count so the matrix still reflects the plan.
+            // No live headless worker: the session shows its two masters and,
+            // when configured, the planned worktree worker count (ZS1-185).
             for tab in self.subtabs() {
                 for slot in 0..usize::from(tab.concurrency.max(1)) {
                     slots.push(WorkerSlot {
@@ -11174,6 +11174,10 @@ impl TuiState {
                 }
             }
         } else {
+            // A live swarm is the truth and counts as the whole matrix, so
+            // 2048 concurrent workers stay in the 32x64 tier instead of
+            // spilling into the next tier because of the two masters.
+            slots.clear();
             // A running swarm is the truth: one square per live headless
             // worker, carrying its request in/out excerpts.
             for row in workers {
@@ -11435,6 +11439,20 @@ impl TuiState {
                     WorkerSlotKind::MasterArch => Color::Magenta,
                     WorkerSlotKind::Worktree => Color::Blue,
                 };
+                if cell < 3 {
+                    // Dense mode: a 1x1 coloured block per worker (CPU-grid
+                    // style) so thousands of squares still fit the viewport.
+                    let colour = if index == zoom.selected {
+                        Color::Cyan
+                    } else {
+                        accent
+                    };
+                    frame.render_widget(
+                        Paragraph::new("\u{2588}").style(Style::default().fg(colour)),
+                        rect,
+                    );
+                    continue;
+                }
                 let tile = Block::default()
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(if index == zoom.selected {
