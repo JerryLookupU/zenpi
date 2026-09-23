@@ -47,13 +47,13 @@ tmux send-keys -t zenpi Tab | C-Down | Escape | M-r | C-c
 - [x] `r` remember → 二次确认阶段 → Enter → 允许并记住（`b.txt` 落盘）
 - [ ] `Tab` / `←` `→` 在多条待审批之间切换
 - [ ] `↑` `↓` `PgUp` `PgDn` `Home` `End` 滚动 diff 预览
-- [ ] `Esc` 失焦（草稿保留），`Alt-A` 重新聚焦
+- [x] `Esc` 失焦 → footer `1 approvals pending · Alt-A review`，卡片收起但请求仍待批；`Alt-A` 重新聚焦 → 卡片复现 → `n`+Enter 拒绝生效
 - [ ] `/` 从审批视图逃回 prompt
 
 ### 其他面板与流程
 - [x] Shell 面板：`echo SHELL_OK_MARKER` → 输出 `SHELL_OK_MARKER` → 新提示符（真实 PTY）
 - [x] Arch 面板：`Alt-M` → footer `Arch console focused · !cmd runs bash · text steers`，独立会话回了 `ARCH_OK`
-- [ ] `Ctrl-C` 单次（中断）与双击 `Ctrl-C`（强杀）
+- [x] `Ctrl-C` 单次 → footer `再按一次 Ctrl-C 强制终止 · Ctrl-D 退出`；**1200ms 窗口内**双击 → 强杀成功（隔 2 秒再按只会重新计时，不是 bug）
 - [x] `Ctrl-T` 打开 `Open project folder` 模态框（含 `Path:`），`Esc` 退出
 - [ ] `Ctrl-W` 空草稿时关项目 / 有草稿时删词
 - [x] resize：`resize-window -x 100 -y 30` 后布局正确重排
@@ -61,7 +61,7 @@ tmux send-keys -t zenpi Tab | C-Down | Escape | M-r | C-c
 
 ### 编辑和弦（在 Conversation 区）
 - [x] `Ctrl-W` 删词、`Ctrl-U` 删到行首 —— `alpha beta gamma` → `alpha beta` → 空（Conversation 区实测）
-- [ ] `Ctrl-J` / `Ctrl-A` / `Ctrl-E` / `Ctrl-K` / `Ctrl-Y` 未逐个实测
+- [x] `Ctrl-A`/`Ctrl-E` 行首行尾 · `Ctrl-U`→`Ctrl-Y` 删除粘回往返 · `Ctrl-K` 删到行尾 · `Ctrl-J` 换行成两行 —— 全部实测通过
 - [ ] 同一批和弦在 **Resources/Gantt/无热区** 下**不得**改草稿（本轮修复点）
 
 ---
@@ -143,3 +143,32 @@ Tab 六区 · Esc/Ctrl-方向键 · 无文本区按键反馈 · TUI 工具下发
 **仍未实测**：审批的多条切换 / 预览滚动 / `Esc` 失焦后 footer 的待审批提示 ·
 `Ctrl-C` 与双击 `Ctrl-C` · `Ctrl-J`/`Ctrl-A`/`Ctrl-E`/`Ctrl-K`/`Ctrl-Y` 逐个 ·
 编辑和弦在非文本区的隔离（已由单测 `a_key_sweep_...` 覆盖，但未在 tmux 里复验）
+
+---
+
+## 第四轮补充（编辑和弦与 Ctrl-C）
+
+**全部编辑和弦实测通过**：`Ctrl-A`（行首）· `Ctrl-E`（行尾）· `Ctrl-U`（删到行首）·
+`Ctrl-Y`（粘回，往返正确）· `Ctrl-K`（删到行尾）· `Ctrl-J`（换行）· `Ctrl-W`（删词）
+
+**`Ctrl-C`**：单次显示升级提示；**1200ms 窗口内**双击强杀成功。
+隔 2 秒再按只会重新计时——这不是 bug，是设计窗口。
+
+**`Esc` / `Alt-A`**：失焦后 footer 正确显示 `1 approvals pending · Alt-A review`；
+`Alt-A` 重新聚焦后卡片复现。（我早先"footer 没提示"的观察是**误报**——当时请求已被解决。）
+
+### 一条重要的实测限制
+
+**草稿非空时，纯键盘无法离开 Conversation 区**：`Tab` 在非空草稿下走 slash 补全而不是切区，
+`Ctrl-方向键` 也只在**空草稿**时切焦点。所以"在有草稿的状态下用别的区的和弦去毁草稿"
+这个 W1 修复点，**现实中要靠鼠标点别的窗格才会触发**。
+
+tmux 里无法模拟鼠标，因此**这条只有单测覆盖**（`a_key_sweep_leaves_drafts_alone_in_every_non_text_zone`
+与 `a_chord_keeps_its_global_meaning_while_a_navigation_zone_is_hot`，均通过），**未在 tmux 里复验**。
+
+### 仍未实测
+
+- 审批：多条待批之间的 `Tab`/`←`/`→` 切换（需要同时产生两条待批，未构造出）
+- 审批：`↑`/`↓`/`PgUp`/`PgDn`/`Home`/`End` 滚动 diff 预览
+- 审批：`/` 从审批视图逃回 prompt
+- W1 修复点在 tmux 中的复验（见上，受限于无法模拟鼠标）
