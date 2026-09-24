@@ -125,3 +125,54 @@ fn dag_tools_and_websearch_are_registered_builtins() {
         assert!(names.iter().any(|candidate| candidate == name), "{name}");
     }
 }
+
+#[test]
+fn dag_relations_are_typed_and_heartbeat_reports_idle() {
+    use zenpi::dag::DagRelation;
+    assert_eq!(DagRelation::parse("parent"), Some(DagRelation::Parent));
+    assert_eq!(DagRelation::parse("children"), Some(DagRelation::Child));
+    assert_eq!(DagRelation::parse("all"), Some(DagRelation::All));
+    assert_eq!(DagRelation::All.as_str(), "all");
+
+    let dir = tempdir().unwrap();
+    let store = DagStore::at(dir.path().join("dag.json"));
+    store.upsert("root", None).unwrap();
+    store.assign_worker("root", "zenpi-dev").unwrap();
+
+    let before = zenpi::dag::status_view(&store, "root").unwrap();
+    assert!(before["worker_idle_seconds"].is_null());
+
+    store.touch_worker("root").unwrap();
+    let after = zenpi::dag::status_view(&store, "root").unwrap();
+    assert!(after["worker_idle_seconds"].as_u64().is_some());
+    assert_eq!(after["worker"], "zenpi-dev");
+    assert_eq!(after["relations"][0], "parent");
+    assert!(store.touch_worker("missing").is_err());
+}
+
+#[test]
+fn dag_claim_redelivery_and_ack_prevent_message_loss() {
+    let dir = tempdir().unwrap();
+    let store = DagStore::at(dir.path().join("dag.json"));
+    store.upsert("root", None).unwrap();
+    store.upsert("a", Some("root")).unwrap();
+
+    store.send("root", "a", "do the thing").unwrap();
+    let first = store.claim_inbox("a").unwrap();
+    assert_eq!(first.len(), 1);
+    let id = first[0].id;
+    assert!(id > 0);
+    assert_eq!(store.unread_count("a").unwrap(), 0);
+    assert_eq!(store.claimed_count("a").unwrap(), 1);
+
+    // Unacked: a restarted reader still gets the message (no silent loss).
+    let second = store.claim_inbox("a").unwrap();
+    assert_eq!(second.len(), 1);
+    assert_eq!(second[0].id, id);
+
+    // Another node cannot ack someone else's claim.
+    assert_eq!(store.ack("root", &[id]).unwrap(), 0);
+    assert_eq!(store.ack("a", &[id]).unwrap(), 1);
+    assert!(store.claim_inbox("a").unwrap().is_empty());
+    assert_eq!(store.claimed_count("a").unwrap(), 0);
+}

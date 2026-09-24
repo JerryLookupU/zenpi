@@ -1,0 +1,11 @@
+{
+  "item_id": "AC-050",
+  "source_path": "opencode/packages/opencode/src/acp/session.ts",
+  "source_hash": "cc73f70f7d7071fd6bf808871c65bcb87d9f737f9e292be5e279ee51f5c9507e",
+  "target_artifact": "Docs/learn/agent_comms/files/opencode/packages/opencode/src/acp/session.ts_learn.md",
+  "artifact_bytes": 16154,
+  "artifact_sha256": "c23bb7e3813cbafa464fd691a7fd3d90f6108b99ca694855dd81eaf6982dfac5",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-24T05:08:05Z"
+}

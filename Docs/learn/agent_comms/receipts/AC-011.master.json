@@ -1,0 +1,11 @@
+{
+  "item_id": "AC-011",
+  "source_path": "claude-code/plugins/hookify/hooks/posttooluse.py",
+  "source_hash": "b440f17f3a6c962d87f094ce8974cb6090881adec2e495eb2356aa89b945f741",
+  "target_artifact": "Docs/learn/agent_comms/files/claude-code/plugins/hookify/hooks/posttooluse.py_learn.md",
+  "artifact_bytes": 10106,
+  "artifact_sha256": "453bd658f0ec21a8272dac1f93271803f9146552b7092368f43a13b77f361850",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-24T04:27:03Z"
+}

@@ -1,0 +1,11 @@
+{
+  "item_id": "AC-025",
+  "source_path": "codex/codex-rs/core/src/agent/status.rs",
+  "source_hash": "fbbbec8b65035d17ae977ca3d73a24286a6e11fcb176daa1909a3cbc777e3910",
+  "target_artifact": "Docs/learn/agent_comms/files/codex/codex-rs/core/src/agent/status.rs_learn.md",
+  "artifact_bytes": 13178,
+  "artifact_sha256": "519d1e4ad35fc385ad7ad1ad4f3a6b81a3f0bf5ab5eaf9677f7cdee12127a448",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-24T04:33:56Z"
+}

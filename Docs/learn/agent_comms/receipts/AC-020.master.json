@@ -1,0 +1,11 @@
+{
+  "item_id": "AC-020",
+  "source_path": "codex/codex-rs/core/src/agent/guards.rs",
+  "source_hash": "5c934424258cd8a31fb1b7ebc11360229f91e1c4a0620509fa30d9ee401a665d",
+  "target_artifact": "Docs/learn/agent_comms/files/codex/codex-rs/core/src/agent/guards.rs_learn.md",
+  "artifact_bytes": 15626,
+  "artifact_sha256": "31e80210e1f76c51824242f43a7141b685482da002359079637a5ebde19f0f10",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-24T04:31:50Z"
+}

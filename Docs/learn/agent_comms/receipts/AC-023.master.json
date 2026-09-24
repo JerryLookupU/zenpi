@@ -1,0 +1,11 @@
+{
+  "item_id": "AC-023",
+  "source_path": "codex/codex-rs/core/src/agent/role.rs",
+  "source_hash": "4fffb32e3f9c39570ba19425568bb0b727f45076610e380e26c096ec377d899b",
+  "target_artifact": "Docs/learn/agent_comms/files/codex/codex-rs/core/src/agent/role.rs_learn.md",
+  "artifact_bytes": 19260,
+  "artifact_sha256": "e997fd600225aeb321ef7401a8e5b095dd65b534c0aca8df1c7c6b540dd0c769",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-24T04:36:14Z"
+}

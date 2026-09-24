@@ -1,0 +1,11 @@
+{
+  "item_id": "AC-010",
+  "source_path": "claude-code/plugins/hookify/hooks/hooks.json",
+  "source_hash": "838dd2ffbe325307cc23a02ef541fd45c25fd42492d64ccbe9ec11233a3a04f0",
+  "target_artifact": "Docs/learn/agent_comms/files/claude-code/plugins/hookify/hooks/hooks.json_learn.md",
+  "artifact_bytes": 11222,
+  "artifact_sha256": "b4f1b7fbb10f25c003b32081c89c063ef0462b092bea87b9b266f387f00704f5",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-24T04:26:17Z"
+}

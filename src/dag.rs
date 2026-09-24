@@ -70,16 +70,64 @@ pub struct DagNode {
     pub summary: Option<String>,
     #[serde(default)]
     pub updated_ms: u64,
+    /// Last keep-alive from the owning worker (learn: heartbeat-based
+    /// liveness lets a parent see a stale/idle worker without IPC).
+    #[serde(default)]
+    pub worker_heartbeat_ms: u64,
+}
+
+/// Typed neighbour relation used by tools and hosts (learn: codex/opencode
+/// agents address neighbours by role, not by ad-hoc strings).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DagRelation {
+    Parent,
+    Grandparent,
+    Sibling,
+    Child,
+    All,
+}
+
+impl DagRelation {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Parent => "parent",
+            Self::Grandparent => "grandparent",
+            Self::Sibling => "sibling",
+            Self::Child => "child",
+            Self::All => "all",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "parent" => Some(Self::Parent),
+            "grandparent" => Some(Self::Grandparent),
+            "sibling" | "siblings" => Some(Self::Sibling),
+            "child" | "children" => Some(Self::Child),
+            "all" => Some(Self::All),
+            _ => None,
+        }
+    }
 }
 
 /// One mailbox message between two nodes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DagMessage {
+    #[serde(default)]
+    pub id: u64,
     pub from: String,
     pub to: String,
     pub body: String,
     #[serde(default)]
     pub ts_ms: u64,
+    /// Claim/ack semantics (learn: codex + opencode agents acknowledge work so
+    /// a restarted reader gets unacked messages redelivered instead of losing
+    /// them).
+    #[serde(default)]
+    pub claimed_by: Option<String>,
+    #[serde(default)]
+    pub claimed_ms: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -88,6 +136,8 @@ struct DagFile {
     nodes: BTreeMap<String, DagNode>,
     #[serde(default)]
     messages: Vec<DagMessage>,
+    #[serde(default)]
+    next_message_id: u64,
 }
 
 /// File-locked view of the shared DAG store.
@@ -219,6 +269,7 @@ impl DagStore {
                         worker: None,
                         summary: None,
                         updated_ms: now_ms(),
+                        worker_heartbeat_ms: 0,
                     });
                 let children = &mut state.nodes.get_mut(parent).expect("inserted").children;
                 if !children.iter().any(|child| child == id) {
@@ -233,6 +284,7 @@ impl DagStore {
                 worker: None,
                 summary: None,
                 updated_ms: now_ms(),
+                worker_heartbeat_ms: 0,
             });
             if parent.is_some() {
                 node.parent = parent.map(str::to_owned);
@@ -272,6 +324,18 @@ impl DagStore {
             };
             node.worker = Some(worker.to_owned());
             node.updated_ms = now_ms();
+            Ok(())
+        })
+    }
+
+    /// Keep-alive from the owning worker. `dag_status`/`dag_recv` call it so a
+    /// parent can see whether a node's worker is still alive.
+    pub fn touch_worker(&self, id: &str) -> Result<(), String> {
+        self.update(|state| {
+            let Some(node) = state.nodes.get_mut(id) else {
+                return Err(format!("dag node not found: {id}"));
+            };
+            node.worker_heartbeat_ms = now_ms();
             Ok(())
         })
     }
@@ -356,18 +420,76 @@ impl DagStore {
         let body: String = body.chars().take(MAX_DAG_BODY_BYTES).collect();
         self.update(|state| {
             for target in &targets {
+                state.next_message_id = state.next_message_id.max(
+                    state
+                        .messages
+                        .iter()
+                        .map(|message| message.id)
+                        .max()
+                        .unwrap_or(0),
+                ) + 1;
                 state.messages.push(DagMessage {
+                    id: state.next_message_id,
                     from: from.to_owned(),
                     to: target.clone(),
                     body: body.clone(),
                     ts_ms: now_ms(),
+                    claimed_by: None,
+                    claimed_ms: 0,
                 });
             }
             Ok(targets.clone())
         })
     }
 
+    /// Claim unread messages for one node: new messages are marked claimed by
+    /// the node and returned; messages already claimed by the same node (not
+    /// yet acked) are redelivered. Callers ack with [`DagStore::ack`].
+    pub fn claim_inbox(&self, node: &str) -> Result<Vec<DagMessage>, String> {
+        self.update(|state| {
+            let now = now_ms();
+            let mut out = Vec::new();
+            for message in &mut state.messages {
+                if message.to != node {
+                    continue;
+                }
+                match &message.claimed_by {
+                    None => {
+                        message.claimed_by = Some(node.to_owned());
+                        message.claimed_ms = now;
+                        out.push(message.clone());
+                    }
+                    Some(owner) if owner == node => out.push(message.clone()),
+                    Some(_) => {}
+                }
+            }
+            Ok(out)
+        })
+    }
+
+    /// Acknowledge processed messages (only ones claimed by `node`).
+    pub fn ack(&self, node: &str, ids: &[u64]) -> Result<usize, String> {
+        self.update(|state| {
+            let before = state.messages.len();
+            state.messages.retain(|message| {
+                !(ids.contains(&message.id) && message.claimed_by.as_deref() == Some(node))
+            });
+            Ok(before - state.messages.len())
+        })
+    }
+
+    /// Claimed-but-unacked messages for one node.
+    pub fn claimed_count(&self, node: &str) -> Result<usize, String> {
+        Ok(self
+            .read_locked()?
+            .messages
+            .iter()
+            .filter(|message| message.claimed_by.as_deref() == Some(node))
+            .count())
+    }
+
     /// Unread messages for one node; `mark_read` consumes them.
+    #[allow(dead_code)]
     pub fn inbox(&self, node: &str, mark_read: bool) -> Result<Vec<DagMessage>, String> {
         self.update(|state| {
             let mut out = Vec::new();
@@ -388,7 +510,7 @@ impl DagStore {
             .read_locked()?
             .messages
             .iter()
-            .filter(|message| message.to == node)
+            .filter(|message| message.to == node && message.claimed_by.is_none())
             .count())
     }
 
@@ -556,7 +678,7 @@ pub fn wait_for_message(
         if cancelled() {
             return Err("cancelled".into());
         }
-        let messages = store.inbox(node, true)?;
+        let messages = store.claim_inbox(node)?;
         if !messages.is_empty() || std::time::Instant::now() >= deadline {
             return Ok(messages);
         }
@@ -583,6 +705,12 @@ pub fn status_view(store: &DagStore, node: &str) -> Result<Value, String> {
             json!({"id": child, "status": status})
         })
         .collect();
+    let heartbeat = current.worker_heartbeat_ms;
+    let idle_seconds = if heartbeat == 0 {
+        None
+    } else {
+        Some(now_ms().saturating_sub(heartbeat) / 1000)
+    };
     Ok(json!({
         "node": current.id,
         "parent": current.parent,
@@ -591,6 +719,10 @@ pub fn status_view(store: &DagStore, node: &str) -> Result<Value, String> {
         "can_close": can_close,
         "unfinished": unfinished,
         "unread": store.unread_count(node)?,
+        "claimed_unacked": store.claimed_count(node)?,
+        "worker": current.worker,
+        "worker_idle_seconds": idle_seconds,
+        "relations": ["parent","grandparent","sibling","child","all"],
         "spawned_here": spawned_nodes().contains(&node.to_owned()),
     }))
 }

@@ -1,0 +1,11 @@
+{
+  "item_id": "AC-036",
+  "source_path": "codex/codex-rs/protocol/src/lib.rs",
+  "source_hash": "2fddb495f04cc545bb68629845afcfd8d52e339bcc533885c470d430f767f835",
+  "target_artifact": "Docs/learn/agent_comms/files/codex/codex-rs/protocol/src/lib.rs_learn.md",
+  "artifact_bytes": 10323,
+  "artifact_sha256": "b625d46f06582bd5fd4a643c8d734e6cfce6da1d57e54d422120652d6a31babe",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-24T04:43:59Z"
+}

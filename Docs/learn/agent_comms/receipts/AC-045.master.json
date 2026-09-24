@@ -1,0 +1,11 @@
+{
+  "item_id": "AC-045",
+  "source_path": "opencode/packages/opencode/src/acp/error.ts",
+  "source_hash": "60657818576b13275c4d3e665e6c586f686d98cc5ef30ac2ef4c0402c2c8080b",
+  "target_artifact": "Docs/learn/agent_comms/files/opencode/packages/opencode/src/acp/error.ts_learn.md",
+  "artifact_bytes": 10558,
+  "artifact_sha256": "963bde2dcdd1160a2eac28fc32a2d6d1f81226912d35cc52a2b31312ba46df7a",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-24T04:54:35Z"
+}

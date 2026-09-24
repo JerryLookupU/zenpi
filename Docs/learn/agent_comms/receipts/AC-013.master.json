@@ -1,0 +1,11 @@
+{
+  "item_id": "AC-013",
+  "source_path": "claude-code/plugins/hookify/hooks/stop.py",
+  "source_hash": "c37678c66db0d9ca0c2d4004ee073de88617c70c6def11bfd110d5610ddfb24c",
+  "target_artifact": "Docs/learn/agent_comms/files/claude-code/plugins/hookify/hooks/stop.py_learn.md",
+  "artifact_bytes": 11943,
+  "artifact_sha256": "d61e8278a3e6bf87c5b9238271b4e15b900ca7cf84561d3e7873323f2914f371",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-24T04:29:04Z"
+}

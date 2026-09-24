@@ -1,0 +1,11 @@
+{
+  "item_id": "AC-032",
+  "source_path": "codex/codex-rs/core/src/tasks/undo.rs",
+  "source_hash": "0bb393e546e415cf8bb33d088a09bdc668035f0683aedc4f9925859197a3ba44",
+  "target_artifact": "Docs/learn/agent_comms/files/codex/codex-rs/core/src/tasks/undo.rs_learn.md",
+  "artifact_bytes": 10194,
+  "artifact_sha256": "357288b5a7cf17b9929546a749ef57f5a5bad6b7c0d987be3c7cb59a82043fb0",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-24T04:50:13Z"
+}

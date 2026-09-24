@@ -1,0 +1,11 @@
+{
+  "item_id": "AC-035",
+  "source_path": "codex/codex-rs/protocol/src/items.rs",
+  "source_hash": "6a05493e2c334d722447ea5ac56fdb50a22a0a90733a12067c2e14b49a2e79f0",
+  "target_artifact": "Docs/learn/agent_comms/files/codex/codex-rs/protocol/src/items.rs_learn.md",
+  "artifact_bytes": 12850,
+  "artifact_sha256": "71be3050751494db74dc48424c3d21db29898b261dd9c8b9108c745cb4675bcc",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-24T04:43:24Z"
+}

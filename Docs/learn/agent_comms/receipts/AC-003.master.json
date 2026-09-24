@@ -1,0 +1,11 @@
+{
+  "item_id": "AC-003",
+  "source_path": "claude-code/plugins/agent-sdk-dev/README.md",
+  "source_hash": "7f9bc2aac9c7c546e550e2fa2e2d9a66d7ab6bb7dea01a2e07147f78981ba3ee",
+  "target_artifact": "Docs/learn/agent_comms/files/claude-code/plugins/agent-sdk-dev/README.md_learn.md",
+  "artifact_bytes": 14789,
+  "artifact_sha256": "e7f79abb6d0888f8452b1d3fd3b6ff43878f8e54a4213da151af7ebfeddd7ff6",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-24T04:27:04Z"
+}

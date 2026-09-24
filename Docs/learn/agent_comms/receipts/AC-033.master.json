@@ -1,0 +1,11 @@
+{
+  "item_id": "AC-033",
+  "source_path": "codex/codex-rs/core/src/tasks/user_shell.rs",
+  "source_hash": "f87841aadd7ec30bd62c34ed0618403c311b9f01107af3f3d53bbdd1b72ace98",
+  "target_artifact": "Docs/learn/agent_comms/files/codex/codex-rs/core/src/tasks/user_shell.rs_learn.md",
+  "artifact_bytes": 18093,
+  "artifact_sha256": "61c0740c471c6b112ab0ae10b03fc4344cf55ede87760e6f18998ba651a7ce25",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-24T04:43:23Z"
+}

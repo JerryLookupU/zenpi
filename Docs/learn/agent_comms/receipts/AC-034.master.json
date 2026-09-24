@@ -1,0 +1,11 @@
+{
+  "item_id": "AC-034",
+  "source_path": "codex/codex-rs/protocol/src/approvals.rs",
+  "source_hash": "b6452ca6956c6f03001b0887a4703146015d2805b82c933598eb6196d0e72cfc",
+  "target_artifact": "Docs/learn/agent_comms/files/codex/codex-rs/protocol/src/approvals.rs_learn.md",
+  "artifact_bytes": 11531,
+  "artifact_sha256": "3cc9061bb2eb88bc21949982a2b89d517717b6cdac71eaf2f81fd84f40bfc8e7",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-24T04:43:10Z"
+}

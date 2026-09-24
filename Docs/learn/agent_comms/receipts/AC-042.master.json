@@ -1,0 +1,11 @@
+{
+  "item_id": "AC-042",
+  "source_path": "opencode/packages/opencode/src/acp/config-option.ts",
+  "source_hash": "4545cf9639b12b4a9a0bd28d9a5f61b3d8e7e6706558f04c66454773813ed1a1",
+  "target_artifact": "Docs/learn/agent_comms/files/opencode/packages/opencode/src/acp/config-option.ts_learn.md",
+  "artifact_bytes": 14927,
+  "artifact_sha256": "e44df7b588e0492357a29adae6170867d90795496cc2c1215ed3158272df6719",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-24T04:55:00Z"
+}

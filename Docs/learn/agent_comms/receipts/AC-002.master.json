@@ -1,0 +1,11 @@
+{
+  "item_id": "AC-002",
+  "source_path": "claude-code/examples/settings/README.md",
+  "source_hash": "ab8ea80cbc9065d195974bcfac84940f058bd7329b010cd162ef468f788ef228",
+  "target_artifact": "Docs/learn/agent_comms/files/claude-code/examples/settings/README.md_learn.md",
+  "artifact_bytes": 11114,
+  "artifact_sha256": "289c727bdfba052cb18cf164221473f80401c2b9380c32b1a07b4e58d0313ecc",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-24T04:26:11Z"
+}

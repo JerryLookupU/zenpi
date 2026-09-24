@@ -1,0 +1,11 @@
+{
+  "item_id": "AC-009",
+  "source_path": "claude-code/plugins/hookify/core/rule_engine.py",
+  "source_hash": "3bc18bd7167ab4ea2c06b9693b1994d267e0678c9210db9761c93060607f9fce",
+  "target_artifact": "Docs/learn/agent_comms/files/claude-code/plugins/hookify/core/rule_engine.py_learn.md",
+  "artifact_bytes": 12705,
+  "artifact_sha256": "7cc1b05cafcc4d235431aed38adf7ed4ad128806ea04bd43b69416eb342a18a7",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-24T04:29:48Z"
+}

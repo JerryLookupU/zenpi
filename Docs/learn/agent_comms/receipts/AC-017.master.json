@@ -1,0 +1,11 @@
+{
+  "item_id": "AC-017",
+  "source_path": "codex/codex-rs/core/src/agent/builtins/explorer.toml",
+  "source_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "target_artifact": "Docs/learn/agent_comms/files/codex/codex-rs/core/src/agent/builtins/explorer.toml_learn.md",
+  "artifact_bytes": 6746,
+  "artifact_sha256": "89b99113adf54baa9ca11a58cb945425ae86638555d2822891681cdce0f5a740",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-24T04:29:31Z"
+}

@@ -3228,6 +3228,7 @@ impl Tool for DagStatusTool {
             node
         };
         let store = crate::dag::DagStore::default_store();
+        let _ = store.touch_worker(&node);
         crate::dag::status_view(&store, &node).map_err(ToolError::Unsupported)
     }
 }
@@ -3293,9 +3294,10 @@ impl Tool for DagRecvTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "dag_recv".into(),
-            description: "Wait (bounded, <=30s) for messages addressed to your DAG node and consume them. Use it to stay alive while children or parents still need you.".into(),
+            description: "Wait (bounded, <=30s) for messages addressed to your DAG node and claim them (ack/claim semantics: claimed-but-unacked messages are redelivered on the next call; pass ack:[ids] once processed). Use it to stay alive while children or parents still need you.".into(),
             input_schema: json!({"type":"object","properties":{
-                "node":{"type":"string"},"wait_seconds":{"type":"integer","minimum":0,"maximum":30}},
+                "node":{"type":"string"},"wait_seconds":{"type":"integer","minimum":0,"maximum":30},
+                "ack":{"type":"array","items":{"type":"integer"},"description":"message ids already processed"}},
                 "additionalProperties":false}),
             side_effect: ToolSideEffect::ReadOnly,
         }
@@ -3313,7 +3315,7 @@ impl Tool for DagRecvTool {
         arguments: &Map<String, Value>,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<Value, ToolError> {
-        reject_unknown(arguments, &["node", "wait_seconds"])?;
+        reject_unknown(arguments, &["node", "wait_seconds", "ack"])?;
         let node = optional_string(arguments, "node", "", 128)?.to_owned();
         let node = if node.is_empty() {
             crate::dag::current_node().ok_or_else(|| {
@@ -3324,10 +3326,31 @@ impl Tool for DagRecvTool {
         };
         let wait = bounded_usize(arguments, "wait_seconds", 0, 0, 30)? as u64;
         let store = crate::dag::DagStore::default_store();
+        let _ = store.touch_worker(&node);
+        let acked = match arguments.get("ack") {
+            None | Some(Value::Null) => 0,
+            Some(Value::Array(ids)) => {
+                let mut acked = Vec::new();
+                for id in ids {
+                    let Some(id) = id.as_u64() else {
+                        return Err(ToolError::InvalidArguments(
+                            "ack ids must be unsigned integers".into(),
+                        ));
+                    };
+                    acked.push(id);
+                }
+                store.ack(&node, &acked).map_err(ToolError::Unsupported)?
+            }
+            Some(_) => {
+                return Err(ToolError::InvalidArguments(
+                    "ack must be an array of message ids".into(),
+                ));
+            }
+        };
         let messages =
             crate::dag::wait_for_message(&store, &node, Duration::from_secs(wait), cancelled)
                 .map_err(ToolError::Unsupported)?;
-        Ok(json!({"node": node, "messages": messages, "count": messages.len()}))
+        Ok(json!({"node": node, "acked": acked, "messages": messages, "count": messages.len()}))
     }
 }
 

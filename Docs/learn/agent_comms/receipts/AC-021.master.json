@@ -1,0 +1,11 @@
+{
+  "item_id": "AC-021",
+  "source_path": "codex/codex-rs/core/src/agent/guards_tests.rs",
+  "source_hash": "7bdfa8b238e430526c4812e5f55a7bda155452c5ee2aa111e1b51cff3b5d41a9",
+  "target_artifact": "Docs/learn/agent_comms/files/codex/codex-rs/core/src/agent/guards_tests.rs_learn.md",
+  "artifact_bytes": 13347,
+  "artifact_sha256": "cf88bbd7ce0a5b838f9e83b7e6e19f707f35ab79894f01c7c18896a259cea433",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-24T04:34:21Z"
+}
