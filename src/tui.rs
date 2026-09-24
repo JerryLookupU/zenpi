@@ -2156,6 +2156,8 @@ struct WorkerSlot {
     kind: WorkerSlotKind,
     worktree: String,
     stdio: Option<(Option<String>, Option<String>)>,
+    /// A live worker whose process phase is busy (blinks in the matrix).
+    busy: bool,
 }
 
 /// Fixed worker-square tiers (ZS1-185): rows x cols double at every tier and
@@ -5527,7 +5529,7 @@ impl TuiState {
 
     /// Advance the thinking animation while either lane is active (ZS1-181).
     pub fn tick(&mut self) {
-        if self.busy || self.master_busy {
+        if self.busy || self.master_busy || self.resources_zoom_has_busy() {
             self.spinner_tick = self.spinner_tick.wrapping_add(1);
             self.dirty = true;
         }
@@ -11332,17 +11334,19 @@ impl TuiState {
                 kind: WorkerSlotKind::MasterPm,
                 worktree: project.clone(),
                 stdio: None,
+                busy: false,
             },
             WorkerSlot {
                 label: "Arch".to_owned(),
                 kind: WorkerSlotKind::MasterArch,
                 worktree: project,
                 stdio: None,
+                busy: false,
             },
         ];
         if workers.is_empty() {
-            // No live headless worker for this session: show the configured
-            // worktree worker count so the matrix still reflects the plan.
+            // No live headless worker: the session shows its two masters and,
+            // when configured, the planned worktree worker count (ZS1-185).
             for tab in self.subtabs() {
                 for slot in 0..usize::from(tab.concurrency.max(1)) {
                     slots.push(WorkerSlot {
@@ -11350,10 +11354,15 @@ impl TuiState {
                         kind: WorkerSlotKind::Worktree,
                         worktree: tab.name.clone(),
                         stdio: None,
+                        busy: false,
                     });
                 }
             }
         } else {
+            // A live swarm is the truth and counts as the whole matrix, so
+            // 2048 concurrent workers stay in the 32x64 tier instead of
+            // spilling into the next tier because of the two masters.
+            slots.clear();
             // A running swarm is the truth: one square per live headless
             // worker, carrying its request in/out excerpts.
             for row in workers {
@@ -11367,6 +11376,7 @@ impl TuiState {
                     kind: WorkerSlotKind::Worktree,
                     worktree: session_name,
                     stdio: Some((row.input.clone(), row.output.clone())),
+                    busy: row.phase == crate::resources::FootprintPhase::Busy,
                 });
             }
         }
@@ -11429,6 +11439,19 @@ impl TuiState {
         rows
     }
 
+    /// True on the bright half of the busy-worker blink cycle.
+    pub fn resources_zoom_blink_on(&self) -> bool {
+        self.spinner_tick % 2 == 0
+    }
+
+    /// True while the matrix shows at least one busy worker, so the render
+    /// loop keeps ticking and the blink animates.
+    pub fn resources_zoom_has_busy(&self) -> bool {
+        self.resources_zoom
+            .as_ref()
+            .is_some_and(|zoom| zoom.slots.iter().any(|slot| slot.busy))
+    }
+
     /// (columns, rows, cell) chosen by the last observation render.
     pub fn resources_zoom_grid_shape(&self) -> Option<(usize, usize, usize)> {
         self.resources_zoom
@@ -11436,12 +11459,16 @@ impl TuiState {
             .and_then(|zoom| zoom.grid_shape)
     }
 
-    /// True when every rendered worker tile is square and belongs to a worker.
+    /// True when every rendered worker tile is visually square (terminal
+    /// cells are ~2:1, so a square tile is twice as wide as it is tall).
     pub fn resources_zoom_tiles_square(&self) -> bool {
         self.resources_zoom.as_ref().is_some_and(|zoom| {
             !zoom.tile_rects.is_empty()
                 && zoom.tile_rects.len() == zoom.slots.len()
-                && zoom.tile_rects.iter().all(|rect| rect.width == rect.height)
+                && zoom
+                    .tile_rects
+                    .iter()
+                    .all(|rect| rect.width == rect.height.saturating_mul(2).max(2))
         })
     }
 
@@ -11523,6 +11550,7 @@ impl TuiState {
         }
         let summary = self.resource_zoom_summary();
         let project = self.active_project().to_owned();
+        let blink_on = self.spinner_tick % 2 == 0;
         let Some(zoom) = self.resources_zoom.as_mut() else {
             return;
         };
@@ -11587,27 +11615,35 @@ impl TuiState {
         } else if grid.width >= 3 && grid.height >= 3 {
             // ZS1-185: fixed tiers 1x2, 2x4, 4x8, ... with rows and columns
             // doubling at every tier; the count rounds up to the next tier.
+            // Terminal cells are ~2:1, so a visually square tile is
+            // `2 * tile_height` cells wide; the size fits the window and the
+            // grid is centered.
             let (tier_rows, tier_columns) = worker_grid_tier(worker_count);
-            let cell = (usize::from(grid.width) / tier_columns)
-                .min(usize::from(grid.height) / tier_rows)
-                .max(3);
-            zoom.grid_shape = Some((tier_columns, tier_rows, cell));
-            let used_width = tier_columns * cell;
-            let used_height = tier_rows * cell;
+            let area_width = usize::from(grid.width);
+            let area_height = usize::from(grid.height);
+            let tile_height = (area_height / tier_rows)
+                .min(area_width / (tier_columns.saturating_mul(2)))
+                .max(1);
+            let tile_width = (tile_height.saturating_mul(2))
+                .min(area_width / tier_columns.max(1))
+                .max(2);
+            zoom.grid_shape = Some((tier_columns, tier_rows, tile_height));
+            let used_width = tier_columns * tile_width;
+            let used_height = tier_rows * tile_height;
             let x0 = grid
                 .x
-                .saturating_add(((usize::from(grid.width).saturating_sub(used_width)) / 2) as u16);
-            let y0 = grid.y.saturating_add(
-                ((usize::from(grid.height).saturating_sub(used_height)) / 2) as u16,
-            );
+                .saturating_add(((area_width.saturating_sub(used_width)) / 2) as u16);
+            let y0 = grid
+                .y
+                .saturating_add(((area_height.saturating_sub(used_height)) / 2) as u16);
             for (index, slot) in zoom.slots.iter().enumerate() {
                 let column = index % tier_columns;
                 let row = index / tier_columns;
                 let rect = Rect::new(
-                    x0.saturating_add((column * cell) as u16),
-                    y0.saturating_add((row * cell) as u16),
-                    cell as u16,
-                    cell as u16,
+                    x0.saturating_add((column * tile_width) as u16),
+                    y0.saturating_add((row * tile_height) as u16),
+                    tile_width as u16,
+                    tile_height as u16,
                 );
                 zoom.tile_rects.push(rect);
                 let accent = match slot.kind {
@@ -11615,13 +11651,35 @@ impl TuiState {
                     WorkerSlotKind::MasterArch => Color::Magenta,
                     WorkerSlotKind::Worktree => Color::Blue,
                 };
+                // ZS1-185: a busy worker blinks; the selected tile stays cyan.
+                let colour = if index == zoom.selected {
+                    Color::Cyan
+                } else if slot.busy {
+                    if blink_on {
+                        Color::LightYellow
+                    } else {
+                        Color::DarkGray
+                    }
+                } else {
+                    accent
+                };
+                if tile_height < 2 || tile_width < 4 {
+                    // Dense mode: a 2x1 block reads as a square on a terminal
+                    // and still fits thousands of workers.
+                    let glyph = if slot.busy && !blink_on {
+                        "  "
+                    } else {
+                        "\u{2588}\u{2588}"
+                    };
+                    frame.render_widget(
+                        Paragraph::new(glyph).style(Style::default().fg(colour)),
+                        rect,
+                    );
+                    continue;
+                }
                 let tile = Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(if index == zoom.selected {
-                        Color::Cyan
-                    } else {
-                        accent
-                    }))
+                    .border_style(Style::default().fg(colour))
                     .title(format!(" {} ", slot.label));
                 let tile_inner = tile.inner(rect);
                 frame.render_widget(tile, rect);
@@ -17585,7 +17643,7 @@ pub fn run_async_with_profile(
             }
             let now = Instant::now();
             state.flush_ordinary_paste(now);
-            if (state.is_busy() || state.master_busy())
+            if (state.is_busy() || state.master_busy() || state.resources_zoom_has_busy())
                 && now.saturating_duration_since(last_tick) >= poll_interval
             {
                 state.tick();
@@ -18735,7 +18793,7 @@ where
             }
             let now = Instant::now();
             state.flush_ordinary_paste(now);
-            if (state.is_busy() || state.master_busy())
+            if (state.is_busy() || state.master_busy() || state.resources_zoom_has_busy())
                 && now.saturating_duration_since(last_tick) >= poll_interval
             {
                 state.tick();
