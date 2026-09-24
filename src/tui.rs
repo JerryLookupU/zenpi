@@ -2966,7 +2966,7 @@ pub struct TuiState {
     goal_edit_intent: Option<String>,
     /// Rectangle of the docked discussion prompt while it is rendered in the
     /// left column. Used to anchor the command palette above the docked input.
-    docked_prompt_rect: Option<Rect>,
+    prompt_rect: Option<Rect>,
     /// Which left-column prompt owns keyboard focus (ZS1-148). The discussion
     /// prompt is the default so existing single-prompt behavior is unchanged.
     left_prompt: LeftPrompt,
@@ -3141,7 +3141,7 @@ impl TuiState {
             goal_edit: None,
             goal_text: String::new(),
             goal_edit_intent: None,
-            docked_prompt_rect: None,
+            prompt_rect: None,
             left_prompt: LeftPrompt::Discussion,
             arch_messages: VecDeque::new(),
             arch_input: String::new(),
@@ -6076,6 +6076,13 @@ impl TuiState {
         self.dirty = true;
     }
 
+    /// Empty the arch console transcript after the master session was reset.
+    pub fn clear_arch_messages(&mut self) {
+        self.arch_messages.clear();
+        self.pane_scroll.remove(&PaneId::Arch);
+        self.dirty = true;
+    }
+
     pub fn arch_input(&self) -> &str {
         &self.arch_input
     }
@@ -8004,16 +8011,17 @@ impl TuiState {
         let adapter = BentoBoxLayoutAdapter::new(&self.workspace_layout, self.workspace_area);
         let panes: Vec<_> = adapter.visible_panes().collect();
         if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
-            // A press in either left-column prompt moves keyboard focus there
-            // (ZS1-148). The prompt rectangles are recorded by the frame that
-            // was actually drawn, so a collapsed group never steals focus.
+            // A press in the arch prompt or the main prompt strip moves
+            // keyboard focus there (ZS1-148). The prompt rectangles are
+            // recorded by the frame that was actually drawn, so a collapsed
+            // group never steals focus.
             if self
                 .arch_prompt_rect
                 .is_some_and(|rect| rect.contains(position))
             {
                 self.set_hot_zone(HotZone::Arch);
             } else if self
-                .docked_prompt_rect
+                .prompt_rect
                 .is_some_and(|rect| rect.contains(position))
             {
                 self.set_hot_zone(HotZone::Conversation);
@@ -10002,19 +10010,15 @@ impl TuiState {
                         "no match"
                     }
                 )
-            } else if self.docked_prompt_rect == Some(area) {
-                if self.goal_text.is_empty() {
-                    " Prompt · Goal: — · Alt-G edit ".to_owned()
-                } else {
-                    format!(
-                        " Prompt · Goal: {} · Alt-G edit ",
-                        inline_token(&self.goal_text, 48)
-                    )
-                }
             } else if self.paste.folds.is_empty() && self.input.starts_with('/') {
                 " Prompt  • command palette active ".to_owned()
+            } else if self.goal_text.is_empty() {
+                " Prompt · Goal: — · Alt-G edit · Ctrl-R history · Ctrl-J newline ".to_owned()
             } else {
-                " Prompt · Ctrl-R history · Ctrl-J newline ".to_owned()
+                format!(
+                    " Prompt · Goal: {} · Alt-G edit · Ctrl-R history ",
+                    inline_token(&self.goal_text, 48)
+                )
             });
         let inner = block.inner(area);
         let width = usize::from(inner.width).max(1);
@@ -10379,23 +10383,10 @@ impl TuiState {
         let prompt_width = usize::from(area.width.saturating_sub(2)).max(1);
         let prompt_lines = wrap_plain(&self.projection().text, prompt_width).len();
         let desired_input_height = prompt_lines.min(MAX_INPUT_LINES).saturating_add(2);
-        // Conversation + Prompt are one resident group. At a roomy viewport on
-        // the project workspace the prompt is rendered inside the top-left
-        // conversation pane, so it is exactly as wide as the left column.
-        // Active overlays (palette, completion, history search, pickers) and
-        // narrow/compact viewports keep the full-width bottom strip so menus
-        // and long lines retain room.
-        let overlay_active = !self.slash_choices().is_empty()
-            || self.current_file_completion().is_some()
-            || self.history_search.is_some()
-            || self.directory_picker.is_some()
-            || self.transcript_browser.is_some();
-        let group_prompt = !overlay_active
-            && self.workspace_layout.tab == TabId::Project
-            && matches!(
-                Breakpoint::for_size(area.width, area.height),
-                Breakpoint::Standard | Breakpoint::Wide
-            );
+        // The prompt always keeps the full-width bottom strip: a fixed home
+        // never jumps when overlays (palette, completion, history search,
+        // pickers) open or close, and menus retain their room above it.
+        let group_prompt = false;
         let input_height = if area.height > 4 {
             u16::try_from(desired_input_height)
                 .unwrap_or(u16::MAX)
@@ -10413,21 +10404,22 @@ impl TuiState {
             ])
             .split(area);
         self.render_workspace_tabs(frame, chunks[0]);
-        self.docked_prompt_rect = None;
+        self.prompt_rect = None;
         self.dock_prompt = group_prompt;
         self.render_workspace(frame, chunks[1]);
-        // When the group could not render the prompt (for example the
-        // conversation pane is collapsed) fall back to the bottom strip so the
-        // prompt is never unreachable.
-        if self.docked_prompt_rect.is_none() {
+        // The prompt normally keeps the bottom strip; the workspace group only
+        // renders it in the docked layout. Record the rect either way so mouse
+        // focus can always find the prompt.
+        if self.prompt_rect.is_none() {
             if self.goal_edit.is_some() {
                 self.render_goal_editor(frame, chunks[2]);
             } else {
                 self.render_input(frame, chunks[2]);
             }
+            self.prompt_rect = Some(chunks[2]);
         }
         self.render_footer(frame, chunks[3]);
-        let prompt_anchor = self.docked_prompt_rect.unwrap_or(chunks[2]);
+        let prompt_anchor = self.prompt_rect.unwrap_or(chunks[2]);
         self.render_slash_choices(frame, prompt_anchor);
         if let Some(picker) = self.directory_picker.as_mut() {
             picker.render(frame);
@@ -10858,7 +10850,7 @@ impl TuiState {
                 );
                 let prompt = Rect::new(prompt.x, prompt.y, prompt.width, prompt.height);
                 self.render_transcript(frame, transcript);
-                self.docked_prompt_rect = Some(prompt);
+                self.prompt_rect = Some(prompt);
                 if self.goal_edit.is_some() {
                     self.render_goal_editor(frame, prompt);
                 } else {
@@ -12760,6 +12752,48 @@ pub fn dispatch_reasoning_input(
         state.set_rejected_input(input);
     }
     true
+}
+
+/// Run a slash command submitted from the arch console (ZS1-165), reporting
+/// into the arch transcript. `/new` is intercepted here: it resets the arch
+/// master session itself, never the discussion lane, which has its own
+/// prompt and async owner flow for that.
+fn dispatch_arch_slash(
+    command: SlashCommand,
+    state: &mut TuiState,
+    project_host: &mut ProjectRuntimeHost,
+    text: &str,
+) -> SlashDispatchAction {
+    if matches!(
+        &command,
+        SlashCommand::Session {
+            action: crate::slash::SessionAction::New
+        }
+    ) {
+        if state.master_busy() {
+            state.push_arch_message(MessageRole::User, text);
+            state.push_arch_message(
+                MessageRole::Error,
+                "new session requires an idle arch session",
+            );
+            return SlashDispatchAction::Continue;
+        }
+        let project = state.active_project().to_owned();
+        match project_host.pool.reset_arch(&project) {
+            Ok(()) => {
+                state.clear_arch_messages();
+                state.push_arch_message(MessageRole::User, text);
+                state.push_arch_message(MessageRole::System, "arch session reset");
+            }
+            Err(error) => {
+                state.push_arch_message(MessageRole::User, text);
+                state.push_arch_message(MessageRole::Error, error);
+            }
+        }
+        return SlashDispatchAction::Continue;
+    }
+    state.push_arch_message(MessageRole::User, text);
+    dispatch_slash_command(command, state, None)
 }
 
 /// Execute the local, transport-independent part of a slash command.
@@ -17710,8 +17744,8 @@ pub fn run_async_with_profile(
                         // (ZS1-165): run here and report into the arch
                         // transcript, never the discussion one.
                         state.set_message_target(MessageTarget::Arch);
-                        state.push_arch_message(MessageRole::User, &text);
-                        let result = dispatch_slash_command(command, &mut state, None);
+                        let result =
+                            dispatch_arch_slash(command, &mut state, &mut project_host, &text);
                         state.set_message_target(MessageTarget::Discussion);
                         match result {
                             SlashDispatchAction::Quit => TuiAction::Quit,
@@ -18649,8 +18683,8 @@ pub fn run_async_with_profile(
                         // Synchronous host: still honor an arch slash command so
                         // both prompts behave alike (ZS1-165).
                         state.set_message_target(MessageTarget::Arch);
-                        state.push_arch_message(MessageRole::User, &text);
-                        let result = dispatch_slash_command(command, &mut state, None);
+                        let result =
+                            dispatch_arch_slash(command, &mut state, &mut project_host, &text);
                         state.set_message_target(MessageTarget::Discussion);
                         match result {
                             SlashDispatchAction::Quit => break 'outer,

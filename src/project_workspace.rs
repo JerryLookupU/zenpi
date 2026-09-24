@@ -636,8 +636,13 @@ impl ProjectOwnerPool {
         {
             return Err("invalid project session mapping".into());
         }
-        self.publish(workspace, &saved.sessions)?;
+        // Adopt the checkpoint even when a saved project fails to prepare
+        // (for example a stale saved model digest): a failed publish leaves
+        // the pool and the file untouched, so `bytes` stays the CAS baseline,
+        // and a later new session still has a durable owner to commit against.
+        let published = self.publish(workspace, &saved.sessions);
         self.checkpoint = Some((path, Some(bytes)));
+        published?;
         Ok(true)
     }
     pub fn workspace(&self) -> &ProjectWorkspace {
@@ -661,6 +666,15 @@ impl ProjectOwnerPool {
         if let Some(existing) = self.arch_owners.get(id) {
             return Ok(existing.clone());
         }
+        let agent = self.prepare_arch_owner(id)?;
+        Ok(self.register_arch_owner(id, agent))
+    }
+
+    /// Build the arch owner for a project: an independent agent on
+    /// `<session dir>/arch.jsonl` with the discussion owner's overrides and
+    /// approval policy, labelled so connection commands addressed to `arch`
+    /// reach this one and not the discussion owner.
+    fn prepare_arch_owner(&self, id: &str) -> Result<crate::core::Agent, String> {
         let active = self
             .owners
             .get(id)
@@ -689,14 +703,20 @@ impl ProjectOwnerPool {
             self.auto_approve,
         )
         .map_err(|error| error.to_string())?;
-        // An arch owner is a separate agent with its own journal, so a
-        // connection command addressed to `arch` must reach this one and not
-        // the discussion owner.
         agent
             .set_owner_label("arch")
             .map_err(|error| error.to_string())?;
-        // Registered like any other owner: a host has to be able to drain and
-        // answer this lane's approvals without taking its execution lock.
+        Ok(agent)
+    }
+
+    /// Publish an arch owner and its control handles under the project id.
+    /// Registered like any other owner: a host has to be able to drain and
+    /// answer this lane's approvals without taking its execution lock.
+    fn register_arch_owner(
+        &mut self,
+        id: &str,
+        agent: crate::core::Agent,
+    ) -> std::sync::Arc<std::sync::Mutex<crate::core::Agent>> {
         let control = OwnerControl {
             project: id.to_owned(),
             input_port: agent.input_port(),
@@ -705,7 +725,51 @@ impl ProjectOwnerPool {
         let handle = std::sync::Arc::new(std::sync::Mutex::new(agent));
         self.arch_owners.insert(id.to_owned(), handle.clone());
         self.control.insert(arch_owner_key(id), control);
-        Ok(handle)
+        handle
+    }
+
+    /// Reset the arch master session for `/new` in the arch console: archive
+    /// the old journal and prepare a fresh owner at the canonical
+    /// `arch.jsonl` path, so the reset survives host restarts. Refuses while
+    /// a master turn is running.
+    pub fn reset_arch(&mut self, id: &str) -> Result<(), String> {
+        let existing = self
+            .arch_owners
+            .get(id)
+            .cloned()
+            .ok_or("arch owner not found")?;
+        let old_path = {
+            let agent = existing.lock().map_err(|_| "arch owner lock poisoned")?;
+            if agent.phase() == crate::core::AgentPhase::Running {
+                return Err("arch session is running; cancel or wait before /new".into());
+            }
+            agent.session().path().to_path_buf()
+        };
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_nanos();
+        let archive = old_path.with_file_name(format!("arch-{stamp}.jsonl"));
+        let renamed = old_path.exists();
+        if renamed {
+            std::fs::rename(&old_path, &archive).map_err(|e| e.to_string())?;
+        }
+        match self.prepare_arch_owner(id) {
+            Ok(fresh) => {
+                if let Ok(mut old) = existing.lock() {
+                    old.close();
+                }
+                self.register_arch_owner(id, fresh);
+                Ok(())
+            }
+            Err(error) => {
+                // Keep the old owner reachable and put its journal back.
+                if renamed {
+                    let _ = std::fs::rename(&archive, &old_path);
+                }
+                Err(error)
+            }
+        }
     }
 
     pub fn close_all(&self) {
