@@ -9,6 +9,9 @@ use zenpi::view_model;
 #[path = "../src/security.rs"]
 #[allow(dead_code)]
 mod security;
+#[path = "../src/dag.rs"]
+#[allow(dead_code)]
+mod dag;
 #[path = "../src/tools.rs"]
 #[allow(dead_code)]
 mod tools;

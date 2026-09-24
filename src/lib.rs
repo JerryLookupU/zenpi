@@ -8,6 +8,7 @@ pub mod cluster;
 pub mod config;
 pub mod context;
 pub mod core;
+pub mod dag;
 pub mod diagnostics;
 pub mod directory_picker;
 pub mod domain_execution;

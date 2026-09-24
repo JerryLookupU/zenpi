@@ -1088,6 +1088,11 @@ impl ToolRegistry {
         registry.register_builtin(EditFileTool)?;
         registry.register_builtin(RunCommandTool)?;
         registry.register_builtin(WebSearchTool)?;
+        registry.register_builtin(DagStatusTool)?;
+        registry.register_builtin(DagSendTool)?;
+        registry.register_builtin(DagRecvTool)?;
+        registry.register_builtin(DagFinishTool)?;
+        registry.register_builtin(DagSpawnTool)?;
         Ok(registry)
     }
 
@@ -3184,6 +3189,285 @@ fn ignored_directory(path: &Path, file_type: fs::FileType) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
         .is_some_and(|name| matches!(name, ".git" | "target" | "node_modules" | ".venv"))
+}
+
+/// `dag_status` — read the current node's subtree, close gate and mailbox depth.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DagStatusTool;
+
+impl Tool for DagStatusTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "dag_status".into(),
+            description: "Read the DAG node you own: parent, children statuses, whether the node may close (node green and all descendants green), unfinished descendants, and unread message count.".into(),
+            input_schema: json!({"type":"object","properties":{
+                "node":{"type":"string"}},"additionalProperties":false}),
+            side_effect: ToolSideEffect::ReadOnly,
+        }
+    }
+    fn invoke(
+        &self,
+        context: &ToolContext,
+        arguments: &Map<String, Value>,
+    ) -> Result<Value, ToolError> {
+        self.invoke_cancellable(context, arguments, &|| false)
+    }
+    fn invoke_cancellable(
+        &self,
+        _: &ToolContext,
+        arguments: &Map<String, Value>,
+        _: &dyn Fn() -> bool,
+    ) -> Result<Value, ToolError> {
+        reject_unknown(arguments, &["node"])?;
+        let node = optional_string(arguments, "node", "", 128)?.to_owned();
+        let node = if node.is_empty() {
+            crate::dag::current_node().ok_or_else(|| {
+                ToolError::InvalidArguments("set ZENPI_DAG_NODE or pass node".into())
+            })?
+        } else {
+            node
+        };
+        let store = crate::dag::DagStore::default_store();
+        crate::dag::status_view(&store, &node).map_err(ToolError::Unsupported)
+    }
+}
+
+/// `dag_send` — message parent/grandparent/siblings/children (or `all`).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DagSendTool;
+
+impl Tool for DagSendTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "dag_send".into(),
+            description: "Send a bounded message to another DAG worker: `to` is a node id or one of parent, grandparent, sibling, child, all (parent + grandparent + direct siblings + direct children). Messages to a child spawned by this process are also piped to its live headless stdin.".into(),
+            input_schema: json!({"type":"object","properties":{
+                "to":{"type":"string"},"body":{"type":"string"},"from":{"type":"string"}},
+                "required":["to","body"],"additionalProperties":false}),
+            side_effect: ToolSideEffect::WorkspaceWrite,
+        }
+    }
+    fn invoke(
+        &self,
+        context: &ToolContext,
+        arguments: &Map<String, Value>,
+    ) -> Result<Value, ToolError> {
+        self.invoke_cancellable(context, arguments, &|| false)
+    }
+    fn invoke_cancellable(
+        &self,
+        _: &ToolContext,
+        arguments: &Map<String, Value>,
+        _: &dyn Fn() -> bool,
+    ) -> Result<Value, ToolError> {
+        reject_unknown(arguments, &["to", "body", "from"])?;
+        let to = required_string(arguments, "to", 128)?;
+        let body = required_string(arguments, "body", crate::dag::MAX_DAG_BODY_BYTES)?;
+        let from_arg = optional_string(arguments, "from", "", 128)?.to_owned();
+        let from = if from_arg.is_empty() {
+            crate::dag::current_node().ok_or_else(|| {
+                ToolError::InvalidArguments("set ZENPI_DAG_NODE or pass from".into())
+            })?
+        } else {
+            from_arg
+        };
+        let store = crate::dag::DagStore::default_store();
+        let delivered = store
+            .send(&from, &to, &body)
+            .map_err(ToolError::Unsupported)?;
+        let mut piped = Vec::new();
+        for target in &delivered {
+            if crate::dag::send_to_worker(target, &body).unwrap_or(false) {
+                piped.push(target.clone());
+            }
+        }
+        Ok(json!({"from": from, "delivered": delivered, "piped": piped}))
+    }
+}
+
+/// `dag_recv` — bounded poll for messages addressed to this node.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DagRecvTool;
+
+impl Tool for DagRecvTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "dag_recv".into(),
+            description: "Wait (bounded, <=30s) for messages addressed to your DAG node and consume them. Use it to stay alive while children or parents still need you.".into(),
+            input_schema: json!({"type":"object","properties":{
+                "node":{"type":"string"},"wait_seconds":{"type":"integer","minimum":0,"maximum":30}},
+                "additionalProperties":false}),
+            side_effect: ToolSideEffect::ReadOnly,
+        }
+    }
+    fn invoke(
+        &self,
+        context: &ToolContext,
+        arguments: &Map<String, Value>,
+    ) -> Result<Value, ToolError> {
+        self.invoke_cancellable(context, arguments, &|| false)
+    }
+    fn invoke_cancellable(
+        &self,
+        _: &ToolContext,
+        arguments: &Map<String, Value>,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Value, ToolError> {
+        reject_unknown(arguments, &["node", "wait_seconds"])?;
+        let node = optional_string(arguments, "node", "", 128)?.to_owned();
+        let node = if node.is_empty() {
+            crate::dag::current_node().ok_or_else(|| {
+                ToolError::InvalidArguments("set ZENPI_DAG_NODE or pass node".into())
+            })?
+        } else {
+            node
+        };
+        let wait = bounded_usize(arguments, "wait_seconds", 0, 0, 30)? as u64;
+        let store = crate::dag::DagStore::default_store();
+        let messages =
+            crate::dag::wait_for_message(&store, &node, Duration::from_secs(wait), cancelled)
+                .map_err(ToolError::Unsupported)?;
+        Ok(json!({"node": node, "messages": messages, "count": messages.len()}))
+    }
+}
+
+/// `dag_finish` — report node status; the close gate enforces the subtree.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DagFinishTool;
+
+impl Tool for DagFinishTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "dag_finish".into(),
+            description: "Report your DAG node status (green/red/open). The result says whether the node may close: it may close only when the node is green and every child/grandchild is green. When can_close is false the worker must stay alive and handle the unfinished work (spawn workers, send messages, keep polling).".into(),
+            input_schema: json!({"type":"object","properties":{
+                "node":{"type":"string"},"status":{"type":"string","enum":["open","green","red"]},
+                "summary":{"type":"string"}},"required":["status"],"additionalProperties":false}),
+            side_effect: ToolSideEffect::WorkspaceWrite,
+        }
+    }
+    fn invoke(
+        &self,
+        context: &ToolContext,
+        arguments: &Map<String, Value>,
+    ) -> Result<Value, ToolError> {
+        self.invoke_cancellable(context, arguments, &|| false)
+    }
+    fn invoke_cancellable(
+        &self,
+        _: &ToolContext,
+        arguments: &Map<String, Value>,
+        _: &dyn Fn() -> bool,
+    ) -> Result<Value, ToolError> {
+        reject_unknown(arguments, &["node", "status", "summary"])?;
+        let node = optional_string(arguments, "node", "", 128)?.to_owned();
+        let node = if node.is_empty() {
+            crate::dag::current_node().ok_or_else(|| {
+                ToolError::InvalidArguments("set ZENPI_DAG_NODE or pass node".into())
+            })?
+        } else {
+            node
+        };
+        let status = required_string(arguments, "status", 16)?;
+        let summary =
+            optional_string(arguments, "summary", "", crate::dag::MAX_DAG_STATUS_BYTES)?.to_owned();
+        let store = crate::dag::DagStore::default_store();
+        let _ = store.upsert(&node, None).map_err(ToolError::Unsupported)?;
+        let node_view = store
+            .set_status(
+                &node,
+                &status,
+                (!summary.is_empty()).then_some(summary.as_str()),
+            )
+            .map_err(ToolError::Unsupported)?;
+        let (can_close, unfinished) = store.can_close(&node).map_err(ToolError::Unsupported)?;
+        Ok(json!({
+            "node": node_view.id,
+            "status": node_view.status,
+            "can_close": can_close,
+            "unfinished": unfinished,
+            "instruction": if can_close {
+                "Node and every descendant are green: the worker may close."
+            } else {
+                "Do NOT close: keep this worker alive, spawn workers for the unfinished nodes (dag_spawn) and communicate (dag_send/dag_recv) until the whole subtree is green."
+            },
+        }))
+    }
+}
+
+/// `dag_spawn` — create a child node and start a live headless worker for it.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DagSpawnTool;
+
+impl Tool for DagSpawnTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "dag_spawn".into(),
+            description: "Create a child DAG node and spawn a live headless worker for it. The child gets ZENPI_DAG_NODE/ZENPI_DAG_STORE, and this process keeps its stdin so dag_send can deliver follow-up work while it stays alive.".into(),
+            input_schema: json!({"type":"object","properties":{
+                "node":{"type":"string"},"parent":{"type":"string"},"prompt":{"type":"string"},
+                "session_dir":{"type":"string"}},
+                "required":["node","prompt"],"additionalProperties":false}),
+            side_effect: ToolSideEffect::CommandExecution,
+        }
+    }
+    fn invoke(
+        &self,
+        context: &ToolContext,
+        arguments: &Map<String, Value>,
+    ) -> Result<Value, ToolError> {
+        self.invoke_cancellable(context, arguments, &|| false)
+    }
+    fn invoke_cancellable(
+        &self,
+        context: &ToolContext,
+        arguments: &Map<String, Value>,
+        _: &dyn Fn() -> bool,
+    ) -> Result<Value, ToolError> {
+        reject_unknown(arguments, &["node", "parent", "prompt", "session_dir"])?;
+        let node = required_string(arguments, "node", 128)?;
+        let prompt = required_string(arguments, "prompt", 16_384)?;
+        let parent_arg = optional_string(arguments, "parent", "", 128)?.to_owned();
+        let parent = if parent_arg.is_empty() {
+            crate::dag::current_node()
+        } else {
+            Some(parent_arg)
+        };
+        let store = crate::dag::DagStore::default_store();
+        let parent_ref = parent.as_deref();
+        store
+            .upsert(&node, parent_ref)
+            .map_err(ToolError::Unsupported)?;
+        let session_dir = match optional_string(arguments, "session_dir", "", 1_024)? {
+            value if value.is_empty() => {
+                let base = store
+                    .path()
+                    .parent()
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| context.workspace_root().to_path_buf());
+                base.join("workers")
+            }
+            value => {
+                let path = PathBuf::from(value);
+                if path.is_absolute() {
+                    path
+                } else {
+                    context.workspace_root().join(path)
+                }
+            }
+        };
+        let pid = crate::dag::spawn_worker(&store, &node, &prompt, &session_dir)
+            .map_err(ToolError::Unsupported)?;
+        store
+            .assign_worker(&node, &format!("pid:{pid}"))
+            .map_err(ToolError::Unsupported)?;
+        Ok(json!({
+            "node": node,
+            "parent": parent,
+            "pid": pid,
+            "session_dir": session_dir.display().to_string(),
+        }))
+    }
 }
 
 /// One web search result set is bounded before it reaches the model.

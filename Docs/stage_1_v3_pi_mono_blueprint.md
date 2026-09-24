@@ -927,3 +927,9 @@ ZS1-128完成判据：逐个Codex交互条目映射实际操作与证据；每�
 用户要求（2026-09-22）：给 zenpi 补 web search（exa.ai，25 QPS），用于 2048 并发 × 6697 学科的全量蜂群任务；TUI Resources 在有 live worker 时按 worker 数绘制方块矩阵（512→16x32，2048→32x64），并展示每个 headless worker 的请求进出状态。
 
 验收：websearch 工具（含 key 解析与有界输出）、25QPS 代理、紧凑矩阵渲染与测试；本机与 20.214 均 build 并通过测试。3.1.41 追加不改动此前已接受项的字节与义务。
+
+### 3.1.42 DAG orchestration（新增 ZS1-199，清单 183 项）
+
+用户要求（2026-09-22）：coding 工具适配执行型 skills——worker 负责 DAG 节点时与 parent/grandparent/直接 sibling/直接 child 通信；节点及其全部 child/grandchild 全绿才允许 close，否则保活并派生新 worker。三家 CLI（opencode/codex/Claude Code）的 agent/session 通信做 1:1 中文学习后，把最小机制融合进 zenpi。
+
+验收：`src/dag.rs` + 5 builtin + 测试（角色寻址、close gate、spawn 保活 stdin）；本机 build `zenpi-dev`。3.1.42 追加不改动此前已接受项的字节与义务。
