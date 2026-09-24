@@ -1,0 +1,11 @@
+{
+  "item_id": "AC-012",
+  "source_path": "claude-code/plugins/hookify/hooks/pretooluse.py",
+  "source_hash": "cf3f718f26f57979686ca00d9cccbe09bc7920943bdc35cd689ba5163a777aac",
+  "target_artifact": "Docs/learn/agent_comms/files/claude-code/plugins/hookify/hooks/pretooluse.py_learn.md",
+  "artifact_bytes": 13023,
+  "artifact_sha256": "d38e128bdcda9810a57e3b7cac188062af50c7556e9b5a8434ea902563b20a46",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-24T04:28:40Z"
+}

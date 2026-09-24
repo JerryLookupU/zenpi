@@ -1,0 +1,11 @@
+{
+  "item_id": "AC-028",
+  "source_path": "codex/codex-rs/core/src/tasks/ghost_snapshot.rs",
+  "source_hash": "dbfc0e2734f96511fdffc3646ba2fbaac7905a1d07aa3aad95513dadd43928da",
+  "target_artifact": "Docs/learn/agent_comms/files/codex/codex-rs/core/src/tasks/ghost_snapshot.rs_learn.md",
+  "artifact_bytes": 11625,
+  "artifact_sha256": "5e1a3af481394e122efbc624be4a6168432adeef8647c576a258e0d96a82f0ec",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-24T04:38:45Z"
+}

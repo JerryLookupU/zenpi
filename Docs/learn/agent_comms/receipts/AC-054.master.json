@@ -1,0 +1,11 @@
+{
+  "item_id": "AC-054",
+  "source_path": "opencode/packages/opencode/src/sync/README.md",
+  "source_hash": "a4b011597b8bfe1dfaf167bbae538dac1c7d36dc862cf9562a0fb416e42a0b8f",
+  "target_artifact": "Docs/learn/agent_comms/files/opencode/packages/opencode/src/sync/README.md_learn.md",
+  "artifact_bytes": 17389,
+  "artifact_sha256": "15a7c13ec076f1b2018f3ea00217ce1759b0919a900de7688e2fc7eec35615da",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-24T05:06:27Z"
+}

@@ -1,0 +1,11 @@
+{
+  "item_id": "AC-016",
+  "source_path": "codex/codex-rs/core/src/agent/builtins/awaiter.toml",
+  "source_hash": "0e760708892f50ae3c6bcc0080e10276c8ac40e6f98bdd4924c3094ba5693f69",
+  "target_artifact": "Docs/learn/agent_comms/files/codex/codex-rs/core/src/agent/builtins/awaiter.toml_learn.md",
+  "artifact_bytes": 11977,
+  "artifact_sha256": "f8758860941bbeee473dfed236171c96a42dc63bb37660b219ef61ce02176936",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-24T04:29:34Z"
+}

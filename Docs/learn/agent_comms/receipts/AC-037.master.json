@@ -1,0 +1,11 @@
+{
+  "item_id": "AC-037",
+  "source_path": "codex/codex-rs/protocol/src/message_history.rs",
+  "source_hash": "997e939050137d59e704bb0d5cb0868141584d46df8a6454635fbe9337c8cfc1",
+  "target_artifact": "Docs/learn/agent_comms/files/codex/codex-rs/protocol/src/message_history.rs_learn.md",
+  "artifact_bytes": 10020,
+  "artifact_sha256": "3010648f8c090c4efba600eb3c843755155ede2f081d6253165a6c0c4f604b26",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-24T04:43:04Z"
+}

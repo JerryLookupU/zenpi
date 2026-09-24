@@ -1,0 +1,11 @@
+{
+  "item_id": "AC-018",
+  "source_path": "codex/codex-rs/core/src/agent/control.rs",
+  "source_hash": "1bbaad2c63db6b05cc7048947501b88ab00f552531d045efa9a3e463782264be",
+  "target_artifact": "Docs/learn/agent_comms/files/codex/codex-rs/core/src/agent/control.rs_learn.md",
+  "artifact_bytes": 25057,
+  "artifact_sha256": "15810a18bfd5321e8d33aadc9e2a0c3b89d584c66063dc53718406f8da29a955",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-24T04:34:09Z"
+}

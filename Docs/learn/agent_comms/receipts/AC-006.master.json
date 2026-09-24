@@ -1,0 +1,11 @@
+{
+  "item_id": "AC-006",
+  "source_path": "claude-code/plugins/agent-sdk-dev/commands/new-sdk-app.md",
+  "source_hash": "d273539c037e63bec2be30ac0e3474371a8725d7b0c39cb9e4341534fde83fb6",
+  "target_artifact": "Docs/learn/agent_comms/files/claude-code/plugins/agent-sdk-dev/commands/new-sdk-app.md_learn.md",
+  "artifact_bytes": 14748,
+  "artifact_sha256": "96927b3e28ab76b3603df07e43a1ffecf2514288e03f5d612571a0910d9b96f5",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-24T04:24:50Z"
+}

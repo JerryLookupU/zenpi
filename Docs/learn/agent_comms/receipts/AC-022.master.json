@@ -1,0 +1,11 @@
+{
+  "item_id": "AC-022",
+  "source_path": "codex/codex-rs/core/src/agent/mod.rs",
+  "source_hash": "7d4ac3345a53771db0d34e90a90c085dd488f1551079d0d4bb5a481b4116e9b1",
+  "target_artifact": "Docs/learn/agent_comms/files/codex/codex-rs/core/src/agent/mod.rs_learn.md",
+  "artifact_bytes": 11735,
+  "artifact_sha256": "9453d99f67c19818d8f9bd67471fa5d84b957783b93ede858f0afe9ebf833aa7",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-24T04:37:29Z"
+}

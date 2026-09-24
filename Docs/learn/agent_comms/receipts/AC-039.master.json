@@ -1,0 +1,11 @@
+{
+  "item_id": "AC-039",
+  "source_path": "codex/codex-rs/protocol/src/protocol.rs",
+  "source_hash": "dd9fb47475b0740800460353ce0798e1611430ea68f78f29e237386262713706",
+  "target_artifact": "Docs/learn/agent_comms/files/codex/codex-rs/protocol/src/protocol.rs_learn.md",
+  "artifact_bytes": 28182,
+  "artifact_sha256": "3e95b110dd787b73e220b4ea654bf5c0688072ea5855d880e368f23bd7a17c27",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-24T04:57:52Z"
+}

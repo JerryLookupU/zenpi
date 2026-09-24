@@ -1,0 +1,11 @@
+{
+  "item_id": "AC-005",
+  "source_path": "claude-code/plugins/agent-sdk-dev/agents/agent-sdk-verifier-ts.md",
+  "source_hash": "68fe98341656fa242a5de9272165481d62b5670b2fff294961bc45a5c4ee57ea",
+  "target_artifact": "Docs/learn/agent_comms/files/claude-code/plugins/agent-sdk-dev/agents/agent-sdk-verifier-ts.md_learn.md",
+  "artifact_bytes": 13250,
+  "artifact_sha256": "15905c1e5905e9db2c4bec270ae66340465d68b14adf07eb69fd2b7b9743d6d9",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-24T04:24:15Z"
+}

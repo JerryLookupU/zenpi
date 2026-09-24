@@ -337,6 +337,10 @@ struct SavedSelection {
     model: Option<String>,
     effort: Option<String>,
     connection: Option<SelectionSnapshotV1>,
+    /// The saved descriptor digest no longer matches the registry, so the
+    /// selection is adopted under current metadata and that adoption is
+    /// recorded back into the journal.
+    drifted: bool,
 }
 
 /// A candidate connection prepared by the host.
@@ -1678,6 +1682,7 @@ impl Agent {
                 model: self.model.clone(),
                 effort: self.backend.reasoning_effort().map(str::to_owned),
                 connection: None,
+                drifted: false,
             });
         }
         let saved = session.records().iter().rev().find_map(|record| {
@@ -1693,6 +1698,7 @@ impl Agent {
                 model: self.backend.model().map(str::to_owned),
                 effort: self.backend.reasoning_effort().map(str::to_owned),
                 connection: None,
+                drifted: false,
             });
         };
         let selected = saved["model"]
@@ -1714,12 +1720,10 @@ impl Agent {
             .backend
             .model_descriptor(Some(selected))?
             .ok_or_else(|| AgentError::InvalidTurn("saved model requires a registry".into()))?;
-        if saved["digest"].as_str() != Some(descriptor.digest().as_str()) {
-            return Err(AgentError::InvalidTurn(
-                "saved model metadata changed; explicitly select a model to adopt current metadata"
-                    .into(),
-            ));
-        }
+        // Registry metadata legitimately drifts as the catalogue evolves; the
+        // budget and capability checks here already run against the current
+        // descriptor, so a stale digest is adopted rather than fatal.
+        let drifted = saved["digest"].as_str() != Some(descriptor.digest().as_str());
         self.backend
             .validate_history_model(&session.selected_tree_turns(&|| false)?, Some(selected))?;
         // The connection fields are advisory for an event written before they
@@ -1729,14 +1733,46 @@ impl Agent {
             model: Some(selected.into()),
             effort,
             connection,
+            drifted,
         })
     }
 
     pub fn restore_model_selection(&mut self) -> Result<(), AgentError> {
         let saved = self.selected_model_for_session(&self.session)?;
         self.require_same_connection(&saved.connection)?;
+        let drifted = saved.drifted;
         self.model = saved.model;
         self.backend.commit_reasoning_effort(saved.effort);
+        if drifted {
+            Self::record_selection_adoption(
+                self.backend.as_ref(),
+                &mut self.session,
+                self.model.clone(),
+                self.backend.reasoning_effort().map(str::to_owned),
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Record that a drifted saved selection was adopted under the current
+    /// descriptor, so the next load no longer sees a digest mismatch.
+    fn record_selection_adoption(
+        backend: &dyn Backend,
+        session: &mut SessionStore,
+        model: Option<String>,
+        effort: Option<String>,
+    ) -> Result<(), AgentError> {
+        let Some(descriptor) = backend.model_descriptor(model.as_deref())? else {
+            return Ok(());
+        };
+        let profile = backend
+            .connection_snapshot(model.as_deref())
+            .ok()
+            .flatten()
+            .map_or_else(String::new, |connection| connection.profile);
+        let snapshot =
+            Self::selection_snapshot_for(backend, &profile, model, effort, Some(&descriptor))?;
+        session.append_event(snapshot.event())?;
         Ok(())
     }
 
@@ -6278,6 +6314,14 @@ impl Agent {
             return Err(BackendError::Cancelled.into());
         }
         commit(&mut replacement)?;
+        if replacement_model.drifted {
+            Self::record_selection_adoption(
+                self.backend.as_ref(),
+                &mut replacement,
+                replacement_model.model.clone(),
+                replacement_model.effort.clone(),
+            )?;
+        }
         // A saved port belongs to one session owner. Revoke that handle before
         // replacing it so old clones can never acquire the new turn's scope.
         self.input_port.set_scope(None);

@@ -1,0 +1,11 @@
+{
+  "item_id": "AC-038",
+  "source_path": "codex/codex-rs/protocol/src/plan_tool.rs",
+  "source_hash": "0a5482699b191fbeeb8f58790b62f6b331b64e29a38b3286a669aff4c699fdd9",
+  "target_artifact": "Docs/learn/agent_comms/files/codex/codex-rs/protocol/src/plan_tool.rs_learn.md",
+  "artifact_bytes": 11114,
+  "artifact_sha256": "1a118b593a74b584ceb2fd301ece22c52d426c25593f1311be2dc5e747bb9aa9",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-24T04:44:00Z"
+}

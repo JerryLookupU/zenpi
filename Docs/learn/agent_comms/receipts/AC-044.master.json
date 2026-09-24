@@ -1,0 +1,11 @@
+{
+  "item_id": "AC-044",
+  "source_path": "opencode/packages/opencode/src/acp/directory.ts",
+  "source_hash": "c4f0f38ef433713afdd50f89d7ecf2ce8130f5104dc7606a2ff3f090726109b4",
+  "target_artifact": "Docs/learn/agent_comms/files/opencode/packages/opencode/src/acp/directory.ts_learn.md",
+  "artifact_bytes": 16706,
+  "artifact_sha256": "0d9b1c7d05a64e6a154f69d1c1d323ef9bf799173d41adf211a7056583c37f45",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-24T05:03:30Z"
+}

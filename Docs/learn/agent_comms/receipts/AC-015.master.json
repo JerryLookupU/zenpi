@@ -1,0 +1,11 @@
+{
+  "item_id": "AC-015",
+  "source_path": "codex/codex-rs/core/src/agent/agent_names.txt",
+  "source_hash": "f6ae12de892a2543bd109cd4da292e98f41c58ce29f0756f5e1eb8ef477e75f9",
+  "target_artifact": "Docs/learn/agent_comms/files/codex/codex-rs/core/src/agent/agent_names.txt_learn.md",
+  "artifact_bytes": 9091,
+  "artifact_sha256": "6de7c11387b2a97acce72c2d88a22d4dffa333e04d86a4a05314079c0cf776b2",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-24T04:28:33Z"
+}

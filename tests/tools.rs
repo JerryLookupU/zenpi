@@ -7,6 +7,9 @@ mod tool_output;
 use zenpi::backend;
 use zenpi::view_model;
 
+#[path = "../src/dag.rs"]
+#[allow(dead_code)]
+mod dag;
 #[path = "../src/security.rs"]
 #[allow(dead_code)]
 mod security;

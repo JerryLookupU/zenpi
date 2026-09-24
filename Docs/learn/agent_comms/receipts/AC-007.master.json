@@ -1,0 +1,11 @@
+{
+  "item_id": "AC-007",
+  "source_path": "claude-code/plugins/hookify/agents/conversation-analyzer.md",
+  "source_hash": "535ec8acb55b51bfac83a54f5f5c70746a52adb7a0b785e9be0e376c7e2eb12c",
+  "target_artifact": "Docs/learn/agent_comms/files/claude-code/plugins/hookify/agents/conversation-analyzer.md_learn.md",
+  "artifact_bytes": 14435,
+  "artifact_sha256": "ae00903830ccc5aca4a10de4fd7a2986a6b0b98552f7b5ae88a9aa1f47a594e8",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-24T04:26:18Z"
+}

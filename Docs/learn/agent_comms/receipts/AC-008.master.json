@@ -1,0 +1,11 @@
+{
+  "item_id": "AC-008",
+  "source_path": "claude-code/plugins/hookify/core/config_loader.py",
+  "source_hash": "9f1d083cc43883323ddf00747e7696a4fd9d478ddd63f5b43038657da8516e56",
+  "target_artifact": "Docs/learn/agent_comms/files/claude-code/plugins/hookify/core/config_loader.py_learn.md",
+  "artifact_bytes": 11282,
+  "artifact_sha256": "405e3e5c1daf4eb7a0143af70f2a26fd73f5fc295631ee3f4190df5a64837407",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-24T04:27:42Z"
+}

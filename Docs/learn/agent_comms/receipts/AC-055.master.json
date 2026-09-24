@@ -1,0 +1,11 @@
+{
+  "item_id": "AC-055",
+  "source_path": "opencode/packages/opencode/src/sync/schema.ts",
+  "source_hash": "4c3366bb2b30e0e1f7868c3d0237293d1f8bbbc60d168916f7383014f0695e14",
+  "target_artifact": "Docs/learn/agent_comms/files/opencode/packages/opencode/src/sync/schema.ts_learn.md",
+  "artifact_bytes": 11574,
+  "artifact_sha256": "a15e8c4a8c6bc6286877c25656c6ae7e80eb519ce4a048d30ca26587de47d5ba",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-24T05:09:52Z"
+}

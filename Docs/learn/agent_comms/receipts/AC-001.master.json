@@ -1,0 +1,11 @@
+{
+  "item_id": "AC-001",
+  "source_path": "claude-code/examples/hooks/bash_command_validator_example.py",
+  "source_hash": "0d7a9468405bb614ebddfb56037217cd9282a8045ea87a42cf6ff4099a61820d",
+  "target_artifact": "Docs/learn/agent_comms/files/claude-code/examples/hooks/bash_command_validator_example.py_learn.md",
+  "artifact_bytes": 12605,
+  "artifact_sha256": "125b1bbab8a0fb5f2a775da7cb2acfd9688353e6483d33dd5552d44347de788f",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-24T04:22:48Z"
+}

@@ -574,9 +574,9 @@ fn validate_destination(
         && (account.is_empty()
             || account.len() > 256
             || account.chars().any(|c| c.is_control() || c.is_whitespace()))
-        {
-            return Err(invalid("invalid account identity"));
-        }
+    {
+        return Err(invalid("invalid account identity"));
+    }
     if matches!(auth, AuthBinding::CodexOAuth { .. }) && identity.account_id.is_none() {
         return Err(invalid("Codex requires an account identity"));
     }
@@ -718,11 +718,12 @@ fn final_url(
                     .ok_or_else(|| invalid("custom provider requires an explicit API prefix"))?,
             )?;
             if let Some(canonical) = canonical_prefix
-                && url != parse_prefix(canonical)? {
-                    return Err(invalid(
-                        "noncanonical builtin API prefix; use an explicitly scoped custom provider",
-                    ));
-                }
+                && url != parse_prefix(canonical)?
+            {
+                return Err(invalid(
+                    "noncanonical builtin API prefix; use an explicitly scoped custom provider",
+                ));
+            }
             let mut segments = url
                 .path_segments_mut()
                 .map_err(|_| invalid("invalid hierarchical API prefix"))?;

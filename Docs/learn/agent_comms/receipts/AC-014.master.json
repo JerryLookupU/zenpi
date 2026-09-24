@@ -1,0 +1,11 @@
+{
+  "item_id": "AC-014",
+  "source_path": "claude-code/plugins/hookify/hooks/userpromptsubmit.py",
+  "source_hash": "82c8784355826e9ecfa01c5b357c27d1246c21f0d26400d32ea962c7db4e3d01",
+  "target_artifact": "Docs/learn/agent_comms/files/claude-code/plugins/hookify/hooks/userpromptsubmit.py_learn.md",
+  "artifact_bytes": 11447,
+  "artifact_sha256": "bb7bdcb50b08e42dfe9e613059bda847722c388071970f3bf422c08b8e8a8a18",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-24T04:30:31Z"
+}

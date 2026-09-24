@@ -1,0 +1,11 @@
+{
+  "item_id": "AC-053",
+  "source_path": "opencode/packages/opencode/src/cli/cmd/run/subagent-data.ts",
+  "source_hash": "d5f7d3dec7e743679e9b06504cc92381242a4d50842d040806fc2bcbd10dacbb",
+  "target_artifact": "Docs/learn/agent_comms/files/opencode/packages/opencode/src/cli/cmd/run/subagent-data.ts_learn.md",
+  "artifact_bytes": 26854,
+  "artifact_sha256": "b7516edb9aff5de69e8dbb210316de73a696f72ee87b8ad46844d6c494511af0",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-24T05:12:21Z"
+}

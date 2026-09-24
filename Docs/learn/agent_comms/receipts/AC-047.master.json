@@ -1,0 +1,11 @@
+{
+  "item_id": "AC-047",
+  "source_path": "opencode/packages/opencode/src/acp/permission.ts",
+  "source_hash": "b83f1b30015f92f432e56a444a7304e131b1824b06870e7842c70db6bd969743",
+  "target_artifact": "Docs/learn/agent_comms/files/opencode/packages/opencode/src/acp/permission.ts_learn.md",
+  "artifact_bytes": 16849,
+  "artifact_sha256": "eae41ee01c06c26483c4bdab495f6982b81659d9d8ff829762d2f8099e5c9676",
+  "attempts": 1,
+  "validated_by": "master",
+  "validated_at": "2026-09-24T05:05:16Z"
+}
