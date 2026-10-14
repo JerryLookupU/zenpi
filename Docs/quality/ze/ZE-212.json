@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-212",
+  "claim_id": "ZE-212@blueprint-4.0.0",
+  "from": "worker",
+  "to": "master",
+  "summary": "Bounded the Agent event buffer filled by run_active_turn_cancelable: new pub const MAX_BUFFERED_AGENT_EVENTS = 4096; after each run the buffer is compacted in one O(n) retain pass that drops the oldest delta-type events (Provider TextDelta/ReasoningDelta/ToolCallDelta and ToolProgress) first and never drops terminal/status events. Added Agent::buffered_event_count(). Fixed the stale max_tool_iterations field comment (said default 8; actual default 1000, clamp 1..=10000).",
+  "changed_files": [
+    "src/core.rs",
+    "tests/core_session.rs"
+  ],
+  "diff_stat": "6 files changed, 309 insertions(+), 3 deletions(-) (shared ZE-107/ZE-212 commit, code + tests)",
+  "commands_run": [
+    "cargo test --locked --test core_session undrained_event_buffer_stays_bounded_across_one_hundred_turns",
+    "cargo test --locked --test core_session",
+    "cargo fmt --all -- --check",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo clippy --locked --all-targets --all-features -- -D warnings",
+    "python3 tools/check_modes.py",
+    "git diff -U0 origin/main -- 'src/*.rs' 'src/**/*.rs' | grep -E '^\\+.*#!?\\[allow\\((dead_code|unused)'"
+  ],
+  "validation_result": {
+    "validator": "pass: undrained_event_buffer_stays_bounded_across_one_hundred_turns - 100 turns x 201 provider events without take_events keep buffered_event_count() <= 4096 after every turn; all 100 TurnAccepted and 100 TextDone survive",
+    "core_session": "41/41 pass",
+    "G-RUST": {
+      "fmt": "pass",
+      "clippy_default": "pass (-D warnings)",
+      "clippy_all_features": "pass (-D warnings)",
+      "check_modes": "pass",
+      "new_allow_dead_code_or_unused": "none"
+    }
+  },
+  "notes": "Terminal events are never dropped, so the cap can only be exceeded if a host never drains and the buffer holds zero deltas (terminal events are a few per turn). The per-run local Vec in run_active_turn_cancelable is still unbounded within a single turn by design (bounded once appended). No new unwrap/unsafe/Arc<Mutex> in src.",
+  "created_at": "2026-10-14T12:24:56Z",
+  "digest": "643500f655ab70e17788ec244617cd87ba20a423b78f6500becaa1dbd04f4b23"
+}

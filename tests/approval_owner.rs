@@ -806,3 +806,43 @@ fn yolo_records_the_choice_where_rebinding_reads_it() {
     );
     assert!(!state.auto_approve());
 }
+
+/// ZS1-182: reject feedback typed by the operator is the denial reason the
+/// model sees on the tool result, so it can correct course.
+#[test]
+fn reject_feedback_reaches_the_model_as_the_tool_result() {
+    let workspace = tempdir().unwrap();
+    let agent = configured_agent(workspace.path());
+    let coordinator = agent.approval_coordinator().unwrap();
+    let (tx, rx) = mpsc::sync_channel(1);
+    let worker = thread::spawn(move || {
+        let mut agent = agent;
+        let result = agent.process(TurnInputRequest::new("write it"));
+        tx.send((agent, result)).unwrap();
+    });
+    let request = wait_for_pending(&coordinator);
+    coordinator
+        .respond(ApprovalResponse {
+            request_id: request.request_id.clone(),
+            decision: ApprovalDecision::Deny,
+            remember: false,
+            message: Some("  use a safer path  ".into()),
+        })
+        .unwrap();
+    let (agent, result) = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    result.unwrap();
+    worker.join().unwrap();
+    assert!(!workspace.path().join("note.txt").exists());
+    let tool_turn = agent
+        .history()
+        .iter()
+        .find(|turn| turn.role == zenpi::core::TurnRole::Tool)
+        .expect("the denial is returned to the model as a tool turn");
+    assert!(
+        tool_turn
+            .content
+            .contains("tool approval denied: use a safer path"),
+        "{}",
+        tool_turn.content
+    );
+}

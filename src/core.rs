@@ -417,6 +417,46 @@ pub enum ConnectionSelectionOutcome {
     },
 }
 
+/// Upper bound on `Agent` events buffered between `take_events` drains
+/// (ZE-212). Hosts that never drain must not grow memory without bound.
+pub const MAX_BUFFERED_AGENT_EVENTS: usize = 4096;
+
+impl AgentEvent {
+    /// Streaming fragments whose information is superseded by a later
+    /// terminal event (`TextDone`, `ToolCallDone`, `ToolResult`, ...). Only
+    /// these may be shed when the event buffer overflows.
+    fn is_droppable_delta(&self) -> bool {
+        match self {
+            Self::ToolProgress { .. } => true,
+            Self::Provider { event, .. } => matches!(
+                event,
+                ProviderEvent::TextDelta { .. }
+                    | ProviderEvent::ReasoningDelta { .. }
+                    | ProviderEvent::ToolCallDelta { .. }
+            ),
+            _ => false,
+        }
+    }
+}
+
+/// Drop the oldest delta-type events until `events.len() <= cap`. Terminal
+/// and status events are never dropped, so the buffer may only exceed `cap`
+/// when it holds no deltas at all.
+fn bound_event_buffer(events: &mut Vec<AgentEvent>, cap: usize) {
+    let mut excess = events.len().saturating_sub(cap);
+    if excess == 0 {
+        return;
+    }
+    events.retain(|event| {
+        if excess > 0 && event.is_droppable_delta() {
+            excess -= 1;
+            false
+        } else {
+            true
+        }
+    });
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentEvent {
@@ -560,7 +600,8 @@ pub struct Agent {
     active_steerable: bool,
     model: Option<String>,
     /// Bounded tool-iteration budget for one provider turn (ZS1-184). The
-    /// default is 8; long-horizon runs raise it explicitly.
+    /// default is 1000 (clamped to 1..=10000); hosts change it via
+    /// `--max-tool-iterations` / `set_max_tool_iterations`.
     max_tool_iterations: usize,
     /// Per-zone model selections for the discussion and arch TUI regions
     /// (ZS1-152). These are validated against the backend before being stored;
@@ -1027,6 +1068,17 @@ impl Agent {
     /// does not prompt, which is not the same statement.
     pub fn auto_approve(&self) -> bool {
         self.auto_approve
+    }
+
+    /// Apply `--auto` to an already constructed root owner (ZS1-180): switch
+    /// the approval mode to `Never` (keeping per-tool rules, so configured
+    /// denials still hold) and record the explicit choice that
+    /// `ProjectOwnerPool` propagates to every arch and project owner.
+    pub fn enable_auto_approve(&mut self) {
+        let mut policy = self.configured_approval_policy().unwrap_or_default();
+        policy.mode = crate::approval::ApprovalMode::Never;
+        self.set_approval_policy(policy);
+        self.auto_approve = true;
     }
 
     pub fn prepare_project_with_options(
@@ -2184,6 +2236,11 @@ impl Agent {
         self.process(TurnInputRequest::new(message))
     }
 
+    /// Number of events buffered since the last `take_events` drain.
+    pub fn buffered_event_count(&self) -> usize {
+        self.events.len()
+    }
+
     pub fn take_events(&mut self) -> Vec<AgentEvent> {
         std::mem::take(&mut self.events)
     }
@@ -2302,8 +2359,6 @@ impl Agent {
         self.pending_attachments.clear();
     }
 
-    /// Configure the approval policy and return the coordinator used by a
-    /// host to surface/respond to pending side-effect requests.
     /// Per-turn tool-iteration budget (ZS1-184). Mature coding agents keep
     /// looping until the model stops, so the default is generous (1000) and
     /// the hard ceiling is 10000; the budget only exists to stop a runaway
@@ -2312,6 +2367,13 @@ impl Agent {
         self.max_tool_iterations = iterations.clamp(1, 10_000);
     }
 
+    /// Current per-turn tool-iteration budget (ZS1-184).
+    pub fn max_tool_iterations(&self) -> usize {
+        self.max_tool_iterations
+    }
+
+    /// Configure the approval policy and return the coordinator used by a
+    /// host to surface/respond to pending side-effect requests.
     pub fn set_approval_policy(&mut self, policy: ApprovalPolicy) -> Option<ApprovalCoordinator> {
         let runtime = self.tools.as_mut()?;
         runtime.approval_policy = policy.with_remembered_events(self.session.events());
@@ -4575,6 +4637,7 @@ impl Agent {
                 event,
             });
         }
+        bound_event_buffer(&mut self.events, MAX_BUFFERED_AGENT_EVENTS);
         result
     }
 
@@ -8351,6 +8414,11 @@ pub fn run() -> Result<(), ZenpiError> {
         mode: approval_mode,
         ..crate::approval::ApprovalPolicy::default()
     });
+    if options.auto {
+        // Record the explicit choice so `ProjectOwnerPool` arms every arch
+        // and project owner it prepares; the mode alone never propagates.
+        agent.enable_auto_approve();
+    }
     agent.set_max_tool_iterations(options.max_tool_iterations);
     agent.restore_resources(default_resource_paths(&paths, &env::current_dir()?), || {
         false

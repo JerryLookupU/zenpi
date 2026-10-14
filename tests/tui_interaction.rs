@@ -1771,6 +1771,16 @@ fn thinking_animation_appears_and_advances_while_busy() {
 
     state.set_busy(false);
     assert!(state.thinking_frame().is_none());
+
+    // A new busy period restarts the animation on its first frame.
+    state.tick();
+    state.set_busy(true);
+    assert_eq!(
+        state.thinking_frame(),
+        Some(first),
+        "busy start resets phase"
+    );
+    state.set_busy(false);
 }
 
 #[test]
