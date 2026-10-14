@@ -43,7 +43,7 @@ class WorkspaceScreenTest {
         compose.onNodeWithText("Two").assertIsNotEnabled()
         compose.onNodeWithContentDescription("Open workspace").performScrollTo().assertIsNotEnabled()
         compose.onNodeWithContentDescription("Close workspace").assertIsNotEnabled()
-        compose.onNodeWithText("Retry same request").performScrollTo().performClick()
+        compose.onNodeWithText("Retry same request").performClick()
         compose.waitUntil(3000) { retry }; assertTrue(retry)
     }
     @Test fun scanningResetAndDuplicateWorkspaceIdentityDisableTargets() {

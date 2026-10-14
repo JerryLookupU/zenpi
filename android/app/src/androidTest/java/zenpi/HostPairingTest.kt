@@ -156,14 +156,15 @@ class HostPairingTest {
                         assertTrue(updated.projects.single().promptControl)
                         compose.runOnUiThread { displayedModel.value = model }
                         assertTrue(updated.projects.single().terminalOpenControl)
+                        compose.onNodeWithContentDescription("Desktop terminal").performScrollTo().performClick()
                         val initialTerminal = model.state.value.projection?.projects?.single()?.terminal
                         if (initialTerminal?.running == true) {
                             assertNotNull(initialTerminal.terminalId)
                             assertTrue(model.state.value.projection?.projects?.single()?.terminalControl == true)
                             // The desktop Execution pane may already own a PTY.
                             // Close it through the same authorized UI before testing Open.
-                            compose.onNodeWithTag("terminal-input").performScrollTo().performTextInput("exit")
-                            compose.onNodeWithContentDescription("Send terminal input").performScrollTo().performClick()
+                            compose.onNodeWithTag("terminal-input").performTextInput("exit")
+                            compose.onNodeWithContentDescription("Send terminal input").performClick()
                             repeat(100) {
                                 val current = model.state.value
                                 if (current.phase != PairingPhase.CONNECTED || current.pendingWorkspace != null
@@ -180,7 +181,7 @@ class HostPairingTest {
                             assertFalse(exited.running)
                             compose.onNodeWithTag("terminal-input").assertDoesNotExist()
                         }
-                        compose.onNodeWithContentDescription("Open desktop terminal").performScrollTo().performClick()
+                        compose.onNodeWithContentDescription("Open desktop terminal").performClick()
                         repeat(100) {
                             val current = model.state.value
                             if (current.phase != PairingPhase.CONNECTED || current.pendingWorkspace != null || current.projection?.projects?.single()?.terminal == null) {
@@ -194,8 +195,8 @@ class HostPairingTest {
                         assertNotNull(terminal.terminalId)
                         assertTrue(terminal.running)
                         initialTerminal?.let { assertNotEquals(it.terminalId, terminal.terminalId) }
-                        compose.onNodeWithTag("terminal-input").performScrollTo().performTextInput("printf '%s%s\\n' 'ANDROID_' 'TERMINAL_OWNED' | tee android-terminal-owned.txt")
-                        compose.onNodeWithContentDescription("Send terminal input").performScrollTo().performClick()
+                        compose.onNodeWithTag("terminal-input").performTextInput("printf '%s%s\\n' 'ANDROID_' 'TERMINAL_OWNED' | tee android-terminal-owned.txt")
+                        compose.onNodeWithContentDescription("Send terminal input").performClick()
                         repeat(100) {
                             val current = model.state.value
                             if (current.phase != PairingPhase.CONNECTED || current.pendingWorkspace != null
@@ -209,8 +210,8 @@ class HostPairingTest {
                         assertEquals(terminal.terminalId, model.state.value.projection?.projects?.single()?.terminal?.terminalId)
                         assertTrue(requireNotNull(model.state.value.projection?.projects?.single()?.terminal).text.contains("ANDROID_TERMINAL_OWNED"))
                         InstrumentationRegistry.getInstrumentation().sendStatus(0, android.os.Bundle().apply { putString("zenpi_phase", "android_desktop_terminal_open_input_verified") })
-                        compose.onNodeWithTag("terminal-input").performScrollTo().performTextInput("exit")
-                        compose.onNodeWithContentDescription("Send terminal input").performScrollTo().performClick()
+                        compose.onNodeWithTag("terminal-input").performTextInput("exit")
+                        compose.onNodeWithContentDescription("Send terminal input").performClick()
                         repeat(100) {
                             val current = model.state.value
                             if (current.pendingWorkspace != null || current.projection?.projects?.single()?.terminal?.running != false) {
@@ -222,7 +223,7 @@ class HostPairingTest {
                         assertNull(model.state.value.pendingWorkspace)
                         assertFalse(requireNotNull(model.state.value.projection?.projects?.single()?.terminal).running)
                         compose.onNodeWithTag("terminal-input").assertDoesNotExist()
-                        compose.onNodeWithContentDescription("Open desktop terminal").performScrollTo().performClick()
+                        compose.onNodeWithContentDescription("Open desktop terminal").performClick()
                         repeat(100) {
                             val current = model.state.value
                             if (current.pendingWorkspace != null || current.projection?.projects?.single()?.terminal?.running != true) {
@@ -234,8 +235,8 @@ class HostPairingTest {
                         val reopened = requireNotNull(model.state.value.projection?.projects?.single()?.terminal)
                         assertNull(model.state.value.pendingWorkspace); assertTrue(reopened.running)
                         assertNotEquals(terminal.terminalId, reopened.terminalId)
-                        compose.onNodeWithTag("terminal-input").performScrollTo().performTextInput("printf '%s%s\\n' 'ANDROID_' 'TERMINAL_REOPENED' | tee android-terminal-reopened.txt")
-                        compose.onNodeWithContentDescription("Send terminal input").performScrollTo().performClick()
+                        compose.onNodeWithTag("terminal-input").performTextInput("printf '%s%s\\n' 'ANDROID_' 'TERMINAL_REOPENED' | tee android-terminal-reopened.txt")
+                        compose.onNodeWithContentDescription("Send terminal input").performClick()
                         repeat(100) {
                             val current = model.state.value
                             if (current.pendingWorkspace != null || current.projection?.projects?.single()?.terminal?.text?.contains("ANDROID_TERMINAL_REOPENED") != true) {

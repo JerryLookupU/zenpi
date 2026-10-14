@@ -31,46 +31,35 @@ import zenpi.pairing.WorkerTargetPolicy
 import zenpi.transport.HostProjection
 import zenpi.transport.RemoteProject
 
-private val activePromptStates = setOf("accepted", "running")
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Surface
+import zenpi.ui.nav.SecondaryPage
 
 /**
- * Session controls for an authorized host that have no secondary page yet: session toolbar,
- * message and task statuses, the task composer and the terminal. The conversation,
- * its composer and the model chip live in [ConversationScreen].
+ * Tasks page: the selected project's worktree tasks (live status, output, history and cancel), the
+ * paged list of every task, and the task composer for the active worktree pinned above the keyboard.
  */
 @Composable
-fun WorkspaceSection(scope: ScreenScope, projection: HostProjection, workspaceUi: WorkspaceUiState, workerPrompt: Draft, actions: PairingActions) {
+fun TasksScreen(scope: ScreenScope, workerPrompt: Draft, actions: ConversationActions, onBack: () -> Unit) {
     val state = scope.state
     val selected = scope.selected
-    SessionToolbar(scope, projection, workspaceUi, actions)
-    Text(projection.phase ?: "Unavailable", style = MaterialTheme.typography.labelLarge)
-    PromptStatuses(state, projection, selected, actions)
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+    val projection = state.projection
+    SecondaryPage("Worktree tasks", "Back to conversation", onBack, actions = {
         IconButton(onClick = { actions.workerStatuses(-1) }, enabled = WorkerStatusReadPolicy.browse(state)) {
             Icon(Icons.AutoMirrored.Outlined.MenuBook, contentDescription = "Browse worktree tasks")
         }
-    }
-    WorkerStatuses(state, projection, selected, actions)
-    if (selected?.workerControl == true && scope.currentSubtabs != null) WorkerComposer(scope, workerPrompt, actions)
-    TerminalSection(scope, projection, actions)
-}
-
-@Composable
-private fun PromptStatuses(state: PairingState, projection: HostProjection, selected: RemoteProject?, actions: ConversationActions) {
-    projection.projects.find { it.id == projection.selectedId }?.promptStatuses?.forEach { status ->
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text(status.requestId.take(8), style = MaterialTheme.typography.labelSmall)
-            Text(when (status.state) { "accepted" -> "Message accepted"; "running" -> "Message running"
-                "succeeded" -> "Message succeeded"; "failed" -> when(status.failureCode){
-                    "invalid_request"->"Message input rejected";"busy"->"Message owner busy";"resource_limit"->"Message limit reached"
-                    "unauthorized","revoked_device"->"Message access denied";else->"Message failed"}; "cancelled" -> "Message cancelled"
-                else -> "Message result unknown" }, style = MaterialTheme.typography.labelMedium,
-                modifier=Modifier.weight(1f).padding(horizontal=8.dp),maxLines=2,overflow=TextOverflow.Ellipsis)
-            if (status.state in activePromptStates && selected?.promptControl == true) {
-                IconButton(onClick = { actions.cancelPrompt(status.requestId) }, enabled = PromptControlPolicy.active(state, status.requestId)) {
-                    Icon(Icons.Outlined.Stop, contentDescription = "Cancel message ${status.requestId}")
-                }
-            }
+    }, bottomBar = {
+        if (selected?.workerControl == true && scope.currentSubtabs != null) Surface(tonalElevation = 3.dp) {
+            Column(Modifier.navigationBarsPadding().imePadding().padding(horizontal = 12.dp, vertical = 8.dp)) { WorkerComposer(scope, workerPrompt, actions) }
+        }
+    }) { padding ->
+        Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            if (selected?.workerStatuses.isNullOrEmpty()) Text("No worktree tasks", style = MaterialTheme.typography.bodyMedium)
+            if (projection != null) WorkerStatuses(state, projection, selected, actions)
         }
     }
 }
@@ -126,4 +115,3 @@ private fun WorkerComposer(scope: ScreenScope, workerPrompt: Draft, actions: Con
         }
     }
 }
-

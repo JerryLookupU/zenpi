@@ -87,12 +87,15 @@ class SessionScopeScreenTest {
         val state = mutableStateOf(PairingState(phase = PairingPhase.CONNECTED, host = host, projection = original))
         var writes = 0
         compose.setContent { MaterialTheme { PairingScreen(state.value, {}, {}, {}, onTerminalInput = { writes++ }) } }
-        compose.onNodeWithTag("terminal-input").performScrollTo().performTextInput("old command")
+        compose.onNodeWithContentDescription("Desktop terminal").performScrollTo().performClick()
+        compose.onNodeWithTag("terminal-input").performTextInput("old command")
         compose.runOnIdle { state.value = state.value.copy(projection = original.copy(eventSequence = "1")) }
         compose.onNodeWithTag("terminal-input").assertTextContains("old command")
         compose.runOnIdle { state.value = state.value.copy(projection = original.copy(sessionId = "new",
             projects = listOf(project.copy(sessionId = "new", terminal = terminal.copy(sessionId = "new"), terminalControl = true)))) }
-        compose.onNodeWithContentDescription("Send terminal input").performScrollTo().assertIsNotEnabled()
+        // A replaced session closes the terminal page; its input never reaches the new session.
+        compose.onNodeWithContentDescription("Send terminal input").assertDoesNotExist()
+        compose.onNodeWithTag("terminal-input").assertDoesNotExist()
         compose.runOnIdle { assertEquals(0, writes) }
     }
 

@@ -29,7 +29,8 @@ class TerminalHistoryScreenTest {
         compose.setContent { MaterialTheme { Box(Modifier.width(320.dp)) {
             PairingScreen(state.value, {}, {}, {}, onTerminalPage = { calls += it })
         } } }
-        compose.onNodeWithContentDescription("Read terminal history").performScrollTo().performClick()
+        compose.onNodeWithContentDescription("Desktop terminal").performScrollTo().performClick()
+        compose.onNodeWithContentDescription("Read terminal history").performClick()
         compose.runOnIdle { assertEquals(listOf(false), calls); state.value = state.value.copy(terminalOpen = true, terminalPage = page) }
         compose.onNodeWithTag("terminal-history-page").assertTextEquals("abc")
         compose.onNodeWithContentDescription("Next terminal history page").performClick()
@@ -69,7 +70,7 @@ class TerminalHistoryScreenTest {
             compose.onNodeWithContentDescription("Refresh terminal history").assertIsNotEnabled()
         }
         compose.runOnIdle { state.value = healthy.copy(terminalOpen = false, scanInProgress = true) }
-        compose.onNodeWithContentDescription("Read terminal history").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithContentDescription("Read terminal history").assertIsNotEnabled()
         compose.runOnIdle { state.value = healthy }
         compose.runOnIdle { state.value = state.value.copy(projection = projection.copy(projects = projection.projects.map { it.copy(terminal = null) })) }
         compose.onNodeWithContentDescription("Refresh terminal history").assertIsNotEnabled()

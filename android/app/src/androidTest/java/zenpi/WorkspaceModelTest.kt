@@ -61,7 +61,7 @@ class WorkspaceModelTest {
                     val pending = state.pendingWorkspace
                     if (state.phase == PairingPhase.ERROR && pending != null && retries < 3) {
                         assertEquals(original, pending.envelope)
-                        compose.onNodeWithText("Retry same request").performScrollTo().performClick()
+                        compose.onNodeWithText("Retry same request").performClick()
                         retries++
                     }
                     if (state.phase != PairingPhase.CONNECTED || tabs?.tabs?.size != count
