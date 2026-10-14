@@ -24,7 +24,12 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-pub const MAX_TOOL_CALL_BYTES: usize = 64 * 1024;
+/// Maximum serialized size of one tool call (id, name and JSON arguments).
+/// A full `MAX_WRITE_BYTES` write plus its path and JSON escaping overhead
+/// must fit, otherwise large `write_file` calls could never succeed.
+pub const MAX_TOOL_CALL_BYTES: usize = MAX_WRITE_BYTES + 64 * 1024;
+/// Maximum serialized size of a tool input schema or Blueprint policy.
+pub const MAX_TOOL_DEFINITION_BYTES: usize = 64 * 1024;
 pub const MAX_TOOL_RESULT_BYTES: usize = 1024 * 1024;
 pub const MAX_INLINE_TOOL_RESULT_BYTES: usize = 64 * 1024;
 pub const TOOL_ARTIFACT_DIRECTORY: &str = ".zenpi/artifacts";
@@ -238,7 +243,7 @@ impl BlueprintGate {
         }
         let encoded = serde_json::to_vec(&(&policy, &lease, context.workspace_root()))
             .map_err(ToolError::Json)?;
-        if encoded.len() > MAX_TOOL_CALL_BYTES {
+        if encoded.len() > MAX_TOOL_DEFINITION_BYTES {
             return Err(invalid("Blueprint policy exceeds 64 KiB"));
         }
         let mut digest = Sha256::new();
@@ -528,7 +533,7 @@ impl ToolDefinition {
         if serde_json::to_vec(&self.input_schema)
             .map_err(ToolError::Json)?
             .len()
-            > MAX_TOOL_CALL_BYTES
+            > MAX_TOOL_DEFINITION_BYTES
         {
             return Err(ToolError::InvalidDefinition(
                 "tool input schema is too large".into(),
@@ -3418,8 +3423,10 @@ pub(crate) fn validate_call(call: &ToolCall) -> Result<(), ToolError> {
     }
     let serialized = serde_json::to_vec(call).map_err(ToolError::Json)?;
     if serialized.len() > MAX_TOOL_CALL_BYTES {
-        return Err(ToolError::InvalidCall(format!(
-            "serialized call exceeds {MAX_TOOL_CALL_BYTES} bytes"
+        return Err(ToolError::LimitExceeded(format!(
+            "tool call arguments are {} bytes; the limit is {MAX_TOOL_CALL_BYTES} bytes. \
+             Split the content into smaller writes or edits",
+            serialized.len()
         )));
     }
     Ok(())
