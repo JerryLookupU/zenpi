@@ -1,0 +1,6 @@
+data: {"type": "response.created", "response": {"id": "compact-3", "model": "gpt-4.1"}}
+
+data: {"type": "response.output_text.delta", "delta": "CONTINUED_AFTER"}
+
+data: {"type": "response.incomplete", "response": {"id": "compact-3", "model": "gpt-4.1", "status": "incomplete", "incomplete_details": {"reason": "max_output_tokens"}, "usage": {"input_tokens": 250, "output_tokens": 150, "total_tokens": 400}}}
+
