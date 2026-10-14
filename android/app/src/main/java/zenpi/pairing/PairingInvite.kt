@@ -3,7 +3,6 @@ package zenpi.pairing
 import java.net.InetAddress
 import java.net.URI
 import java.net.URLDecoder
-import java.security.MessageDigest
 import java.util.Base64
 
 class PairingException(val reason: String) : Exception(reason)
@@ -15,12 +14,6 @@ class PairingInvite private constructor(
 ) {
     private var expired = false
     val address: String get() = if (host.contains(':')) "[$host]:$port" else "$host:$port"
-    val safetyCode: String get() {
-        val digest = MessageDigest.getInstance("SHA-256")
-            .digest("zenpi-pair-v1:$fingerprint:$token".toByteArray(Charsets.UTF_8))
-        val value = digest.take(4).fold(0L) { result, byte -> (result shl 8) or (byte.toLong() and 255) }
-        return (value % 1_000_000).toString().padStart(6, '0')
-    }
     @Synchronized fun requireFresh(now: Long = System.currentTimeMillis() / 1000) {
         freshElapsed(now)
     }

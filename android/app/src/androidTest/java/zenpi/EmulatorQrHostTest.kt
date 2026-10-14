@@ -29,8 +29,6 @@ class EmulatorQrHostTest {
         val address = requireNotNull(args.getString("expected_address"))
         val fingerprint = requireNotNull(args.getString("expected_fingerprint"))
         val project = requireNotNull(args.getString("expected_project"))
-        val safetyCode = requireNotNull(args.getString("safety_code"))
-        assertTrue(safetyCode.matches(Regex("[0-9]{6}")))
         val store = PairedHostStore(instrumentation.targetContext)
         assertNull("Existing pairings must not be overwritten", store.loadState())
         assertNull("Existing keys must not be replaced", DeviceIdentity.loadExisting())
@@ -48,19 +46,17 @@ class EmulatorQrHostTest {
             assertTrue(instrumentation.uiAutomation.setRotation(android.app.UiAutomation.ROTATION_FREEZE_90))
             phase("emulator_qr_production_camera_requested")
             compose.waitUntil(60_000) { model.state.value.invite != null && !model.state.value.scanInProgress }
-            compose.onNodeWithText("Desktop safety code").assertExists()
+            compose.onNodeWithText("Confirm host").assertExists()
             compose.onNodeWithText(address).performScrollTo().assertIsDisplayed()
             compose.onNodeWithText(fingerprint.chunked(16).joinToString("\n")).assertExists()
             assertNull(store.loadState()); assertNull(DeviceIdentity.loadExisting())
             phase("emulator_qr_camera_confirmation_verified")
-            compose.onNodeWithText("Desktop safety code").performScrollTo().performTextInput(safetyCode)
             compose.onNode(hasText("Confirm host") and hasClickAction()).performScrollTo().assertIsEnabled().performClick()
             compose.waitUntil(15_000) { model.state.value.registered && model.state.value.invite == null }
             val host = requireNotNull(store.loadState()).host
             assertEquals(fingerprint, host.fingerprint)
             assertEquals(host.deviceId, requireNotNull(DeviceIdentity.loadExisting()).deviceId)
-            assertTrue(model.state.value.projection?.projects.orEmpty().isEmpty())
-            phase("ungranted_projection_verified")
+            phase("paired_projection_verified")
             repeat(30) {
                 if (model.state.value.projection?.selectedId != project) {
                     compose.runOnUiThread { model.refresh() }

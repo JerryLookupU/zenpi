@@ -136,7 +136,7 @@ fn selected_offline_lan_address_roundtrips_through_the_actual_qr_invite() {
             PairingInvite::from_uri(&invite.to_uri().unwrap(), unix_seconds().unwrap()).unwrap();
         assert_eq!(decoded.address.ip(), address);
         assert_eq!(decoded.address.port(), 7777);
-        assert_eq!(decoded.safety_code(), invite.safety_code());
+        assert_eq!(decoded, invite);
         assert!(!zenpi::host_pair::qr_lines(&invite).unwrap().is_empty());
     }
 }

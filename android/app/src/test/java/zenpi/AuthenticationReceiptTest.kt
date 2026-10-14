@@ -18,11 +18,14 @@ class AuthenticationReceiptTest {
         assertEquals("18446744073709551615", AuthenticationReceipt.validate(maximum, device))
         val legacy = receipt().apply { remove("device_revision") }
         assertNull(AuthenticationReceipt.validate(legacy, device))
+        // The host truthfully reports control once pairing granted the mounted project.
+        val controlling = receipt().apply { addProperty("control_available", true) }
+        assertEquals("1", AuthenticationReceipt.validate(controlling, device))
     }
     @Test fun missingUnknownOrAuthorityFieldsNeverAdmitAWorkspaceRead() {
         val changes = listOf<(JsonObject) -> Unit>(
             { it.remove("authenticated") }, { it.remove("device_id") }, { it.remove("control_available") },
-            { it.addProperty("control_available", true) }, { it.addProperty("authenticated", false) },
+            { it.addProperty("authenticated", false) },
             { it.addProperty("project_id", "private") }, { it.addProperty("capabilities", "control") },
             { it.addProperty("token", "PRIVATE_TOKEN") }, { it.addProperty("private_key", "PRIVATE_KEY") })
         for (change in changes) {
@@ -94,7 +97,7 @@ class AuthenticationReceiptTest {
         val changes = listOf<(JsonObject) -> Unit>(
             { it.addProperty("authenticated", false) }, { it.addProperty("authenticated", "true") },
             { it.addProperty("device_id", "b".repeat(64)) }, { it.remove("control_available") },
-            { it.addProperty("control_available", true) }, { it.addProperty("device_revision", 0) },
+            { it.addProperty("device_revision", 0) },
             { it.addProperty("private_key", "PRIVATE_KEY") })
         for (change in changes) {
             val failure = runCatching { AuthenticationReceipt.validate(receipt().apply(change), device) }.exceptionOrNull() as Exception

@@ -52,10 +52,8 @@ pub struct HostPairOptions {
     pub revoke_device: Option<String>,
     pub workspace: Option<PathBuf>,
     pub session: Option<PathBuf>,
-    pub grant_device: Option<String>,
-    pub grant_projects: Vec<String>,
-    pub grant_control: bool,
-    pub grant_approval: bool,
+    /// Projects a newly paired device controls; derived from `--workspace`, never a CLI flag.
+    pub mounted_projects: Vec<String>,
     pub list_worktree_intents: bool,
     pub reconcile_worktree: Option<String>,
     pub list_quota_intents: bool,
@@ -87,10 +85,7 @@ impl HostPairOptions {
             revoke_device: None,
             workspace: None,
             session: None,
-            grant_device: None,
-            grant_projects: vec![],
-            grant_control: false,
-            grant_approval: false,
+            mounted_projects: vec![],
             list_worktree_intents: false,
             reconcile_worktree: None,
             list_quota_intents: false,
@@ -148,26 +143,6 @@ impl HostPairOptions {
                 "--identity" => options.identity = PathBuf::from(value),
                 "--workspace" => options.workspace = Some(PathBuf::from(value)),
                 "--session" => options.session = Some(PathBuf::from(value)),
-                "--grant-device-read"
-                | "--grant-device-control"
-                | "--grant-device-approval"
-                | "--grant-device-control-approval" => {
-                    if options.grant_device.is_some() {
-                        return Err(ZenpiError::arguments(
-                            "only one device grant action is allowed",
-                        ));
-                    }
-                    options.grant_control = matches!(
-                        argument.as_str(),
-                        "--grant-device-control" | "--grant-device-control-approval"
-                    );
-                    options.grant_approval = matches!(
-                        argument.as_str(),
-                        "--grant-device-approval" | "--grant-device-control-approval"
-                    );
-                    options.grant_device = Some(value);
-                }
-                "--project" => options.grant_projects.push(value),
                 "--revoke-device" => options.revoke_device = Some(value),
                 "--reconcile-worktree" => options.reconcile_worktree = Some(value),
                 "--reconcile-quota" => options.reconcile_quota = Some(value),
@@ -221,7 +196,6 @@ impl HostPairOptions {
                 || options.desktop
                 || options.plain
                 || options.list_devices
-                || options.grant_device.is_some()
                 || options.revoke_device.is_some()
                 || repair
                 || options.reconcile_device.is_some())
@@ -235,7 +209,6 @@ impl HostPairOptions {
                 || options.desktop
                 || options.plain
                 || options.list_devices
-                || options.grant_device.is_some()
                 || options.revoke_device.is_some()
                 || repair_actions > 1)
             || repair_request.is_some() != options.reconcile_device.is_some()
@@ -255,39 +228,18 @@ impl HostPairOptions {
             && (options.workspace.is_none()
                 || options.plain
                 || options.list_devices
-                || options.revoke_device.is_some()
-                || options.grant_device.is_some())
+                || options.revoke_device.is_some())
         {
             return Err(ZenpiError::arguments(
                 "--desktop requires --workspace and --session, without --plain or device actions",
             ));
         }
-        if options.grant_device.is_some() != !options.grant_projects.is_empty()
-            || [
-                options.list_devices,
-                options.revoke_device.is_some(),
-                options.grant_device.is_some(),
-            ]
-            .into_iter()
-            .filter(|value| *value)
-            .count()
-                > 1
-        {
-            return Err(ZenpiError::arguments(
-                "device grant/list/revoke policy conflict",
-            ));
-        }
-        if options
-            .revoke_device
-            .as_deref()
-            .or(options.grant_device.as_deref())
-            .is_some_and(|id| {
-                id.len() != 64
-                    || !id
-                        .bytes()
-                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-            })
-        {
+        if options.revoke_device.as_deref().is_some_and(|id| {
+            id.len() != 64
+                || !id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        }) {
             return Err(ZenpiError::arguments("device ID must be lowercase SHA-256"));
         }
         options.validate_addresses()?;
@@ -452,34 +404,6 @@ pub fn run(options: HostPairOptions) -> Result<(), ZenpiError> {
         }
         return Ok(());
     }
-    if let Some(id) = options.grant_device.as_deref() {
-        let record = registry
-            .lookup(id)
-            .map_err(|error| ZenpiError::Message(error.to_string()))?;
-        let mut capabilities = vec![crate::remote::auth::Capability::Read];
-        if options.grant_control {
-            capabilities.push(crate::remote::auth::Capability::Control);
-        }
-        if options.grant_approval {
-            capabilities.push(crate::remote::auth::Capability::Approval);
-        }
-        registry
-            .set_permissions(id, record.revision, capabilities, options.grant_projects)
-            .map_err(|error| ZenpiError::Message(error.to_string()))?;
-        println!(
-            "{} permission granted: {id}",
-            if options.grant_control && options.grant_approval {
-                "Read/Control/Approval"
-            } else if options.grant_approval {
-                "Read/Approval"
-            } else if options.grant_control {
-                "Read/Control"
-            } else {
-                "Read"
-            }
-        );
-        return Ok(());
-    }
     if options.desktop {
         let owner = crate::core::Agent::prepare_project_with_options(
             options.session.as_ref().unwrap(),
@@ -488,6 +412,7 @@ pub fn run(options: HostPairOptions) -> Result<(), ZenpiError> {
             false,
         )?;
         let mut attached = options.clone();
+        attached.mounted_projects = vec![mounted_project(options.workspace.as_ref().unwrap())?];
         attached.workspace = None;
         attached.session = None;
         return crate::tui::run_async_with_remote(owner, None, Some(attached));
@@ -511,6 +436,7 @@ pub fn run(options: HostPairOptions) -> Result<(), ZenpiError> {
     }
     let mut headless_host = None;
     let adapter = if let (Some(workspace), Some(session)) = (&options.workspace, &options.session) {
+        options.mounted_projects = vec![mounted_project(workspace)?];
         let owner = crate::core::Agent::prepare_project_with_options(
             session,
             workspace,
@@ -543,8 +469,7 @@ pub fn run(options: HostPairOptions) -> Result<(), ZenpiError> {
                 .map_err(|error| ZenpiError::Message(error.to_string()))?
         );
         println!(
-            "Safety code: {}\nInvite expires: {}\nListening on {bound} until stopped.",
-            host.invite.safety_code(),
+            "Invite expires: {}\nListening on {bound} until stopped.",
             host.invite.expires_at,
         );
         io::stdout().flush()?;
@@ -562,11 +487,10 @@ pub fn run(options: HostPairOptions) -> Result<(), ZenpiError> {
                 .map_err(|error| ZenpiError::Message(error.to_string()))?
         );
         println!(
-            "Safety code: {}\nExpires: {}\n{}",
-            host.invite.safety_code(),
+            "Expires: {}\n{}",
             host.invite.expires_at,
             if headless_host.is_some() {
-                "Host controls require a local device grant."
+                PAIR_GRANTS_CONTROL
             } else {
                 "Host writes unavailable."
             }
@@ -574,7 +498,13 @@ pub fn run(options: HostPairOptions) -> Result<(), ZenpiError> {
         io::stdout().flush()?;
         std::thread::sleep(ttl);
     } else {
-        pairing_tui(host.invite.clone(), &host.issuer, ttl, &host.accepted)?;
+        pairing_tui(
+            host.invite.clone(),
+            &host.issuer,
+            ttl,
+            &host.accepted,
+            headless_host.is_some(),
+        )?;
     }
     let result = host.shutdown();
     if let Some(host) = headless_host {
@@ -590,8 +520,9 @@ pub fn help() -> &'static str {
 Pair an Android device with this Rust host over TLS on the local network.
 `serve` keeps the listener up after the invite expires, on the selected
 interface and the port it first bound, until the process is stopped.
-Scan the desktop QR, compare the six-digit safety code, then confirm on Android.
-Pairing registers a device; project access must be granted separately.
+Scan the QR shown on this screen with Android, check the host fingerprint and
+confirm. Scanning the QR is the desktop confirmation: the paired device gets
+Read, Control and Approval on the mounted --workspace project. Revoke at any time.
 
 Connection:
   --desktop                         Attach the existing desktop TUI and QR view
@@ -605,11 +536,7 @@ Connection:
 
 Devices (exclusive local actions; use the same --identity PATH as the host):
   --list-devices [--json]            Inspect registered devices and grants
-  --revoke-device ID                Revoke one device
-  --grant-device-read ID            Grant read access to --project ID (repeatable)
-  --grant-device-control ID         Grant read/control access to --project ID
-  --grant-device-approval ID        Grant read/approval access to --project ID
-  --grant-device-control-approval ID Grant read/control/approval access to --project ID
+  --revoke-device ID                Revoke one device (effective on its next frame)
 
 Recovery (requires --workspace PATH --session PATH, no listener):
   --list-worktree-intents           Inspect unresolved worktree operations
@@ -620,12 +547,26 @@ Recovery (requires --workspace PATH --session PATH, no listener):
 Examples:
   zenpi host pair --desktop --workspace /path/project --session /path/session.jsonl
   zenpi host pair --bind 192.168.50.14:7777 --workspace /path/project --session /path/session.jsonl
-  zenpi host pair --grant-device-control DEVICE_ID --project PROJECT_ID
+  zenpi host pair --revoke-device DEVICE_ID
 
 QR does not provide Internet/NAT traversal. Both devices must reach the same LAN.
 Keep invitation tokens and identity keys private. Plain output contains a one-use token.
 Normal TUI/headless runs do not start a listener. Help creates no files or sockets.
 Use --help or -h alone after host pair to display this help."
+}
+
+const PAIR_GRANTS_CONTROL: &str = "Pairing grants control of the mounted project.";
+
+/// The project a `--workspace` mounts; pairing grants exactly this project.
+fn mounted_project(workspace: &std::path::Path) -> Result<String, ZenpiError> {
+    let root = workspace.canonicalize()?;
+    let (projected, _) = crate::project_workspace::ProjectWorkspace::default()
+        .with_directory(Some(&root), &root)
+        .map_err(|error| ZenpiError::Message(error.to_string()))?;
+    projected
+        .active()
+        .map(|tab| tab.id().as_str().to_owned())
+        .ok_or_else(|| ZenpiError::arguments("workspace project unavailable"))
 }
 
 /// Local inspection does not prepare an Agent or create identity/checkpoint state.
@@ -728,7 +669,6 @@ impl PairingHost {
             || options.list_devices
             || options.list_projects
             || options.revoke_device.is_some()
-            || options.grant_device.is_some()
         {
             return Err(ZenpiError::arguments(
                 "attached desktop listener cannot prepare another owner or manage devices",
@@ -758,6 +698,12 @@ impl PairingHost {
         let admission = issuer.clone();
         let count = accepted.clone();
         let host_fingerprint = identity.fingerprint();
+        // Without an attached owner nothing is mounted, so nothing is granted.
+        let mounted = if adapter.is_some() {
+            options.mounted_projects.clone()
+        } else {
+            vec![]
+        };
         let mut policy = ListenerOptions::loopback();
         policy.bind = options.bind;
         let listener = RemoteListener::start(
@@ -846,7 +792,7 @@ impl PairingHost {
                             result: serde_json::json!({
                                 "authenticated": authenticated.is_some(), "device_id": authenticated.as_ref().map(|value| value.id()),
                                 "device_revision": authenticated.as_ref().map(|value| value.revision()),
-                                "control_available": false,
+                                "control_available": authenticated.as_ref().is_some_and(|value| registry.controls_any(value.id(), &mounted)),
                             }),
                         },
                     );
@@ -920,7 +866,6 @@ impl PairingHost {
                 let Message::Pair {
                     token,
                     fingerprint,
-                    safety_code,
                     device_name,
                     public_key,
                     signature,
@@ -928,17 +873,14 @@ impl PairingHost {
                 else {
                     return Err(io::Error::other("pair required"));
                 };
-                let registration = registry.verify_pair_and_register(
+                let registration = registry.verify_pair_and_grant(
                     &token,
                     request.id.as_deref().unwrap_or(""),
                     &device_name,
                     &public_key,
                     &signature,
-                    || {
-                        admission
-                            .consume(&token, &fingerprint, &safety_code)
-                            .is_ok()
-                    },
+                    &mounted,
+                    || admission.consume(&token, &fingerprint).is_ok(),
                 );
                 let refusal = registration.as_ref().err().map(|error| error.remote_code());
                 let device = registration.ok();
@@ -947,7 +889,8 @@ impl PairingHost {
                     Channel::Control,
                     Message::Response {
                         result: serde_json::json!({
-                            "paired": permitted, "control_available": false, "device_registered": permitted,
+                            "paired": permitted, "device_registered": permitted,
+                            "control_available": device.as_ref().is_some_and(|record| registry.controls_any(&record.id, &mounted)),
                             "device_id": device.as_ref().map(|record| &record.id),
                             "device_revision": device.as_ref().map(|record| record.revision)
                         }),
@@ -1004,6 +947,7 @@ impl PairingHost {
             frame,
             &self.invite,
             self.accepted.load(Ordering::SeqCst),
+            true,
             true,
         )
     }
@@ -1089,6 +1033,7 @@ fn pairing_tui(
     issuer: &InviteIssuer,
     ttl: Duration,
     accepted: &AtomicUsize,
+    mounted: bool,
 ) -> Result<(), ZenpiError> {
     terminal::enable_raw_mode()?;
     let _restore = TerminalRestore;
@@ -1102,7 +1047,13 @@ fn pairing_tui(
         }
         let mut render_result = Ok(());
         terminal.draw(|frame| {
-            render_result = render_pairing(frame, &invite, accepted.load(Ordering::SeqCst), false);
+            render_result = render_pairing(
+                frame,
+                &invite,
+                accepted.load(Ordering::SeqCst),
+                false,
+                mounted,
+            );
         })?;
         render_result?;
         if event::poll(Duration::from_millis(100))?
@@ -1134,12 +1085,14 @@ fn render_pairing(
     invite: &PairingInvite,
     accepted: usize,
     desktop: bool,
+    mounted: bool,
 ) -> Result<(), ZenpiError> {
     render_pairing_at(
         frame,
         invite,
         accepted,
         desktop,
+        mounted,
         crate::remote::pairing::unix_seconds().ok(),
     )
 }
@@ -1149,6 +1102,7 @@ fn render_pairing_at(
     invite: &PairingInvite,
     accepted: usize,
     desktop: bool,
+    mounted: bool,
     now: Option<u64>,
 ) -> Result<(), ZenpiError> {
     let area = frame.area();
@@ -1185,16 +1139,12 @@ fn render_pairing_at(
     }
     let qr = qr_lines_at(invite, now)?;
     let width = qr[0].width() as u16;
-    let grant = if desktop {
-        "Project access and controls require a local device grant."
+    let grant = if mounted {
+        PAIR_GRANTS_CONTROL
     } else {
-        "Read permission requires local project grant. Host writes unavailable."
+        "No project mounted. Host writes unavailable."
     };
-    let metadata = vec![
-        "Zenpi Pair".to_owned(),
-        invite.address.to_string(),
-        format!("Safety code: {}", invite.safety_code()),
-    ];
+    let metadata = vec!["Zenpi Pair".to_owned(), invite.address.to_string()];
     let footer = vec![
         "Host certificate SHA-256:".to_owned(),
         invite.fingerprint.clone(),
@@ -1259,7 +1209,9 @@ mod lan_selection_tests {
                 let mut terminal =
                     Terminal::new(ratatui::backend::TestBackend::new(80, 12)).unwrap();
                 terminal
-                    .draw(|frame| render_pairing_at(frame, &invite, 2, desktop, now).unwrap())
+                    .draw(|frame| {
+                        render_pairing_at(frame, &invite, 2, desktop, desktop, now).unwrap()
+                    })
                     .unwrap();
                 let buffer = terminal.backend().buffer();
                 let text = buffer
@@ -1293,6 +1245,7 @@ mod lan_selection_tests {
                     &invite,
                     0,
                     true,
+                    true,
                     Some(invite.expires_at - crate::remote::pairing::MAX_INVITE_TTL.as_secs() - 1),
                 )
                 .unwrap()
@@ -1317,18 +1270,10 @@ mod lan_selection_tests {
                 .any(|cell| cell.symbol() == "▀")
         );
         assert_ne!(refreshed.token, invite.token);
+        assert!(issuer.consume(&invite.token, &invite.fingerprint).is_err());
         assert!(
             issuer
-                .consume(&invite.token, &invite.fingerprint, &invite.safety_code())
-                .is_err()
-        );
-        assert!(
-            issuer
-                .consume(
-                    &refreshed.token,
-                    &refreshed.fingerprint,
-                    &refreshed.safety_code()
-                )
+                .consume(&refreshed.token, &refreshed.fingerprint,)
                 .is_ok()
         );
     }
@@ -1353,7 +1298,8 @@ mod lan_selection_tests {
                         Terminal::new(ratatui::backend::TestBackend::new(columns, 80)).unwrap();
                     terminal
                         .draw(|frame| {
-                            render_pairing_at(frame, &invite, 0, desktop, Some(now)).unwrap()
+                            render_pairing_at(frame, &invite, 0, desktop, desktop, Some(now))
+                                .unwrap()
                         })
                         .unwrap();
                     let buffer = terminal.backend().buffer();
@@ -1414,7 +1360,8 @@ mod lan_selection_tests {
                     .unwrap();
                     exact
                         .draw(|frame| {
-                            render_pairing_at(frame, &invite, 0, desktop, Some(now)).unwrap()
+                            render_pairing_at(frame, &invite, 0, desktop, desktop, Some(now))
+                                .unwrap()
                         })
                         .unwrap();
                     assert!(
@@ -1432,7 +1379,8 @@ mod lan_selection_tests {
                     .unwrap();
                     short
                         .draw(|frame| {
-                            render_pairing_at(frame, &invite, 0, desktop, Some(now)).unwrap()
+                            render_pairing_at(frame, &invite, 0, desktop, desktop, Some(now))
+                                .unwrap()
                         })
                         .unwrap();
                     assert!(
@@ -1471,7 +1419,7 @@ mod lan_selection_tests {
         let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 70)).unwrap();
         for desktop in [true, false] {
             terminal
-                .draw(|frame| render_pairing(frame, &invite, 1, desktop).unwrap())
+                .draw(|frame| render_pairing(frame, &invite, 1, desktop, desktop).unwrap())
                 .unwrap();
             let buffer = terminal.backend().buffer();
             let text = buffer
@@ -1480,7 +1428,6 @@ mod lan_selection_tests {
                 .map(|cell| cell.symbol())
                 .collect::<String>();
             assert!(text.contains("192.168.50.55:7777"));
-            assert!(text.contains(&invite.safety_code()));
             assert!(text.contains(&invite.fingerprint));
             assert!(!text.contains(&invite.token));
             assert_eq!(text.contains("Host writes unavailable."), !desktop);
@@ -1494,7 +1441,7 @@ mod lan_selection_tests {
         }
         let mut narrow = Terminal::new(ratatui::backend::TestBackend::new(40, 10)).unwrap();
         narrow
-            .draw(|frame| render_pairing(frame, &invite, 0, true).unwrap())
+            .draw(|frame| render_pairing(frame, &invite, 0, true, true).unwrap())
             .unwrap();
         let text = narrow
             .backend()

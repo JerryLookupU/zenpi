@@ -11,7 +11,7 @@ import zenpi.transport.RemoteApproval
  * production code calls [AppShell] directly.
  */
 @Composable
-fun PairingScreen(state: PairingState, onScan: () -> Unit, onConfirm: (String) -> Unit, onCancel: () -> Unit, onForget: () -> Unit = {}, onRefresh: (String?) -> Unit = {},
+fun PairingScreen(state: PairingState, onScan: () -> Unit, onConfirm: () -> Unit, onCancel: () -> Unit, onForget: () -> Unit = {}, onRefresh: (String?) -> Unit = {},
     onWorkspace: (String, String, String?) -> Unit = { _, _, _ -> }, onRetryWorkspace: () -> Unit = {},
     onSubtab: (String, String, String?) -> Unit = { _, _, _ -> }, onAddDirectoryTab: (String, String) -> Unit = { _, _ -> }, onRevoke: () -> Unit = {}, onCheckRevoke: () -> Unit = {}, onPrompt: (String) -> Unit = {}, onCancelPrompt: (String) -> Unit = {},
     onApprove: (RemoteApproval, String) -> Unit = { _, _ -> }, onSteer: (String, String) -> Unit = { _, _ -> },
@@ -41,7 +41,7 @@ fun PairingScreen(state: PairingState, onScan: () -> Unit, onConfirm: (String) -
     onPreviousTranscript: () -> Unit = {}, onWorkerPrompt: (String) -> Unit = {}, onCancelWorker: (String) -> Unit = {}, onConcurrency: (String, Int) -> Unit = { _, _ -> }) {
     AppShell(state, inlineSwitcher = true, actions = object : PairingActions {
         override fun scan() = onScan()
-        override fun confirm(code: String) = onConfirm(code)
+        override fun confirm() = onConfirm()
         override fun cancel() = onCancel()
         override fun forget() = onForget()
         override fun refresh(projectId: String?) = onRefresh(projectId)

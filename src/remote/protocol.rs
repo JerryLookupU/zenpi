@@ -149,7 +149,6 @@ pub enum Message {
     Pair {
         token: String,
         fingerprint: String,
-        safety_code: String,
         device_name: String,
         public_key: String,
         signature: String,
@@ -188,7 +187,6 @@ impl std::fmt::Debug for Message {
         let mut value = serde_json::to_value(self).map_err(|_| std::fmt::Error)?;
         if matches!(self, Self::Pair { .. }) {
             value["token"] = Value::String("<redacted>".into());
-            value["safety_code"] = Value::String("<redacted>".into());
         }
         value.fmt(formatter)
     }
@@ -411,7 +409,6 @@ impl Envelope {
             Message::Pair {
                 token,
                 fingerprint,
-                safety_code,
                 device_name,
                 public_key,
                 signature,
@@ -424,8 +421,6 @@ impl Envelope {
                     || !fingerprint
                         .bytes()
                         .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-                    || safety_code.len() != 6
-                    || !safety_code.bytes().all(|byte| byte.is_ascii_digit())
                 {
                     return Err(ProtocolError::Invalid("pairing proof format"));
                 }

@@ -3,7 +3,6 @@ package zenpi
 import org.junit.Assert.*
 import org.junit.Test
 import zenpi.pairing.PairingInvite
-import java.security.MessageDigest
 import java.util.Base64
 
 class PairingInviteTest {
@@ -11,12 +10,10 @@ class PairingInviteTest {
     private val token = Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(32) { it.toByte() })
     private val uri = "zenpi://pair?v=1&address=192.168.50.55%3A7777&fingerprint=$fingerprint&token=$token&expires=1060"
     private fun refused(value: String, now: Long = 1000) { assertTrue(runCatching { PairingInvite.parse(value, now) { 0 } }.isFailure) }
-    @Test fun roundtripSafetyCodeAndRedaction() {
+    @Test fun roundtripAndRedaction() {
         val invite = PairingInvite.parse(uri, 1000) { 0 }
         assertEquals("192.168.50.55", invite.host); assertEquals(7777, invite.port)
-        val digest = MessageDigest.getInstance("SHA-256").digest("zenpi-pair-v1:$fingerprint:$token".toByteArray())
-        val code = java.nio.ByteBuffer.wrap(digest).int.toLong() and 0xffff_ffffL
-        assertEquals((code % 1_000_000).toString().padStart(6, '0'), invite.safetyCode)
+        assertEquals(fingerprint, invite.fingerprint)
         assertFalse(invite.toString().contains(token))
         assertEquals("fd00::1234", PairingInvite.parse(uri.replace("192.168.50.55%3A7777", "%5Bfd00%3A%3A1234%5D%3A7777"), 1000) { 0 }.host)
     }

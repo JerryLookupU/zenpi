@@ -308,14 +308,6 @@ impl PairingInvite {
         invite.validate_at(now)?;
         Ok(invite)
     }
-
-    pub fn safety_code(&self) -> String {
-        let digest = Sha256::digest(format!("zenpi-pair-v1:{}:{}", self.fingerprint, self.token));
-        format!(
-            "{:06}",
-            u32::from_be_bytes(digest[..4].try_into().expect("digest prefix")) % 1_000_000
-        )
-    }
 }
 
 struct ActiveInvite {
@@ -324,7 +316,7 @@ struct ActiveInvite {
 }
 
 /// A new invite invalidates the previous one. Admission consumes atomically;
-/// wrong code/token/fingerprint never consumes a still-valid invitation.
+/// wrong token/fingerprint never consumes a still-valid invitation.
 pub struct InviteIssuer {
     fingerprint: String,
     active: Mutex<Option<ActiveInvite>>,
@@ -361,18 +353,12 @@ impl InviteIssuer {
         Ok(invite)
     }
 
-    pub fn consume(
-        &self,
-        token: &str,
-        fingerprint: &str,
-        safety_code: &str,
-    ) -> Result<(), PairingError> {
+    pub fn consume(&self, token: &str, fingerprint: &str) -> Result<(), PairingError> {
         let mut active = self.active.lock().map_err(|_| PairingError::Unavailable)?;
         Self::consume_at(
             &mut active,
             token,
             fingerprint,
-            safety_code,
             unix_seconds(),
             Instant::now(),
         )
@@ -382,7 +368,6 @@ impl InviteIssuer {
         active: &mut Option<ActiveInvite>,
         token: &str,
         fingerprint: &str,
-        safety_code: &str,
         now: Result<u64, PairingError>,
         instant: Instant,
     ) -> Result<(), PairingError> {
@@ -399,10 +384,6 @@ impl InviteIssuer {
             || !crate::security::constant_time_equal(
                 record.invite.fingerprint.as_bytes(),
                 fingerprint.as_bytes(),
-            )
-            || !crate::security::constant_time_equal(
-                record.invite.safety_code().as_bytes(),
-                safety_code.as_bytes(),
             )
         {
             return Err(PairingError::Admission);
@@ -454,7 +435,6 @@ mod admission_clock_tests {
                     &mut active,
                     &invite.token,
                     &invite.fingerprint,
-                    &invite.safety_code(),
                     wall,
                     instant
                 )
@@ -466,7 +446,6 @@ mod admission_clock_tests {
                     &mut active,
                     &invite.token,
                     &invite.fingerprint,
-                    &invite.safety_code(),
                     Ok(1000),
                     instant
                 )
@@ -483,7 +462,6 @@ mod admission_clock_tests {
                 &mut active,
                 &invite.token,
                 &invite.fingerprint,
-                &invite.safety_code(),
                 Ok(990),
                 instant + Duration::from_secs(60)
             )
@@ -495,7 +473,6 @@ mod admission_clock_tests {
                 &mut active,
                 &invite.token,
                 &invite.fingerprint,
-                &invite.safety_code(),
                 Ok(1000),
                 instant
             )
@@ -506,17 +483,12 @@ mod admission_clock_tests {
     #[test]
     fn wrong_proof_with_a_valid_clock_preserves_exactly_one_valid_admission() {
         let (mut active, invite, instant) = active();
-        for (token, fingerprint, code) in [
-            ("wrong", invite.fingerprint.as_str(), invite.safety_code()),
-            (invite.token.as_str(), "wrong", invite.safety_code()),
-            (
-                invite.token.as_str(),
-                invite.fingerprint.as_str(),
-                "wrong".into(),
-            ),
+        for (token, fingerprint) in [
+            ("wrong", invite.fingerprint.as_str()),
+            (invite.token.as_str(), "wrong"),
         ] {
             assert!(
-                InviteIssuer::consume_at(&mut active, token, fingerprint, &code, Ok(1000), instant)
+                InviteIssuer::consume_at(&mut active, token, fingerprint, Ok(1000), instant)
                     .is_err()
             );
             assert!(active.is_some());
@@ -525,7 +497,6 @@ mod admission_clock_tests {
             &mut active,
             &invite.token,
             &invite.fingerprint,
-            &invite.safety_code(),
             Ok(760),
             instant + Duration::from_secs(59),
         )
@@ -536,7 +507,6 @@ mod admission_clock_tests {
                 &mut active,
                 &invite.token,
                 &invite.fingerprint,
-                &invite.safety_code(),
                 Ok(1000),
                 instant
             )
@@ -547,10 +517,7 @@ mod admission_clock_tests {
     #[test]
     fn invalid_clock_retires_invite_even_when_the_submitted_proof_is_wrong() {
         let (mut active, _, instant) = active();
-        assert!(
-            InviteIssuer::consume_at(&mut active, "wrong", "wrong", "wrong", Ok(759), instant)
-                .is_err()
-        );
+        assert!(InviteIssuer::consume_at(&mut active, "wrong", "wrong", Ok(759), instant).is_err());
         assert!(active.is_none());
     }
 }

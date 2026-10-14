@@ -141,14 +141,14 @@ identity; no signature retry, key creation or mutation replay is introduced.
 
 Android authentication success requires exactly a control response envelope
 with no project/session/turn/owner/revision/error metadata and an allowlisted
-result containing authenticated=true, the exact saved signing-device ID and
-control_available=false. Booleans are not coerced from strings/numbers. Optional
+result containing authenticated=true, the exact saved signing-device ID and a
+boolean control_available. Booleans are not coerced from strings/numbers. Optional
 device_revision is a positive lexical u64; legacy absence permits ordinary
-reads but cannot authorize self-revoke. Unknown result fields, null/zero/
-fractional/overflow revision and authentication-level control grants refuse
-before workspace/ACK/command followup. Pairing success likewise rejects
-control_available=true: project grants always come from fresh host ACL views,
-not the QR/registration receipt.
+reads but cannot authorize self-revoke. Unknown result fields and null/zero/
+fractional/overflow revision refuse before workspace/ACK/command followup.
+control_available (pair and authenticate) is the host's truthful report that the
+device currently holds Control on a project this host has mounted (ZE-514); the
+per-project authority Android acts on still comes from fresh host ACL views.
 
 Android ViewModel host callbacks (subscription projection, saved command
 confirmation and prompt-status listing) dispatch from network IO to the Main
@@ -186,7 +186,7 @@ resubmission of a write; exact saved-request retry remains explicit. Pairing
 timeout cannot prove the one-use invitation was unconsumed.
 
 Android same-identity re-pair may update the stored endpoint only after the
-new invite passes expiry/SAS/pinned TLS/device-proof exchange. The encrypted
+new invite passes expiry/pinned TLS/device-proof exchange. The encrypted
 metadata store preserves its display/cursor record only when both host
 fingerprint and device ID match; it reuses the strict cache codec so grants,
 owner epochs, running-state authority, live text and terminal output do not
@@ -1124,15 +1124,18 @@ Control payloads: `hello {supported_versions}`, `welcome {selected_version}`,
 Bulk payload: `snapshot {cursor, state}`. Cursors have `session_id` and
 `next_sequence`, and must match the envelope session.
 
-Control `pair {token, fingerprint, safety_code, device_name, public_key, signature}` requires a
+Control `pair {token, fingerprint, device_name, public_key, signature}` requires a
 correlation `id`, a 43-character base64url token (32 random bytes), a lowercase
-64-character certificate fingerprint, a six-digit safety code and a bounded
-device name. Pairing fields are redacted in Debug output. After TLS handshake,
+64-character certificate fingerprint and a bounded device name. The former
+six-digit safety code was derivable from the QR itself and is removed (ZE-514).
+Pairing fields are redacted in Debug output. After TLS handshake,
 the host requires hello/welcome negotiation before the pair request. The
 current response returns `device_registered: true` only after signature
 verification, invite consumption and durable device registration; it includes
-`device_id` and `device_revision`, but explicitly returns
-`control_available: false`. Registration grants no project access or mutation.
+`device_id`, `device_revision` and a truthful `control_available`. Scanning the
+QR shown only on the host owner's screen is the desktop confirmation: the device
+receives Read, Control and Approval on the project mounted by `--workspace`
+(none when nothing is mounted, so `control_available` is false).
 The connection then closes. This is still a development schema with no released
 v1 client; older unsigned pairing clients are rejected, never silently admitted.
 
@@ -1156,7 +1159,7 @@ It is connection-local, expires after 30 seconds and is
 consumed even by a failed authentication attempt. The host independently reads
 the current private device registry; revocation and permission revision changes
 fence earlier authentication handles. The current authentication response has
-`authenticated`, `device_id` and `control_available:false`. Without a workspace
+`authenticated`, `device_id` and `control_available`. Without a workspace
 attachment it then closes. An explicit `--workspace PATH --session PATH`
 attachment retains the prepared production owner pool and admits authorized
 read requests on the connection with a 30-second absolute per-request deadline.
@@ -1164,10 +1167,11 @@ Android can authenticate a saved host and retrieve a bounded snapshot.
 
 The host registry is bounded, private, owned, non-symlink, host-fingerprint-bound,
 cross-process locked and atomically persisted. Corrupt/rotated identity storage
-fails closed. New devices have Read capability and an empty project ACL, so all
-project actions are denied. Local host permissions distinguish Read, Control
-and Approval; Approval does not imply Control and no global wildcard is used.
-Re-pairing never restores revoked keys or expands existing permissions.
+fails closed. A device paired while a project is mounted has Read, Control and
+Approval on exactly that project; one paired with nothing mounted has Read and an
+empty project ACL. Local host permissions distinguish Read, Control and Approval;
+no global wildcard is used. Re-pairing never restores revoked keys; a fresh scan
+adds the currently mounted project to an existing grant and is otherwise a no-op.
 `zenpi host pair --identity PATH --list-devices` lists local records;
 optional `--json` emits only id/name/revoked/revision/capabilities/projects for
 each local record, never public/private key or authentication proof fields.
@@ -1180,20 +1184,11 @@ uses an existing session and bounded non-symlink owner checkpoint, and does not
 publish, migrate, repair or grant permissions. A missing checkpoint projects
 the bootstrap workspace identity without creating a checkpoint. Malformed or
 mismatched stored state refuses rather than inventing an authorization target.
-`--revoke-device ID` durably revokes before returning and starts no listener.
-`--grant-device-read ID --project PROJECT_ID` (repeat `--project` for more IDs)
-replaces the local project ACL with explicit Read grants, increments revision,
-and starts no listener. It does not grant Control or Approval.
-`--grant-device-control ID --project PROJECT_ID` instead replaces that ACL with
-Read and Control, never Approval. Duplicate grant actions are rejected. Grant UI
-and complete remote mutation dispatch remain unfinished.
-`--grant-device-control-approval ID --project PROJECT_ID` explicitly replaces
-the ACL with Read/Control/Approval so one phone may submit and decide its
-host-side approval requests. This local opt-in does not make Control imply
-Approval, does not change other devices or wildcard projects, and cannot be
-combined with another grant action. Existing revision fencing/revocation and
-restart persistence apply unchanged; no remote permission-escalation command
-is added.
+`--revoke-device ID` durably revokes before returning and starts no listener;
+the revoked device is refused on its next frame. The former four
+`--grant-device-*` actions are removed (ZE-514): pairing itself grants the
+mounted project. Revision fencing and restart persistence apply unchanged; no
+remote permission-escalation command is added.
 Android's Forget device wipes local key/metadata only; it is not host revocation.
 
 The current read adapter exposes `workspace_list` (authorized IDs, display titles,
@@ -1582,7 +1577,7 @@ replaced or repaired automatically.
 QR URI: `zenpi://pair?v=1&address=<literal IP:port>&fingerprint=<sha256>&token=<base64url>&expires=<unix seconds>`.
 
 Shared invitation fixtures bind raw URI, validation clock, normalized address
-and expected safety code across Rust and Android. Scheme/authority must use
+across Rust and Android. Scheme/authority must use
 the exact zenpi://pair origin, v must be exactly 1, and expiry must be unsigned
 decimal with at most 19 digits. IPv4 link-local and IPv4-mapped IPv6 wildcard,
 multicast/broadcast/link-local targets are refused on the host as on Android.
@@ -1592,7 +1587,7 @@ remain invalid. Loopback is allowed for explicitly scoped local fixtures.
 
 The remote_qr_fixture example rasterizes the actual production terminal QR
 cells into PGM fixtures. Android JVM tests decode those pixels with ZXing and
-then validate the exact URI/address/SAS. Fixtures use a public deterministic
+then validate the exact URI/address. Fixtures use a public deterministic
 test token and never start a listener or create an accepted invite. This proves
 tested terminal-renderer/scanner-engine compatibility, not physical camera,
 foreground Android transport or LAN success.
@@ -1609,10 +1604,9 @@ token. Invalid proofs on an otherwise fresh invitation remain non-consuming.
 The monotonic deadline independently prevents a smaller rollback from extending
 the invitation's original lifetime. No invitation is persisted across restart.
 A mutex serializes consumption so concurrent scans yield exactly one winner.
-The safety code is six decimal digits from the first four bytes (big-endian)
-of SHA-256 of `zenpi-pair-v1:<fingerprint>:<token>`, modulo 1,000,000. The client
-must require human confirmation against the independently displayed desktop
-code before sending it. This is not mTLS or an untrusted-network release.
+There is no separate safety code: anything derived from the QR proves nothing the
+QR does not. The client requires a human tap after showing the pinned
+fingerprint. This is not mTLS or an untrusted-network release.
 
 The opt-in default binds `0.0.0.0:0`. `--bind IP:PORT` narrows the interface;
 `--advertise IP` selects a reachable literal IP, with address-family/interface
@@ -2088,9 +2082,7 @@ Pending approvals are intentionally omitted from offline cache, and offline
 views do not display a saved pending decision target. `approve` accepts exactly
 request_id/digest/decision (allow or deny), plus envelope request identity,
 project/session and workspace owner/revision. The registry's Approval capability
-is required independently of Control. `--grant-device-approval` is a local
-Read/Approval grant action, not an implicit Control grant. Like existing grant
-actions it replaces that device's project/capability set; it is not additive.
+is checked independently of Control; pairing grants both on the mounted project.
 The coordinator compares the full request digest and claims the answer under
 one lock, so a local answer or different request cannot be overwritten. Remote
 answers always have remember=false and no policy grant/message. The worker's
@@ -2836,7 +2828,7 @@ before preparing proof. The current Rust listener emits these exact envelopes.
 
 Successful pairing requires correlated succeeded response, exact expected
 device identity and true boolean paired/device_registered. control_available
-must be boolean; registration does not itself grant project control. Current
+must be boolean and is true when pairing granted the mounted project. Current
 host device_revision is accepted and checked as positive u64 when present;
 legacy schema-1 receipts without it remain compatible. Unknown result fields
 or contradictory registration flags refuse. An accepted correlated receipt

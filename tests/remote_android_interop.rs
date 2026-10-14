@@ -97,7 +97,6 @@ fn android_p256_pair_and_challenge_proofs_are_verified_by_rust() {
     let Message::Pair {
         token,
         fingerprint: pin,
-        safety_code,
         device_name: name,
         public_key: public,
         signature,
@@ -106,7 +105,6 @@ fn android_p256_pair_and_challenge_proofs_are_verified_by_rust() {
         panic!("signed pair")
     };
     assert_eq!(pin, &fingerprint);
-    assert_eq!(safety_code, &invite.safety_code());
     assert_eq!(name, "Phone\u{2028}desk\\u2028");
     let id = pair.id.as_deref().unwrap();
     for (bad_pin, bad_token, bad_id, bad_name) in [
@@ -153,15 +151,19 @@ fn android_p256_pair_and_challenge_proofs_are_verified_by_rust() {
             assert!(registry.list().unwrap().is_empty());
         }
     }
+    let mounted = vec!["mounted-project".to_owned()];
     let record = registry
-        .verify_pair_and_register(token, id, name, public, signature, || {
-            issuer.consume(token, pin, safety_code).is_ok()
+        .verify_pair_and_grant(token, id, name, public, signature, &mounted, || {
+            issuer.consume(token, pin).is_ok()
         })
         .unwrap();
     assert_eq!(record.id, output["device_id"]);
-    assert_eq!(record.capabilities, [Capability::Read]);
-    assert!(record.projects.is_empty());
-    assert!(issuer.consume(token, pin, safety_code).is_err());
+    assert_eq!(
+        record.capabilities,
+        [Capability::Read, Capability::Control, Capability::Approval]
+    );
+    assert_eq!(record.projects, mounted);
+    assert!(issuer.consume(token, pin).is_err());
     let mut framed_signatures = std::collections::BTreeMap::new();
     for proof in output["proofs"].as_array().unwrap() {
         let kind = proof["kind"].as_str().unwrap();

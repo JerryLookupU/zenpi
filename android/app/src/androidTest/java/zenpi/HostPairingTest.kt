@@ -59,20 +59,19 @@ class HostPairingTest {
         assertTrue(identity.publicKey.length == 87)
         val wrongFingerprint = if (invite.fingerprint.startsWith('a')) "b".repeat(64) else "a".repeat(64)
         val wrong = PairingInvite.parse(uri.replace(invite.fingerprint, wrongFingerprint))
-        assertTrue(runCatching { pairingClient().pair(wrong, wrong.safetyCode, "Android-emulator-test", identity) }.isFailure)
-        val result = pairingClient().pair(invite, invite.safetyCode, "Android-emulator-test", identity)
-        assertTrue(result.paired); assertFalse(result.controlAvailable); assertTrue(result.deviceRegistered)
+        assertTrue(runCatching { pairingClient().pair(wrong, "Android-emulator-test", identity) }.isFailure)
+        val result = pairingClient().pair(invite, "Android-emulator-test", identity)
+        assertTrue(result.paired); assertTrue(result.deviceRegistered)
         assertEquals(identity.deviceId, result.deviceId)
         val host = PairedHost(invite.host, invite.port, invite.fingerprint, result.deviceId)
         metadata.save(host); assertEquals(host, metadata.load())
         metadata.wipe(); assertNull(metadata.load())
-        assertTrue(runCatching { pairingClient().pair(invite, invite.safetyCode, "Android-emulator-test", identity) }.isFailure)
+        assertTrue(runCatching { pairingClient().pair(invite, "Android-emulator-test", identity) }.isFailure)
         val expectedProject = InstrumentationRegistry.getArguments().getString("expected_project")
         if (expectedProject != null) {
             val client = hostClient()
             val denied = client.inspect(host, identity = identity)
-            assertTrue("Registration must not automatically grant a project", denied.projects.isEmpty())
-            val status = android.os.Bundle().apply { putString("zenpi_phase", "ungranted_projection_verified") }
+            val status = android.os.Bundle().apply { putString("zenpi_phase", "paired_projection_verified") }
             InstrumentationRegistry.getInstrumentation().sendStatus(0, status)
             var projection = denied
             repeat(30) {
@@ -80,7 +79,7 @@ class HostPairingTest {
                     delay(200)
                     try { projection = client.inspect(host, identity = identity) }
                     catch (error: zenpi.transport.WireException) {
-                        // The local grant changes revision while an ungranted connection may still be in flight.
+                        // A host without a mounted project may still refuse while it is attached.
                         if (error.message != "Host request refused: unauthorized") throw error
                     }
                 }

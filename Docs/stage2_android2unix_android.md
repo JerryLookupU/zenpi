@@ -3,10 +3,11 @@
 For the current operator flow, see
 [Android/Rust LAN user guide](stage2_android2unix_user_guide.md). It distinguishes
 source-implemented behavior from outstanding device/release acceptance.
-The local host CLI now has an explicit `--grant-device-control-approval` action
-for one phone to submit prompts and decide tool approvals. It replaces its
-project ACL with Read/Control/Approval, not a default pairing permission. The
-existing separate capability checks and offline authority removal are unchanged.
+Since ZE-514 pairing grants Read/Control/Approval on the host's mounted project
+directly (scanning the QR shown on the owner's screen is the desktop
+confirmation); the grant CLIs and the six-digit safety code are removed, and
+later sections that mention them are historical. The existing separate
+capability checks and offline authority removal are unchanged.
 Paired host display now shows the full device ID in four monospace lines with
 an explicit copy icon, so the local operator can match it to --list-devices
 before granting an ACL. The ID is public correlation, not a signing key or

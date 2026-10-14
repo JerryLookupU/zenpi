@@ -11,14 +11,12 @@ class PairingConfirmationPolicyTest {
         val token = Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(32) { byte })
         return PairingInvite.parse("zenpi://pair?v=1&address=192.168.50.55%3A7777&fingerprint=${"a".repeat(64)}&token=$token&expires=1060", 1000) { 0 }
     }
-    @Test fun exactAsciiCodeAndFreshInviteAreRequiredBeforeRegistration() {
+    @Test fun freshInviteIsRequiredBeforeRegistration() {
         val invite = invite(); val state = PairingState(PairingPhase.CONFIRMING, invite)
-        assertTrue(PairingConfirmationPolicy.allows(state, invite.safetyCode, 1000))
-        assertTrue(PairingConfirmationPolicy.allows(state, invite.safetyCode, 1059))
-        for (code in listOf("", "123", "1234567", " ${invite.safetyCode}", invite.safetyCode + "\n", "\u0661\u0662\u0663\u0664\u0665\u0666"))
-            assertFalse(PairingConfirmationPolicy.allows(state, code, 1000))
+        assertTrue(PairingConfirmationPolicy.allows(state, 1000))
+        assertTrue(PairingConfirmationPolicy.allows(state, 1059))
         for (now in listOf(1060L, 1061L, 759L, -1L, Long.MIN_VALUE, Long.MAX_VALUE))
-            assertFalse(PairingConfirmationPolicy.allows(state, invite.safetyCode, now))
+            assertFalse(PairingConfirmationPolicy.allows(state, now))
     }
     @Test fun otherPhasesResetAndPendingAuthorityNeverPermitConfirmation() {
         val invite = invite(); val state = PairingState(PairingPhase.CONFIRMING, invite)
@@ -28,14 +26,13 @@ class PairingConfirmationPolicyTest {
         for (bad in PairingPhase.entries.filter { it != PairingPhase.CONFIRMING }.map { state.copy(phase = it) }
             + listOf(state.copy(invite = null), state.copy(scanInProgress = true), state.copy(resetting = true), state.copy(resetRequired = true),
                 state.copy(pendingWorkspace = command), state.copy(pendingRevoke = "revoke")))
-            assertFalse(PairingConfirmationPolicy.allows(bad, invite.safetyCode, 1000))
+            assertFalse(PairingConfirmationPolicy.allows(bad, 1000))
     }
     @Test fun replacementWithSameHostAndExpiryIsStillANewInvitation() {
         val old = invite(); val replacement = invite(1)
         assertEquals(old.fingerprint, replacement.fingerprint); assertEquals(old.expiresAt, replacement.expiresAt)
-        assertNotEquals(old.safetyCode, replacement.safetyCode)
+        assertNotEquals(old.token, replacement.token)
         val state = PairingState(PairingPhase.CONFIRMING, replacement)
-        assertFalse(PairingConfirmationPolicy.allows(state, old.safetyCode, 1000))
-        assertTrue(PairingConfirmationPolicy.allows(state, replacement.safetyCode, 1000))
+        assertTrue(PairingConfirmationPolicy.allows(state, 1000))
     }
 }

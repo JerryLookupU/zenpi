@@ -95,7 +95,7 @@ fn read_invite_with_timeout(mut child: std::process::Child) -> (ChildGuard, Stri
             .and_then(|line| line);
         let _ = sender.send(result);
         // Keep the child's stdout alive after the invite. Dropping the read
-        // end here races its subsequent safety-code output with SIGPIPE.
+        // end here races its subsequent expiry output with SIGPIPE.
         let _ = std::io::copy(&mut reader, &mut std::io::sink());
         let mut stdout = reader.into_inner().into_inner();
         let _ = std::io::copy(&mut stdout, &mut std::io::sink());
@@ -224,7 +224,6 @@ fn tls_pair(
         Message::Pair {
             token: invite.token.clone(),
             fingerprint: invite.fingerprint.clone(),
-            safety_code: invite.safety_code(),
             device_name: device_name.to_owned(),
             public_key,
             signature,
@@ -601,7 +600,6 @@ fn wait_listing(
 #[ignore = "requires production TLS and HTTP loopback listeners"]
 fn production_prompt_tool_approval_cancel_replay_and_clean_restart() {
     use serde_json::json;
-    use sha2::Digest;
     let fixture = ProviderFixture::start();
     let temporary = tempfile::tempdir().unwrap();
     let workspace = temporary.path().join("workspace");
@@ -656,30 +654,13 @@ fn production_prompt_tool_approval_cancel_replay_and_clean_restart() {
     let document = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &random).unwrap();
     let key = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, document.as_ref(), &random)
         .unwrap();
+    // ZE-514: scanning the desktop QR is the confirmation; no grant CLI follows.
     let paired = tls_pair(&invite, &identity, &key, "production-phone");
+    assert_eq!(response_result(&paired)["control_available"], true);
     let device = response_result(&paired)["device_id"]
         .as_str()
         .unwrap()
         .to_owned();
-    let mut hash = sha2::Sha256::new();
-    hash.update(b"zenpi-project-workspace-v1\0");
-    hash.update(workspace.to_str().unwrap().as_bytes());
-    let project = format!("{:x}", hash.finalize());
-    let grant = Command::new(env!("CARGO_BIN_EXE_zenpi"))
-        .args(["host", "pair", "--identity"])
-        .arg(&identity_path)
-        .args([
-            "--grant-device-control-approval",
-            &device,
-            "--project",
-            &project,
-        ])
-        .env_clear()
-        .env("HOME", &home)
-        .env("ZENPI_HOME", &home)
-        .output()
-        .unwrap();
-    assert!(grant.status.success());
     let listing = authenticated_workspace_list(&invite, &identity, &key, &device);
     assert_eq!(listing["projects"][0]["prompt_control"], true);
     let prompt = request_from_listing(
@@ -932,7 +913,7 @@ fn provider_fixture_requires_tool_result_before_final_answer_and_holds_cancel_op
 /// socket bind into a false production claim; run with `cargo test --ignored`.
 #[test]
 #[ignore = "requires a real production TLS listener and LAN-capable sandbox"]
-fn production_attached_workspace_is_readable_after_pair_and_grant() {
+fn production_attached_workspace_is_controllable_right_after_pairing() {
     let fixture = ProviderFixture::start();
     let temporary = tempfile::tempdir().unwrap();
     let workspace = temporary.path().join("workspace");
@@ -987,30 +968,21 @@ fn production_attached_workspace_is_readable_after_pair_and_grant() {
         panic!("pairing response missing");
     };
     let device_id = result["device_id"].as_str().unwrap().to_owned();
+    assert_eq!(result["control_available"], true);
     use sha2::Digest;
     let mut hash = sha2::Sha256::new();
     hash.update(b"zenpi-project-workspace-v1\0");
     hash.update(workspace.to_str().unwrap().as_bytes());
     let project = format!("{:x}", hash.finalize());
-    let grant = Command::new(env!("CARGO_BIN_EXE_zenpi"))
-        .args(["host", "pair", "--identity"])
-        .arg(&identity_path)
-        .args(["--grant-device-read", &device_id, "--project", &project])
-        .output()
-        .unwrap();
-    assert!(
-        grant.status.success(),
-        "{}",
-        String::from_utf8_lossy(&grant.stderr)
-    );
     let listing = authenticated_workspace_list(&invite, &identity, &key, &device_id);
-    assert!(
-        listing["projects"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|item| item["id"] == project)
-    );
+    let mounted = listing["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == project)
+        .unwrap();
+    assert_eq!(mounted["prompt_control"], true);
+    assert_eq!(mounted["approval_control"], true);
 }
 
 /// Requires a real loopback listener and filesystem/network permissions.
@@ -1054,6 +1026,7 @@ fn production_binary_invite_is_pinned_and_consumed_once() {
     };
     assert_eq!(result["paired"], true);
     assert_eq!(result["device_registered"], true);
+    // No --workspace is mounted, so pairing truthfully grants no control.
     assert_eq!(result["control_available"], false);
 
     let replay = tls_pair(&invite, &identity, &key, "e2e-phone");
@@ -1126,18 +1099,7 @@ fn production_serve_outlives_the_invite_and_keeps_its_port_across_restart() {
         panic!("pairing response missing");
     };
     let device_id = result["device_id"].as_str().unwrap().to_owned();
-    use sha2::Digest;
-    let mut hash = sha2::Sha256::new();
-    hash.update(b"zenpi-project-workspace-v1\0");
-    hash.update(workspace.to_str().unwrap().as_bytes());
-    let project = format!("{:x}", hash.finalize());
-    let grant = Command::new(env!("CARGO_BIN_EXE_zenpi"))
-        .args(["host", "pair", "--identity"])
-        .arg(&identity_path)
-        .args(["--grant-device-read", &device_id, "--project", &project])
-        .output()
-        .unwrap();
-    assert!(grant.status.success());
+    assert_eq!(result["control_available"], true);
     // The invite expires; the paired device still reconnects with its key.
     thread::sleep(Duration::from_secs(3));
     let listing = authenticated_workspace_list(&invite, &identity, &key, &device_id);

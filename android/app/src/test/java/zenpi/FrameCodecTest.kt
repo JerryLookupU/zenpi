@@ -13,7 +13,7 @@ class FrameCodecTest {
             """{"type":"hello","supported_versions":[1]}""",
             """{"type":"welcome","selected_version":1}""",
             """{"type":"challenge","nonce":"${"A".repeat(43)}","host_fingerprint":"${"a".repeat(64)}"}""",
-            """{"type":"pair","token":"${"A".repeat(43)}","fingerprint":"${"a".repeat(64)}","safety_code":"123456","device_name":"phone","public_key":"$public","signature":"proof"}""",
+            """{"type":"pair","token":"${"A".repeat(43)}","fingerprint":"${"a".repeat(64)}","device_name":"phone","public_key":"$public","signature":"proof"}""",
             """{"type":"authenticate","device_id":"${"a".repeat(64)}","signature":"proof"}""",
             """{"type":"revoke_status","device_id":"${"a".repeat(64)}","request_id":"original","signature":"proof"}"""
         )

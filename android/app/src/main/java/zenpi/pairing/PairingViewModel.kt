@@ -1070,8 +1070,8 @@ class PairingViewModel @JvmOverloads constructor(application: Application, priva
         closeDiff(); connection?.cancel(); generation++
         mutable.value = PairingState(PairingPhase.CONFIRMING, invite, scanInProgress = mutable.value.scanInProgress)
     }
-    fun confirm(safetyCode: String) {
-        if (!foreground || !PairingConfirmationPolicy.allows(mutable.value, safetyCode)) return
+    fun confirm() {
+        if (!foreground || !PairingConfirmationPolicy.allows(mutable.value)) return
         val invite = mutable.value.invite ?: return
         if (!networkAvailable) { mutable.value = mutable.value.copy(error = "Network unavailable"); return }
         val current = ++generation
@@ -1081,7 +1081,7 @@ class PairingViewModel @JvmOverloads constructor(application: Application, priva
                 val identity = PairingCredentialAdmission.load(storage, { generation == current }, { invite.requireFresh() }) {
                     deviceIdentity ?: DeviceIdentity.loadOrCreate()
                 }
-                val result = PairingClient(socketRouting::bind).pair(invite, safetyCode, "Android", identity)
+                val result = PairingClient(socketRouting::bind).pair(invite, "Android", identity)
                 var saved: zenpi.security.SavedHostState? = null
                 if (result.paired && result.deviceRegistered && generation == current) {
                     storage.withLock { withContext(Dispatchers.IO) { if (generation == current) {

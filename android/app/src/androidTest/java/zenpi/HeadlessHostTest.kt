@@ -40,14 +40,12 @@ class HeadlessHostTest {
         val identity = DeviceIdentity.loadOrCreate("zenpi.headless-process.$namespace")
         val store = PairedHostStore(instrumentation.targetContext, namespace)
         val invite = PairingInvite.parse(requireNotNull(args.getString("invite")))
-        val paired = pairingClient().pair(invite, invite.safetyCode, "Android-headless-test", identity)
-        assertTrue(paired.paired); assertFalse(paired.controlAvailable)
+        val paired = pairingClient().pair(invite, "Android-headless-test", identity)
+        // ZE-514: the headless host mounts a project, so pairing grants control at once.
+        assertTrue(paired.paired); assertTrue(paired.controlAvailable)
         val host = PairedHost(invite.host, invite.port, invite.fingerprint, paired.deviceId)
         store.save(host)
-        val ungranted = hostClient().inspect(host, identity = identity)
-        assertTrue(ungranted.projects.isEmpty())
-        instrumentation.sendStatus(0, android.os.Bundle().apply { putString("zenpi_phase", "headless_local_grant_requested") })
-        var projection = ungranted
+        var projection = hostClient().inspect(host, identity = identity)
         repeat(60) {
             if (projection.projects.isEmpty()) {
                 delay(100)

@@ -39,13 +39,13 @@ class PhysicalQrHostTest {
             delay(1000)
             compose.onNodeWithText("Scan QR").performScrollTo().performClick()
             phase("physical_qr_camera_requested")
-            compose.waitUntil(125_000) { compose.onAllNodesWithText("Desktop safety code").fetchSemanticsNodes().isNotEmpty() }
+            compose.waitUntil(125_000) { compose.onAllNodesWithText("Confirm host").fetchSemanticsNodes().isNotEmpty() }
             compose.onNodeWithText(address).performScrollTo().assertIsDisplayed()
             compose.onNodeWithText(fingerprint.chunked(16).joinToString("\n")).assertExists()
             assertNull(store.loadState()); assertNull(DeviceIdentity.loadExisting())
             phase("physical_qr_confirmation_visible")
             // No performTextInput, confirm click or ViewModel injection here.
-            // The operator must compare and enter the SAS, then tap Confirm host.
+            // The operator must compare the fingerprint, then tap Confirm host.
             var saved: SavedHostState? = null
             val registrationDeadline = System.nanoTime() + 90_000_000_000L
             while (saved == null && System.nanoTime() < registrationDeadline) { delay(100); saved = store.loadState() }
@@ -60,8 +60,7 @@ class PhysicalQrHostTest {
             assertNull("A successful registration must retire its one-use invitation", model.state.value.invite)
             phase("physical_qr_invitation_retired_verified")
             val client = HostClient(LanSocketRouting(context)::bind)
-            assertTrue(client.inspect(host, identity = identity).projects.isEmpty())
-            phase("ungranted_projection_verified")
+            phase("paired_projection_verified")
             var projection: HostProjection? = null
             repeat(200) {
                 if (projection?.selectedId != project) {

@@ -8230,7 +8230,7 @@ fn backend_from_effective(
 
 fn print_help() {
     println!(
-        "zenpi host pair [--bind IP:PORT] [--advertise IP] [--identity PATH] [--duration-seconds 1..300] [--plain] [--workspace PATH --session PATH [--desktop | --list-projects]] [--list-devices [--json] | --revoke-device ID | --grant-device-read ID --project ID ... | --grant-device-control ID --project ID ... | --grant-device-approval ID --project ID ... | --grant-device-control-approval ID --project ID ...]"
+        "zenpi host pair [--bind IP:PORT] [--advertise IP] [--identity PATH] [--duration-seconds 1..300] [--plain] [--workspace PATH --session PATH [--desktop | --list-projects]] [--list-devices [--json] | --revoke-device ID]"
     );
     println!(
         "zenpi [--mode tui|headless] [--session PATH | -s NAME|ID | -c | --no-session] [--auto] [--eof-drain-secs N] [--max-tool-iterations N] [--tools a,b] [--backend openai|anthropic|google] [--profile NAME] [--model NAME]"

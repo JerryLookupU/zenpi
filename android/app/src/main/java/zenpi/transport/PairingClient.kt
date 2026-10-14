@@ -33,9 +33,8 @@ class PinnedTrustManager internal constructor(fingerprint: String, private val n
 }
 
 class PairingClient(private val bindSocket: (Socket, String) -> Unit = { _, _ -> }) {
-    suspend fun pair(invite: PairingInvite, safetyCode: String, deviceName: String, identity: DeviceIdentity): PairingResult {
+    suspend fun pair(invite: PairingInvite, deviceName: String, identity: DeviceIdentity): PairingResult {
         invite.requireFresh()
-        if (safetyCode != invite.safetyCode) throw WireException("Safety code mismatch")
         if (deviceName.isBlank() || deviceName.toByteArray().size > 128
             || deviceName.any { Character.isISOControl(it) }) throw WireException("Invalid device name")
         val proof = withContext(Dispatchers.IO) { PairingIdentityProof.capture { identity.publicKey } }
@@ -69,7 +68,7 @@ class PairingClient(private val bindSocket: (Socket, String) -> Unit = { _, _ ->
                                 socket.startHandshake()
                                 HandshakePrelude.applicationProtocol(socket.applicationProtocol)
                                 PairingHandshake.exchange(socket.inputStream, socket.outputStream, invite,
-                                    safetyCode, deviceName, proof.publicKey, proof.deviceId,
+                                    deviceName, proof.publicKey, proof.deviceId,
                                     sign = { id -> identity.signPair(invite.fingerprint, invite.token, id, deviceName) },
                                     checkActive = { ensureActive() }, checkIdentity = { proof.requireCurrent { identity.publicKey } })
                             }

@@ -114,13 +114,6 @@ fn invite_roundtrip_bounds_and_debug_redaction() {
         invite
     );
     assert!(!format!("{invite:?}").contains(&invite.token));
-    assert_eq!(invite.safety_code().len(), 6);
-    assert!(
-        invite
-            .safety_code()
-            .bytes()
-            .all(|value| value.is_ascii_digit())
-    );
     for suffix in ["&v=1", "&credential=secret", "#fragment"] {
         assert!(PairingInvite::from_uri(&(uri.clone() + suffix), unix_seconds().unwrap()).is_err());
     }
@@ -146,35 +139,16 @@ fn invite_roundtrip_bounds_and_debug_redaction() {
 }
 
 #[test]
-fn invites_are_one_use_and_refresh_cancel_and_wrong_sas_fail_closed() {
+fn invites_are_one_use_and_refresh_cancel_and_wrong_proof_fail_closed() {
     let identity = HostIdentity::generate().unwrap();
     let issuer = InviteIssuer::new(&identity);
     let first = issuer
         .issue("127.0.0.1:7777".parse().unwrap(), Duration::from_secs(60))
         .unwrap();
-    assert!(
-        issuer
-            .consume(&first.token, &first.fingerprint, "wrong")
-            .is_err()
-    );
-    assert!(
-        issuer
-            .consume("wrong", &first.fingerprint, &first.safety_code())
-            .is_err()
-    );
-    assert!(
-        issuer
-            .consume(&first.token, &"a".repeat(64), &first.safety_code())
-            .is_err()
-    );
-    issuer
-        .consume(&first.token, &first.fingerprint, &first.safety_code())
-        .unwrap();
-    assert!(
-        issuer
-            .consume(&first.token, &first.fingerprint, &first.safety_code())
-            .is_err()
-    );
+    assert!(issuer.consume("wrong", &first.fingerprint).is_err());
+    assert!(issuer.consume(&first.token, &"a".repeat(64)).is_err());
+    issuer.consume(&first.token, &first.fingerprint).unwrap();
+    assert!(issuer.consume(&first.token, &first.fingerprint).is_err());
     let second = issuer
         .issue(first.address, Duration::from_secs(60))
         .unwrap();
@@ -182,17 +156,9 @@ fn invites_are_one_use_and_refresh_cancel_and_wrong_sas_fail_closed() {
         .issue(first.address, Duration::from_secs(60))
         .unwrap();
     assert_ne!(second.token, third.token);
-    assert!(
-        issuer
-            .consume(&second.token, &second.fingerprint, &second.safety_code())
-            .is_err()
-    );
+    assert!(issuer.consume(&second.token, &second.fingerprint).is_err());
     issuer.cancel().unwrap();
-    assert!(
-        issuer
-            .consume(&third.token, &third.fingerprint, &third.safety_code())
-            .is_err()
-    );
+    assert!(issuer.consume(&third.token, &third.fingerprint).is_err());
     for (address, ttl) in [
         ("0.0.0.0:5", 60),
         ("127.0.0.1:0", 60),
@@ -223,9 +189,7 @@ fn concurrent_admission_has_exactly_one_winner() {
             let barrier = barrier.clone();
             std::thread::spawn(move || {
                 barrier.wait();
-                issuer
-                    .consume(&invite.token, &invite.fingerprint, &invite.safety_code())
-                    .is_ok()
+                issuer.consume(&invite.token, &invite.fingerprint).is_ok()
             })
         })
         .collect();
@@ -246,15 +210,11 @@ fn monotonic_and_wall_clock_expiry_are_enforced() {
         .issue("127.0.0.1:7777".parse().unwrap(), Duration::from_secs(1))
         .unwrap();
     std::thread::sleep(Duration::from_millis(1100));
-    assert!(
-        issuer
-            .consume(&invite.token, &invite.fingerprint, &invite.safety_code())
-            .is_err()
-    );
+    assert!(issuer.consume(&invite.token, &invite.fingerprint).is_err());
 }
 
 #[test]
-fn shared_android_rust_qr_invitation_corpus_matches_address_safety_code_and_refusal() {
+fn shared_android_rust_qr_invitation_corpus_matches_address_and_refusal() {
     let mut names = std::collections::BTreeSet::new();
     for row in include_str!("../fuzz/remote_protocol/pairing-corpus.jsonl").lines() {
         let case: serde_json::Value = serde_json::from_str(row).unwrap();
@@ -271,11 +231,6 @@ fn shared_android_rust_qr_invitation_corpus_matches_address_safety_code_and_refu
             assert_eq!(
                 invite.address.to_string(),
                 case["address"].as_str().unwrap(),
-                "{name}"
-            );
-            assert_eq!(
-                invite.safety_code(),
-                case["safety_code"].as_str().unwrap(),
                 "{name}"
             );
             assert!(!format!("{invite:?}").contains(&invite.token));
