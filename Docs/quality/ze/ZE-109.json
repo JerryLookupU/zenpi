@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-109",
+  "claim_id": "ZE-109@blueprint-4.0.0",
+  "from": "worker",
+  "to": "master",
+  "summary": "validate_blueprint_v2.py now requires Docs/quality/ze/<ID>.json for every [_]/[x] item outside level-0 baseline layers (item_id match, changed_files list, non-empty commands_run, validation_result object, sha256 digest of canonical JSON of the other fields) and reports owned-path overlaps between open items with no transitive Depends path (--report-overlaps, also in --json). The Gantt monitoring index gains Claim (handoff claim_id) and Integration (handoff/accepted/—) columns. Retroactive handoffs for ZE-100..102 from commit 649536a; the b3ehive blueprint transform note now points at the v2 blueprint.",
+  "changed_files": [
+    "Docs/Zenpi_Execution_Blueprint_v2_Gantt.md",
+    "Docs/learn/files/b3ehive/docs/blueprint.md_transform.md",
+    "Docs/quality/ze/ZE-100.json",
+    "Docs/quality/ze/ZE-101.json",
+    "Docs/quality/ze/ZE-102.json",
+    "Docs/quality/ze/ZE-109.json",
+    "tools/generate_blueprint_v2_gantt.py",
+    "tools/test_validate_blueprint_v2.py",
+    "tools/validate_blueprint_v2.py"
+  ],
+  "diff_stat": "8 files changed, 456 insertions(+), 138 deletions(-) (excluding this handoff)",
+  "commands_run": [
+    "python3 tools/test_validate_blueprint_v2.py",
+    "python3 tools/validate_blueprint_v2.py",
+    "python3 tools/validate_blueprint_v2.py --report-overlaps",
+    "python3 tools/generate_blueprint_v2_gantt.py",
+    "python3 tools/generate_blueprint_v2_gantt.py --check",
+    "python3 tools/validate_blueprint_v2.py --evidence-dir <copy of Docs/quality/ze without ZE-101.json>",
+    "python3 tools/validate_blueprint_v2.py --evidence-dir <copy of Docs/quality/ze with ZE-102.json notes edited>",
+    "grep -l '^authoritative: true' Docs/*.md",
+    "cargo test --locked --test stage1_sync"
+  ],
+  "validation_result": {
+    "unit_tests": "pass: 21 tests (missing handoff, tampered digest, empty commands_run / wrong item_id, A0 [x] without handoff, overlap report with transitive-dependency exclusion and directory ownership)",
+    "G-BP": "pass: 4 handoffs verified (ZE-100, ZE-101, ZE-102, ZE-234; ZE-109 is still [ ] so its own handoff is present but not yet required); Gantt --check current",
+    "delete_handoff": "fail as required: 'ZE-101: missing handoff', exit 1",
+    "tamper_digest": "fail as required: 'ZE-102: handoff digest mismatch', exit 1",
+    "overlap_report": "341 open-item pairs share an owned path without a Depends path (report only, not an error)",
+    "ZE-100_retro_validators": "pass: only the v2 blueprint is authoritative: true; stage1_sync 5/5"
+  },
+  "notes": "commands_run coverage of each item's Validators is not checked mechanically: Validators mix gate names (G-BP), shell commands and prose, so the check is structural (non-empty) and coverage remains a Master review point. Retroactive ZE-100 notes that the Stage 2 header/selector changes landed in snapshot 212a0c4, not in 649536a. Level-0 exemption is by layer rank 0 (currently only A0).",
+  "created_at": "2026-10-14T12:00:00Z",
+  "digest": "c63e0c782ac94975ef7630c7499c88075b7d82b8203dfa892141cd6da9717c25"
+}
