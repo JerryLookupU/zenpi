@@ -5,9 +5,9 @@
 
 ```yaml
 source: Docs/Zenpi_Execution_Blueprint_v2.md
-source_sha256: 6b7ad583e849a6a93d9ec308823e451388d08ca05a78f7d0e350550d1e695ff9
+source_sha256: fd5c8ddb470ea275a6738df7094cc70b95a7c8a3edd342fd38e347dab19da981
 blueprint_version: 4.0.0
-generated_at: 2026-10-14T11:27:18Z
+generated_at: 2026-10-14T12:45:44Z
 ```
 
 ## Dependency-order view
@@ -43,12 +43,12 @@ gantt
     ZE-100 权威切换： Docs/execution/active_requirement. :done, ZE_100, after ZE_101 ZE_102, 1d
     ZE-101 重写  tools/validate_blueprint_v2.py ：解析 c :done, ZE_101, 0, 1d
     ZE-102 同名只读 Gantt： tools/generate_blueprint_v2_ :done, ZE_102, after ZE_101, 1d
-    ZE-104 共享的脚本化 provider：同一份脚本同时驱动进程内的  ScriptedB :ZE_104, 0, 1d
+    ZE-104 共享的脚本化 provider：同一份脚本同时驱动进程内的  ScriptedB :done, ZE_104, 0, 1d
     ZE-105 Provider 录制回放套件：把  Docs/quality/stage1/p :ZE_105, after ZE_104, 1d
     ZE-106 TUI 生产 loop 的测试注入点：让  run_async_with_rem :ZE_106, after ZE_104, 1d
     ZE-107 验收工作区里已经实现但没有勾选的 ZS1-180（ --auto ）、ZS1-1 :ZE_107, 0, 1d
-    ZE-108 CI 绿基线与 Rust 规范门（来源：codex-rust-deslop、ze :ZE_108, after ZE_100, 1d
-    ZE-109 执行协议机械化（来源：b3ehive bridge contract）。内容如下 :ZE_109, after ZE_101 ZE_102, 1d
+    ZE-108 CI 绿基线与 Rust 规范门（来源：codex-rust-deslop、ze :done, ZE_108, after ZE_100, 1d
+    ZE-109 执行协议机械化（来源：b3ehive bridge contract）。内容如下 :done, ZE_109, after ZE_101 ZE_102, 1d
     section A2
     ZE-213 给模型的工具结果改为纯文本（对齐 pi 的 content 与 details :ZE_213, after ZE_104, 1d
     ZE-200 子进程继承用户环境：保留  PATH / HOME / USER / SHELL :ZE_200, after ZE_104, 1d
@@ -61,7 +61,7 @@ gantt
     ZE-207 搜索改为单次  rg --json ：默认按 regex 匹配，需要时用  -- :ZE_207, after ZE_213, 1d
     ZE-214 默认工具集与  --tools  白名单： dag_*  只对 DAG 派生的 :ZE_214, 0, 1d
     ZE-210 工具调用之后，模型回复空文本或只有 reasoning 时，本轮正常结束。协议层 :ZE_210, after ZE_104, 1d
-    ZE-211 输入队列的记录数和字节数只统计未结束的输入  recover()  不再每次都重 :ZE_211, 0, 1d
+    ZE-211 输入队列的记录数和字节数只统计未结束的输入  recover()  不再每次都重 :active, ZE_211, 0, 1d
     ZE-212 只给  run_active_turn_cancelable  的事件缓冲设上限 :ZE_212, 0, 1d
     ZE-220 保留有界（4 KB）的错误响应体 新增  BackendError  Conte :ZE_220, after ZE_105, 1d
     ZE-221 Completion  增加  StopReason{Stop Length :ZE_221, after ZE_105, 1d
@@ -144,7 +144,7 @@ gantt
 
 ## Monitoring index
 
-Counts: open 89 · self-tested 1 · accepted 23 · total 113
+Counts: open 85 · self-tested 2 · accepted 26 · total 113
 
 | ID | Layer | State | Ready | Depends | Claim | Integration | Est. LOC | Title |
 |---|---|---|---|---|---|---|---:|---|
@@ -171,24 +171,24 @@ Counts: open 89 · self-tested 1 · accepted 23 · total 113
 | ZE-100 | A1 | accepted | no | ZE-101, ZE-102 | ZE-100@blueprint-4.0.0 | accepted | 90 | 权威切换：`Docs/execution/active_requirement.json` 指向本文件，旧的 Stage 1 选择器归档到 `Docs/execution/archive/`；v1、Stage 1、Stage 2 文件头改为 `authoritative: false` 并写入 `superseded_by`；停用 Stage 2 selector；`/sync` 改为优先读取激活的选择器，扫描时跳过 `_Gantt` 投影，并按目标 blueprint 的 `stable_id_pattern` 生成新 ID；CI 改为运行本文件的校验器和 Gantt 检查 |
 | ZE-101 | A1 | accepted | no | — | ZE-101@blueprint-4.0.0 | accepted | 260 | 重写 `tools/validate_blueprint_v2.py`：解析 checkbox 行，拒绝重复 ID、缺失或未知依赖、依赖成环、非法状态、LOC ≥ 5000、违反层门的 `[x]`、依赖未闭合的 `[x]`、指向更高层的依赖 |
 | ZE-102 | A1 | accepted | no | ZE-101 | ZE-102@blueprint-4.0.0 | accepted | 160 | 同名只读 Gantt：`tools/generate_blueprint_v2_gantt.py` 生成 `Docs/Zenpi_Execution_Blueprint_v2_Gantt.md`（mermaid 图、每个 ID 恰好出现一次、带源文件摘要、不含可变 checkbox；`--check` 检测是否过期） |
-| ZE-104 | A1 | open | yes | — | — | — | 400 | 共享的脚本化 provider：同一份脚本同时驱动进程内的 `ScriptedBackend`（记录请求，可在指定轮次停住以测试取消）和本地 HTTP/SSE 假服务器（覆盖 Responses、Chat、Anthropic 三种 wire）；用它替换至少 3 个重复的 mock |
-| ZE-105 | A1 | open | no | ZE-104 | — | — | 220 | Provider 录制回放套件：把 `Docs/quality/stage1/provider-kill319/**` 下 68 份真实 `.sse` 收进 `tests/fixtures/sse/`，按 wire 回放并断言事件序列 |
-| ZE-106 | A1 | open | no | ZE-104 | — | — | 300 | TUI 生产 loop 的测试注入点：让 `run_async_with_remote` 可以注入事件源和 `TestBackend`，用脚本化按键加 ZE-104 的 provider 跑真实 loop，对 transcript 做快照 |
+| ZE-104 | A1 | accepted | no | — | ZE-104@blueprint-4.0.0 | accepted | 400 | 共享的脚本化 provider：同一份脚本同时驱动进程内的 `ScriptedBackend`（记录请求，可在指定轮次停住以测试取消）和本地 HTTP/SSE 假服务器（覆盖 Responses、Chat、Anthropic 三种 wire）；用它替换至少 3 个重复的 mock |
+| ZE-105 | A1 | open | yes | ZE-104 | — | — | 220 | Provider 录制回放套件：把 `Docs/quality/stage1/provider-kill319/**` 下 68 份真实 `.sse` 收进 `tests/fixtures/sse/`，按 wire 回放并断言事件序列 |
+| ZE-106 | A1 | open | yes | ZE-104 | — | — | 300 | TUI 生产 loop 的测试注入点：让 `run_async_with_remote` 可以注入事件源和 `TestBackend`，用脚本化按键加 ZE-104 的 provider 跑真实 loop，对 transcript 做快照 |
 | ZE-107 | A1 | open | yes | — | — | — | 50 | 验收工作区里已经实现但没有勾选的 ZS1-180（`--auto`）、ZS1-181（思考中动画）、ZS1-182（审批确认分级与拒绝反馈）、ZS1-184（`--max-tool-iterations`）：运行它们原先登记的 Validators，通过后在本文件关闭 |
-| ZE-108 | A1 | open | yes | ZE-100 | — | — | 300 | CI 绿基线与 Rust 规范门（来源：codex-rust-deslop、zenpi 自审）。内容如下：<br>• 默认 feature 和 all-features 两套 clippy 都要清零 `-D warnings`；<br>• auth 模块里未接线的登录入口（`cancel_login`、`CancelDisposition` 等 PA10 残留）删除，或移到 `#[cfg(test)]` 下，不新增任何 `allow(dead_code)`；<br>• 修掉约 21 处机械类 lint；<br>• clippy 加上 `--locked`；<br>• 诊断 host-smoke 的 `shared-projects` 失败：若是产品 bug 就修复，若只是在测已冻结的多项目功能，就从 CI 矩阵移除并记录理由；<br>• 确认扩展的 pipe 夹具稳定；<br>• `Docs/quality/rust-deslop-gate.md` 改为指向 G-RUST；<br>• 依赖数门按实测临时重设基线（ZE-520 拆出 remote 后再收紧）；<br>layer `A1` \| Depends: ZE-100 \| Owned paths: `src/auth/`, `.github/workflows/ci.yml`, `tools/stage1_host_smoke.py`, `tests/stage1_extension_hooks.rs`, `Docs/quality/rust-deslop-gate.md`, `tools/bench_runtime.py`，以及 clippy 输出点名的文件（清单写入 handoff） \| Validators: G-RUST；PR 上连续 3 次 CI 全绿 \| Estimated LOC: 300 |
-| ZE-109 | A1 | open | yes | ZE-101, ZE-102 | ZE-109@blueprint-4.0.0 | — | 220 | 执行协议机械化（来源：b3ehive bridge contract）。内容如下：<br>• 校验器要求每个 `[_]`/`[x]` 都有 `Docs/quality/ze/<ID>.json`，其摘要可复核，且 `commands_run` 覆盖该条目的 Validators；<br>• 列出共享 owned paths 但彼此没有依赖关系的未完成条目；<br>• Gantt 增加 claim 与集成状态两列，数据取自 handoff；<br>• 为 ZE-100..102 补写回溯 handoff；<br>• 把 `Docs/learn/files/b3ehive/docs/blueprint.md_transform.md` 里的指向改为本文件；<br>layer `A1` \| Depends: ZE-101, ZE-102 \| Owned paths: `tools/validate_blueprint_v2.py`, `tools/test_validate_blueprint_v2.py`, `tools/generate_blueprint_v2_gantt.py`, `Docs/quality/ze/`, `Docs/learn/files/b3ehive/docs/blueprint.md_transform.md` \| Validators: G-BP；删除任一 handoff 或篡改其摘要后 G-BP 失败 \| Estimated LOC: 220 |
-| ZE-213 | A2 | open | no | ZE-104 | — | — | 220 | 给模型的工具结果改为纯文本（对齐 pi 的 content 与 details 分离）。各内置工具输出的文本如下：<br>• read：原文，加 `[Showing lines a-b of N. Use offset=K to continue]`；<br>• bash：输出尾部，加 `Command exited with code N`、截断说明和完整输出的路径；<br>• edit/write：一行成功信息，diff 只给 UI；<br>• search：`path:line: text`。<br>各 adapter 只发送这段文本加上 `is_error`，结构化 JSON 只留在日志和 UI 中 |
-| ZE-200 | A2 | open | no | ZE-104 | — | — | 60 | 子进程继承用户环境：保留 `PATH`/`HOME`/`USER`/`SHELL`/`TMPDIR` 等，剔除已知的密钥变量；ripgrep、扩展、项目 shell 都用同一份环境 |
+| ZE-108 | A1 | accepted | no | ZE-100 | ZE-108@blueprint-4.0.0 | accepted | 300 | CI 绿基线与 Rust 规范门（来源：codex-rust-deslop、zenpi 自审）。内容如下：<br>• 默认 feature 和 all-features 两套 clippy 都要清零 `-D warnings`；<br>• auth 模块里未接线的登录入口（`cancel_login`、`CancelDisposition` 等 PA10 残留）删除，或移到 `#[cfg(test)]` 下，不新增任何 `allow(dead_code)`；<br>• 修掉约 21 处机械类 lint；<br>• clippy 加上 `--locked`；<br>• 诊断 host-smoke 的 `shared-projects` 失败：若是产品 bug 就修复，若只是在测已冻结的多项目功能，就从 CI 矩阵移除并记录理由；<br>• 确认扩展的 pipe 夹具稳定；<br>• `Docs/quality/rust-deslop-gate.md` 改为指向 G-RUST；<br>• 依赖数门按实测临时重设基线（ZE-520 拆出 remote 后再收紧）；<br>layer `A1` \| Depends: ZE-100 \| Owned paths: `src/auth/`, `.github/workflows/ci.yml`, `tools/stage1_host_smoke.py`, `tests/stage1_extension_hooks.rs`, `Docs/quality/rust-deslop-gate.md`, `tools/bench_runtime.py`，以及 clippy 输出点名的文件（清单写入 handoff） \| Validators: G-RUST；PR 上连续 3 次 CI 全绿 \| Estimated LOC: 300 |
+| ZE-109 | A1 | accepted | no | ZE-101, ZE-102 | ZE-109@blueprint-4.0.0 | accepted | 220 | 执行协议机械化（来源：b3ehive bridge contract）。内容如下：<br>• 校验器要求每个 `[_]`/`[x]` 都有 `Docs/quality/ze/<ID>.json`，其摘要可复核，且 `commands_run` 覆盖该条目的 Validators；<br>• 列出共享 owned paths 但彼此没有依赖关系的未完成条目；<br>• Gantt 增加 claim 与集成状态两列，数据取自 handoff；<br>• 为 ZE-100..102 补写回溯 handoff；<br>• 把 `Docs/learn/files/b3ehive/docs/blueprint.md_transform.md` 里的指向改为本文件；<br>layer `A1` \| Depends: ZE-101, ZE-102 \| Owned paths: `tools/validate_blueprint_v2.py`, `tools/test_validate_blueprint_v2.py`, `tools/generate_blueprint_v2_gantt.py`, `Docs/quality/ze/`, `Docs/learn/files/b3ehive/docs/blueprint.md_transform.md` \| Validators: G-BP；删除任一 handoff 或篡改其摘要后 G-BP 失败 \| Estimated LOC: 220 |
+| ZE-213 | A2 | open | yes | ZE-104 | — | — | 220 | 给模型的工具结果改为纯文本（对齐 pi 的 content 与 details 分离）。各内置工具输出的文本如下：<br>• read：原文，加 `[Showing lines a-b of N. Use offset=K to continue]`；<br>• bash：输出尾部，加 `Command exited with code N`、截断说明和完整输出的路径；<br>• edit/write：一行成功信息，diff 只给 UI；<br>• search：`path:line: text`。<br>各 adapter 只发送这段文本加上 `is_error`，结构化 JSON 只留在日志和 UI 中 |
+| ZE-200 | A2 | open | yes | ZE-104 | — | — | 60 | 子进程继承用户环境：保留 `PATH`/`HOME`/`USER`/`SHELL`/`TMPDIR` 等，剔除已知的密钥变量；ripgrep、扩展、项目 shell 都用同一份环境 |
 | ZE-201 | A2 | open | no | ZE-213 | — | — | 160 | `run_command` 对齐 pi：<br>• stdout 和 stderr 合并为单个管道；<br>• 非零退出作为 `is_error` 结果返回，带输出尾部和退出码，永不丢弃输出；<br>• 保留**尾部** 50 KB / 2000 行，全量写入 artifact；<br>• `timeout` 可选，且没有默认值；<br>layer `A2` \| Depends: ZE-213 \| Owned paths: `src/tools.rs` \| Validators: `sh -c 'echo out; exit 3'` 返回 "out"、退出码 3 和 `is_error`；`seq 100000` 返回尾部，`truncated=true`，artifact 中有全量 \| Estimated LOC: 160 |
 | ZE-202 | A2 | open | no | ZE-201 | — | — | 80 | 工具超时或 IO 失败时作为错误结果回给模型，不再映射为 `UnknownOutcome`，不阻断后续 compaction |
 | ZE-203 | A2 | open | no | ZE-213 | — | — | 80 | `read_file` 按行用 `offset`/`limit` 分页（每页 2000 行 / 50 KB），在字符边界截断，取消 512 KB 的上限 |
-| ZE-204 | A2 | open | no | ZE-104 | — | — | 40 | 写/编辑的单次调用上限与 `MAX_WRITE_BYTES` 对齐；工具参数超限时只让这一次调用失败，不再让整轮 `InvalidTurn`；同时复核 256 KiB 的批次上限 |
-| ZE-205 | A2 | open | no | ZE-104 | — | — | 110 | edit 规范化：剥离 BOM；按 LF 规范化后匹配，并恢复原来的行尾；采用 pi 的模糊回退，唯一性在规范化后判定 |
-| ZE-206 | A2 | open | no | ZE-104 | — | — | 40 | 接受工作区内的绝对路径，以及 `~`、前导 `@` 写法；越界路径仍然拒绝 |
+| ZE-204 | A2 | open | yes | ZE-104 | — | — | 40 | 写/编辑的单次调用上限与 `MAX_WRITE_BYTES` 对齐；工具参数超限时只让这一次调用失败，不再让整轮 `InvalidTurn`；同时复核 256 KiB 的批次上限 |
+| ZE-205 | A2 | open | yes | ZE-104 | — | — | 110 | edit 规范化：剥离 BOM；按 LF 规范化后匹配，并恢复原来的行尾；采用 pi 的模糊回退，唯一性在规范化后判定 |
+| ZE-206 | A2 | open | yes | ZE-104 | — | — | 40 | 接受工作区内的绝对路径，以及 `~`、前导 `@` 写法；越界路径仍然拒绝 |
 | ZE-207 | A2 | open | no | ZE-213 | — | — | 300 | 搜索改为单次 `rg --json`：默认按 regex 匹配，需要时用 `--fixed-strings`；删掉高级参数路径上的 256 文件列表和"每 16 个文件一批"的分发；手写扫描只在找不到 rg 时兜底 |
 | ZE-214 | A2 | open | yes | — | — | — | 70 | 默认工具集与 `--tools` 白名单：`dag_*` 只对 DAG 派生的 worker 或显式开启时暴露；`websearch` 只在解析到 key 时暴露；`--tools a,b` 限定对模型可见的工具集合 |
-| ZE-210 | A2 | open | no | ZE-104 | — | — | 60 | 工具调用之后，模型回复空文本或只有 reasoning 时，本轮正常结束。协议层与 core 两处都要放行 |
-| ZE-211 | A2 | open | yes | — | — | — | 50 | 输入队列的记录数和字节数只统计未结束的输入；`recover()` 不再每次都重放全部事件 |
+| ZE-210 | A2 | open | yes | ZE-104 | — | — | 60 | 工具调用之后，模型回复空文本或只有 reasoning 时，本轮正常结束。协议层与 core 两处都要放行 |
+| ZE-211 | A2 | self-tested | yes | — | ZE-211@blueprint-4.0.0 | handoff | 50 | 输入队列的记录数和字节数只统计未结束的输入；`recover()` 不再每次都重放全部事件 |
 | ZE-212 | A2 | open | yes | — | — | — | 20 | 只给 `run_active_turn_cancelable` 的事件缓冲设上限；修正 `core.rs:562` 里"default is 8"的过期注释 |
 | ZE-220 | A2 | open | no | ZE-105 | — | — | 160 | 保留有界（4 KB）的错误响应体；新增 `BackendError::ContextOverflow`，按 OpenAI、Anthropic、Gemini 各自的已知标记分类；headless 的 `retryable` 改为读取错误本身，不再写死为 `true` |
 | ZE-221 | A2 | open | no | ZE-105 | — | — | 160 | `Completion` 增加 `StopReason{Stop,Length,ToolUse,Refusal}`，length、max_tokens、incomplete 都保留已生成的内容。因长度被截断的那一轮如果带有工具调用，一律不执行，每个调用回一条"output token limit reached"错误结果，循环继续 |
@@ -198,16 +198,16 @@ Counts: open 89 · self-tested 1 · accepted 23 · total 113
 | ZE-225 | A2 | open | no | ZE-105 | — | — | 100 | 缓存与用量：Anthropic 在 system 和最后一个用户块上加 `cache_control`；Responses/Codex 的 `prompt_cache_key` 设为 session ID；`Usage` 增加 cache_read/cache_write 字段，供 ZE-232 做真实用量锚点 |
 | ZE-226 | A2 | open | no | ZE-105 | — | — | 40 | 放宽脆弱的校验：<br>• Chat：允许 stop 与工具调用同时出现，允许缺 `choices`/`index`；<br>• Anthropic：忽略未知事件；<br>• Gemini：总 token 数只要不小于各项之和即可；<br>layer `A2` \| Depends: ZE-105 \| Owned paths: `src/protocols/chat.rs`, `src/protocols/anthropic.rs`, `src/protocols/google.rs` \| Validators: 各 wire 构造的变体回放都通过 \| Estimated LOC: 40 |
 | ZE-227 | A2 | open | no | ZE-105 | — | — | 140 | 跨模型历史转换：目标模型或 wire 与某轮的 `native_history` 不同时，丢弃不透明的 reasoning 和签名，把可见的 thinking 转成文本，把工具调用 ID 规范化到目标 wire 的限制以内；同一模型仍按原样严格重放 |
-| ZE-230 | A2 | open | no | ZE-104 | — | — | 260 | 基础 system prompt。内容如下：<br>• 工具清单与使用准则，写明各工具的上限、分页方式和截断规则；<br>• 一行环境信息：cwd、日期、OS；<br>• 发现 AGENTS.md，没有时用 CLAUDE.md。查找范围是全局 `~/.zenpi/` 加上从工作区根到 cwd 的各级目录，按全局 → 根 → cwd 的顺序合并，总字节数有上限，读失败时跳过并发出事件；<br>• SYSTEM.md / APPEND_SYSTEM.md 分别覆盖或追加 system prompt。<br>本项取代 ZS1-192，不依赖 openspec |
-| ZE-231 | A2 | open | no | ZE-104 | — | — | 120 | 撕裂的末尾可以恢复：<br>• 可写打开时，把没有换行的末行复制为 `.torn` 后截掉；<br>• 列举 session 时跳过损坏文件，而不是整体失败；<br>• `write_all` 失败后截回 `observed_bytes`；<br>• 新建 session 文件后对所在目录 fsync；<br>layer `A2` \| Depends: ZE-104 \| Owned paths: `src/session.rs` \| Validators: 写入半行后，`open_in_workspace` 加 `append_turn` 成功；有一个损坏的兄弟文件时，`/session resume-last` 仍然可用 \| Estimated LOC: 120 |
+| ZE-230 | A2 | open | yes | ZE-104 | — | — | 260 | 基础 system prompt。内容如下：<br>• 工具清单与使用准则，写明各工具的上限、分页方式和截断规则；<br>• 一行环境信息：cwd、日期、OS；<br>• 发现 AGENTS.md，没有时用 CLAUDE.md。查找范围是全局 `~/.zenpi/` 加上从工作区根到 cwd 的各级目录，按全局 → 根 → cwd 的顺序合并，总字节数有上限，读失败时跳过并发出事件；<br>• SYSTEM.md / APPEND_SYSTEM.md 分别覆盖或追加 system prompt。<br>本项取代 ZS1-192，不依赖 openspec |
+| ZE-231 | A2 | open | yes | ZE-104 | — | — | 120 | 撕裂的末尾可以恢复：<br>• 可写打开时，把没有换行的末行复制为 `.torn` 后截掉；<br>• 列举 session 时跳过损坏文件，而不是整体失败；<br>• `write_all` 失败后截回 `observed_bytes`；<br>• 新建 session 文件后对所在目录 fsync；<br>layer `A2` \| Depends: ZE-104 \| Owned paths: `src/session.rs` \| Validators: 写入半行后，`open_in_workspace` 加 `append_turn` 成功；有一个损坏的兄弟文件时，`/session resume-last` 仍然可用 \| Estimated LOC: 120 |
 | ZE-232 | A2 | open | no | ZE-220, ZE-225, ZE-104 | — | — | 480 | compaction 对齐 pi（对应 learn：`compaction.ts_learn`）。内容如下：<br>• 切点：可以在 assistant/tool-result 边界切入单个长 turn，turn 前缀单独做摘要；工具结果不能作为切点；<br>• 被摘要的区段里丢弃不透明的 reasoning 状态，不再整体拒绝；<br>• 摘要输入改为带角色标签的文本，每条工具结果截到 2000 字符，去掉元数据和签名；<br>• 历史输出上限为 floor(0.8×reserve)，前缀上限为 floor(0.5×reserve)，两者串行；摘要请求本身也要通过上下文窗口校验；<br>• 接受自由文本摘要，不再要求模型逐字回显文件列表；<br>• 新增配置 `{enabled, reserve_tokens=16384, keep_recent_tokens=20000}`；<br>• 触发条件为 `最近一次真实 usage + 估算 > window − reserve`；<br>• 收到 `ContextOverflow` 时压缩一次并重试一次；<br>layer `A2` \| Depends: ZE-220, ZE-225, ZE-104 \| Owned paths: `src/context.rs`, `src/config.rs`, `src/core.rs` \| Validators: 1 个 prompt 加 200 次工具调用的会话可以压缩；带 Anthropic 签名的夹具可以压缩；原始工具输出超过窗口时，摘要请求仍小于窗口；首次溢出 → 恰好 1 次摘要加 1 次重试并成功；第二次溢出返回 `context_overflow` \| Estimated LOC: 480 |
 | ZE-233 | A2 | open | no | ZE-230 | — | — | 80 | 模板和技能展开后的文本写进用户 turn；技能正文移出 system prompt，让 system prompt 在各轮之间保持稳定以命中缓存；`selected_skills` 只看当前分支 |
 | ZE-234 | A2 | self-tested | yes | — | ZE-234@blueprint-4.0.0 | handoff | 40 | **（最先修：目前会导致无法启动）** 单个无效的 SKILL.md、模板或 `.gitignore` 只产生诊断信息并被跳过，不再中止加载，也不再导致启动失败 |
 | ZE-235 | A2 | open | no | ZE-232 | — | — | 280 | 删除没有生产调用方的旧 compaction（`prepare_context`、`context::restore_checkpoint`）及 `tests/context.rs`；`CompactionCheckpoint` 是 `CompactionReport` 的公开字段，要连同序列化后的报告一起迁移 |
 | ZE-236 | A2 | open | no | ZE-231 | — | — | 220 | session 默认行为对齐 pi（对应 learn：`session-manager.ts_learn`，并与 pi 核心能力清单交叉确认）：<br>• 没有 `--session`/`-s` 时，新建 `~/.zenpi/sessions/<cwd-key>/<ts>-<id>.jsonl`；<br>• `-c/--continue` 打开文件头中 cwd 与当前一致的最新 session，只读文件头；<br>• `--no-session` 不落盘；<br>• 默认打开路径统一走 `open_in_workspace`；<br>• `ZENPI_SESSION` 保持可用；<br>layer `A2` \| Depends: ZE-231 \| Owned paths: `src/core.rs`, `src/session.rs`, `src/project_workspace.rs`, `tests/cli_session.rs` \| Validators: 在不同 cwd 下各跑一次 headless，得到不同的日志文件；`-c` 不会打开其他 cwd 的 session；200 个并行的默认启动中 `session_locked` 为 0；`--no-session` 不写任何文件 \| Estimated LOC: 220 |
-| ZE-240 | A2 | open | no | ZE-104 | — | — | 60 | 异步生产 host 在 prompt 入队时就判定 `mode` 和 `expected_turn_id`（目前要等排队执行时才判定）：`start_if_idle` 在忙时立即返回 `not_idle` |
-| ZE-241 | A2 | open | no | ZE-104 | — | — | 80 | 事件按因果顺序输出：每个 job 一个按序号排序的单一邮箱，取代"准入、增量、工具"三条队列分批写出。领取前先写失败测试核实该问题确实存在 |
-| ZE-242 | A2 | open | no | ZE-104 | — | — | 100 | 生命周期：<br>• SIGTERM 等同于 `shutdown`；<br>• EOF 有可配置、有上限的排空时限；<br>• close hook 在进程退出前完成；<br>• session 被占用时返回明确的 `session_locked`；<br>layer `A2` \| Depends: ZE-104 \| Owned paths: `src/headless.rs`, `src/core.rs` \| Validators: 一轮进行中 `kill -TERM`，得到终态响应且 WAL 干净；`printf '{prompt}\n' \\| zenpi --mode headless --auto` 在终态事件后以 0 退出；第二个进程打开同一个 session 时以 `session_locked` 退出 \| Estimated LOC: 100 |
+| ZE-240 | A2 | open | yes | ZE-104 | — | — | 60 | 异步生产 host 在 prompt 入队时就判定 `mode` 和 `expected_turn_id`（目前要等排队执行时才判定）：`start_if_idle` 在忙时立即返回 `not_idle` |
+| ZE-241 | A2 | open | yes | ZE-104 | — | — | 80 | 事件按因果顺序输出：每个 job 一个按序号排序的单一邮箱，取代"准入、增量、工具"三条队列分批写出。领取前先写失败测试核实该问题确实存在 |
+| ZE-242 | A2 | open | yes | ZE-104 | — | — | 100 | 生命周期：<br>• SIGTERM 等同于 `shutdown`；<br>• EOF 有可配置、有上限的排空时限；<br>• close hook 在进程退出前完成；<br>• session 被占用时返回明确的 `session_locked`；<br>layer `A2` \| Depends: ZE-104 \| Owned paths: `src/headless.rs`, `src/core.rs` \| Validators: 一轮进行中 `kill -TERM`，得到终态响应且 WAL 干净；`printf '{prompt}\n' \\| zenpi --mode headless --auto` 在终态事件后以 0 退出；第二个进程打开同一个 session 时以 `session_locked` 退出 \| Estimated LOC: 100 |
 | ZE-243 | A2 | open | no | ZE-240 | — | — | 900 | 删除二进制不使用的同步 `run_headless`/`run_stdio` 及其中不可达的 Prompt/Steer 分支，把约 41 个测试迁到 `run_async_streams` |
 | ZE-250 | A2 | open | no | ZE-106 | — | — | 40 | 修复 text→tool→text 的顺序：工具开始时结束当前流式段，结束时只收尾当前段，不覆盖工具前的文本 |
 | ZE-251 | A2 | open | no | ZE-106 | — | — | 70 | 审批的过期清扫覆盖后台标签页；中断只作用于当前 job 所属的 owner；取消投递失败（QueueFull）时，提示"未送达，请重试"，而不是"已请求中断" |
@@ -233,7 +233,7 @@ Counts: open 89 · self-tested 1 · accepted 23 · total 113
 | ZE-404 | A4 | open | no | ZE-108, ZE-400, ZE-401, ZE-402, ZE-403 | — | — | 60 | CI 门禁：每个 PR 运行 G-RUST、G-TASK 和 `G-LOAD(200)`；nightly 或手动运行 `G-LOAD(2000)` |
 | ZE-406 | A4 | open | no | ZE-100, ZE-404 | — | — | 40 | 文档收口：<br>• README 和 `Docs/Zenpi_Execution_Spec.md` 只描述已验收的能力，列出冻结模块，并以 G-RUST 为准；<br>• v1、Stage 1、Stage 2 移到 `Docs/archive/`，同步修正引用它们的 validator 和 gantt 工具路径；<br>• 把与审计结论矛盾的 learn 笔记标为过期：`session-manager.ts_transform`（恢复语义）和 `tui.ts_transform`（合并重绘）；<br>• 在 `Cargo.toml` 的 crossterm patch 旁边注明上游 issue #1126、#1142；<br>layer `A4` \| Depends: ZE-100, ZE-404 \| Owned paths: `README.md`, `Docs/Zenpi_Execution_Spec.md`, `Docs/archive/`, `tools/`, `Docs/learn/files/pi-mono/`, `Cargo.toml` \| Validators: G-BP；`tools/validate_blueprint.py` 和 `tools/validate_stage1_blueprint.py` 指向归档路径后仍能运行 \| Estimated LOC: 40 |
 | ZE-999 | A4 | open | no | ZE-400, ZE-401, ZE-402, ZE-403, ZE-404, ZE-406, ZE-599 | — | — | 0 | Master 终验：A、B 两块 全部为 `[x]`；G-BUILD、G-TEST、G-RUST、G-TASK、G-BENCH、`G-LOAD(2000)` 全部通过；Gantt 未过期，handoff 齐全 |
-| ZE-500 | B1 | open | no | ZE-100, ZE-108 | — | — | 150 | 代码入库与 CI 基线：<br>• 提交 `android/`、`src/remote/`、`src/host_pair.rs`、`tests/remote_*.rs`、`fuzz/remote_protocol/`；<br>• CI 增加 G-ANDROID，并在 CI 中运行原本 `#[ignore]` 的 8 个 `remote_android_*_interop` 测试；<br>• Stage 2 的执行脚手架（`tools/*stage2*`、`.ops/stage2_android2unix/`）中 CI 用不到的部分，原样移到 `Docs/archive/stage2/`；<br>layer `B1` \| Depends: ZE-100, ZE-108 \| Owned paths: `android/`, `src/remote/`, `src/host_pair.rs`, `tests/remote_*.rs`, `fuzz/remote_protocol/`, `.github/workflows/ci.yml`, `tools/`, `.ops/stage2_android2unix/`, `Docs/archive/stage2/` \| Validators: `git ls-files android src/remote \\| wc -l` > 0；G-REMOTE；G-ANDROID；interop 测试在 CI 中通过 \| Estimated LOC: 150 |
+| ZE-500 | B1 | open | yes | ZE-100, ZE-108 | — | — | 150 | 代码入库与 CI 基线：<br>• 提交 `android/`、`src/remote/`、`src/host_pair.rs`、`tests/remote_*.rs`、`fuzz/remote_protocol/`；<br>• CI 增加 G-ANDROID，并在 CI 中运行原本 `#[ignore]` 的 8 个 `remote_android_*_interop` 测试；<br>• Stage 2 的执行脚手架（`tools/*stage2*`、`.ops/stage2_android2unix/`）中 CI 用不到的部分，原样移到 `Docs/archive/stage2/`；<br>layer `B1` \| Depends: ZE-100, ZE-108 \| Owned paths: `android/`, `src/remote/`, `src/host_pair.rs`, `tests/remote_*.rs`, `fuzz/remote_protocol/`, `.github/workflows/ci.yml`, `tools/`, `.ops/stage2_android2unix/`, `Docs/archive/stage2/` \| Validators: `git ls-files android src/remote \\| wc -l` > 0；G-REMOTE；G-ANDROID；interop 测试在 CI 中通过 \| Estimated LOC: 150 |
 | ZE-502 | B1 | open | no | ZE-500 | — | — | 50 | 接受已有的核心成果：<br>• 主机侧：线协议（frame、envelope v1、严格 JSON）、TLS 1.3 监听与 ALPN、二维码邀请与证书 pin 配对、设备注册表与撤销、owner 路由、事件 cursor、回放与订阅；<br>• Android 侧：`pairing/`、`security/`、`transport/`、`state/`；<br>• 运行原有的测试和 fuzz 语料，结果写进 handoff；<br>layer `B1` \| Depends: ZE-500 \| Owned paths: `src/remote/{frame,protocol,strict_json,listener,lan,pairing,auth,command,host_adapter,events,subscription,transcript,live_text,wakeup}.rs`, `android/app/src/main/java/zenpi/{pairing,security,transport,state}/` \| Validators: G-REMOTE（含 `remote_protocol`、`remote_pairing`、`remote_auth`、`remote_events`、`remote_subscription_tls`、`remote_parity`）；G-ANDROID 的 JVM 部分全部通过 \| Estimated LOC: 50 |
 | ZE-510 | B2 | open | no | ZE-502 | — | — | 400 | 把远程状态（回执、ack、intent）从 `project-workspace.json` 移到独立的 `remote-state.json`，保证不带 feature 的构建也能读取由 remote 构建写出的 checkpoint |
 | ZE-511 | B2 | open | no | ZE-510 | — | — | 600 | 把 worktree、worker、subtab 子系统从 `src/remote/` 移到 `src/worktree/`。这部分 TUI 也在用，行为不变，按 §7 冻结；目的是解除对 remote feature 开关的阻塞 |
