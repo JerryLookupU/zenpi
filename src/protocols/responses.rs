@@ -796,7 +796,9 @@ fn process_responses_line(
                     }
                 }
                 if let Ok(text) = extract_responses_content(&checked) {
-                    if !content.is_empty() && *content != text {
+                    // An empty terminal output means "text arrived only as deltas"
+                    // (Codex sends `output: []`), not a conflicting answer.
+                    if !content.is_empty() && !text.is_empty() && *content != text {
                         return Err(BackendError::InvalidResponse(
                             "Responses terminal text conflicts with stream".into(),
                         ));
