@@ -733,6 +733,7 @@ pub(super) fn encode_request(
     request: &CompletionRequest<'_>,
     model: &str,
     provider: &str,
+    reasoning_effort: Option<&str>,
 ) -> Result<Value, BackendError> {
     if request
         .attachments
@@ -791,6 +792,11 @@ pub(super) fn encode_request(
     }
     if let Some(metadata) = request.metadata {
         body["metadata"] = metadata.clone();
+    }
+    // ZE-224: the selected level is the Chat `reasoning_effort` field; a
+    // dialect may still rewrite it (DeepSeek maps its own levels).
+    if let Some(effort) = reasoning_effort {
+        body["reasoning_effort"] = json!(effort);
     }
     Ok(body)
 }

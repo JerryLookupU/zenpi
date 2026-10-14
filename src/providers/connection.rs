@@ -1287,10 +1287,9 @@ mod tests {
             protocol: Protocol::ChatCompletions,
             ..c
         };
-        let caps = resolve_connection(&chat, "unknown", &registry, Some(&id), true)
-            .unwrap()
-            .capabilities();
-        assert!(caps.tools && !caps.reasoning);
+        let route = resolve_connection(&chat, "unknown", &registry, Some(&id), true).unwrap();
+        assert!(route.capabilities().tools && route.capabilities().reasoning);
+        assert!(!route.options().reasoning_effort);
     }
 
     fn validate_effort_for_test(route: &ValidatedRoute, effort: &str) -> Result<(), ()> {
@@ -1400,8 +1399,10 @@ mod tests {
         c.protocol = Protocol::ChatCompletions;
         let id = identity("gateway", "https://gateway.test", "/v1");
         let route = resolve_connection(&c, "synthetic", &registry, Some(&id), true).unwrap();
-        assert!(!route.capabilities().reasoning);
-        assert!(!route.options().reasoning_effort);
+        // ZE-224: generic Chat carries `reasoning_effort` for declared levels;
+        // DeepSeek JSON mode still does not leak into generic Chat.
+        assert!(route.capabilities().reasoning);
+        assert!(route.options().reasoning_effort);
         assert!(!route.options().response_format);
         assert!(!route.capabilities().structured_output);
     }

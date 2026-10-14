@@ -328,7 +328,9 @@ impl ProviderCapabilities {
                 tools: true,
                 structured_output: true,
                 streaming: true,
-                reasoning: false,
+                // `reasoning_effort` (ZE-224); a model still needs catalogued
+                // or user-declared levels before an effort is sent.
+                reasoning: true,
             },
         }
     }

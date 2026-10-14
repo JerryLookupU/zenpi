@@ -176,7 +176,8 @@ fn invalid_level_or_wire_does_not_change_effective_state_or_journal() {
         )),
     );
     let before = fs::read(&other).unwrap();
-    assert!(chat.set_reasoning_effort(Some("high".into())).is_err());
+    // ZE-224: Chat carries the catalogued levels, but not one gpt-5.2 lacks.
+    assert!(chat.set_reasoning_effort(Some("max".into())).is_err());
     assert_eq!(before, fs::read(&other).unwrap());
     assert_eq!(chat.reasoning_effort(), None);
     agent.set_reasoning_effort(Some("none".into())).unwrap();
@@ -611,7 +612,10 @@ fn typed_reasoning_selection_choices_validate_actual_wire_and_append_before_comm
             OpenAiWireApi::ChatCompletions,
         )),
     );
-    assert_eq!(chat.reasoning_choices().unwrap(), vec![None]);
+    // ZE-224: Chat offers the model's catalogued levels.
+    let choices = chat.reasoning_choices().unwrap();
+    assert_eq!(choices.first(), Some(&None));
+    assert!(choices.contains(&Some("high".into())) && !choices.contains(&Some("max".into())));
     let echo = Agent::with_echo(SessionStore::open(dir.path().join("echo-choice.jsonl")).unwrap());
     assert!(echo.reasoning_choices().unwrap().is_empty());
 }

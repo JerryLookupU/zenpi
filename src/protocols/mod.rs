@@ -307,7 +307,9 @@ fn encode_request_inner(
                 anthropic::request_body(request, model, reasoning_effort, provider)?
             }
         }
-        OpenAiWireApi::ChatCompletions => chat::encode_request(request, model, provider)?,
+        OpenAiWireApi::ChatCompletions => {
+            chat::encode_request(request, model, provider, reasoning_effort)?
+        }
         OpenAiWireApi::Responses => {
             if let Some(route) = route {
                 responses::encode_request_for_route(
@@ -993,6 +995,37 @@ mod route_tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn chat_sends_the_selected_reasoning_effort() {
+        let turns = [Turn::new("user", TurnRole::User, "Think.")];
+        let route = route("openai", Protocol::ChatCompletions, true);
+        assert!(route.options().reasoning_effort);
+        let mut options = options(&route);
+        let request = CompletionRequest::new("op", &turns, None, &[]);
+        let body = encode_request_for_route(&request, &options, &route).unwrap();
+        assert!(body.get("reasoning_effort").is_none());
+        options.reasoning_effort = Some("high");
+        let body = encode_request_for_route(&request, &options, &route).unwrap();
+        assert_eq!(
+            body,
+            json!({
+                "model": "fixture-model",
+                "messages": [{"role":"user","content":"Think."}],
+                "stream": true,
+                "stream_options": {"include_usage": true},
+                "reasoning_effort": "high",
+            })
+        );
+        // The legacy (catalog) path encodes the same field.
+        assert_eq!(
+            encode_request(&request, &options).unwrap()["reasoning_effort"],
+            "high"
+        );
+        // A level the model does not declare never reaches the wire.
+        options.reasoning_effort = Some("xhigh");
+        assert!(encode_request_for_route(&request, &options, &route).is_err());
     }
 
     #[test]
