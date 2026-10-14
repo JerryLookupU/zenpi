@@ -511,7 +511,16 @@ fn headless_catalog_selection_expands_skill_and_template_on_host_and_retry_does_
     host.shutdown();
     let values = captured.lock().unwrap();
     assert_eq!(values.len(), 2);
-    assert!(values[0].1.contains("HEADLESS_PRIVATE_SKILL_BODY"));
+    // ZE-233: the skill body travels in its user turn, never the instructions.
+    assert!(!values[0].1.contains("HEADLESS_PRIVATE_SKILL_BODY"));
+    assert!(
+        values[0]
+            .0
+            .last()
+            .unwrap()
+            .content
+            .contains("HEADLESS_PRIVATE_SKILL_BODY")
+    );
     assert!(
         values[0]
             .0

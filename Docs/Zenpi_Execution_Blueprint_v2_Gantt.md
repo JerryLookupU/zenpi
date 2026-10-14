@@ -5,9 +5,9 @@
 
 ```yaml
 source: Docs/Zenpi_Execution_Blueprint_v2.md
-source_sha256: aaeb0ec720f99f4b06598e11d8bc6c823025d5a63a20b3e5d8b65fefc057417a
+source_sha256: 1471ba915ce6cef21ff2fbd5f47598c2620760a10212c180dc5d715a24c51f48
 blueprint_version: 4.0.0
-generated_at: 2026-10-14T19:07:16Z
+generated_at: 2026-10-14T19:25:53Z
 ```
 
 ## Dependency-order view
@@ -74,7 +74,7 @@ gantt
     ZE-230 基础 system prompt。内容如下：<br>• 工具清单与使用准则，写明 :done, ZE_230, after ZE_104, 1d
     ZE-231 撕裂的末尾可以恢复：<br>• 可写打开时，把没有换行的末行复制为  .torn :done, ZE_231, after ZE_104, 1d
     ZE-232 compaction 对齐 pi（对应 learn： compaction.ts :ZE_232, after ZE_220 ZE_225 ZE_104, 1d
-    ZE-233 （进展 2026-10-15：历史模板 turn 已在构建请求时按快照重渲染，正 :ZE_233, after ZE_230, 1d
+    ZE-233 模板和技能展开后的文本写进用户 turn 技能正文移出 system promp :active, ZE_233, after ZE_230, 1d
     ZE-234 **（最先修：目前会导致无法启动）** 单个无效的 SKILL.md、模板或 :done, ZE_234, 0, 1d
     ZE-235 删除没有生产调用方的旧 compaction（ prepare_context :ZE_235, after ZE_232, 1d
     ZE-236 session 默认行为对齐 pi（对应 learn： session-mana :done, ZE_236, after ZE_231, 1d
@@ -144,7 +144,7 @@ gantt
 
 ## Monitoring index
 
-Counts: open 35 · self-tested 8 · accepted 70 · total 113
+Counts: open 34 · self-tested 9 · accepted 70 · total 113
 
 | ID | Layer | State | Ready | Depends | Claim | Integration | Est. LOC | Title |
 |---|---|---|---|---|---|---|---:|---|
@@ -200,10 +200,10 @@ Counts: open 35 · self-tested 8 · accepted 70 · total 113
 | ZE-227 | A2 | accepted | no | ZE-105 | ZE-227@blueprint-4.0.0 | accepted | 140 | 跨模型历史转换：目标模型或 wire 与某轮的 `native_history` 不同时，丢弃不透明的 reasoning 和签名，把可见的 thinking 转成文本，把工具调用 ID 规范化到目标 wire 的限制以内；同一模型仍按原样严格重放 |
 | ZE-230 | A2 | accepted | no | ZE-104 | ZE-230@blueprint-4.0.0 | accepted | 260 | 基础 system prompt。内容如下：<br>• 工具清单与使用准则，写明各工具的上限、分页方式和截断规则；<br>• 一行环境信息：cwd、日期、OS；<br>• 发现 AGENTS.md，没有时用 CLAUDE.md。查找范围是全局 `~/.zenpi/` 加上从工作区根到 cwd 的各级目录，按全局 → 根 → cwd 的顺序合并，总字节数有上限，读失败时跳过并发出事件；<br>• SYSTEM.md / APPEND_SYSTEM.md 分别覆盖或追加 system prompt。<br>本项取代 ZS1-192，不依赖 openspec |
 | ZE-231 | A2 | accepted | no | ZE-104 | ZE-231@blueprint-4.0.0 | accepted | 120 | 撕裂的末尾可以恢复：<br>• 可写打开时，把没有换行的末行复制为 `.torn` 后截掉；<br>• 列举 session 时跳过损坏文件，而不是整体失败；<br>• `write_all` 失败后截回 `observed_bytes`；<br>• 新建 session 文件后对所在目录 fsync；<br>layer `A2` \| Depends: ZE-104 \| Owned paths: `src/session.rs` \| Validators: 写入半行后，`open_in_workspace` 加 `append_turn` 成功；有一个损坏的兄弟文件时，`/session resume-last` 仍然可用 \| Estimated LOC: 120 |
-| ZE-232 | A2 | open | yes | ZE-220, ZE-225, ZE-104 | — | — | 480 | compaction 对齐 pi（对应 learn：`compaction.ts_learn`）。内容如下：<br>• 切点：可以在 assistant/tool-result 边界切入单个长 turn，turn 前缀单独做摘要；工具结果不能作为切点；<br>• 被摘要的区段里丢弃不透明的 reasoning 状态，不再整体拒绝；<br>• 摘要输入改为带角色标签的文本，每条工具结果截到 2000 字符，去掉元数据和签名；<br>• 历史输出上限为 floor(0.8×reserve)，前缀上限为 floor(0.5×reserve)，两者串行；摘要请求本身也要通过上下文窗口校验；<br>• 接受自由文本摘要，不再要求模型逐字回显文件列表；<br>• 新增配置 `{enabled, reserve_tokens=16384, keep_recent_tokens=20000}`；<br>• 触发条件为 `最近一次真实 usage + 估算 > window − reserve`；<br>• 收到 `ContextOverflow` 时压缩一次并重试一次；<br>layer `A2` \| Depends: ZE-220, ZE-225, ZE-104 \| Owned paths: `src/context.rs`, `src/config.rs`, `src/core.rs` \| Validators: 1 个 prompt 加 200 次工具调用的会话可以压缩；带 Anthropic 签名的夹具可以压缩；原始工具输出超过窗口时，摘要请求仍小于窗口；首次溢出 → 恰好 1 次摘要加 1 次重试并成功；第二次溢出返回 `context_overflow` \| Estimated LOC: 480 |
-| ZE-233 | A2 | open | yes | ZE-230 | — | — | 80 | （进展 2026-10-15：历史模板 turn 已在构建请求时按快照重渲染，正文不入日志；技能正文移出 system prompt 仍待做——当前轮的文本由结构化内容之外的路径组装，需先定位）模板和技能展开后的文本写进用户 turn；技能正文移出 system prompt，让 system prompt 在各轮之间保持稳定以命中缓存；`selected_skills` 只看当前分支 |
+| ZE-232 | A2 | open | yes | ZE-220, ZE-225, ZE-104 | ZE-232@blueprint-4.0.0 | — | 480 | compaction 对齐 pi（对应 learn：`compaction.ts_learn`）。内容如下：<br>• 切点：可以在 assistant/tool-result 边界切入单个长 turn，turn 前缀单独做摘要；工具结果不能作为切点；<br>• 被摘要的区段里丢弃不透明的 reasoning 状态，不再整体拒绝；<br>• 摘要输入改为带角色标签的文本，每条工具结果截到 2000 字符，去掉元数据和签名；<br>• 历史输出上限为 floor(0.8×reserve)，前缀上限为 floor(0.5×reserve)，两者串行；摘要请求本身也要通过上下文窗口校验；<br>• 接受自由文本摘要，不再要求模型逐字回显文件列表；<br>• 新增配置 `{enabled, reserve_tokens=16384, keep_recent_tokens=20000}`；<br>• 触发条件为 `最近一次真实 usage + 估算 > window − reserve`；<br>• 收到 `ContextOverflow` 时压缩一次并重试一次；<br>layer `A2` \| Depends: ZE-220, ZE-225, ZE-104 \| Owned paths: `src/context.rs`, `src/config.rs`, `src/core.rs` \| Validators: 1 个 prompt 加 200 次工具调用的会话可以压缩；带 Anthropic 签名的夹具可以压缩；原始工具输出超过窗口时，摘要请求仍小于窗口；首次溢出 → 恰好 1 次摘要加 1 次重试并成功；第二次溢出返回 `context_overflow` \| Estimated LOC: 480 |
+| ZE-233 | A2 | self-tested | yes | ZE-230 | ZE-233@blueprint-4.0.0 | handoff | 80 | 模板和技能展开后的文本写进用户 turn；技能正文移出 system prompt，让 system prompt 在各轮之间保持稳定以命中缓存；`selected_skills` 只看当前分支 |
 | ZE-234 | A2 | accepted | no | — | ZE-234@blueprint-4.0.0 | accepted | 40 | **（最先修：目前会导致无法启动）** 单个无效的 SKILL.md、模板或 `.gitignore` 只产生诊断信息并被跳过，不再中止加载，也不再导致启动失败 |
-| ZE-235 | A2 | open | no | ZE-232 | — | — | 280 | 删除没有生产调用方的旧 compaction（`prepare_context`、`context::restore_checkpoint`）及 `tests/context.rs`；`CompactionCheckpoint` 是 `CompactionReport` 的公开字段，要连同序列化后的报告一起迁移 |
+| ZE-235 | A2 | open | no | ZE-232 | ZE-235@blueprint-4.0.0 | — | 280 | 删除没有生产调用方的旧 compaction（`prepare_context`、`context::restore_checkpoint`）及 `tests/context.rs`；`CompactionCheckpoint` 是 `CompactionReport` 的公开字段，要连同序列化后的报告一起迁移 |
 | ZE-236 | A2 | accepted | no | ZE-231 | ZE-236@blueprint-4.0.0 | accepted | 220 | session 默认行为对齐 pi（对应 learn：`session-manager.ts_learn`，并与 pi 核心能力清单交叉确认）：<br>• 没有 `--session`/`-s` 时，新建 `~/.zenpi/sessions/<cwd-key>/<ts>-<id>.jsonl`；<br>• `-c/--continue` 打开文件头中 cwd 与当前一致的最新 session，只读文件头；<br>• `--no-session` 不落盘；<br>• 默认打开路径统一走 `open_in_workspace`；<br>• `ZENPI_SESSION` 保持可用；<br>layer `A2` \| Depends: ZE-231 \| Owned paths: `src/core.rs`, `src/session.rs`, `src/project_workspace.rs`, `tests/cli_session.rs` \| Validators: 在不同 cwd 下各跑一次 headless，得到不同的日志文件；`-c` 不会打开其他 cwd 的 session；200 个并行的默认启动中 `session_locked` 为 0；`--no-session` 不写任何文件 \| Estimated LOC: 220 |
 | ZE-240 | A2 | accepted | no | ZE-104 | ZE-240@blueprint-4.0.0 | accepted | 60 | 异步生产 host 在 prompt 入队时就判定 `mode` 和 `expected_turn_id`（目前要等排队执行时才判定）：`start_if_idle` 在忙时立即返回 `not_idle` |
 | ZE-241 | A2 | accepted | no | ZE-104 | ZE-241@blueprint-4.0.0 | accepted | 80 | 事件按因果顺序输出：每个 job 一个按序号排序的单一邮箱，取代"准入、增量、工具"三条队列分批写出。领取前先写失败测试核实该问题确实存在 |

@@ -5042,11 +5042,9 @@ impl Agent {
                 .iter()
                 .find(|turn| turn.id == turn_id)
                 .ok_or(AgentError::NoActiveTurn)?;
-            let input = if turn
-                .metadata
-                .as_ref()
-                .is_some_and(|m| m["resource"]["kind"] == "template")
-            {
+            let input = if turn.metadata.as_ref().is_some_and(|m| {
+                matches!(m["resource"]["kind"].as_str(), Some("template" | "skill"))
+            }) {
                 self.active_resource_inputs
                     .get(turn_id)
                     .unwrap_or(&turn.content)
@@ -5107,19 +5105,6 @@ impl Agent {
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
-            let selected_skills = self
-                .session
-                .turns()
-                .iter()
-                .filter(|turn| {
-                    turn.metadata
-                        .as_ref()
-                        .is_some_and(|metadata| metadata["resource"]["kind"] == "skill")
-                })
-                .filter_map(|turn| self.active_resource_inputs.get(&turn.id))
-                .map(String::as_str)
-                .collect::<Vec<_>>()
-                .join("\n");
             let resource_text = self
                 .active_resources
                 .as_ref()
@@ -5135,13 +5120,14 @@ impl Agent {
             if system_prompt.is_none() {
                 system_prompt = Some(self.build_system_prompt(&definitions));
             }
+            // Selected skill bodies travel in their user turns (below), so the
+            // instructions stay byte-identical across turns for prompt caching.
             let mut instructions = format!(
-                "{}{}\n{}\n{}\n{}",
+                "{}{}\n{}\n{}\n",
                 system_prompt.as_deref().unwrap_or_default(),
                 self.turn_skills().effective_instructions(),
                 crate::persona::instructions(self.persona()),
                 resource_text,
-                selected_skills
             );
             if let Some(runtime) = &self.extensions {
                 let pump = crate::input_queue::InputPump::new(
@@ -5171,7 +5157,7 @@ impl Agent {
                     std::mem::take(&mut force_compaction),
                     is_cancelled,
                 )?;
-                // ZE-233 (templates): every template turn on this branch is sent
+                // ZE-233: every template and skill turn on this branch is sent
                 // expanded, so later turns and restarts see the same text.
                 // Expansions are re-rendered from the current snapshot (never
                 // journaled); a changed source is flagged instead of guessed.
@@ -5184,7 +5170,7 @@ impl Agent {
                     .iter()
                     .filter_map(|turn| {
                         let resource = &turn.metadata.as_ref()?["resource"];
-                        (resource["kind"] == "template")
+                        (resource["kind"] == "template" || resource["kind"] == "skill")
                             .then(|| (turn.id.clone(), resource.clone()))
                     })
                     .collect();

@@ -432,6 +432,12 @@ fn production_jsonl_skill_template_reload_and_unknown_slash_reach_real_http_back
     assert!(!captured[0].to_string().contains("MANUAL_BODY"));
     assert!(captured[0].to_string().contains("TEMPLATE_OLD: literal $1"));
     assert!(captured[1].to_string().contains("SECRET_SKILL_BODY_OLD"));
+    // ZE-233: the skill body travels in its user turn, never the system
+    // prompt, so the system prompt stays byte-identical across requests.
+    let system = |index: usize| captured[index]["messages"][0].clone();
+    assert_eq!(system(0)["role"], "system");
+    assert!(!system(1).to_string().contains("SECRET_SKILL_BODY"));
+    assert_eq!(system(1), system(0));
     // ZE-233: the earlier template turn is resent expanded, not as raw `/tpl`.
     assert!(captured[1].to_string().contains("TEMPLATE_OLD: literal $1"));
     assert!(captured[2].to_string().contains("TEMPLATE_NEW: old"));
