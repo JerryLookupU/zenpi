@@ -1855,3 +1855,26 @@ fn worker_tiles_are_visually_square_adapt_to_window_and_busy_workers_blink() {
         "busy workers blink with the animation tick"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn ctrl_c_in_shell_then_conversation_does_not_force_kill() {
+    // ZE-252: escalation is counted per hot zone.
+    let mut state = TuiState::default();
+    let mut terminal = Terminal::new(TestBackend::new(160, 40)).unwrap();
+    terminal
+        .draw(|f| state.render_bentobox(f, "zenpi"))
+        .unwrap();
+    assert!(state.has_shell());
+    assert!(state.set_hot_zone(HotZone::Shell));
+    assert_eq!(
+        state.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+        TuiAction::Redraw
+    );
+    assert!(state.set_hot_zone(HotZone::Conversation));
+    assert_ne!(
+        state.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+        TuiAction::ForceKill,
+        "a Shell press plus a Conversation press is not a double Ctrl-C"
+    );
+}

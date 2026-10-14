@@ -5,9 +5,9 @@
 
 ```yaml
 source: Docs/Zenpi_Execution_Blueprint_v2.md
-source_sha256: 4a18872b45cd67ff0b552a7f73f0aaf25eebce4c96e8544763d556e6882adc88
+source_sha256: 60ebfbae7deab07d1b9abdf37fdc40144c209811e168165bfaa3cbda5f8e074a
 blueprint_version: 4.0.0
-generated_at: 2026-10-14T16:31:37Z
+generated_at: 2026-10-14T16:35:38Z
 ```
 
 ## Dependency-order view
@@ -84,7 +84,7 @@ gantt
     ZE-243 删除二进制不使用的同步  run_headless / run_stdio  及 :ZE_243, after ZE_240, 1d
     ZE-250 修复 text→tool→text 的顺序：工具开始时结束当前流式段，结束时只收 :done, ZE_250, after ZE_106, 1d
     ZE-251 审批的过期清扫覆盖后台标签页 中断只作用于当前 job 所属的 owner 取消 :done, ZE_251, after ZE_106, 1d
-    ZE-252 双击 Ctrl-C 的计数只在同一热区内累计：Shell 热区的第一次按键交给 :ZE_252, after ZE_106, 1d
+    ZE-252 双击 Ctrl-C 的计数只在同一热区内累计（跨热区的两次不构成双击） 同一热区 :ZE_252, after ZE_106, 1d
     ZE-253 COMMAND_SPECS  作为唯一的命令目录：补齐  /reasoning :done, ZE_253, 0, 1d
     ZE-254 删除旧的同步 TUI 路径（ run 、 run_interactive 、 r :ZE_254, after ZE_106, 1d
     ZE-255 panic 时恢复终端： TerminalGuard  enter  安装一个串 :done, ZE_255, 0, 1d
@@ -211,7 +211,7 @@ Counts: open 54 · self-tested 0 · accepted 59 · total 113
 | ZE-243 | A2 | open | yes | ZE-240 | — | — | 900 | 删除二进制不使用的同步 `run_headless`/`run_stdio` 及其中不可达的 Prompt/Steer 分支，把约 41 个测试迁到 `run_async_streams` |
 | ZE-250 | A2 | accepted | no | ZE-106 | ZE-250@blueprint-4.0.0 | accepted | 40 | 修复 text→tool→text 的顺序：工具开始时结束当前流式段，结束时只收尾当前段，不覆盖工具前的文本 |
 | ZE-251 | A2 | accepted | no | ZE-106 | ZE-251@blueprint-4.0.0 | accepted | 70 | 审批的过期清扫覆盖后台标签页；中断只作用于当前 job 所属的 owner；取消投递失败（QueueFull）时，提示"未送达，请重试"，而不是"已请求中断" |
-| ZE-252 | A2 | open | yes | ZE-106 | — | — | 30 | 双击 Ctrl-C 的计数只在同一热区内累计：Shell 热区的第一次按键交给 PTY，不计入；其余保持 ZS1-179 的语义 |
+| ZE-252 | A2 | open | yes | ZE-106 | ZE-252@blueprint-4.0.0 | — | 30 | 双击 Ctrl-C 的计数只在同一热区内累计（跨热区的两次不构成双击）；同一热区内的双击强杀（含 Shell 热区）保持 ZS1-179 的语义 |
 | ZE-253 | A2 | accepted | no | — | ZE-253@blueprint-4.0.0 | accepted | 100 | `COMMAND_SPECS` 作为唯一的命令目录：补齐 `/reasoning` `/tree` `/output` `/input` `/reload` `/skills` `/templates` 以及 `resource` 别名；`/reasoning` 也能在 headless 的 command 帧中使用，使 headless 可以在运行时调整思考级别；`/approval` 不带参数时只显示当前模式；`/yolo` 不带参数时切换开关；删除 `/review` 别名 |
 | ZE-254 | A2 | open | yes | ZE-106 | — | — | 500 | 删除旧的同步 TUI 路径（`run`、`run_interactive`、`run_with_state*`、`agent=None` 分支），把 `stage1_input_host` 的端到端测试迁到 ZE-106 的注入点上 |
 | ZE-255 | A2 | accepted | no | — | ZE-255@blueprint-4.0.0 | accepted | 60 | panic 时恢复终端：`TerminalGuard::enter` 安装一个串接原有 hook 的 panic hook，执行与 `leave()` 相同的恢复步骤 |

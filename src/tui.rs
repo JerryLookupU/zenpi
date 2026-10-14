@@ -2967,7 +2967,10 @@ pub struct TuiState {
     /// no native double-click event.
     last_left_click: Option<(Instant, u16, u16)>,
     /// Last Ctrl-C press used to escalate to a force kill (ZS1-179).
-    last_interrupt: Option<Instant>,
+    /// When and where the last Ctrl-C landed. ZE-252: escalation counts only
+    /// within one hot zone, so a Shell press (the PTY's SIGINT) followed by a
+    /// Conversation press never force-kills the job.
+    last_interrupt: Option<(Instant, HotZone)>,
     /// Current session's operator name, projected from the journal (ZS1-178).
     session_name: Option<String>,
     /// Journal path of the current session, for rename duplicate checks.
@@ -8472,10 +8475,10 @@ impl TuiState {
         // the confirmation hint.
         if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('c') {
             let now = Instant::now();
-            let escalate = self
-                .last_interrupt
-                .is_some_and(|last| now.saturating_duration_since(last) <= INTERRUPT_WINDOW);
-            self.last_interrupt = Some(now);
+            let escalate = self.last_interrupt.is_some_and(|(last, last_zone)| {
+                last_zone == zone && now.saturating_duration_since(last) <= INTERRUPT_WINDOW
+            });
+            self.last_interrupt = Some((now, zone));
             if escalate {
                 return TuiAction::ForceKill;
             }
