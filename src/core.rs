@@ -1111,8 +1111,8 @@ impl Agent {
         };
         let paths = crate::config::ConfigPaths::discover()?;
         let resource_paths = default_resource_paths(&paths, &cwd);
-        let registry =
-            ToolRegistry::with_all_builtins().map_err(|e| ZenpiError::Message(e.to_string()))?;
+        let registry = ToolRegistry::with_default_builtins()
+            .map_err(|e| ZenpiError::Message(e.to_string()))?;
         let session = SessionStore::open_in_workspace(session_path, &cwd)?;
         let mut agent = Self::new(session, backend);
         if overrides.model.is_none() {
@@ -6942,6 +6942,8 @@ pub struct CliOptions {
     /// `--max-tool-iterations N`: per-turn tool budget (ZS1-184), 1..=10000;
     /// defaults to 1000 so long-horizon turns are not truncated.
     pub max_tool_iterations: usize,
+    /// `--tools a,b`: advertise exactly these builtin tools (ZE-214).
+    pub tools: Option<Vec<String>>,
     pub backend: String,
     pub backend_explicit: bool,
     pub profile: Option<String>,
@@ -7002,6 +7004,7 @@ impl Default for CliOptions {
             session_ref: None,
             auto: false,
             max_tool_iterations: 1000,
+            tools: None,
             backend: "openai".into(),
             backend_explicit: false,
             profile: None,
@@ -7725,6 +7728,15 @@ where
                 }
                 options.max_tool_iterations = iterations;
             }
+            "--tools" => {
+                let value = inline
+                    .map(str::to_owned)
+                    .or_else(|| args.next())
+                    .ok_or_else(|| ZenpiError::arguments("--tools requires a,b names"))?;
+                let names =
+                    crate::tools::parse_builtin_allowlist(&value).map_err(ZenpiError::arguments)?;
+                options.tools = Some(names);
+            }
             "--auto" => {
                 if inline.is_some() {
                     return Err(ZenpiError::arguments("--auto does not take a value"));
@@ -7969,7 +7981,7 @@ fn print_help() {
         "zenpi host pair [--bind IP:PORT] [--advertise IP] [--identity PATH] [--duration-seconds 1..300] [--plain] [--workspace PATH --session PATH [--desktop | --list-projects]] [--list-devices [--json] | --revoke-device ID | --grant-device-read ID --project ID ... | --grant-device-control ID --project ID ... | --grant-device-approval ID --project ID ... | --grant-device-control-approval ID --project ID ...]"
     );
     println!(
-        "zenpi [--mode tui|headless] [--session PATH | -s NAME|ID] [--auto] [--max-tool-iterations N] [--backend openai|anthropic|google] [--profile NAME] [--model NAME]"
+        "zenpi [--mode tui|headless] [--session PATH | -s NAME|ID] [--auto] [--max-tool-iterations N] [--tools a,b] [--backend openai|anthropic|google] [--profile NAME] [--model NAME]"
     );
     println!("zenpi config import-codex [--profile NAME]");
     println!("zenpi config doctor [--profile NAME] [--json]");
@@ -8362,6 +8374,8 @@ pub fn run() -> Result<(), ZenpiError> {
             }
         }
     }
+    // ZE-214: `--tools a,b` scopes every owner this process prepares.
+    crate::tools::set_builtin_allowlist(options.tools.clone());
     let backend = make_backend(&options)?;
     // `-s NAME|ID` resolves against the cached zenpi sessions; `--session PATH`
     // keeps its literal path semantics.
@@ -8387,10 +8401,11 @@ pub fn run() -> Result<(), ZenpiError> {
         ..crate::config::ConfigOverrides::default()
     };
     let _ = agent.acknowledge_recovery()?;
-    // Advertise the complete bounded tool set. Side effects still cannot run
-    // until the local approval policy grants the individual call.
+    // Advertise the scoped builtin set (ZE-214: `dag_*` only for DAG workers or
+    // explicit opt-in, `websearch` only with a key, `--tools` allow-list). Side
+    // effects still cannot run until the approval policy grants the call.
     let workspace = env::current_dir()?;
-    let tools = crate::tools::ToolRegistry::with_all_builtins()
+    let tools = crate::tools::ToolRegistry::with_default_builtins()
         .map_err(|error| ZenpiError::Message(format!("tool registry: {error}")))?;
     let paths = crate::config::ConfigPaths::discover()?;
     let tool_context = crate::tools::ToolContext::new(workspace)
