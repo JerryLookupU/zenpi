@@ -40,11 +40,11 @@ jobs:
         # retaining the complete all-targets matrix.
         run: cargo test --all-targets --all-features --locked -- --test-threads=1
 
-      - name: Validate execution blueprint and Gantt
-        run: python3 tools/validate_blueprint.py
-
-      - name: Validate v2 blueprint review draft
-        run: python3 tools/validate_blueprint_v2.py
+      - name: Validate authoritative blueprint and Gantt
+        run: |
+          python3 tools/test_validate_blueprint_v2.py
+          python3 tools/validate_blueprint_v2.py
+          python3 tools/generate_blueprint_v2_gantt.py --check
 
       - name: Report Rust source inventory
         run: python3 tools/check_rust_loc.py

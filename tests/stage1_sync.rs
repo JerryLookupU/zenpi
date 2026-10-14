@@ -76,6 +76,58 @@ fn sync_appends_once_and_is_idempotent() {
 }
 
 #[test]
+fn sync_follows_active_selector_and_blueprint_id_prefix() {
+    let dir = tempdir().unwrap();
+    let docs = dir.path().join("Docs");
+    fs::create_dir_all(docs.join("execution")).unwrap();
+    // Sorts first by name, so a name-only scan would wrongly pick it.
+    let legacy = docs.join("Zenpi_Execution_Blueprint.md");
+    fs::write(&legacy, "# legacy\n").unwrap();
+    fs::write(
+        docs.join("Zenpi_Execution_Blueprint_v2_Gantt.md"),
+        "# gantt\n",
+    )
+    .unwrap();
+    let selected = docs.join("Zenpi_Execution_Blueprint_v2.md");
+    fs::write(
+        &selected,
+        "# v2\n\n```yaml\nstable_id_pattern: '^ZE-[0-9]{3}$'\n```\n\n- [ ] **ZE-100** — base；layer `L1` | Depends: — | Owned paths: — | Validators: — | Estimated LOC: 0\n",
+    )
+    .unwrap();
+    let selector = docs.join("execution/active_requirement.json");
+    fs::write(
+        &selector,
+        r#"{"active": true, "blueprint": "Docs/Zenpi_Execution_Blueprint_v2.md"}"#,
+    )
+    .unwrap();
+
+    assert_eq!(discover_blueprint(dir.path()).unwrap(), selected);
+    let receipt = sync_requirement(dir.path(), "new requirement").unwrap();
+    assert_eq!(receipt.item_id, "ZE-900");
+    assert!(
+        fs::read_to_string(&selected)
+            .unwrap()
+            .contains("**ZE-900**")
+    );
+    assert_eq!(fs::read_to_string(&legacy).unwrap(), "# legacy\n");
+
+    // An inactive selector falls back to the name scan, which skips Gantt projections.
+    fs::write(
+        &selector,
+        r#"{"active": false, "blueprint": "Docs/Zenpi_Execution_Blueprint_v2.md"}"#,
+    )
+    .unwrap();
+    assert_eq!(discover_blueprint(dir.path()).unwrap(), legacy);
+    // A selector may not escape the workspace.
+    fs::write(
+        &selector,
+        r#"{"active": true, "blueprint": "../outside.md"}"#,
+    )
+    .unwrap();
+    assert_eq!(discover_blueprint(dir.path()).unwrap(), legacy);
+}
+
+#[test]
 fn parse_execute_explore_and_addloop_alias() {
     match zenpi::slash::parse("/execute start BP-1").unwrap() {
         Some(SlashCommand::Execute { args }) => assert_eq!(args, vec!["start", "BP-1"]),

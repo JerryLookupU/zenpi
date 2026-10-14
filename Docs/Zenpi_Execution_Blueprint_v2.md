@@ -1,652 +1,423 @@
-# zenpi Execution Blueprint v2
+# zenpi Execution Blueprint v2 — 唯一权威执行蓝图
 
-> **Review draft, version 2.3.0 (2026-09-13).** This document is a
-> self-audit and re-plan for the terminal-agent product. It is intentionally
-> **not** the current authoritative checklist and it does not mutate or
-> supersede `Docs/Zenpi_Execution_Blueprint.md` until the Master accepts the
-> migration described in this file. The v1 checklist therefore remains the
-> source of truth for the already recorded execution receipt; this document is
-> the source of truth for the proposed next product contract.
+> 4.0.0（2026-10-14）。按 b3ehive `execution-cron-builder` 蓝图标准编写：单一权威、
+> `[ ]`/`[_]`/`[x]` 三态清单、真实 `Depends` DAG、按块分层的严格层门、
+> `Owned paths` 归属、可执行 Validators、同名只读 Gantt 投影。
+> 本蓝图分为两大块：
+> - **A 块 · Agent 内核**：TUI 与 headless 两种形态。目标是对齐 pi 的极简与 1:1 正确性，用任务级测试证明，并在 16 核上承载 2000 个并发 agent。
+> - **B 块 · Android 远程**：Android 客户端遥控 Unix 主机上的 zenpi，体验与桌面 TUI 对齐，同时适配竖屏。网络设计借鉴 Tailscale：身份就是密钥，地址只是提示。
+>
+> 原 Stage 2 已并入 B 块，不再单独作为权威文件。
+> 凡不是目标必需的内容，一律按奥卡姆剃刀 / YAGNI 冻结或删除。
 
 ```yaml
 schema_version: execution-blueprint/v2
-blueprint_version: 2.3.0
-revision_date: 2026-09-13
-status: proposed-audit
-authoritative: false
-predecessor: Docs/Zenpi_Execution_Blueprint.md
-stable_id_pattern: '^V2-[0-9]{3}$'
-product_modes: [tui, headless]
+blueprint_version: 4.0.0
+revision_date: 2026-10-14
+status: bootstrap-active
+authoritative: true
+authority_switch_item: ZE-100
+authority_switched_at: 2026-10-14
+selector: Docs/execution/active_requirement.json
+supersedes: Docs/Zenpi_Execution_Blueprint.md, Docs/stage_1_v3_pi_mono_blueprint.md, Docs/stage2_android2unix_blueprint.md
+stable_id_pattern: '^ZE-[0-9]{3}$'
+legacy_id_namespaces: V2, ZP, ZS1, S2
+status_values: '[ ]|[_]|[x]'
+blocks: 'A = agent core (ZE-0xx..4xx, 999); B = Android remote (ZE-5xx)'
+layers: A0, A1, A2, A3, A4, B1, B2, B3, B4
+layer_gate: strict-within-block
+claim_policy: any-layer-when-depends-closed
 per_item_code_loc_cap: 5000
-per_item_code_loc_rule: "estimated_loc < 5000 (exclusive)"
-loc_basis: per-item forecast of implementation and test code attributable to that row; documentation, configuration, and generated artifacts count as zero
-status_values: AUDITED|PARTIAL|PLANNED|DEFERRED|ACCEPTED
-required_for_v2_acceptance: all rows except DEFERRED rows
-layout_name: bentobox
-first_class_domains: [blueprint, goal, learn]
-runtime_domains: [compete, loop]
-gui_scope: future-separate-workspaces
-worker_policy: blueprint_scoped_allow
-allow_scope: declared_item_only
-deny_precedence: true
-preflight_required: true
-policy_digest_required: true
-host_emergency_cancel: true
-default_network: deny
-nested_agents_schedulers_daemons: deny
-credential_paths: deny
-approval_mode: worker_allow_after_preflight
-prohibition_gate: required_preflight_and_per_action
-gate_precedence: deny_over_allow
-unknown_side_effect: deny
-worker_can_modify_policy: false
-emergency_cancel_owner: host
+per_item_code_loc_rule: 'estimated_loc < 5000'
+loc_basis: 'implementation + test LOC touched (deletions count; pure file moves count only edited lines); docs count zero'
+handoff_path: 'Docs/quality/ze/<ID>.json'
+gantt_companion: Docs/Zenpi_Execution_Blueprint_v2_Gantt.md
+validator: tools/validate_blueprint_v2.py
+gantt_generator: tools/generate_blueprint_v2_gantt.py
+target_repo: /Users/mac/Github/zenpi
+target_baseline: current-worktree-with-user-changes
+product_modes: tui, headless, android-remote
+reference_minimal_agent: weiyangzen/pi-mono (fork of badlogic/pi-mono)
+concurrency_model: one-os-process-per-agent, blocking-io, no-async-runtime
+scale_target: '16 CPU cores, 2000 concurrent headless agents'
 ```
 
-The review draft is checked independently of the v1 authority:
+## 1. 权威与范围
 
-```text
-python3 tools/validate_blueprint_v2.py
-Blueprint v2 valid: 56 rows, max LOC 2800 < 5000
+v1（ZP）、Stage 1（ZS1）、Stage 2（S2）均已标为 `authoritative: false`，并指向本文件。ZE-100 已将 `active_requirement.json` 切到本文件，Stage 2 的选择器已停用，`/sync` 也已改为写入本文件。三份旧文件现在只保留为证据和规格参考，各旧编号的去向见 §8。
+
+## 2. 判定"必做"的标准
+
+一项工作满足以下任一条件才进入清单：
+
+| 标准 | 含义 |
+|---|---|
+| (a) 基本任务 | 缺了它，基本编码任务（读、改、跑、修、续）在 TUI 或 headless 下会失败或给出错误结果 |
+| (b) pi 对齐 | 与 pi 语义不一致，且这种不一致会损害模型表现 |
+| (c) 规模 | 实测证明 2000 并发目标需要它 |
+| (d) 证明 | 它是证明 (a)–(c) 或 (e) 所需的测试或门禁 |
+| (e) Android 远程 | 用户明确要求 Android 遥控与体验对齐，因此属于 B 块的范围。块内同样适用奥卡姆剃刀：只做竖屏下的"核心体验对齐"，不做桌面功能的全量搬运 |
+
+执行原则：
+1. **先删后加。** 一个概念只留一个 owner（来自 codex-rust-deslop 的约束）。
+2. **一进程一 agent，阻塞 IO，不引入 tokio。** 参照 redis 的 ae 事件循环：没有事件就睡到下一个截止时间，不设固定 tick。
+3. **任务级测试是交付物。** 每个 A2/A3/B2/B3 项至少要有一条走真实路径的断言。
+4. **冻结不等于删除。** 只有当冻结模块阻碍了核心项时，才另开条目处理。
+
+### 2.1 A 块规模预算（ZE-403 验收阈值）
+
+以下阈值属于 `external_reality_cap`：首轮在 16 核实机上测量后，Master 可以改写。数值是本项目自己的策略，不是照搬 redis 的默认值。
+
+测试条件：N=2000 个 headless agent，脚本化 provider 延迟 200 ms，每个任务 3 轮。
+
+| 指标 | 阈值 |
+|---|---|
+| 任务成功率 | 100% |
+| 每 agent 空闲 RSS（p99） | ≤ 8 MiB，总计 ≤ 24 GiB |
+| 整机 CPU：全部空闲 / 全部在等 provider | 均 ≤ 1 核 |
+| 每进程空闲唤醒（`ru_nvcsw` 增量） | ≤ 5 次/秒 |
+| 每 agent 线程数 | 空闲 ≤ 3，活跃 ≤ 5 |
+| 每 agent fd 数 | ≤ 16 |
+| 每轮额外开销 p99 | ≤ 100 ms |
+| 每次工具调用的 fsync | ≤ 2 次，并报告 p99 |
+| 每请求写入 WAL 的字节数 | ≤ 终态记录大小 + 1 KiB |
+| 因资源上限导致的失败 | 0，报告中写明所需的 `ulimit -n`、`kern.maxfiles`、`kern.maxprocperuid` |
+
+## 3. B 块设计（据 6 路调研定稿）
+
+### 3.1 架构决策
+
+| 决策 | 选择 | 理由与备选 |
+|---|---|---|
+| 主机形态 | 常驻的 `zenpi host serve`；同时保留"挂载在桌面 TUI 上"的模式，两者共用同一个 `ProjectOwnerPool` | 目前不带 `--desktop` 的 `host pair` 会随邀请一起在 300 s 后退出，这是 bug |
+| 线协议 | 保留 remote 协议 v1 并冻结 schema（4 字节长度前缀 + 严格 JSON、CAS 写入、回执、事件 cursor），删除 `HeadlessHost` 重复的那套运行时，改为复用 headless 的准入逻辑 | 另一种做法是"TLS 里直接跑 headless JSONL"，主机侧能少 6–7k 行，但 Android 传输层要重写，而且手机与桌面就不能共享同一个 owner。这一方案记为 LATER |
+| 身份 | 主机身份 `host_id = sha256(SPKI)`，证书可以轮换；设备用 AndroidKeyStore 中的 P-256 密钥（保持现状）；每次连接用 nonce 挑战签名 | 借鉴 Tailscale/iroh"按密钥拨号"的做法：私钥永不离开设备 |
+| 控制面 | 二维码本身就是控制面：一次性 token 加主机公钥，再加**有序的地址提示列表**；授权与撤销由主机侧注册表负责 | Tailscale 的协调服务器只负责分发公钥和端点；zenpi 只有单用户，用不着服务器 |
+| 授权 | 在桌面上确认配对后，直接授予该项目的 Control 和 Approval 权限；撤销在下一帧生效 | 现在配对后仍"无权限"，还要手动执行 4 个 grant CLI，违背"扫码即用"；那个 6 位安全码可以从二维码推算出来，没有安全价值，删除 |
+| 连通性 | **T0** 局域网直连，然后 **T1** 用户自己的 Tailscale / Headscale / WireGuard 叠加网络（主机端零依赖，Android 只放行这些网段的 VPN 路由）；兜底方案在文档里写明 `ssh -R` 到自己的 VPS | T2 盲中继（只转发密文，按密钥寻址，可参考 DERP）和 T3 iroh sidecar 都是 LATER。iroh 会多出约 137 个 crate、引入 tokio，体积增加约 45%，只能做成独立 sidecar |
+| 拨号 | 按提示顺序尝试，局域网优先；任何一个提示上证书 pin 不符都直接判为致命错误，不回退到下一个 | Tailscale 的经验：一旦路径会变，就绝不能再以 IP 作为安全边界 |
+| 后台 | 不常驻 socket；靠 `ResumeWorker` 发审批通知（需 POST_NOTIFICATIONS 权限，不用前台服务） | 真正的推送需要 FCM 或中继，记为 LATER |
+
+### 3.2 竖屏信息架构（对齐桌面体验）
+
+| 桌面 | Android 竖屏 |
+|---|---|
+| Conversation 面板 + prompt | **主屏**：单栏对话流，加底部固定的输入框（发送 / steer / 停止三态） |
+| Arch 面板 + prompt | 主屏上的 Agent/Arch 模式切换 chip，共用同一个输入框 |
+| 工具状态行 / markdown | 默认折叠为一行的卡片，点开看详情；代码块可横向滚动 |
+| Diff | 次级页：全屏，逐文件，可回到原滚动位置 |
+| 审批模态框 | 常驻审批条加底部面板（i/N，一次点击即生效）；后台时改为带操作按钮的通知 |
+| 两排项目 / worktree 标签 | 抽屉里的会话收件箱，按"需要你 / 运行中 / 空闲"分组；主屏顶部放 worktree chip |
+| 斜杠命令 | 输入 `/` 弹出底部命令板，`@` 选择文件 |
+| 模型 / reasoning | 顶栏的模型 chip，点开底部面板 |
+| Shell | 次级页：全屏终端，键盘上方有按键行 |
+| Resources / Tasks | 次级页 |
+| Gantt、Learn、Goal、布局预设、并发 ± | 手机端不做，在桌面上操作 |
+
+```
+┌──────────────────────────────┐
+│ ☰ zenpi/main ▾   gpt-x ▾  ⋮  │
+│ [Agent|Arch]  ●wt-a ○wt-b    │
+├──────────────────────────────┤
+│ you: fix the flaky test      │
+│ ▸ read  src/tui.rs       ✓   │
+│ ▸ edit  src/tui.rs +12 -3  ⧉ │
+│ ▸ bash  cargo test    ⟳ 0:14 │
+│ assistant: The race is in…   │
+├──────────────────────────────┤
+│ ⚠ bash rm -rf target [拒][允] │
+├──────────────────────────────┤
+│ [/] 消息或 steer…        ➤/■ │
+└──────────────────────────────┘
 ```
 
-`tools/validate_blueprint.py` continues to validate the single authoritative
-v1 Blueprint; the v2 checker verifies this draft's version, status vocabulary,
-dependency DAG, duplicate IDs, and strict per-item LOC cap.
+## 4. 执行协议
 
-## 1. Why a v2 review is necessary
+- **三种状态**：`[ ]` 未完成或需返修；`[_]` worker 已自测，并在 `Docs/quality/ze/<ID>.json` 写好 handoff（格式为 `src/b3.rs` 中的 `HandoffRecord`/`EvidenceRecord`，至少含 `changed_files`、`commands_run`、`validation_result`，且 `commands_run` 覆盖该项的 Validators）；`[x]` Master 集成后全部 Validators 通过。worker 不写 `[x]`。DAG 或运行时里的 `green`、`finished` 只是遥测信号，永远不会改动勾选。
+- **层门（按块）**：A 块依次为 A0 已交付基线、A1 权威 / 验证器 / CI / 测试底座、A2 正确性与 pi 对齐、A3 规模、A4 验收与发布；B 块为 B1 入库与接受、B2 设计与体验、B3 连接与后台、B4 验收与发布。块内低层还有 `[ ]` 或 `[_]` 时，高层不能为 `[x]`。依赖可以跨块，但不能指向层号更高的条目。
+- **领取**：`Depends` 全部闭合即可领取，不受层的限制（这是对 b3ehive"只在最低未闭合层领取"规则的显式偏离）。共享以下文件、但彼此没有依赖关系的条目，由 Master 串行合并，ZE-109 会列出这类重叠：`src/tui.rs`、`src/session.rs`、`src/headless.rs`、`src/core.rs`、`src/project_workspace.rs`、`android/.../MainActivity.kt`。
+- **行格式**：`- [ ] **ZE-NNN** — 标题；layer \`A2\` | Depends: … | Owned paths: … | Validators: … | Estimated LOC: N`。
+- **公共门**（每项默认必须通过 G-BUILD + G-TEST + G-RUST；B 块的项还要通过 G-ANDROID）：
 
-The previous framework work made the provider, session, tool, and transport
-boundaries much stronger, but a green compile is not the same thing as a
-usable Claude Code/Codex-style terminal agent. In particular, the v1 contract
-was deliberately limited to a single transcript and a fixed vertical TUI. It
-does not define multiline editing, slash commands, a BentoBox workspace,
-first-class blueprint/goal/learn operations, or a rendering model for code and
-Markdown blocks. It also records several capabilities as complete before a
-user-facing end-to-end acceptance test exists.
+| 门 | 命令 |
+|---|---|
+| `G-BP` | `python3 tools/validate_blueprint_v2.py && python3 tools/generate_blueprint_v2_gantt.py --check` |
+| `G-BUILD` | `cargo build --locked --release` |
+| `G-TEST` | `cargo test --locked` |
+| `G-RUST` | 见下方代码块（来自 codex-rust-deslop） |
+| `G-TASK` | `cargo test --locked --test tasks --test tasks_headless --test tui_task` |
+| `G-BENCH` | `python3 tools/bench_runtime.py --samples 3` |
+| `G-LOAD(N)` | `python3 tools/load_agents.py --agents N`（阈值见 §2.1） |
+| `G-REMOTE` | `cargo test --locked --features remote` |
+| `G-ANDROID` | `cd android && ./gradlew :app:testDebugUnitTest lint verifyRoborazziDebug` |
 
-This v2 draft makes the distinction explicit:
-
-* `AUDITED` means the current tree and an executable observation support the
-  statement. It is not a promise that the final v2 gate has passed.
-* `PARTIAL` means a useful slice exists, but an important interaction,
-  failure mode, or proof is missing.
-* `PLANNED` means the contract is now specified but implementation is not
-  accepted.
-* `DEFERRED` means intentionally outside the lightweight v2.1 binary; it is
-  not silently counted as done.
-* `ACCEPTED` means that row's applicable acceptance evidence and gates pass; it
-  is not a promise that the complete v2 matrix has passed. `V2-999` remains the
-  master gate for the whole contract. A v2 row must never be marked accepted
-  merely because a nearby v1 row is `[x]`.
-
-Version 2.1 explicitly reopens v1 claims that cannot prove worker-scoped
-allowance, immutable Blueprint prohibition gates, durable cross-process
-checkpoints, session-to-session delivery, or local `!` shell escapes. The
-affected v1 contract rows are now marked `[ ]` and the read-only Gantt is
-regenerated from that source; untouched foundation rows remain historical
-provenance and are not silently treated as acceptance of these new contracts.
-
-The `Estimated LOC` value on every row is an independent forecast. The number
-of rows is not a target, and there is no aggregate 5,000-line limit. Every
-forecast below is strictly less than 5,000.
-
-## 2. Current-state audit
-
-**Latest executable slice (2026-09-05):** `src/domain_execution.rs` now owns a
-bounded local `/blueprint run ID[@VERSION]` step. It selects one dependency-ready
-item, persists a private running/terminal receipt, enforces the linked Goal
-budget, rejects duplicate attempt identities, and resumes a running receipt
-without allocating a duplicate attempt.
-Both TUI and headless hosts call the same owner; it performs deterministic local
-evidence only and does not invoke a provider, shell, scheduler, or nested agent.
-The installed smoke now proves session GC and the Blueprint run owner: it
-installs the production no-fixture binary, persists a Blueprint/Goal, executes
-two dependency-ordered bookkeeping steps across two processes, verifies private receipt
-recovery while the Goal remains running, and asserts that no provider request occurred.
-That is executable control-plane evidence, not execution of the Blueprint
-item's real implementation work: the current owner marks a deterministic local
-evidence operation successful without invoking a shell, provider, b3ehive
-worker, or acceptance command. Accordingly, a passing `/blueprint run` receipt
-must not be read as proof that the described code change or test was performed.
-
-The following table is the evidence-ledger snapshot taken from the current
-checkout on 2026-09-05. Paths and symbols are intentionally named so the audit
-can be repeated after each integration pass.
-
-| # | Requested experience | Status | Evidence in the current tree | What is still missing |
-|---:|---|---|---|---|
-| 1 | Input and multiline editing | PARTIAL | `src/tui.rs` now has UTF-8-safe cursor movement, Shift-Enter/Ctrl-J newline insertion, line navigation, bounded prompt scrolling, and focused cases in `tests/tui_resize.rs`; the installed-binary smoke also proves one exact bracketed-paste multiline submission through a real PTY. | Cursor movement across lines, multiline history, paste limits, bounded prompt scrolling, and the remaining resize/PTY matrix still need acceptance. |
-| 2 | Streamed AI replies | PARTIAL | `src/backend.rs` emits typed `TextDelta`/`TextDone` events for Responses SSE; `src/tui.rs` and `src/headless.rs` consume provider events while a `BackgroundRunner` job runs. Headless provider/agent mailboxes and the TUI provider mailbox are bounded by both event count and serialized bytes; both hosts expose explicit drop/truncation markers, and focused tests cover SSE, UTF-8 byte accounting, oversized events, accounting reset, and blocked-output flooding. | Canonical lifecycle ordering and request correlation, global control-input fairness, and the complete slow-stream PTY/headless matrix are still missing; Chat compatibility remains blocking. |
-| 3 | Tool-call status | PARTIAL | `src/core.rs` records `AgentEvent::ToolCall`/`ToolResult`; the TUI now maintains stable call-ID rows for running/succeeded/failed/cancelled states and tests them in `tests/tui_logs.rs`. | Headless and TUI do not yet consume one canonical lifecycle schema, and provider/core/tool status ordering still needs protocol-level acceptance. |
-| 4 | Command confirmation | PARTIAL | `src/approval.rs` provides a first-response-wins coordinator; TUI and headless answer real pending requests. Write/edit requests carry a bounded pre-execution diff, execution revalidates the approved source digest, stale previews fail without writing, and the installed no-feature binary against a local OpenAI-compatible Responses fixture proves provider-to-approval-to-write-to-continuation. `tools/tui_approval_smoke.py` additionally drives the installed production TUI through a real PTY, folds tool logs, checks the diff remains visible, denies without a file, and allows a real write plus provider continuation. The durable approval receipt stores metadata/digest, not the diff body. | Approval focus, multiple simultaneous pending requests, timeout/cancel semantics, and the full JSONL matrix still need acceptance. |
-| 5 | Error recovery | PARTIAL | `src/backend.rs` has retry/backoff and circuit state; `src/session.rs` recovers a valid JSONL prefix and retains validated durable sequence envelopes. TUI/headless `/resume [sequence]` now returns a bounded journal suffix with a continuation cursor and durable marker; `/compact` writes a deterministic checkpoint that is restored for later provider context after restart. Session switching rejects empty, malformed, non-session, missing, and symlink paths without mutating them; startup journal reads are capped at 256 MiB and over-limit files are rejected before permission changes; invalid or exhausted sequence records no longer poison later appends. | Retrying an interrupted provider/tool side effect, automatically repairing a stuck active marker, concurrent journal-writer serialization, large-valid-journal streaming/indexing, and the kill/restart PTY/headless acceptance matrix remain open. |
-| 6 | File modification diff | PARTIAL | `src/tools.rs` attaches typed bounded diffs to write/edit approvals before mutation, rejects unreadable sources, and revalidates the source digest immediately before execution; a stale approved preview returns `stale_preview` without writing. TUI shows the proposal and headless emits it in `approval_request`; the installed no-feature binary against a local OpenAI-compatible Responses fixture asserts it before approving. Workspace `/diff` also covers tracked/untracked/no-HEAD inspection. | Move TUI presentation to the shared Diff block, define binary-file behavior, and add atomic-write failure plus PTY approval acceptance. |
-| 7 | Log folding | PARTIAL | Transcript messages are retained in a bounded `VecDeque`; `src/tui.rs` now adds `ToolRunStatus`, fold state, Ctrl-O, summary rendering, and per-tab/profile layout persistence, with focused coverage in `tests/tui_logs.rs` and `tests/tui_bentobox.rs`. | Add PTY evidence that a pending approval/error can never be hidden. |
-| 8 | Session history | PARTIAL | `src/session.rs` owns append-only JSONL recovery; `Agent::history`, TUI up/down history, CLI `session list/inspect/fork/import/export/gc`, real `/session list`, `/session open PATH`, explicit-source `/session fork\|export\|import SOURCE DESTINATION`, and bounded durable `/resume [sequence]` routes exist in TUI/headless. Maintenance sources must be clean existing zenpi journals and destinations must not exist or be symlinks, so no path silently means the active session and no destination is overwritten. Listing includes the legacy root journal; opening/replaying needs no provider call and the replay path survives process restart. Startup recovery eagerly loads a valid journal but now has a hard 256 MiB byte cap. | `/session gc`, the in-workspace browser/search UI, and history-aware conversation/goal navigation are still missing; large valid journals still need streaming/indexed recovery and near-cap startup measurement. |
-| 9 | Interrupt and cancellation | PARTIAL | `src/runtime.rs` has a cooperative `CancellationToken`; core/tool loops check it; TUI/headless expose cancel/live-steer paths (including typed slash `/cancel`), including bounded promotion of a deferred headless steer before shutdown. Responses SSE body reads now poll cancellation at a bounded 100 ms interval and close a stalled body, with a focused no-retry test; production hosts use owned runners and deterministic tests cover deferred steer admission and shutdown ordering. | Chat/non-streaming requests and DNS/connect/send/header phases still have no external abort handle and remain bounded by ordinary timeouts; byte budgets for other event/control queues, control-input fairness, and complete shutdown/close-hook semantics remain to be accepted. |
-| 10 | Terminal resize adaptation | PARTIAL | `crossterm` resize handling and `tests/tui_resize.rs` cover the current view; `src/layout.rs` plus `tests/layout.rs` provide wide/standard/compact/narrow/zero-cell geometry, capability collapse, ratios, tabs, presets, and deterministic focus/ratio APIs. The production async TUI now uses a bounded BentoBox adapter, tab bar, keyboard workspace controls, and profile/tab layout restore/save. | A full PTY acceptance matrix is still missing; the legacy synchronous callback keeps the compact vertical renderer. |
-| a | Code/text/simple-Markdown and block rendering | PARTIAL | `src/render.rs` is wired into the TUI for Assistant/System messages (headings, lists, quotes, fences, inline styles); `src/view_model.rs` now defines bounded plain/Markdown/code/diff/tool/approval/error blocks and adapters, while User/Tool/Error messages in the current renderer remain literal and sanitized. `tests/render_markdown.rs`, `tests/tui_markdown.rs`, and `tests/view_model.rs` cover the bounded subset. The audit note [`Docs/research/zenpi-rendering.md`](research/zenpi-rendering.md) records the remaining boundary. | Carry the shared block model through headless events, add streaming fence boundaries, and accept deterministic golden snapshots. |
-| b | Slash command area and common commands | PARTIAL | The hand-written CLI parser covers process commands such as `config`, `session`, and `extension`; `src/slash.rs` defines the shared typed grammar. Production TUI and headless route commands before provider submission. Goal status/show, bounded diff, attachment staging, domain read/put, Learn evidence/checkpoint inspection, session list/open/fork/export/import/GC, durable resume/compact, real approval decisions, cancel, redacted `/models` and `/doctor`, BentoBox `/layout` and `/pane` owner actions, and journal-only compete/loop intent submit/status are exercised through owners. `/session gc` requires an explicit bounded retention policy plus `--yes`, excludes the active journal, skips unowned/domain data, and returns a bounded receipt. Headless runtime-intent request IDs are deduplicated across restart and conflicting payload reuse fails closed. Unsupported actions return errors rather than fake success. | Wire natural-language plan/domain execution and the external compete/loop delivery, acknowledgement, and result lifecycle, then prove complete command-owner parity; headless layout/pane requests still require the interactive TUI owner. |
-| b | b3ehive first-class domains | PARTIAL | `src/b3.rs` contains bounded handoff/budget/lease/evidence records; `src/domains.rs` adds typed, content-addressed Blueprint DAGs plus bounded Goal and Learn records, including the strict per-item `estimated_loc < 5000` invariant and optional bounded declarative `BlueprintTask` instructions/acceptance commands; `src/domain_store.rs` now provides a bounded, private, digest-checked JSONL snapshot store with atomic replacement and Goal-to-Blueprint validation. Read-only projections and explicit JSON `put` paths are wired in TUI/headless. A local Blueprint execution owner (`src/domain_execution.rs`) now selects one dependency-ready item at a time, persists running/terminal receipts, enforces the linked Goal budget, resumes an interrupted receipt without a duplicate attempt, and is exposed by `/blueprint run ID[@VERSION]` in both hosts; its explicit `recorded`/`control_plane_only` result is deterministic bookkeeping, not a shell/provider scheduler or proof that the task ran. Learn evidence owner commands validate a bounded repository-relative artifact, persist an idempotent reference, and return a hash receipt; Learn `resume` is explicitly a read-only checkpoint with external execution untracked. Compete/loop persist bounded typed runtime intents with explicit `journal_only` delivery and `execution_state: untracked`; headless keyed intents are restart-idempotent, and zenpi starts no hidden scheduler. | Goal-level parallel execution/cancel/worker handoff, executing `BlueprintTask` instructions and acceptance commands, actual Learn worker resume/result handoff, and external runtime delivery/acknowledgement/result import remain open. |
-| c | Tabs and BentoBox workspace | PARTIAL | `src/layout.rs` defines Project/Goal/Learn/Review/Session tabs, capabilities, presets, breakpoints, safe geometry, focus/split controls, and strict profile/tab persistence. The production TUI renders the Ratatui workspace and uses separate single-slot workers for a bounded Resources pane and a bounded Blueprint/Goal summary projection in the center Gantt pane. Session switches clear the prior projection and reject stale completions. | This is a domain summary, not yet a complete Markdown progress Gantt: item execution status/evidence and Learn/Review/Session pane content remain open; periodic resource/domain polling is absent, and browser/PTY adapters stay disabled by default. |
-| d | Scaling and platform quality | PARTIAL | Ratatui/crossterm provide a small terminal surface; release settings use size-oriented optimization; the layout model and production async BentoBox adapter compute compact fallbacks safely, and profile/tab layout state is persisted with bounded JSON and fail-closed migration. V2-302 now measures pure layout and TestBackend render budgets. | No production pane/PTY end-to-end budget or measured GUI surface. A Svelte-quality GUI for macOS/Linux/Windows is deliberately future work, not a v2.0 dependency. |
-
-### Reproducible evidence snapshot
-
-These observations are deliberately narrower than a completion claim:
-
-```text
-Audit summary (equivalent to `git status --short`, not a literal command dump)
-  v2 slices: runtime/headless safety, multiline TUI, diff, log folding,
-  Markdown renderer, slash grammar plus TUI dispatcher, domain records, and
-  BentoBox layout adapter
-
-cargo tree --depth 1
-  12 direct normal dependencies (dev dependencies excluded by the budget probe);
-  no tokio, reqwest, clap, or rusqlite
-
-tools/bench_runtime.py (2026-09-05 arm64 Darwin receipt)
-  6,249,216 release bytes and 12 direct normal dependencies; exact size and
-  timings remain host/build-profile dependent (see `Docs/quality/runtime-budget-v2.md`)
-
-Existing focused evidence
-  tests/backend.rs          Responses/Chat fixture parsing and provider events
-  tests/headless_protocol.rs JSONL framing, duplicate/in-flight, replay,
-                             shutdown paths (full v2 acceptance pending)
-  tests/runtime.rs          bounded runner, cancellation, panic, and shutdown cases
-  tests/tui_resize.rs       mock-terminal resize and small-cell rendering
-  tests/tools.rs            path/policy/tool-result contracts
-  tests/session_cli.rs      session lifecycle commands
-  tests/config.rs           profile/import/doctor and secret redaction
-  tests/domains.rs          Blueprint/Goal/Learn bounds, DAG, digest, transitions
-  tests/layout.rs           BentoBox preset geometry and collapse invariants
-  tests/render_markdown.rs  bounded Markdown parsing/rendering
-  tests/slash.rs            typed slash grammar, aliases, routing, bounds
-  tests/tui_logs.rs         stable tool lifecycle rows and folding
-  tests/tui_markdown.rs     live TUI renderer integration
+```sh
+# G-RUST
+cargo fmt --all -- --check &&
+cargo clippy --locked --all-targets -- -D warnings &&
+cargo clippy --locked --all-targets --all-features -- -D warnings &&
+python3 tools/check_modes.py &&
+! git diff -U0 origin/main -- 'src/*.rs' 'src/**/*.rs' | grep -E '^\+.*#!?\[allow\((dead_code|unused)'
+# 以下不阻断合并，但 handoff 中必须列出：新增的非测试 unwrap/expect/panic!、
+# 没有 `// SAFETY:` 注释的 unsafe、新增 Arc<Mutex> 或大值 clone 的理由
 ```
 
-The focused and full Rust gates pass for these slices, but that is deliberately
-not recorded as product acceptance. A compile, a unit test, or a generated
-Gantt file cannot prove the ten interactive experiences; `V2-305` still
-requires user-facing PTY and headless acceptance for each remaining matrix
-row. The installed smoke has executable proof for bracketed-paste multiline
-submission, but that single path does not close the broader editor contract.
+## 5. A 块 · Agent 内核
 
-## 3. Lightweight technology decision record
+### A0 — 已交付基线（按 ZP/ZS1 原验收口径；括号内为修复其已知缺陷的条目）
 
-The goal is a capable terminal agent without shipping a desktop/browser stack
-or an idle server. The default binary should stay small; capability-heavy
-adapters must be optional and must not leak into headless startup.
+- [x] **ZE-001** — Agent loop、steer/follow-up 持久队列、有界工具批次、doom-loop 防护（已知缺陷：ZE-202、ZE-210、ZE-211）；layer `A0` | Depends: — | Owned paths: `src/core.rs`, `src/input_queue.rs`, `src/tool_runtime.rs`, `src/runtime.rs` | Validators: 继承 ZS1-101、ZS1-102、ZS1-187 验收证据 | Estimated LOC: 0
+- [x] **ZE-002** — append-only JSONL session、分支树、fork、`/new`、session 命名与 `-s` 恢复（已知缺陷：ZE-231、ZE-236）；layer `A0` | Depends: — | Owned paths: `src/session.rs`, `src/session_tree.rs` | Validators: 继承 ZS1-105、ZS1-106、ZS1-132、ZS1-178 | Estimated LOC: 0
+- [x] **ZE-003** — 版本化语义 checkpoint 与真实 backend 摘要（已知缺陷：ZE-232）；layer `A0` | Depends: — | Owned paths: `src/context.rs` | Validators: 继承 ZS1-103、ZS1-104 | Estimated LOC: 0
+- [x] **ZE-004** — Provider 层：模型 registry 与能力协商、Responses/Chat SSE、Anthropic 与 Gemini 原生 adapter、第三方供应商开放、模型生命周期状态（已知缺陷：ZE-220..227）；layer `A0` | Depends: — | Owned paths: `src/backend.rs`, `src/backend/`, `src/providers/`, `src/protocols/` | Validators: 继承 ZS1-107、ZS1-108、ZS1-109、ZS1-110、ZS1-118、ZS1-176、ZS1-186 | Estimated LOC: 0
+- [x] **ZE-005** — 认证：Codex 浏览器/设备 OAuth、刷新、凭据存储、API key 解析（首启登录引导 PA10 仍是 partial，按 §6.1 冻结；未接线的入口由 ZE-108 清理）；layer `A0` | Depends: — | Owned paths: `src/auth/`, `src/tui/bootstrap.rs` | Validators: 继承 `Docs/Zenpi_Provider_Auth_Implementation.md` 与已提交的测试 | Estimated LOC: 0
+- [x] **ZE-006** — 内置工具 read/list/search/find/write/edit/run_command，输出 artifact、流式脱敏、ripgrep 搜索（已知缺陷：ZE-200..207、ZE-213、ZE-214）；layer `A0` | Depends: — | Owned paths: `src/tools.rs`, `src/tool_output.rs`, `src/tool_output/`, `src/search.rs` | Validators: 继承 v1 ZP 工具项与 ZS1-111、ZS1-112 | Estimated LOC: 0
+- [x] **ZE-007** — 审批协调器、写前 diff 预览、批准后摘要重校验、审计回执；layer `A0` | Depends: — | Owned paths: `src/approval.rs`, `src/security.rs`, `src/governance.rs` | Validators: 继承 v1 ZP-011 与 ZS1-124 | Estimated LOC: 0
+- [x] **ZE-008** — SKILL.md 发现与按需加载、参数模板、资源原子 reload（已知缺陷：ZE-233、ZE-234）；layer `A0` | Depends: — | Owned paths: `src/skills.rs`, `src/prompt_templates.rs`, `src/resource_loader.rs` | Validators: 继承 ZS1-113、ZS1-114 | Estimated LOC: 0
+- [x] **ZE-009** — 类型化 subprocess hooks 与生命周期撤销；layer `A0` | Depends: — | Owned paths: `src/extensions.rs`, `src/extension_runtime.rs` | Validators: 继承 ZS1-115 | Estimated LOC: 0
+- [x] **ZE-010** — Headless stdio JSONL v2：有界帧、请求 ID 幂等、reconnect、与 TUI 共享项目上下文（已知缺陷：ZE-240..243、ZE-303）；layer `A0` | Depends: — | Owned paths: `src/headless.rs`, `src/protocol.rs` | Validators: 继承 ZS1-126、ZS1-159 | Estimated LOC: 0
+- [x] **ZE-011** — TUI 输入：多行编辑、历史、粘贴折叠与粘贴突发识别、排队消息编辑、kill/yank、外部编辑器、命令/文件补全与模型选择；layer `A0` | Depends: — | Owned paths: `src/tui.rs`, `src/external_editor.rs`, `src/slash.rs`, `src/slash_actions.rs`, `vendor/crossterm/` | Validators: 继承 ZS1-122、ZS1-123、ZS1-129、ZS1-130、ZS1-131 | Estimated LOC: 0
+- [x] **ZE-012** — TUI 渲染：滚动复制、退出与信号时恢复终端、Codex 交互矩阵、热区模型、按热区的 Ctrl-C 语义（已知缺陷：ZE-250..255）；layer `A0` | Depends: — | Owned paths: `src/tui.rs`, `src/render.rs`, `src/view_model.rs`, `src/layout.rs` | Validators: 继承 ZS1-125、ZS1-128、ZS1-177、ZS1-179 | Estimated LOC: 0
+- [x] **ZE-013** — 项目 workspace 与 worktree 双排标签、目录选择器、SSH 工作目录、持久化（§6.1 冻结）；layer `A0` | Depends: — | Owned paths: `src/project_workspace.rs`, `src/directory_picker.rs` | Validators: 继承 ZS1-120、ZS1-121、ZS1-140、ZS1-141、ZS1-142、ZS1-146、ZS1-157、ZS1-167、ZS1-168、ZS1-169、ZS1-170 | Estimated LOC: 0
+- [x] **ZE-014** — 内嵌 PTY Shell 面板、VT 字符网格、IME 热区（§6.1 冻结，已知缺陷记在 §6.1）；layer `A0` | Depends: — | Owned paths: `src/pty_shell.rs` | Validators: 继承 ZS1-151、ZS1-155、ZS1-166、ZS1-171、ZS1-172、ZS1-173 | Estimated LOC: 0
+- [x] **ZE-015** — 运行时面板：Conversation/Arch 两个独立 session 与两个 prompt、Gantt 面板、信息头（§6.1 冻结）；layer `A0` | Depends: — | Owned paths: `src/tui.rs`, `src/layout.rs` | Validators: 继承 ZS1-145、ZS1-147、ZS1-148、ZS1-150、ZS1-152、ZS1-153、ZS1-156、ZS1-165 | Estimated LOC: 0
+- [x] **ZE-016** — b3ehive 领域：Blueprint/Goal/Learn 记录、`/execute` `/sync` `/explore` `/addloop`、可验证外部结果（§6.1 冻结）；layer `A0` | Depends: — | Owned paths: `src/b3.rs`, `src/domains.rs`, `src/domain_store.rs`, `src/domain_execution.rs`, `src/runtime_intent.rs`, `src/sync.rs` | Validators: 继承 ZS1-116、ZS1-119、ZS1-143、ZS1-144 | Estimated LOC: 0
+- [x] **ZE-017** — Resources 资源总线、局域网感知、LAN headless 集群（§6.1 冻结）；layer `A0` | Depends: — | Owned paths: `src/resources.rs`, `src/net_probe.rs`, `src/cluster.rs` | Validators: 继承 ZS1-149、ZS1-154、ZS1-158、ZS1-160、ZS1-161、ZS1-163、ZS1-164 | Estimated LOC: 0
+- [x] **ZE-018** — 生产入口与单进程 footprint 预算；layer `A0` | Depends: — | Owned paths: `src/main.rs`, `src/lib.rs`, `tools/bench_runtime.py` | Validators: 继承 ZS1-117、ZS1-162 | Estimated LOC: 0
+- [x] **ZE-019** — DAG 编排最小集：类型化关系、claim/ack 邮箱与重投、worker 心跳、`dag_*` 工具（已知缺陷：ZE-260、ZE-308）；layer `A0` | Depends: — | Owned paths: `src/dag.rs` | Validators: 继承 ZS1-407 | Estimated LOC: 0
+- [x] **ZE-020** — Exa `websearch` 工具（没有对应的 ZS1 项，按已合入 main 的 commit e8733e6 记入基线）；layer `A0` | Depends: — | Owned paths: `src/tools.rs` | Validators: commit e8733e6 已合入 main；`tools.rs:1120` 注册 | Estimated LOC: 0
 
-| Choice | v2.1 decision | Reason and gate |
+### A1 — 权威、验证器、CI 绿基线、测试底座
+
+- [x] **ZE-100** — 权威切换：`Docs/execution/active_requirement.json` 指向本文件，旧的 Stage 1 选择器归档到 `Docs/execution/archive/`；v1、Stage 1、Stage 2 文件头改为 `authoritative: false` 并写入 `superseded_by`；停用 Stage 2 selector；`/sync` 改为优先读取激活的选择器，扫描时跳过 `_Gantt` 投影，并按目标 blueprint 的 `stable_id_pattern` 生成新 ID；CI 改为运行本文件的校验器和 Gantt 检查；layer `A1` | Depends: ZE-101, ZE-102 | Owned paths: `Docs/execution/active_requirement.json`, `Docs/execution/stage2_android2unix_active_requirement.json`, `Docs/execution/archive/`, `Docs/Zenpi_Execution_Blueprint.md`, `Docs/stage_1_v3_pi_mono_blueprint.md`, `Docs/stage2_android2unix_blueprint.md`, `src/sync.rs`, `tests/stage1_sync.rs`, `.github/workflows/ci.yml` | Validators: G-BP；`grep -l '^authoritative: true' Docs/*.md` 只返回本文件；`cargo test --locked --test stage1_sync`（含 `sync_follows_active_selector_and_blueprint_id_prefix`） | Estimated LOC: 90
+- [x] **ZE-101** — 重写 `tools/validate_blueprint_v2.py`：解析 checkbox 行，拒绝重复 ID、缺失或未知依赖、依赖成环、非法状态、LOC ≥ 5000、违反层门的 `[x]`、依赖未闭合的 `[x]`、指向更高层的依赖；layer `A1` | Depends: — | Owned paths: `tools/validate_blueprint_v2.py`, `tools/test_validate_blueprint_v2.py` | Validators: `python3 tools/test_validate_blueprint_v2.py`；G-BP | Estimated LOC: 260
+- [x] **ZE-102** — 同名只读 Gantt：`tools/generate_blueprint_v2_gantt.py` 生成 `Docs/Zenpi_Execution_Blueprint_v2_Gantt.md`（mermaid 图、每个 ID 恰好出现一次、带源文件摘要、不含可变 checkbox；`--check` 检测是否过期）；layer `A1` | Depends: ZE-101 | Owned paths: `tools/generate_blueprint_v2_gantt.py`, `Docs/Zenpi_Execution_Blueprint_v2_Gantt.md` | Validators: G-BP；改动任一状态后 `--check` 失败 | Estimated LOC: 160
+- [ ] **ZE-104** — 共享的脚本化 provider：同一份脚本同时驱动进程内的 `ScriptedBackend`（记录请求，可在指定轮次停住以测试取消）和本地 HTTP/SSE 假服务器（覆盖 Responses、Chat、Anthropic 三种 wire）；用它替换至少 3 个重复的 mock；layer `A1` | Depends: — | Owned paths: `tests/support/mod.rs`, `tests/support/scripted.rs` | Validators: `cargo test --locked --test support_selftest` 证明同一脚本在两条路径上产生相同的请求序列 | Estimated LOC: 400
+- [ ] **ZE-105** — Provider 录制回放套件：把 `Docs/quality/stage1/provider-kill319/**` 下 68 份真实 `.sse` 收进 `tests/fixtures/sse/`，按 wire 回放并断言事件序列；layer `A1` | Depends: ZE-104 | Owned paths: `tests/provider_replay.rs`, `tests/fixtures/sse/` | Validators: `cargo test --locked --test provider_replay` | Estimated LOC: 220
+- [ ] **ZE-106** — TUI 生产 loop 的测试注入点：让 `run_async_with_remote` 可以注入事件源和 `TestBackend`，用脚本化按键加 ZE-104 的 provider 跑真实 loop，对 transcript 做快照；layer `A1` | Depends: ZE-104 | Owned paths: `src/tui.rs`, `tests/tui_task.rs` | Validators: `cargo test --locked --test tui_task` 跑通 prompt → 流式回答 → 退出 | Estimated LOC: 300
+- [ ] **ZE-107** — 验收工作区里已经实现但没有勾选的 ZS1-180（`--auto`）、ZS1-181（思考中动画）、ZS1-182（审批确认分级与拒绝反馈）、ZS1-184（`--max-tool-iterations`）：运行它们原先登记的 Validators，通过后在本文件关闭；layer `A1` | Depends: — | Owned paths: `src/core.rs`, `src/approval.rs`, `src/tui.rs` | Validators: 原 ZS1-180/181/182/184 Validators 全部通过 | Estimated LOC: 50
+- [ ] **ZE-108** — CI 绿基线与 Rust 规范门（来源：codex-rust-deslop、zenpi 自审）。内容如下：<br>• 默认 feature 和 all-features 两套 clippy 都要清零 `-D warnings`；<br>• auth 模块里未接线的登录入口（`cancel_login`、`CancelDisposition` 等 PA10 残留）删除，或移到 `#[cfg(test)]` 下，不新增任何 `allow(dead_code)`；<br>• 修掉约 21 处机械类 lint；<br>• clippy 加上 `--locked`；<br>• 诊断 host-smoke 的 `shared-projects` 失败：若是产品 bug 就修复，若只是在测已冻结的多项目功能，就从 CI 矩阵移除并记录理由；<br>• 确认扩展的 pipe 夹具稳定；<br>• `Docs/quality/rust-deslop-gate.md` 改为指向 G-RUST；<br>• 依赖数门按实测临时重设基线（ZE-520 拆出 remote 后再收紧）；<br>layer `A1` | Depends: ZE-100 | Owned paths: `src/auth/`, `.github/workflows/ci.yml`, `tools/stage1_host_smoke.py`, `tests/stage1_extension_hooks.rs`, `Docs/quality/rust-deslop-gate.md`, `tools/bench_runtime.py`，以及 clippy 输出点名的文件（清单写入 handoff） | Validators: G-RUST；PR 上连续 3 次 CI 全绿 | Estimated LOC: 300
+- [ ] **ZE-109** — 执行协议机械化（来源：b3ehive bridge contract）。内容如下：<br>• 校验器要求每个 `[_]`/`[x]` 都有 `Docs/quality/ze/<ID>.json`，其摘要可复核，且 `commands_run` 覆盖该条目的 Validators；<br>• 列出共享 owned paths 但彼此没有依赖关系的未完成条目；<br>• Gantt 增加 claim 与集成状态两列，数据取自 handoff；<br>• 为 ZE-100..102 补写回溯 handoff；<br>• 把 `Docs/learn/files/b3ehive/docs/blueprint.md_transform.md` 里的指向改为本文件；<br>layer `A1` | Depends: ZE-101, ZE-102 | Owned paths: `tools/validate_blueprint_v2.py`, `tools/test_validate_blueprint_v2.py`, `tools/generate_blueprint_v2_gantt.py`, `Docs/quality/ze/`, `Docs/learn/files/b3ehive/docs/blueprint.md_transform.md` | Validators: G-BP；删除任一 handoff 或篡改其摘要后 G-BP 失败 | Estimated LOC: 220
+
+### A2 — 正确性与 pi 对齐（每项附任务级测试）
+
+**工具：**
+
+- [ ] **ZE-213** — 给模型的工具结果改为纯文本（对齐 pi 的 content 与 details 分离）。各内置工具输出的文本如下：<br>• read：原文，加 `[Showing lines a-b of N. Use offset=K to continue]`；<br>• bash：输出尾部，加 `Command exited with code N`、截断说明和完整输出的路径；<br>• edit/write：一行成功信息，diff 只给 UI；<br>• search：`path:line: text`。<br>各 adapter 只发送这段文本加上 `is_error`，结构化 JSON 只留在日志和 UI 中；layer `A2` | Depends: ZE-104 | Owned paths: `src/core.rs`, `src/tools.rs`, `src/protocols/responses.rs`, `src/protocols/chat.rs`, `src/protocols/anthropic.rs`, `src/protocols/google.rs` | Validators: 请求体快照中 `read_file` 的结果是未转义的原文，且不含 `call_id`/`output_capture`；任务测试：从含引号和制表符的文件 read 出旧文本后原样 edit，能够成功 | Estimated LOC: 220
+- [ ] **ZE-200** — 子进程继承用户环境：保留 `PATH`/`HOME`/`USER`/`SHELL`/`TMPDIR` 等，剔除已知的密钥变量；ripgrep、扩展、项目 shell 都用同一份环境；layer `A2` | Depends: ZE-104 | Owned paths: `src/security.rs` | Validators: 任务测试 `run_command "command -v cargo && echo $HOME"` 成功；包含密钥的环境变量不出现在子进程中 | Estimated LOC: 60
+- [ ] **ZE-201** — `run_command` 对齐 pi：<br>• stdout 和 stderr 合并为单个管道；<br>• 非零退出作为 `is_error` 结果返回，带输出尾部和退出码，永不丢弃输出；<br>• 保留**尾部** 50 KB / 2000 行，全量写入 artifact；<br>• `timeout` 可选，且没有默认值；<br>layer `A2` | Depends: ZE-213 | Owned paths: `src/tools.rs` | Validators: `sh -c 'echo out; exit 3'` 返回 "out"、退出码 3 和 `is_error`；`seq 100000` 返回尾部，`truncated=true`，artifact 中有全量 | Estimated LOC: 160
+- [ ] **ZE-202** — 工具超时或 IO 失败时作为错误结果回给模型，不再映射为 `UnknownOutcome`，不阻断后续 compaction；layer `A2` | Depends: ZE-201 | Owned paths: `src/core.rs` | Validators: 任务测试：命令超时 → 模型收到超时文本 → 修复后正常结束，且 `automation_vetoed()` 为 None | Estimated LOC: 80
+- [ ] **ZE-203** — `read_file` 按行用 `offset`/`limit` 分页（每页 2000 行 / 50 KB），在字符边界截断，取消 512 KB 的上限；layer `A2` | Depends: ZE-213 | Owned paths: `src/tools.rs` | Validators: 2 MB 的中文文件能分页完整读出，不出现 `InvalidUtf8` | Estimated LOC: 80
+- [ ] **ZE-204** — 写/编辑的单次调用上限与 `MAX_WRITE_BYTES` 对齐；工具参数超限时只让这一次调用失败，不再让整轮 `InvalidTurn`；同时复核 256 KiB 的批次上限；layer `A2` | Depends: ZE-104 | Owned paths: `src/tools.rs`, `src/core.rs` | Validators: 80 KB 的 `write_file` 成功；超限调用返回错误结果，本轮继续 | Estimated LOC: 40
+- [ ] **ZE-205** — edit 规范化：剥离 BOM；按 LF 规范化后匹配，并恢复原来的行尾；采用 pi 的模糊回退，唯一性在规范化后判定；layer `A2` | Depends: ZE-104 | Owned paths: `src/tools.rs` | Validators: CRLF 文件配 LF 写的 `old` 文本能成功，且行尾保持 CRLF；弯引号用例成功；有歧义的匹配仍然拒绝 | Estimated LOC: 110
+- [ ] **ZE-206** — 接受工作区内的绝对路径，以及 `~`、前导 `@` 写法；越界路径仍然拒绝；layer `A2` | Depends: ZE-104 | Owned paths: `src/tools.rs` | Validators: 工作区内的绝对路径可以读写；`/etc/passwd` 被拒绝；指向工作区外的 symlink 被拒绝 | Estimated LOC: 40
+- [ ] **ZE-207** — 搜索改为单次 `rg --json`：默认按 regex 匹配，需要时用 `--fixed-strings`；删掉高级参数路径上的 256 文件列表和"每 16 个文件一批"的分发；手写扫描只在找不到 rg 时兜底；layer `A2` | Depends: ZE-213 | Owned paths: `src/search.rs`, `src/tools.rs` | Validators: 带 glob 时，第 1000 个文件里的匹配也能找到；单次调用只启动一个 rg 进程 | Estimated LOC: 300
+- [ ] **ZE-214** — 默认工具集与 `--tools` 白名单：`dag_*` 只对 DAG 派生的 worker 或显式开启时暴露；`websearch` 只在解析到 key 时暴露；`--tools a,b` 限定对模型可见的工具集合；layer `A2` | Depends: — | Owned paths: `src/core.rs`, `src/tools.rs`, `src/dag.rs` | Validators: 默认请求里不出现 `dag_spawn`；`--tools read_file,run_command` 恰好暴露 2 个工具 | Estimated LOC: 70
+
+**Agent loop：**
+
+- [ ] **ZE-210** — 工具调用之后，模型回复空文本或只有 reasoning 时，本轮正常结束。协议层与 core 两处都要放行；layer `A2` | Depends: ZE-104 | Owned paths: `src/core.rs`, `src/protocols/chat.rs`, `src/protocols/responses.rs`, `src/protocols/anthropic.rs` | Validators: 任务测试 `empty_final_text_after_tools_completes_turn`，三种 wire 各跑一次 | Estimated LOC: 60
+- [ ] **ZE-211** — 输入队列的记录数和字节数只统计未结束的输入；`recover()` 不再每次都重放全部事件；layer `A2` | Depends: — | Owned paths: `src/input_queue.rs` | Validators: 单个 session 累计 5000 次 steer/follow-up、共 8 MiB 后，仍然可以入队 | Estimated LOC: 50
+- [ ] **ZE-212** — 只给 `run_active_turn_cancelable` 的事件缓冲设上限；修正 `core.rs:562` 里"default is 8"的过期注释；layer `A2` | Depends: — | Owned paths: `src/core.rs` | Validators: 100 轮都不 drain 时，缓冲长度仍不超过上限 | Estimated LOC: 20
+
+**Provider：**
+
+- [ ] **ZE-220** — 保留有界（4 KB）的错误响应体；新增 `BackendError::ContextOverflow`，按 OpenAI、Anthropic、Gemini 各自的已知标记分类；headless 的 `retryable` 改为读取错误本身，不再写死为 `true`；layer `A2` | Depends: ZE-105 | Owned paths: `src/backend.rs`, `src/protocols/`, `src/headless.rs` | Validators: 各 wire 的 400/413 回放识别为 `ContextOverflow`，且 `retryable=false` | Estimated LOC: 160
+- [ ] **ZE-221** — `Completion` 增加 `StopReason{Stop,Length,ToolUse,Refusal}`，length、max_tokens、incomplete 都保留已生成的内容。因长度被截断的那一轮如果带有工具调用，一律不执行，每个调用回一条"output token limit reached"错误结果，循环继续；layer `A2` | Depends: ZE-105 | Owned paths: `src/backend.rs`, `src/protocols/`, `src/core.rs` | Validators: max_tokens 回放返回部分文本和 `Length`；任务测试 `length_truncated_tool_calls_not_dispatched` | Estimated LOC: 160
+- [ ] **ZE-222** — 把实际在用的 Codex、OpenAI、Claude、Gemini 模型编进目录（含 tools、reasoning、真实上下文窗口）。显式指定连接但未编目的模型，不再静默关闭 tools；同步修改 `connection.rs:1265-1275` 里断言旧行为的测试；layer `A2` | Depends: ZE-105 | Owned paths: `src/providers/registry.rs`, `src/providers/connection.rs` | Validators: `openai-codex` 默认模型解析后带 tools 和 reasoning；默认 Codex 配置下的任务测试能发起工具调用 | Estimated LOC: 100
+- [ ] **ZE-223** — 接受别名解析后服务端返回的模型 ID（记录下来，不拒绝）；旧 Anthropic 路径改用 `x-api-key` 加 `anthropic-version`；layer `A2` | Depends: ZE-105 | Owned paths: `src/protocols/anthropic.rs`, `src/protocols/google.rs`, `src/backend.rs` | Validators: 用别名请求、响应里是带日期的模型 ID → Ok；断言请求头 | Estimated LOC: 40
+- [ ] **ZE-224** — Chat dialect 发送 `reasoning_effort`；layer `A2` | Depends: ZE-105, ZE-222 | Owned paths: `src/protocols/chat.rs` | Validators: 请求体快照中带 `reasoning_effort` | Estimated LOC: 20
+- [ ] **ZE-225** — 缓存与用量：Anthropic 在 system 和最后一个用户块上加 `cache_control`；Responses/Codex 的 `prompt_cache_key` 设为 session ID；`Usage` 增加 cache_read/cache_write 字段，供 ZE-232 做真实用量锚点；layer `A2` | Depends: ZE-105 | Owned paths: `src/protocols/anthropic.rs`, `src/protocols/responses.rs`, `src/protocols/mod.rs`, `src/backend.rs` | Validators: 请求体快照；回放后断言用量字段 | Estimated LOC: 100
+- [ ] **ZE-226** — 放宽脆弱的校验：<br>• Chat：允许 stop 与工具调用同时出现，允许缺 `choices`/`index`；<br>• Anthropic：忽略未知事件；<br>• Gemini：总 token 数只要不小于各项之和即可；<br>layer `A2` | Depends: ZE-105 | Owned paths: `src/protocols/chat.rs`, `src/protocols/anthropic.rs`, `src/protocols/google.rs` | Validators: 各 wire 构造的变体回放都通过 | Estimated LOC: 40
+- [ ] **ZE-227** — 跨模型历史转换：目标模型或 wire 与某轮的 `native_history` 不同时，丢弃不透明的 reasoning 和签名，把可见的 thinking 转成文本，把工具调用 ID 规范化到目标 wire 的限制以内；同一模型仍按原样严格重放；layer `A2` | Depends: ZE-105 | Owned paths: `src/backend.rs`, `src/protocols/anthropic.rs`, `src/protocols/google.rs`, `src/protocols/responses.rs` | Validators: Anthropic thinking 会话 `/model` 切到 OpenAI 模型后，下一次请求成功；Gemini thought 切到 Claude 成功；同模型重放逐字节一致 | Estimated LOC: 140
+
+**Session 与上下文：**
+
+- [ ] **ZE-230** — 基础 system prompt。内容如下：<br>• 工具清单与使用准则，写明各工具的上限、分页方式和截断规则；<br>• 一行环境信息：cwd、日期、OS；<br>• 发现 AGENTS.md，没有时用 CLAUDE.md。查找范围是全局 `~/.zenpi/` 加上从工作区根到 cwd 的各级目录，按全局 → 根 → cwd 的顺序合并，总字节数有上限，读失败时跳过并发出事件；<br>• SYSTEM.md / APPEND_SYSTEM.md 分别覆盖或追加 system prompt。<br>本项取代 ZS1-192，不依赖 openspec；layer `A2` | Depends: ZE-104 | Owned paths: `src/system_prompt.rs`, `src/core.rs`, `src/lib.rs`, `tests/system_prompt.rs` | Validators: 用嵌套目录夹具断言合并顺序和文件头；CLAUDE.md 回退；超出上限时截断；不可读的文件被跳过；instructions 计入 token 预算；工具描述中包含 offset 续读提示 | Estimated LOC: 260
+- [ ] **ZE-231** — 撕裂的末尾可以恢复：<br>• 可写打开时，把没有换行的末行复制为 `.torn` 后截掉；<br>• 列举 session 时跳过损坏文件，而不是整体失败；<br>• `write_all` 失败后截回 `observed_bytes`；<br>• 新建 session 文件后对所在目录 fsync；<br>layer `A2` | Depends: ZE-104 | Owned paths: `src/session.rs` | Validators: 写入半行后，`open_in_workspace` 加 `append_turn` 成功；有一个损坏的兄弟文件时，`/session resume-last` 仍然可用 | Estimated LOC: 120
+- [ ] **ZE-232** — compaction 对齐 pi（对应 learn：`compaction.ts_learn`）。内容如下：<br>• 切点：可以在 assistant/tool-result 边界切入单个长 turn，turn 前缀单独做摘要；工具结果不能作为切点；<br>• 被摘要的区段里丢弃不透明的 reasoning 状态，不再整体拒绝；<br>• 摘要输入改为带角色标签的文本，每条工具结果截到 2000 字符，去掉元数据和签名；<br>• 历史输出上限为 floor(0.8×reserve)，前缀上限为 floor(0.5×reserve)，两者串行；摘要请求本身也要通过上下文窗口校验；<br>• 接受自由文本摘要，不再要求模型逐字回显文件列表；<br>• 新增配置 `{enabled, reserve_tokens=16384, keep_recent_tokens=20000}`；<br>• 触发条件为 `最近一次真实 usage + 估算 > window − reserve`；<br>• 收到 `ContextOverflow` 时压缩一次并重试一次；<br>layer `A2` | Depends: ZE-220, ZE-225, ZE-104 | Owned paths: `src/context.rs`, `src/config.rs`, `src/core.rs` | Validators: 1 个 prompt 加 200 次工具调用的会话可以压缩；带 Anthropic 签名的夹具可以压缩；原始工具输出超过窗口时，摘要请求仍小于窗口；首次溢出 → 恰好 1 次摘要加 1 次重试并成功；第二次溢出返回 `context_overflow` | Estimated LOC: 480
+- [ ] **ZE-233** — 模板和技能展开后的文本写进用户 turn；技能正文移出 system prompt，让 system prompt 在各轮之间保持稳定以命中缓存；`selected_skills` 只看当前分支；layer `A2` | Depends: ZE-230 | Owned paths: `src/core.rs` | Validators: `/tpl a` 之后，第二轮以及重启之后的请求都包含展开后的文本，且 system prompt 逐字节一致 | Estimated LOC: 80
+- [ ] **ZE-234** — **（最先修：目前会导致无法启动）** 单个无效的 SKILL.md、模板或 `.gitignore` 只产生诊断信息并被跳过，不再中止加载，也不再导致启动失败；layer `A2` | Depends: — | Owned paths: `src/skills.rs`, `src/prompt_templates.rs`, `src/resource_loader.rs` | Validators: 一个坏的加一个好的 SKILL.md → 加载 1 个技能并给出 1 条警告；二进制能正常启动 | Estimated LOC: 40
+- [ ] **ZE-235** — 删除没有生产调用方的旧 compaction（`prepare_context`、`context::restore_checkpoint`）及 `tests/context.rs`；`CompactionCheckpoint` 是 `CompactionReport` 的公开字段，要连同序列化后的报告一起迁移；layer `A2` | Depends: ZE-232 | Owned paths: `src/context.rs`, `src/core.rs`, `tests/context.rs` | Validators: `grep -rn 'fn prepare_context' src` 为空；`CompactionReport` 序列化测试通过 | Estimated LOC: 280
+- [ ] **ZE-236** — session 默认行为对齐 pi（对应 learn：`session-manager.ts_learn`，并与 pi 核心能力清单交叉确认）：<br>• 没有 `--session`/`-s` 时，新建 `~/.zenpi/sessions/<cwd-key>/<ts>-<id>.jsonl`；<br>• `-c/--continue` 打开文件头中 cwd 与当前一致的最新 session，只读文件头；<br>• `--no-session` 不落盘；<br>• 默认打开路径统一走 `open_in_workspace`；<br>• `ZENPI_SESSION` 保持可用；<br>layer `A2` | Depends: ZE-231 | Owned paths: `src/core.rs`, `src/session.rs`, `src/project_workspace.rs`, `tests/cli_session.rs` | Validators: 在不同 cwd 下各跑一次 headless，得到不同的日志文件；`-c` 不会打开其他 cwd 的 session；200 个并行的默认启动中 `session_locked` 为 0；`--no-session` 不写任何文件 | Estimated LOC: 220
+
+**Headless：**
+
+- [ ] **ZE-240** — 异步生产 host 在 prompt 入队时就判定 `mode` 和 `expected_turn_id`（目前要等排队执行时才判定）：`start_if_idle` 在忙时立即返回 `not_idle`；layer `A2` | Depends: ZE-104 | Owned paths: `src/headless.rs` | Validators: `run_async_streams` 测试：慢 prompt 进行中，`start_if_idle` 立即被拒绝 | Estimated LOC: 60
+- [ ] **ZE-241** — 事件按因果顺序输出：每个 job 一个按序号排序的单一邮箱，取代"准入、增量、工具"三条队列分批写出。领取前先写失败测试核实该问题确实存在；layer `A2` | Depends: ZE-104 | Owned paths: `src/headless.rs` | Validators: tool_progress 先于其后产生的文本增量输出 | Estimated LOC: 80
+- [ ] **ZE-242** — 生命周期：<br>• SIGTERM 等同于 `shutdown`；<br>• EOF 有可配置、有上限的排空时限；<br>• close hook 在进程退出前完成；<br>• session 被占用时返回明确的 `session_locked`；<br>layer `A2` | Depends: ZE-104 | Owned paths: `src/headless.rs`, `src/core.rs` | Validators: 一轮进行中 `kill -TERM`，得到终态响应且 WAL 干净；`printf '{prompt}\n' \| zenpi --mode headless --auto` 在终态事件后以 0 退出；第二个进程打开同一个 session 时以 `session_locked` 退出 | Estimated LOC: 100
+- [ ] **ZE-243** — 删除二进制不使用的同步 `run_headless`/`run_stdio` 及其中不可达的 Prompt/Steer 分支，把约 41 个测试迁到 `run_async_streams`；layer `A2` | Depends: ZE-240 | Owned paths: `src/headless.rs`, `tests/headless_protocol.rs`, `tests/headless_domain_owner.rs` | Validators: `cargo test --locked headless_` 全部通过；`grep 'pub fn run_headless' src` 为空 | Estimated LOC: 900
+
+**TUI：**
+
+- [ ] **ZE-250** — 修复 text→tool→text 的顺序：工具开始时结束当前流式段，结束时只收尾当前段，不覆盖工具前的文本；layer `A2` | Depends: ZE-106 | Owned paths: `src/tui.rs` | Validators: `tui_task` 快照中，工具行两侧的文本各自在正确位置且完整 | Estimated LOC: 40
+- [ ] **ZE-251** — 审批的过期清扫覆盖后台标签页；中断只作用于当前 job 所属的 owner；取消投递失败（QueueFull）时，提示"未送达，请重试"，而不是"已请求中断"；layer `A2` | Depends: ZE-106 | Owned paths: `src/tui.rs` | Validators: A 标签发起审批 → 切到 B → 处理或过期后，A 不残留模态框；中断 B 不影响 A | Estimated LOC: 70
+- [ ] **ZE-252** — 双击 Ctrl-C 的计数只在同一热区内累计：Shell 热区的第一次按键交给 PTY，不计入；其余保持 ZS1-179 的语义；layer `A2` | Depends: ZE-106 | Owned paths: `src/tui.rs` | Validators: 在 Shell 热区按一次 Ctrl-C，再到 Conversation 按一次，不会强杀 job | Estimated LOC: 30
+- [ ] **ZE-253** — `COMMAND_SPECS` 作为唯一的命令目录：补齐 `/reasoning` `/tree` `/output` `/input` `/reload` `/skills` `/templates` 以及 `resource` 别名；`/reasoning` 也能在 headless 的 command 帧中使用，使 headless 可以在运行时调整思考级别；`/approval` 不带参数时只显示当前模式；`/yolo` 不带参数时切换开关；删除 `/review` 别名；layer `A2` | Depends: — | Owned paths: `src/slash.rs`, `src/tui.rs`, `src/headless.rs` | Validators: 每个可解析的命令名都有对应的 spec；headless 发送 `/reasoning high` 后，请求体快照发生变化；不带参数的 `/approval` 不改变模式 | Estimated LOC: 100
+- [ ] **ZE-254** — 删除旧的同步 TUI 路径（`run`、`run_interactive`、`run_with_state*`、`agent=None` 分支），把 `stage1_input_host` 的端到端测试迁到 ZE-106 的注入点上；layer `A2` | Depends: ZE-106 | Owned paths: `src/tui.rs`, `tests/stage1_input_host.rs` | Validators: `grep -n 'fn run_interactive' src/tui.rs` 为空；迁移后的测试通过 | Estimated LOC: 500
+- [ ] **ZE-255** — panic 时恢复终端：`TerminalGuard::enter` 安装一个串接原有 hook 的 panic hook，执行与 `leave()` 相同的恢复步骤；layer `A2` | Depends: — | Owned paths: `src/tui.rs`, `tools/tui_transcript_ux_smoke.py` | Validators: PTY smoke 中，debug 构建通过环境变量触发 panic，退出后能看到 `\e[?1049l`，且 `stty -a` 与启动前一致 | Estimated LOC: 60
+
+**DAG：**
+
+- [ ] **ZE-260** — DAG 正确性：<br>• worker 默认用 `current_exe()`；<br>• 存储满时 `send` 返回错误，不再静默丢弃；<br>• 写入改为临时文件 + fsync + rename 的原子写；<br>• 消息体按字节限制；<br>• 回收子进程；<br>• `dag_spawn` 限制深度 ≤ 3，且扇出不超过父节点租约；<br>layer `A2` | Depends: — | Owned paths: `src/dag.rs`, `src/tools.rs`, `tests/dag.rs` | Validators: `dag_send_full_mailbox_errors`；`dag_spawn_defaults_to_current_exe`；写到一半被截断后存储仍可读；第 4 层 spawn 被拒绝 | Estimated LOC: 130
+
+### A3 — 16 核 / 2000 并发：空闲零开销（依据 redis ae/networking/aof）
+
+- [ ] **ZE-300** — headless 去轮询（对应 redis ae：睡到下一个真实截止时间）：<br>• stdin、runtime、审批三类唤醒合并为一个阻塞 channel；<br>• `worker_loop` 改用 condvar，job 完成时主动唤醒；<br>• job 线程创建失败时发出类型化的 `SpawnFailed`，并继续消化排队中的任务；<br>• shutdown 之后再 submit 时显式返回 `Rejected`；<br>layer `A3` | Depends: ZE-243 | Owned paths: `src/headless.rs`, `src/runtime.rs` | Validators: 空闲进程 10 s 内 `ru_nvcsw` 增量 ≤ 50；200 个进程都卡在 10 s 的脚本化 provider 上时，总 CPU < 单核的 1%；stdout 读端暂停 5 s 期间，stdin 发出的 cancel 在 250 ms 内送达 job；注入 spawn 失败后，下一个排队任务仍能完成 | Estimated LOC: 300
+- [ ] **ZE-301** — 传输层：进程内共享一个 `ureq::Agent`（keep-alive 连接池、共享 TLS 配置）；在连接器内通过 `RequestControl` 的 Arc 标志实现取消，删除每个请求的发送线程和 5 ms park 轮询；layer `A3` | Depends: ZE-105 | Owned paths: `src/backend.rs`, `src/backend/transport.rs` | Validators: `stage1_transport` 的取消测试全部通过；对同一主机连续两次请求会复用连接；每个在途请求最多占 1 个线程；等待 provider 期间唤醒次数为 0 | Estimated LOC: 180
+- [ ] **ZE-302** — 工具、搜索、扩展的读取改用 `poll(2)` 阻塞等待：单个线程同时监听两个 fd 和子进程，poll 超时取"工具截止时间"与"100 ms 取消检查"中较小的一个；删除 2–5 ms 的 sleep 循环和固定 50 ms 等待；进程组信号只发给尚未被回收的 leader；改动涉及的 `unsafe` 一律加 `// SAFETY:` 注释；layer `A3` | Depends: ZE-201, ZE-207 | Owned paths: `src/tools.rs`, `src/search.rs`, `src/extension_runtime.rs` | Validators: 一次工具调用新增的线程数为 0；200 个并发 `sleep 2` 的总 CPU < 5%；不存在因 PID 复用而误杀的情况 | Estimated LOC: 220
+- [ ] **ZE-303** — reconnect WAL 收敛（对应 redis aof：只对确认点做持久化，写失败视为"提交不确定"）：<br>• `Event` 记录不再写入 WAL，改放内存环形缓冲；<br>• 只对 Reserved、Terminal、Ack 三类记录 fsync，且 Terminal 先 fsync 再写 stdout；<br>• 任何一次追加失败后，日志被毒化，之后的追加都返回 `CommitUncertain`；<br>• 打开时用 write、`sync_all`、rename、目录 fsync 的方式压缩；<br>• 截断撕裂的末尾前，先复制为 `.torn`；<br>• 请求 ID 账本与 terminals 一起按 FIFO 修剪；<br>• 干净关闭且没有未知结果时，删除 WAL；<br>layer `A3` | Depends: ZE-243 | Owned paths: `src/session.rs`, `src/headless.rs` | Validators: 每个请求写入 WAL 的字节数 ≤ 终态大小 + 1 KiB；每个请求的 fsync ≤ 3 次；注入短写和 fsync 错误后仍能重新打开；干净 shutdown 后 export/delete 成功；2 万次带 ID 的 `status` 全部成功，被淘汰的 ID 返回 `replay_expired` | Estimated LOC: 260
+- [ ] **ZE-304** — session 日志的 fsync 策略：只对 turn、`operation_*` 和终态记录 fsync，其他记录在下一个边界时一起刷盘。崩溃时最多丢失最后一个边界之后的记录，不会丢失任何已接受的 turn。flock 改为阻塞等待，不再用 `LOCK_NB`。注意 macOS 上 `sync_data` 走的是 `F_FULLFSYNC`，单次代价较高；layer `A3` | Depends: ZE-231 | Owned paths: `src/session.rs` | Validators: 用计数器验证每次工具调用 fsync ≤ 2 次，并报告 p99 延迟；注入崩溃后不丢失 turn | Estimated LOC: 60
+- [ ] **ZE-305** — session 内存瘦身：去掉 `records: Vec<Value>` 和 `event_values` 这两份重复副本（只保留序号、类型、偏移，需要时重新解析）；缓存已校验过的 checkpoint；`tree_ancestry_turns` 不再克隆整棵树；layer `A3` | Depends: ZE-232 | Owned paths: `src/session.rs`, `src/core.rs`, `src/context.rs` | Validators: 1 万条记录的 session 常驻内存 < 文件大小的 2 倍；每次请求做全量序列化的次数为 0；截断或损坏的记录在去重之后仍会被拒绝 | Estimated LOC: 260
+- [ ] **ZE-306** — session 列表和"最新 session"查找只读文件头加 mtime，并按 cwd 过滤；layer `A3` | Depends: ZE-236 | Owned paths: `src/session.rs` | Validators: 列出 500 个 session 时，字节读取计数只覆盖文件头 | Estimated LOC: 70
+- [ ] **ZE-307** — 凭据元数据缓存在内存中，只在需要刷新时才取账户锁。领取前先用计数器核实问题确实存在；layer `A3` | Depends: — | Owned paths: `src/auth/resolve.rs`, `src/auth/store.rs` | Validators: 100 个并行解析请求中，每个凭据版本最多读 1 次文件 | Estimated LOC: 70
+- [ ] **ZE-308** — 拆分 DAG 存储：<br>• `nodes.json` 用原子写（rename 加目录 fsync），只在拓扑或状态变化时写；<br>• 每个节点一个 append-only 的 `inbox/<node>.jsonl`，追加时 fsync，ack 用游标记录；<br>• 心跳写在独立文件里；<br>• `wait_for_message` 只检查自己 inbox 的大小，发现变大才加锁；<br>• DAG 的状态永远不会改动蓝图的勾选；<br>layer `A3` | Depends: ZE-260 | Owned paths: `src/dag.rs`, `tests/dag.rs` | Validators: 256 个线程各做 20 轮收发和心跳，无丢失、无重复；心跳不改变 `nodes.json` 的字节；未 ack 的消息会重投；2000 个等待中的 worker 合计 ≤ 0.25 核；写到一半崩溃后存储仍可解析 | Estimated LOC: 280
+- [ ] **ZE-309** — TUI 渲染成本：按消息缓存已渲染的行，只让正在流式输出的那条失效；项目 checkpoint 不再包含 transcript（目前有改动时每 250 ms 序列化一遍全部 transcript）；删除 250 ms 和 20 ms 的无条件重绘，但事件循环的超时仍要包含粘贴突发的截止时间（对应 codex `paste_burst_learn`）；layer `A3` | Depends: ZE-106 | Owned paths: `src/tui.rs` | Validators: transcript 变长时单帧开销保持不变（bench）；输入或流式输出期间没有 checkpoint 写盘；普通（非 bracketed）粘贴突发在超时内刷新出来；空闲时事件循环完全静止 | Estimated LOC: 180
+
+### A4 — 任务级验收、规模验收与发布
+
+- [ ] **ZE-400** — 进程内 golden 任务套件（使用真实工具、临时工作区）。覆盖以下场景：<br>• 读文件后回答；<br>• 新建文件；<br>• 编辑文件并校验 diff；<br>• bash 成功，且输出进入下一次请求；<br>• bash 失败后模型修复；<br>• 同一轮发起 3 个并行工具；<br>• 需要审批的写入被拒绝，文件不落盘；同一写入获批后落盘；<br>• 在 provider 调用中取消、在工具执行中取消，日志保持一致；<br>• 轮中被杀后恢复，修复未完成的调用；<br>• 迭代上限或 doom-loop 上限止损；<br>• provider 出错后重试；<br>• 因长度截断的轮次不执行其中的工具调用；<br>• 会话中途切换模型后继续工作；<br>layer `A4` | Depends: ZE-202, ZE-203, ZE-205, ZE-210, ZE-213, ZE-221, ZE-227, ZE-232 | Owned paths: `tests/tasks.rs` | Validators: `cargo test --locked --test tasks`，每个任务都断言最终文件、日志记录和请求数 | Estimated LOC: 800
+- [ ] **ZE-401** — 二进制级 headless 任务：针对 ZE-104 的假服务器启动 `zenpi --mode headless`，覆盖新建文件、bash、审批被拒、取消、杀进程后恢复、`-c` 续接；layer `A4` | Depends: ZE-400, ZE-236, ZE-240, ZE-242, ZE-303 | Owned paths: `tests/tasks_headless.rs` | Validators: `cargo test --locked --test tasks_headless` | Estimated LOC: 380
+- [ ] **ZE-402** — TUI 任务快照，覆盖以下用例：<br>• text→tool→text；<br>• 跨标签页审批；<br>• 忙、闲、有草稿三种状态下分别按 Esc 和 Ctrl-C；<br>• 浮层打开时按 Esc 不会中断任务；<br>• 粘贴内容里夹带 `\n/exit`、`\n!rm` 时什么也不提交；<br>• 按键 Release 事件不产生任何动作；<br>• 粘贴折叠后再提交；<br>• 斜杠命令走真实 loop 完成往返；<br>layer `A4` | Depends: ZE-250, ZE-251, ZE-252, ZE-254, ZE-255 | Owned paths: `tests/tui_task.rs` | Validators: `cargo test --locked --test tui_task` | Estimated LOC: 380
+- [ ] **ZE-403** — 2000 agent 压测 `tools/load_agents.py`：<br>• harness 用单个 `selectors`（kqueue）事件循环读取所有 stdout 管道（对应 redis ae）；<br>• 启动前先算 fd 预算（harness ≥ 3N+64，provider ≥ N+64）并上调软限制，不够则直接失败；<br>• 一个脚本化 provider 服务器，N 个 `--no-session` 或独立 session 的 headless 进程，每个任务含一次 `write_file` 和一次 `bash echo`；<br>• 报告 RSS、CPU、唤醒次数、线程数、fd、fsync 次数与延迟、磁盘写速率，以及内核限制；<br>layer `A4` | Depends: ZE-236, ZE-300, ZE-301, ZE-302, ZE-303, ZE-304, ZE-305, ZE-401 | Owned paths: `tools/load_agents.py` | Validators: `G-LOAD(2000)` 在 16 核机器上满足 §2.2 的全部阈值，报告存入 `Docs/quality/` | Estimated LOC: 340
+- [ ] **ZE-404** — CI 门禁：每个 PR 运行 G-RUST、G-TASK 和 `G-LOAD(200)`；nightly 或手动运行 `G-LOAD(2000)`；layer `A4` | Depends: ZE-108, ZE-400, ZE-401, ZE-402, ZE-403 | Owned paths: `.github/workflows/` | Validators: CI 全绿 | Estimated LOC: 60
+- [ ] **ZE-406** — 文档收口：<br>• README 和 `Docs/Zenpi_Execution_Spec.md` 只描述已验收的能力，列出冻结模块，并以 G-RUST 为准；<br>• v1、Stage 1、Stage 2 移到 `Docs/archive/`，同步修正引用它们的 validator 和 gantt 工具路径；<br>• 把与审计结论矛盾的 learn 笔记标为过期：`session-manager.ts_transform`（恢复语义）和 `tui.ts_transform`（合并重绘）；<br>• 在 `Cargo.toml` 的 crossterm patch 旁边注明上游 issue #1126、#1142；<br>layer `A4` | Depends: ZE-100, ZE-404 | Owned paths: `README.md`, `Docs/Zenpi_Execution_Spec.md`, `Docs/archive/`, `tools/`, `Docs/learn/files/pi-mono/`, `Cargo.toml` | Validators: G-BP；`tools/validate_blueprint.py` 和 `tools/validate_stage1_blueprint.py` 指向归档路径后仍能运行 | Estimated LOC: 40
+- [ ] **ZE-999** — Master 终验：A、B 两块 全部为 `[x]`；G-BUILD、G-TEST、G-RUST、G-TASK、G-BENCH、`G-LOAD(2000)` 全部通过；Gantt 未过期，handoff 齐全；layer `A4` | Depends: ZE-400, ZE-401, ZE-402, ZE-403, ZE-404, ZE-406, ZE-599 | Owned paths: `Docs/Zenpi_Execution_Blueprint_v2.md` | Validators: 全部公共门 | Estimated LOC: 0
+
+## 6. B 块 · Android 远程
+
+> 现状：主机侧 `src/remote/` 约 16.6k 行，`host_pair.rs` 1.5k 行，37 个 `tests/remote_*.rs`；`android/` 有 236 个 `.kt` 文件，其中生产代码 8.1k 行，另有 611 个 JVM 测试和 137 个 instrumentation 测试。**这些全部未提交，也没有任何一项通过验收**；真机和实体局域网的回执全部为 false。B 块没有 B0 基线：现有成果先由 ZE-502 接受，之后才能计入。
+
+### B1 — 入库与接受
+
+- [ ] **ZE-500** — 代码入库与 CI 基线：<br>• 提交 `android/`、`src/remote/`、`src/host_pair.rs`、`tests/remote_*.rs`、`fuzz/remote_protocol/`；<br>• CI 增加 G-ANDROID，并在 CI 中运行原本 `#[ignore]` 的 8 个 `remote_android_*_interop` 测试；<br>• Stage 2 的执行脚手架（`tools/*stage2*`、`.ops/stage2_android2unix/`）中 CI 用不到的部分，原样移到 `Docs/archive/stage2/`；<br>layer `B1` | Depends: ZE-100, ZE-108 | Owned paths: `android/`, `src/remote/`, `src/host_pair.rs`, `tests/remote_*.rs`, `fuzz/remote_protocol/`, `.github/workflows/ci.yml`, `tools/`, `.ops/stage2_android2unix/`, `Docs/archive/stage2/` | Validators: `git ls-files android src/remote \| wc -l` > 0；G-REMOTE；G-ANDROID；interop 测试在 CI 中通过 | Estimated LOC: 150
+- [ ] **ZE-502** — 接受已有的核心成果：<br>• 主机侧：线协议（frame、envelope v1、严格 JSON）、TLS 1.3 监听与 ALPN、二维码邀请与证书 pin 配对、设备注册表与撤销、owner 路由、事件 cursor、回放与订阅；<br>• Android 侧：`pairing/`、`security/`、`transport/`、`state/`；<br>• 运行原有的测试和 fuzz 语料，结果写进 handoff；<br>layer `B1` | Depends: ZE-500 | Owned paths: `src/remote/{frame,protocol,strict_json,listener,lan,pairing,auth,command,host_adapter,events,subscription,transcript,live_text,wakeup}.rs`, `android/app/src/main/java/zenpi/{pairing,security,transport,state}/` | Validators: G-REMOTE（含 `remote_protocol`、`remote_pairing`、`remote_auth`、`remote_events`、`remote_subscription_tls`、`remote_parity`）；G-ANDROID 的 JVM 部分全部通过 | Estimated LOC: 50
+
+### B2 — 主机侧收敛、身份与网络、竖屏体验
+
+- [ ] **ZE-510** — 把远程状态（回执、ack、intent）从 `project-workspace.json` 移到独立的 `remote-state.json`，保证不带 feature 的构建也能读取由 remote 构建写出的 checkpoint；layer `B2` | Depends: ZE-502 | Owned paths: `src/project_workspace.rs`, `src/remote/` | Validators: 用 `--features remote` 写出的 checkpoint，默认构建能够加载 | Estimated LOC: 400
+- [ ] **ZE-511** — 把 worktree、worker、subtab 子系统从 `src/remote/` 移到 `src/worktree/`。这部分 TUI 也在用，行为不变，按 §7 冻结；目的是解除对 remote feature 开关的阻塞；layer `B2` | Depends: ZE-510 | Owned paths: `src/remote/{subtab,worker,worker_progress,worker_admission,worktree_host,worktree_runner}.rs`, `src/worktree/`, `src/tui.rs`, `src/project_workspace.rs` | Validators: G-TEST；`grep -rn 'remote::\(subtab\|worker\|worktree\)' src` 为空 | Estimated LOC: 600
+- [ ] **ZE-512** — 删除 `HeadlessHost` 独立的 prompt runner 和 10 ms 轮询，远程宿主改为复用 headless 异步 host 的准入、取消和 steer 逻辑，保证同一个概念只有一个 owner；layer `B2` | Depends: ZE-243, ZE-502 | Owned paths: `src/remote/headless_host.rs`, `src/remote/host_adapter.rs`, `src/headless.rs` | Validators: `remote_headless`、`remote_headless_commands` 通过；`grep -n 'recv_timeout(Duration::from_millis(10))' src/remote` 为空 | Estimated LOC: 1200
+- [ ] **ZE-513** — 常驻的 `zenpi host serve`：<br>• 监听器的生命周期与邀请解耦；<br>• 固定端口写进 identity；<br>• 默认绑定选中的网卡，而不是 0.0.0.0；<br>• 保留挂载在桌面 TUI 上的模式；<br>layer `B2` | Depends: ZE-502 | Owned paths: `src/host_pair.rs`, `src/remote/listener.rs`, `src/core.rs` | Validators: 端到端测试：配对 → 邀请过期 → 10 分钟后仍可重连；重启后端口不变 | Estimated LOC: 250
+- [ ] **ZE-514** — 配对后即可使用：<br>• 桌面确认后，授予所挂载项目的 Control 和 Approval；<br>• 保留 `--list-devices` 和 `--revoke-device`，删除 4 个 grant CLI；<br>• 删除可以由二维码推出的 6 位安全码；<br>• Pair 和 Authenticate 的响应如实报告 `control_available`；<br>layer `B2` | Depends: ZE-513 | Owned paths: `src/remote/auth.rs`, `src/remote/pairing.rs`, `src/host_pair.rs`, `android/.../pairing/`, `tests/remote_auth.rs`, `tests/remote_device_grants.rs` | Validators: 新配对的设备能直接发 prompt；被撤销或重放的 token 会被拒绝；撤销在下一帧生效 | Estimated LOC: 600
+- [ ] **ZE-515** — 基于密钥的身份与二维码 v2：<br>• `host_id = sha256(SPKI)`，证书轮换后 pin 仍然有效；<br>• 二维码 v2 带上与 token 绑定的有序地址提示（`lan`、`tailnet`），v1 仍可解析；<br>• Android 端已保存的主机自动迁移；<br>layer `B2` | Depends: ZE-514 | Owned paths: `src/remote/pairing.rs`, `src/remote/auth.rs`, `android/.../pairing/`, `android/.../transport/PairingClient.kt`, `android/.../security/PairedHostStore.kt` | Validators: v1 和 v2 邀请都按严格模式解析；证书轮换后仍能连接；已存主机的迁移测试 | Estimated LOC: 700
+- [ ] **ZE-516** — 网络 T1 叠加网：<br>• 主机端 `--tailnet` 按网卡地址识别 `100.64.0.0/10` 和 `fd7a:115c:a1e0::/48`，加入地址提示，不调用 Tailscale API；<br>• Android 只对这两个网段放行 `TRANSPORT_VPN`；<br>• 多提示拨号：局域网优先，失败后依次尝试下一个；任何一个 pin 不符都直接失败，不回退；<br>• 用户指南补上 Tailscale/Headscale 的配置，以及 `ssh -R` 兜底方案；<br>layer `B2` | Depends: ZE-515 | Owned paths: `src/remote/lan.rs`, `src/host_pair.rs`, `android/.../lifecycle/LanSocketRouting.kt`, `android/.../lifecycle/NetworkMonitor.kt`, `android/.../transport/HostClient.kt`, `Docs/stage2_android2unix_user_guide.md` | Validators: CGNAT 和 fd7a 地址被识别为叠加网；局域网不可达时回退到 tailnet 提示；任一提示 pin 错误时直接失败；非叠加网段的 VPN 仍被拒绝 | Estimated LOC: 600
+- [ ] **ZE-517** — 流式对齐：把 `live_text` 目前 4 KiB 的整行预览改为逐 token 的增量，回放时顺序正确；layer `B2` | Depends: ZE-502 | Owned paths: `src/remote/live_text.rs`, `src/remote/subscription.rs`, `android/.../state/SubscriptionReducer.kt` | Validators: interop 测试中增量有序、回放无重复也无遗漏 | Estimated LOC: 600
+- [ ] **ZE-518** — 拆分 Android UI：<br>• 把 `PairingScreen`（约 60 个参数）拆到 `ui/` 包，`PairingState`（约 90 个字段）拆成子状态；<br>• 修掉每秒一次的空转重组；<br>• 草稿只以 host、session、tab 的 id 为键，不含 revision，避免远端改名时清空草稿；<br>行为保持不变；layer `B2` | Depends: ZE-502 | Owned paths: `android/.../MainActivity.kt`, `android/.../ui/`, `android/.../pairing/PairingViewModel.kt` | Validators: 137 个 instrumentation 测试的 testTag 不变且全部通过；空闲时每秒重组 0 次；subtab 的 revision 变化后草稿仍在 | Estimated LOC: 1800
+- [ ] **ZE-519** — 竖屏截图测试底座：Roborazzi，分辨率 360×800 和 412×915，字号 1.0 和 1.3，覆盖明暗主题；layer `B2` | Depends: ZE-518 | Owned paths: `android/app/build.gradle.kts`, `android/app/src/test/java/zenpi/screenshot/`, `android/app/src/test/resources/golden/` | Validators: `./gradlew verifyRoborazziDebug`；主屏无横向裁切 | Estimated LOC: 400
+- [ ] **ZE-530** — 对话主屏：<br>• 用 reverse 的 `LazyColumn`，自动贴底，带流式行；<br>• 工具行默认折叠；<br>• 轻量 markdown：代码块、行内代码、列表，不引入第三方库；<br>• 底部固定输入框：发送 / steer / 停止三态，配 `ImeAction.Send` 和 `imePadding`；<br>• 顶栏放 Agent/Arch 模式切换、worktree chip 和模型 chip；<br>layer `B2` | Depends: ZE-519, ZE-517 | Owned paths: `android/.../ui/ConversationScreen.kt`, `android/.../ui/Markdown.kt`, `android/.../ui/Composer.kt` | Validators: 截图黄金图；500 轮对话的 fixture 卡顿帧 < 5%；草稿在旋转后仍保留 | Estimated LOC: 1300
+- [ ] **ZE-531** — 审批：常驻审批条加底部面板。面板显示 i/N 和彩色补丁，点一次即决定，有待决审批时无法关闭；可以开启生物识别确认；layer `B2` | Depends: ZE-530 | Owned paths: `android/.../ui/ApprovalSheet.kt`, `android/.../pairing/ApprovalDecisionPolicy.kt` | Validators: 滚动到任何位置审批条都可见；按队列顺序处理；摘要过期时按钮禁用；黄金图 | Estimated LOC: 450
+- [ ] **ZE-532** — 抽屉收件箱：会话和项目按"需要你 / 运行中 / 空闲"分组，角标等于待审批数；项目和 worktree 的管理入口移进抽屉；layer `B2` | Depends: ZE-518 | Owned paths: `android/.../ui/SwitcherDrawer.kt` | Validators: `WorkspaceScreenTest`、`SubtabScreenTest`、`TabCapacityScreenTest` 通过；黄金图 | Estimated LOC: 600
+- [ ] **ZE-533** — 次级页与路由栈：<br>• Sessions：搜索和恢复；<br>• Diff：全屏、逐文件、+/- 着色，返回时恢复原滚动位置；<br>• Terminal：按视口计算行列数，按键行在键盘上方，旋转后重新计算；<br>• Tasks；<br>• 模型面板；<br>layer `B2` | Depends: ZE-530 | Owned paths: `android/.../ui/nav/`, `android/.../ui/SessionsScreen.kt`, `android/.../ui/DiffScreen.kt`, `android/.../ui/TerminalScreen.kt`, `android/.../ui/TasksScreen.kt`, `android/.../ui/ModelSheet.kt` | Validators: 原有的 Session、Diff、Terminal、Worker、ModelStatus 屏幕测试迁移后通过；返回栈测试；黄金图 | Estimated LOC: 1800
+- [ ] **ZE-534** — 输入框命令板：输入 `/` 时弹出底部面板，列出主机端的斜杠命令和资源；输入 `@` 时弹出文件选择；不支持的桌面专属命令在面板中注明；layer `B2` | Depends: ZE-530, ZE-253 | Owned paths: `android/.../ui/Composer.kt`, `android/.../ui/Palette.kt` | Validators: 在输入框中驱动 `ResourceCatalogScreenTest` 和 `WorkspaceFilesScreenTest` | Estimated LOC: 450
+- [ ] **ZE-535** — 安全与无障碍：<br>• 默认开启 `FLAG_SECURE`；<br>• 支持深色和动态色；<br>• 同一个图标不再复用于多个功能；<br>• TalkBack 朗读内容不含 UUID，补上标题语义；<br>• release 构建开启 R8；<br>layer `B2` | Depends: ZE-533 | Owned paths: `android/.../ui/theme/`, `android/app/src/main/res/`, `android/app/build.gradle.kts` | Validators: Compose `enableAccessibilityChecks` 通过；release 包能安装并完成配对；深色主题黄金图 | Estimated LOC: 350
+
+### B3 — 连接、后台与开关
+
+- [ ] **ZE-520** — `remote` feature 开关（默认关闭）：<br>• `cfg` 覆盖 `src/remote/`、`host_pair`、rcgen、qrcode、`wakeup::notify` 和 `RemoteApprovalActor`；<br>• 去掉 rustls 中未使用的 `tls12`；<br>• 依赖数门按实测收紧；<br>• 核心 crate 永远不引入 tokio；<br>layer `B3` | Depends: ZE-510, ZE-511, ZE-108 | Owned paths: `Cargo.toml`, `src/lib.rs`, `src/core.rs`, `src/tui.rs`, `src/session.rs`, `src/approval.rs`, `src/pty_shell.rs`, `src/slash_actions.rs`, `tools/bench_runtime.py` | Validators: 默认构建中没有 rcgen 和 qrcode；`cargo tree -i tokio` 为空；`cargo clippy --locked --all-targets --features remote -- -D warnings` 通过；G-REMOTE；G-BENCH | Estimated LOC: 300
+- [ ] **ZE-541** — 监听器加固：<br>• accept 改为事件驱动，不再每 10 ms 轮询；<br>• 每个 IP 只给 1 个未认证连接槽，未认证阶段总时限 5 s；<br>• 为已认证连接预留槽位；<br>layer `B3` | Depends: ZE-513 | Owned paths: `src/remote/listener.rs` | Validators: 有 N 个半开连接时，已认证客户端仍能连上；空闲时每秒唤醒 0 次 | Estimated LOC: 270
+- [ ] **ZE-542** — 持久认证连接：订阅复用同一条 TLS 会话，空闲时每分钟握手不超过 1 次；订阅循环改由 wakeup 驱动，不再每 250 ms 内部调度 4 次；layer `B3` | Depends: ZE-541, ZE-512 | Owned paths: `src/remote/subscription.rs`, `src/remote/listener.rs`, `android/.../transport/HostClient.kt` | Validators: `RemoteProtocolCorpusTest`；空闲时握手计数 ≤ 1 次/分钟；断开重连后从 cursor 续传 | Estimated LOC: 800
+- [ ] **ZE-543** — 设备注册表按 mtime 缓存，不再在每一帧都 flock 并解析一遍；撤销仍在下一帧生效；layer `B3` | Depends: ZE-514 | Owned paths: `src/remote/auth.rs` | Validators: 1000 帧只读取 1 次注册表；撤销测试通过 | Estimated LOC: 150
+- [ ] **ZE-544** — 后台审批通知：<br>• 申请 `POST_NOTIFICATIONS` 权限；<br>• `ResumeWorker` 读到有待审批时，发一条高优先级通知，带"拒绝 / 允许一次"按钮（需要解锁），点击后深链到对应会话；<br>• 审批在别处处理后，1 s 内撤销这条通知；<br>• 不使用前台服务，也不使用 FCM；<br>layer `B3` | Depends: ZE-531, ZE-542 | Owned paths: `android/.../lifecycle/ResumeWorker.kt`, `android/app/src/main/AndroidManifest.xml` | Validators: `ResumeWorkerTest` 中有通知断言；生命周期校验脚本确认没有前台服务 | Estimated LOC: 350
+
+### B4 — 验收与发布
+
+- [ ] **ZE-590** — 生产端到端测试：`zenpi host serve` 配合 ZE-104 的脚本化 provider，Kotlin JVM 客户端走真实 TCP，依次完成配对 → prompt → 流式输出 → 审批 → 断线 → 回放，全程零重复、零遗漏；layer `B4` | Depends: ZE-104, ZE-514, ZE-517, ZE-542 | Owned paths: `tests/remote_host_e2e.rs` | Validators: `cargo test --locked --features remote --test remote_host_e2e`，不带 `#[ignore]` | Estimated LOC: 600
+- [ ] **ZE-591** — Android 体验验收，覆盖以下必做要求：<br>• 审批通知在 2 s 内送达；<br>• 从通知深链进入会话不超过 1 s；<br>• 审批条在任何滚动位置都可见；<br>• 1 万轮对话滚动 p95 ≥ 55 fps（Macrobenchmark）；<br>• 断网 30 s 后重连，零重复、零遗漏，草稿保留；<br>• 离线时 500 ms 内渲染出缓存内容；<br>• 主要操作都在屏幕下方 40% 区域内；<br>layer `B4` | Depends: ZE-530, ZE-531, ZE-532, ZE-533, ZE-534, ZE-535, ZE-544 | Owned paths: `android/app/src/androidTest/`, `android/macrobenchmark/` | Validators: 上述每一条都有对应的 instrumentation 或 Macrobenchmark 断言 | Estimated LOC: 500
+- [ ] **ZE-592** — 真机验收：<br>• 一台 API 35 模拟器；<br>• 一台实体手机连实体局域网：摄像头扫码、prompt、审批、Wi-Fi 断开后恢复、撤销；<br>• 走 Tailscale 叠加网完成一次完整运行；<br>layer `B4` | Depends: ZE-590, ZE-591, ZE-516 | Owned paths: `Docs/quality/ze/ZE-592.json` | Validators: 回执中 `physical_phone_lan_verified=true`，且 `overlay_verified=true` | Estimated LOC: 200
+- [ ] **ZE-593** — 发布：<br>• 签名的 sideload APK，`apksigner verify` 通过，并做安装和升级冒烟测试；<br>• 用户指南精简为只写已验收的能力和离网用法；<br>• 记录 fat LTO 对 G-BUILD 的影响；<br>layer `B4` | Depends: ZE-592 | Owned paths: `android/app/build.gradle.kts`, `Docs/stage2_android2unix_user_guide.md`, `Cargo.toml` | Validators: `apksigner verify`；G-BP | Estimated LOC: 150
+- [ ] **ZE-599** — B 块终验：B1–B4 全部 `[x]`，G-REMOTE、G-ANDROID、ZE-590、ZE-591、ZE-592 全部通过；layer `B4` | Depends: ZE-590, ZE-591, ZE-592, ZE-593 | Owned paths: `Docs/Zenpi_Execution_Blueprint_v2.md` | Validators: 全部公共门 | Estimated LOC: 0
+
+## 7. 冻结与不做
+
+### 7.1 冻结（保留现状，不再扩展）
+
+| 模块 | 理由 |
+|---|---|
+| b3ehive 领域（`b3.rs`、`domains.rs`、`domain_store.rs`、`domain_execution.rs`、`runtime_intent.rs`）、`/goal` `/learn` `/blueprint` `/plan` `/compete` `/loop` `/execute` `/explore` | 属于编排层，不是 agent 内核，pi 也没有 |
+| BentoBox 多面板、Arch/Gantt/Resources 面板、旧的 5 标签 `TabId`、alternate screen | pi 只有 transcript 加编辑器 |
+| Resources、局域网探测、集群（`resources.rs`、`net_probe.rs`、`cluster.rs`）、ZS1-174/175/185 | 不在 2000 并发的执行路径上 |
+| 多项目与 worktree 标签（ZE-013），以及 worktree、worker、subtab 子系统（ZE-511 移位后冻结；一个进程里跑多个 agent，与"一进程一 agent"原则冲突） | 超出 pi 的范围 |
+| PTY Shell 面板（ZE-014）及其已知缺陷：master fd 没有设 CLOEXEC、fork 之后调用 `putenv`、只对 leader 发 SIGHUP | 只影响已冻结的 TUI 面板 |
+| `/persona`、`/mailbox`、`/recovery`、`/session queue\|gc\|migrate`；`session.rs` 中的 mailbox；TOML 技能清单与 hooks；首次启动的登录引导（PA10） | 外观或维护类管道，与核心无关 |
+| `vendor/crossterm` | **必须保留**：它修复了上游 #1126 和 #1142，等上游修复后再移除 |
+| 不单独拆分 `tui.rs` | 由删除类条目逐步缩小；多个条目都要改它时，按 §4 串行合并 |
+| B 块中超出核心体验对齐的部分：远程按标签页调并发、worker 任务分页和取消、worktree 移动和改名、资源 reload、加密离线缓存 v1–v4、7 页一致性复核、API 31/34 矩阵、schema 协商 | 已经实现，但不属于竖屏下的核心体验对齐；保留现状，不再扩展 |
+
+### 7.2 不做 / 以后再做
+
+| 项目 | 判定 | 理由 |
 |---|---|---|
-| Rust | KEEP | Ownership, typed errors, one portable core, and straightforward process/terminal cleanup match the failure-sensitive product. |
-| Ratatui + crossterm | KEEP | Already provides a single terminal buffer, resize events, and compact rendering. The current BentoBox adapter uses pure layout data plus Ratatui; do not add a second TUI framework. |
-| serde + serde_json | KEEP | One typed representation can serve the JSONL protocol, session records, layout presets, and b3 handoffs. |
-| JSONL journal | KEEP for v2.1 | Append-only, inspectable, crash-prefix recovery, and no database dependency. Add an index only after a measured history query problem. |
-| `std::thread` + bounded channels | KEEP provisionally | The measured no-feature release is 6,249,216 bytes with 12 direct normal dependencies on the observed arm64 Darwin host (see the runtime receipt). It is enough to keep a blocking provider off the UI thread and is cheaper than introducing an executor solely for scheduling. It is not called an async executor. |
-| Tokio + reqwest | DEFER behind a measured gate | Adopt together, not piecemeal, only if tests require external abort of an in-flight socket, nonblocking Chat streaming, or concurrent tools that bounded threads cannot satisfy. A v2.1 migration must replace the provider boundary coherently; a Tokio runtime around blocking `ureq` is explicitly rejected. |
-| `ureq` | KEEP while the gate is green | It keeps the current synchronous adapter small and works with the dedicated worker. Responses SSE body reads now use a bounded cooperative poll, but Chat/non-streaming and pre-body network phases still have no external abort handle; the limitation is explicit rather than hidden. |
-| clap | DEFER | The current parser has no dependency/compile cost and can be wrapped by a typed slash registry. Reconsider when command grammar, completion, and generated help exceed the hand parser's testable surface; do not add clap only for branding. |
-| SQLite | DEFER / optional index | The append-only journal remains the recovery source in v2.1; introduce SQLite only with a benchmark showing JSONL history or multi-process indexing is the bottleneck. |
-| Browser pane | DEFER / external adapter | An embedded browser is a large security and binary-size commitment. v2 models a browser pane as an optional capability that can show a bounded external URL/snapshot; no browser process starts by default. |
-| Terminal pane | DEFER / external PTY adapter | A terminal pane may later own a PTY and child lifecycle, but v2.1 keeps `run_command` approval and reaping in the existing tool boundary. No hidden shell multiplexer or daemon is introduced. |
-| GUI (Svelte-quality) | DEFER / separate workspaces | No GUI is built now. A future macOS, Linux, and Windows client will consume the stable headless/core protocol from separate crates or workspace members, so GUI dependencies never enter the lightweight TUI/headless binary. |
-
-### Hard size and ownership rules
-
-1. `cargo tree --depth 1`, release binary size, cold-start time, and peak RSS are
-   recorded for every dependency decision. A feature is not "lightweight" by
-   intent alone.
-2. The default build has exactly two public transports: `tui` and `headless`.
-   Optional browser, PTY, GUI, Tokio, reqwest, or SQLite adapters are feature
-   or workspace boundaries, not hidden modes.
-3. Blocking work runs outside the render/input loop. Every queue has a byte or
-   item bound, and the target shutdown contract joins owned workers or reports
-   why a join is impossible. The current async stdin reader is still a
-   documented join gap in V2-109. Session journal startup reads are separately
-   capped at 256 MiB before parsing or permission mutation.
-4. Each blueprint row below forecasts fewer than 5,000 implementation/test
-   LOC independently. The forecast is not a promise that the whole repository
-   will contain fewer than 5,000 lines.
-
-## 4. Product and ownership model
-
-### 4.1 One core, two transports, one view model
-
-The target v2 ownership contract is: `src/core.rs` owns turn admission, tool
-policy, approval, recovery, and durable events; `src/headless.rs` owns only
-LF-JSONL framing and stdout/stderr discipline; and `src/tui.rs` owns terminal
-lifecycle and input while consuming the same typed event stream as headless.
-The current tree has not yet completed the shared view-model layer that would
-normalize provider text, Markdown blocks, tool states, diffs, approvals, and
-errors before either renderer sees them.
-
-The **target v2** event lifecycle is explicit. The current headless adapter now
-emits correlated, replayable runtime acceptance, queue, start, and cancellation
-events alongside its provider/agent events, but the view-model/block projection
-is not yet one canonical stream, so lifecycle parity remains a partial row:
-
-```text
-request.accepted
-turn.started
-assistant.delta*
-tool.started
-tool.output.delta*
-tool.succeeded | tool.failed | tool.cancelled
-approval.required | approval.accepted | approval.denied
-turn.recoverable_error | turn.cancelled | turn.completed
-```
-
-Headless provider/agent mailboxes and the TUI provider mailbox have count and
-serialized-byte bounds with explicit loss markers. Other event/control queues,
-mandatory request correlation, fair output scheduling, and the complete
-ordering matrix remain open. For turn operations, the terminal response follows its
-durable operation marker; control-plane responses are not operation-marked. A
-dropped stream never synthesizes a successful completion.
-
-### 4.2 First-class b3ehive domains
-
-The v2 product target treats these as local, durable user concepts. The current
-`src/domains.rs` provides bounded typed records and validation;
-`src/domain_store.rs` provides a private snapshot store, and read-only/explicit
-put host routes are wired. Learn evidence and read-only resume-checkpoint owners
-are also wired, but they do not start a worker: actual execution and result
-handoff remain planned or partial rows. Fields such as current item,
-mapping manifests, and result handoffs below describe the target schema, not
-fields currently persisted by the in-memory records:
-
-* **Blueprint**: a versioned DAG of bounded work items, dependencies, owned
-  paths, acceptance commands, and per-item LOC forecast. A blueprint has an
-  immutable content digest and can be inspected or validated without running
-  work.
-* **Goal**: a user-facing execution intent linked to one blueprint/version,
-  with status (`queued`, `running`, `blocked`, `cancelled`, `done`), budget,
-  lease reference, current item, and evidence links. A goal may be resumed or
-  cancelled without rewriting prior journal records.
-* **Learn**: a source-to-target transformation task with source manifest,
-  target contract, mapping/evidence records, and a bounded result handoff. It
-  is not an opaque prompt alias.
-
-`compete` and `loop` are runtime calls, not hidden local schedulers:
-
-1. `/compete` creates a typed route/handoff request with a parent goal and
-   resource envelope.
-2. `/loop` requests a bounded continuation/feedback pass and records its lease,
-   attempt, and evidence.
-3. An external b3ehive runtime may execute those requests. zenpi imports only a
-   validated result manifest and never spawns a nested agent, cron daemon, or
-   competition controller on its own.
-
-This distinction keeps blueprint/goal/learn useful when zenpi is standalone,
-while preserving the user's b3ehive composition model.
-
-### 4.3 Slash-command contract
-
-The target command area is a typed command registry, not implicit shell
-evaluation. An explicit `!` local shell escape is a separate user route
-defined by V2-118; ordinary shell-looking prompt text is still never executed.
-The current `src/slash.rs` supplies the parser/catalogue and both TUI input and
-headless JSONL `type=command` now dispatch local commands before provider
-submission. Read-only domain inspection, bounded resource snapshots, explicit
-JSON `put` operations, bounded Learn evidence/checkpoint inspection, and
-explicit-source session fork/export/import are wired; durable domain execution,
-session GC, and complete command parity are not yet fully wired. The v2 gate requires commands to
-be parsed before a model turn, bounded by protocol limits, rendered as
-system/tool events, and exposed through an equivalent headless `command`
-request so TUI and headless behavior cannot drift.
-
-| Command | v2 meaning | Domain |
-|---|---|---|
-| `/help [command]` | list or inspect commands | core |
-| `/model [id]` / `/models` | inspect or select an allowed model/profile | core/config |
-| `/doctor` | run redacted configuration/runtime diagnostics | core/config |
-| `/settings [key] [value]` | inspect or change a bounded user setting | core/config |
-| `/init [path]` | initialize a project blueprint/goal context without a model call | first-class |
-| `/plan [instruction]` | propose a plan that can be saved as a Blueprint | first-class |
-| `/blueprint show\|status\|validate\|put\|run` | inspect, persist, or execute a versioned DAG | first-class |
-| `/goal put\|show\|run\|pause\|resume\|cancel` | inspect/persist or manage one durable goal | first-class |
-| `/learn put\|show\|resume\|evidence` | inspect/persist or manage a source-to-target learn task | first-class |
-| `/compete submit\|status` | hand a bounded proposal request to the runtime | runtime call |
-| `/loop start\|status\|stop` | hand a bounded continuation request to the runtime | runtime call |
-| `/session list\|open\|fork\|export\|import\|gc` plus planned lifecycle actions | navigate durable sessions; V2-117 adds agents/list, resume-last, queue, archive, delete, unarchive, and migrate semantics | core |
-| `/resume [sequence]` | replay a bounded event suffix or recover a turn | core |
-| `/diff [path]` | inspect pending file changes and bounded hunks | review |
-| `/attach [path]` | add a bounded workspace attachment to the next turn | core/provider |
-| `/permissions show\|set` | inspect or change explicit side-effect policy | approval |
-| `/compact` | compact context with a durable marker | core |
-| `/approve [id] once\|always\|deny` | answer a pending side-effect request | approval |
-| `/cancel` | cancel the active turn/tool/goal operation | core |
-| `!<command>` | explicit local `user_shell` escape; never an implicit prompt or `run_command` tool | V2-118 (planned; `!!` is not Codex parity and is not accepted here) |
-| `/layout [show\|preset\|reset\|save] [tab]` | inspect, select/reset, or persist a BentoBox preset | TUI owner (headless returns an explicit owner-required response) |
-| `/pane [show\|focus\|collapse\|expand\|toggle] [name]` | inspect, focus, or change pane visibility | TUI owner (headless returns an explicit owner-required response) |
-| `/clear`, `/quit` | clear view or close cleanly | TUI |
-
-Unknown commands, ambiguous arguments, and shell-looking payloads fail before
-mutating the journal; only the explicit V2-118 bang route may request a local
-shell operation. `/compete` and `/loop` never imply that zenpi itself has
-started a scheduler.
-
-## 5. BentoBox workspace contract
-
-The upper tab bar is a named workspace selector. Each tab now owns an
-independent preset, focus, collapsed-pane state, and bounded split ratios in
-memory. The production TUI restores and atomically saves those values under
-the active profile in bounded `layout.json`; a malformed snapshot fails closed
-to built-in presets and is reported visibly. The layout model is data
-(`TabId`, `PaneId`, `Split`, `Visibility`, `min_width`, `min_height`), so it can
-be tested without a terminal and later consumed by a GUI.
-
-### 5.1 Pane vocabulary
-
-| Pane | Purpose | Default capability |
-|---|---|---|
-| `project_conversation` | project-level conversation and current context | always on |
-| `resources` | workspace files, changed paths, and bounded CPU/memory/disk signals | always on |
-| `goal_conversation` | goal-specific prompts, approvals, and execution notes | always on when a goal is active |
-| `gantt` | Markdown-rendered blueprint DAG/progress board | always on for blueprint/goal tabs |
-| `browser` | optional bounded external web/snapshot view | off unless an adapter is enabled |
-| `terminal` | optional approved PTY/command view, with the quality bar of a modern Herd-like terminal workflow | off unless requested and approved |
-
-### 5.2 Presets for each upper tab
-
-Ratios are the target starting values, not pixel promises. The pure
-`src/layout.rs` model records them and safely computes geometry, and the
-production async TUI consumes it through `BentoBoxLayoutAdapter`. The current
-adapter renders the tab bar, conversation pane, a live bounded Resources
-projection, and a bounded Blueprint/Goal summary in the Gantt pane; keyboard
-focus, bounded ratio editing, per-tab state, automatic profile persistence, and
-keyboard reset are now wired. Resources and domain summaries refresh through
-separate single-slot workers and retain the last good snapshot, but they are not
-periodically polled. The Gantt content is still a summary rather than item
-progress/evidence, and real browser/terminal content remains deferred. The smallest pane
-will never be allowed below its declared minimum.
-
-| Tab | Left column (30%) | Center (45%) | Right column (25%) |
-|---|---|---|---|
-| `Project` | top `project_conversation` (45%), middle `resources` (30%), bottom `goal_conversation` (25%) | `gantt` with current project blueprint and activity | top `browser` (55%), bottom `terminal` (45%), both collapsible |
-| `Goal` | top `goal_conversation` (50%), middle `resources` (25%), bottom `project_conversation` (25%) | `gantt` (70%) and goal event log (30%) | `browser`/`terminal` stack, hidden when no capability |
-| `Learn` | source/target conversation (45%), source tree/resources (35%), learn queue (20%) | learn mapping, Markdown blocks, and evidence progress | browser for source references, terminal for validation |
-| `Review` | diff conversation (45%), checks/resources (35%), approval queue (20%) | file diff/Markdown review with foldable hunks | terminal for tests; browser optional |
-| `Session` | session list (45%), selected conversation (35%), replay/goal controls (20%) | event timeline and Gantt projection | terminal/browser optional |
-
-The target wide layout matches the requested shape: project conversation at
-upper-left, resource awareness at left-middle, goal conversation at lower-left,
-the Markdown Gantt board in the center, browser at upper-right, and terminal at
-lower-right. The production async TUI now has the tab/adapter and keyboard
-focus/split controls; the legacy synchronous `run_with_state` path remains
-vertical. V2-206 completes real pane content and narrow-terminal stack behavior
-instead of forcing unreadable six-way splits. V2-207 retains the PTY and
-migration acceptance work for the already-wired persistence path. The typed
-`/layout` and `/pane` commands now dispatch to this TUI owner; headless accepts
-the grammar but returns an explicit owner-required response rather than
-mutating layout state without a terminal.
-
-### 5.3 Scaling and focus rules
-
-* Wide (`>=160` columns): target behavior is to show the three columns and all enabled panes.
-* Standard (`100-159`): keep the three columns, collapse optional browser or
-  terminal panes when their minimum width would be violated.
-* Compact (`80-99`): show left + center; right panes become tabs in a single
-  auxiliary stack.
-* Narrow (`<80`) or transient zero/one-cell resize: show one focused pane and
-  preserve state; never panic, overlap text, or resize the command buffer to
-  zero.
-* `Ctrl-1..Ctrl-5` selects the upper tab; `Tab`/`Shift-Tab` and `Ctrl-Arrow`
-  move focus; `Ctrl-Shift-Left/Right` adjusts the focused split by a bounded
-  step; `Ctrl-0` resets the active layout. Automatic profile/tab save and
-  restore are wired through bounded `layout.json`; the `/layout` and `/pane`
-  slash parser and TUI owner are wired. Headless parses these commands but
-  reports that an interactive TUI owner is required.
-
-## 6. Rendering contract
-
-The view model splits each message into bounded blocks before rendering:
-
-```text
-PlainText | Paragraph | Heading(level) | List | Quote | Code(language?)
-Diff(path, hunks) | ToolStatus(state) | Approval(request) | Error(retryable)
-```
-
-Streaming may append to the current text/code block, but a completed block is
-immutable. Code and diff blocks use a monospace style and explicit truncation
-markers; simple Markdown is parsed without a browser or a full web layout
-engine. Unsupported Markdown is rendered as safe plain text. Folded tool/log
-groups target a one-line summary (`N calls, M succeeded, K failed`) and can be
-expanded without re-reading the provider.
-
-The target is for the same block model to be serialized in headless progress
-events. Typed adapters and bounded envelopes exist, but canonical block parity
-is not emitted yet; current headless clients receive the existing event schema
-and can use its plain-text fields until V2-004/V2-301 are accepted.
-
-The headless replay cache is now restored from a private, bounded `.reconnect`
-WAL with request reservations, terminal responses, event sequence, ACK, and
-writer-epoch evidence. Session-path switches change that namespace. This does
-not yet provide portable WAL migration/retention, non-Unix locking, or TUI
-transport reconnect; those parts of V2-115 remain open.
-
-## 7. v2 work matrix
-
-This is the proposed execution sequence. `Paths` are intended ownership
-boundaries; a row may not silently broaden them. Every `Estimated LOC` is an
-independent forecast and is `<5000`.
-
-### A. Contracts and decisions
-
-| ID | State | Deliverable | Paths | Depends | Gate | Estimated LOC |
-|---|---|---|---|---|---|---:|
-| V2-001 | AUDITED | Freeze this audit, version metadata, status vocabulary, and v1-to-v2 migration map | `Docs/Zenpi_Execution_Blueprint_v2.md` | - | Draft is explicitly non-authoritative and every gap has a row | 0 |
-| V2-002 | ACCEPTED | Record dependency, binary-size, startup, RSS, queue, and feature-flag budgets; `tools/bench_runtime.py` now emits a versioned JSON receipt with explicit regression thresholds, raw cold-start samples, and per-process RSS | `Cargo.toml`, `Docs/quality/line-budget.md`, `Docs/quality/runtime-budget-v2.md`, `tools/` | V2-001 | Reproducible baseline and regression thresholds | 250 |
-| V2-003 | PARTIAL | Define one lifecycle event schema for provider, tools, approvals, recovery, and terminal state; `src/view_model.rs` supplies versioned envelopes, correlation validation, and bounded buffering, and headless now emits correlated/replayable runtime admission, queue, start, and cancellation transitions, while block projection is still split between legacy wire events and host adapters | `src/protocol.rs`, `src/backend.rs`, `src/core.rs`, `src/view_model.rs`, `tests/` | V2-001 | Sequence/correlation and terminal-state invariants in one emitted schema | 900 |
-| V2-004 | PARTIAL | Add the bounded block model for text, Markdown, code, diff, tool status, approval, and error; typed blocks and Markdown adapters now exist in `src/view_model.rs`, while the current renderer covers a tested TUI subset | `src/render.rs`, `src/view_model.rs`, `src/tui.rs`, `src/headless.rs`, `tests/` | V2-003 | Golden block tests and headless parity for all declared block kinds | 1100 |
-| V2-005 | PARTIAL | Define typed slash-command grammar and TUI/headless parity; parser/catalogue plus TUI and JSONL `/command` dispatch slices are present, while complete command-owner parity remains planned | `src/slash.rs`, `src/protocol.rs`, `src/tui.rs`, `src/headless.rs`, `tests/` | V2-003 | Unknown/ambiguous commands fail without mutation in both transports | 1200 |
-| V2-006 | PARTIAL | Extend b3 records with first-class Blueprint, Goal, Learn, and external runtime-call references; bounded data types plus a digest-checked JSONL snapshot store now exist, and read-only host projections cover part of the command surface | `src/b3.rs`, `src/domains.rs`, `src/domain_store.rs`, `src/session.rs`, `tests/` | V2-003 | Durable digest, owner, budget, lease, and evidence round trips through every owner command | 1400 |
-| V2-007 | PARTIAL | Define pure BentoBox layout data, tabs, pane capabilities, minimums, and breakpoints; geometry and a production TUI adapter now exist | `src/layout.rs`, `src/tui.rs`, `tests/` | V2-004 | Layout computes safely and all interactive pane behavior is accepted | 1200 |
-
-### B. Core terminal-agent experiences
-
-| ID | State | Deliverable | Paths | Depends | Gate | Estimated LOC |
-|---|---|---|---|---|---|---:|
-| V2-101 | PARTIAL | Multiline editor with newline key, UTF-8 cursor, line navigation, paste, history, and bounded wrapping; the installed-binary PTY smoke now submits one exact bracketed paste | `src/tui.rs`, `tests/tui_resize.rs`, `tools/user_smoke.py` | V2-004 | Shift-Enter/Ctrl-J inserts; Enter and bracketed paste submit exact text; multiline history round trips | 1400 |
-| V2-102 | PARTIAL | Stream event backpressure and live rendering without unbounded provider mailbox growth; headless provider/agent mailboxes and the TUI provider mailbox are bounded by both event count and serialized bytes. Headless emits dropped count/bytes before the terminal response and has a real blocked-output flood test; TUI shows an explicit truncation marker, with focused tests for UTF-8 accounting, zero/oversized limits, and accounting reset | `src/runtime.rs`, `src/backend.rs`, `src/tui.rs`, `src/headless.rs`, `tests/headless_event_budget.rs`, `tests/` | V2-003 | Slow consumers stay byte-bounded with explicit loss; global control-input fairness, all other event/control queue budgets, and the full ordering/PTY matrix remain | 1800 |
-| V2-103 | PARTIAL | Tool lifecycle events and status rows for queued, running, success, failure, cancellation, and output truncation; `ViewEventKind::ToolStarted/ToolFinished` and conversion helpers now exist, but hosts still emit legacy agent/provider envelopes | `src/core.rs`, `src/backend.rs`, `src/view_model.rs`, `src/tui.rs`, `src/headless.rs`, `tests/` | V2-003 | Same call ID/status sequence in TUI and JSONL | 1800 |
-| V2-104 | PARTIAL | Inline approval focus, multiple pending requests, timeout, deny, and no-side-effect proof; TUI/headless decisions reach the first-response-wins coordinator, write/edit approvals expose bounded diffs, approved source digests are revalidated before execution, and metadata-only audit receipts precede side effects | `src/approval.rs`, `src/core.rs`, `src/tui.rs`, `src/headless.rs`, `tests/approval_owner.rs` | V2-005,V2-103 | Focused denial/allow/stale-preview and installed headless tool-owner tests pass; multi-request, timeout, PTY, and full headless matrix remain | 1200 |
-| V2-105 | PARTIAL | User-visible retry, resume, interrupted-operation markers, and durable recovery guidance; `/resume [sequence]` pages bounded validated journal records with a continuation cursor and marker, `/compact` persists/restores deterministic provider context, and session switching now opens only a clean existing zenpi journal without mutating rejected paths. Recovery advances sequence state only for accepted records, rejects exhaustion before append, and refuses startup journals over the 256 MiB byte cap before permission changes | `src/context.rs`, `src/core.rs`, `src/session.rs`, `src/headless.rs`, `src/tui.rs`, `tests/resume_compact_owner.rs`, `tests/session_recovery.rs` | V2-003,V2-102 | Restart replay/compaction, startup-cap refusal, and adversarial sequence/path tests pass; interrupted side-effect retry, large-valid-journal streaming, multi-writer serialization, and kill/restart acceptance remain | 2000 |
-| V2-106 | PARTIAL | Bounded unified diff is emitted before write/edit approval and returned after execution; unreadable sources fail closed and digest-bound revalidation rejects a stale approved preview without writing. Workspace `/diff` covers tracked/untracked/no-HEAD inspection | `src/tools.rs`, `src/slash_actions.rs`, `src/tui.rs`, `src/headless.rs`, `tests/` | V2-004,V2-104 | Add atomic-write failure acceptance, shared Diff-block TUI rendering, redaction policy, and full allow/deny PTY matrix | 1300 |
-| V2-107 | PARTIAL | Foldable tool/log groups with counts, error summaries, keyboard toggle, and preference | `src/tui.rs`, `src/render.rs`, `tests/` | V2-004,V2-103 | Fold/unfold is deterministic and never hides a pending approval/error | 900 |
-| V2-108 | PARTIAL | In-workspace session browser, history search, replay suffix, fork/open, and goal/session navigation; slash list/open, bounded durable sequence replay, TUI/headless fork/export/import, and explicitly confirmed bounded GC owners are wired without provider work. Maintenance requires an explicit clean existing source plus a non-existing, non-symlink destination and never overwrites the target. GC requires both retention dimensions and `--yes`, excludes the active journal, skips domain/unowned data, and caps scan/removal/receipt sizes. Startup recovery eagerly loads a valid journal but rejects files over the 256 MiB cap before parsing/permission changes | `src/session.rs`, `src/tui.rs`, `src/slash.rs`, `src/headless.rs`, `tests/` | V2-005,V2-006 | Restarted-process bounded replay, startup-cap refusal, GC active/unowned refusal, and maintenance refusal paths are covered; large-valid-journal streaming/indexing, the workspace browser/search, and navigation UX remain | 1600 |
-| V2-109 | PARTIAL | Atomic cancel/steer admission, Responses SSE body-read cancellation polling, socket/read boundary policy, child reaping, joined shutdown, and close-hook coverage | `src/runtime.rs`, `src/backend.rs`, `src/core.rs`, `src/headless.rs`, `src/tui.rs`, `tests/` | V2-102,V2-105 | Focused stalled-Responses-body cancellation has no duplicate request and closes the socket within the bounded poll test; Chat/non-streaming and DNS/connect/send/header phases still lack external abort, while owned-host close hooks and the full PTY/headless matrix remain open | 2400 |
-| V2-110 | PARTIAL | Responsive BentoBox resize, keyboard focus navigation, bounded split-ratio adjustment/reset, collapse, terminal restoration, and profile/tab layout restore/save; pure layout APIs plus TUI keyboard bindings now exist | `src/layout.rs`, `src/tui.rs`, `tests/tui_resize.rs`, `tests/tui_bentobox.rs` | V2-007,V2-109 | Wide/standard/compact/narrow/zero-cell PTY and mock-terminal matrix, including persisted focus/ratios | 1800 |
-| V2-111 | PARTIAL | Deterministic Markdown/code renderer with plain fallback; current TUI integration covers Assistant/System text and needs diff/streaming blocks | `src/render.rs`, `src/tui.rs`, `tests/` | V2-004,V2-110 | Golden snapshots contain no overlap, unsafe escapes, or broken wide glyphs | 2400 |
-
-### C. b3ehive domains, commands, and workspace panes
-
-| ID | State | Deliverable | Paths | Depends | Gate | Estimated LOC |
-|---|---|---|---|---|---|---:|
-| V2-201 | PARTIAL | Durable Blueprint store, digest, DAG validation, read-only `/blueprint show`/`status`/`validate`, explicit `/blueprint put <json-path>` persistence, and a bounded local `/blueprint run ID[@VERSION]` owner now exist. The owner selects one dependency-ready item, writes a private receipt snapshot with running/terminal state, enforces the linked Goal budget, and resumes a running receipt without allocating a duplicate attempt; TUI and headless share the adapter and never call the provider for this local evidence operation. The receipt proves only deterministic control-plane admission/recovery: it does **not** execute or validate the Blueprint item's described implementation work, so its `succeeded` state is not product-work completion. Production TUI still projects a 32 KiB/96-row Blueprint/Goal summary through an independent single-slot worker, retains the last good result, and rejects stale results after a session switch. This is not yet item-progress/evidence Gantt semantics, production worker bootstrap/lease admission, or a general worker scheduler | `src/b3.rs`, `src/domain_execution.rs`, `src/domains.rs`, `src/domain_store.rs`, `src/session.rs`, `src/slash.rs`, `src/headless.rs`, `src/tui.rs`, `src/tools.rs`, `src/governance.rs`, `tests/domain_execution_owner.rs`, `tests/domain_execution_host.rs` | V2-005,V2-006 | Duplicate/cycle/missing dependency, budget/cancel/restart receipt, and shared host-owner tests pass; executing the item's real work, binding an external worker to immutable gate+budget lease, importing acceptance evidence, multi-item worker parallelism, Goal cancellation, and external handoff remain | 2400 |
-| V2-202 | PARTIAL | Durable Goal records are linked to immutable Blueprint digests with bounded status transitions; headless and TUI `/goal show`/`list`/`status`/`transition` inspect and durably transition goals, and `/goal put <json-path>` persists a validated record; natural-language create/run/resume/cancel owner commands remain open | `src/b3.rs`, `src/domains.rs`, `src/domain_store.rs`, `src/session.rs`, `src/core.rs`, `src/tui.rs`, `src/headless.rs`, `tests/` | V2-006,V2-201 | Goal status transitions and restart recovery are typed and idempotent through the command owner | 1600 |
-| V2-203 | PARTIAL | Bounded Learn records, `/learn show`, and explicit `/learn put <json-path>` persistence now exist. `/learn evidence <id> <repo-relative-ref>` validates and hashes a bounded local artifact, persists only an idempotent reference, and returns a receipt in both hosts; `/learn resume <id>` validates and exposes a durable read-only checkpoint with `zenpi_started: false`, `execution_state: untracked`, and `external_owner_required` rather than pretending to run a worker | `src/b3.rs`, `src/domains.rs`, `src/domain_store.rs`, `src/session.rs`, `src/slash.rs`, `src/headless.rs`, `tests/learn_owner.rs` | V2-006,V2-202 | Add actual source-to-target worker resume, mapping/result handoff, and external execution lifecycle while preserving bounded traceability | 1900 |
-| V2-204 | PARTIAL | `/compete` and `/loop` now create bounded typed route/envelope/optional-parent-lease intents, recover them from the session journal, and expose submit/status in TUI and headless. Headless source request ID plus payload fingerprint provide cross-restart replay/no-second-append and conflict detection. Responses explicitly say `route: runtime_intent`, `delivery: journal_only`, `zenpi_started: false`, and `execution_state: untracked`; this is not external runtime execution | `src/b3.rs`, `src/runtime_intent.rs`, `src/session.rs`, `src/headless.rs`, `src/tui.rs`, `tests/runtime_intent_owner.rs` | V2-006,V2-202 | Add external delivery/claim/acknowledgement, result-manifest import, multi-writer journal serialization, and lifecycle evidence without a hidden scheduler or nested agent | 1600 |
-| V2-205 | PARTIAL | Complete the slash-command dispatcher, completion/help metadata, aliases, and command events; TUI/headless owner paths now include goal status/show, bounded diff, attachment staging, domain read/put plus Learn evidence/checkpoint inspection, session list/open/fork/export/import and explicitly confirmed bounded GC, durable resume/compact, real approval decisions, cancel, redacted `/models` and `/doctor`, and journal-only compete/loop intent submit/status | `src/slash.rs`, `src/core.rs`, `src/config.rs`, `src/tui.rs`, `src/headless.rs`, `tests/` | V2-005,V2-201,V2-203 | Remaining plan/domain execution and external runtime lifecycle actions need success/error/abort parity | 1800 |
-| V2-206 | PARTIAL | Add the Project, Goal, Learn, Review, and Session tabs with the requested six-pane BentoBox presets; production async TUI tab/adapter, keyboard focus, bounded split controls, independent state, a live bounded Resources pane, and a 32 KiB/96-row Blueprint/Goal summary pane are present. The Gantt projection now annotates each Blueprint item with the latest bounded local execution receipt status/attempt without creating missing receipt state. Separate single-slot workers keep refreshes off the renderer, retain last-good data, and ignore stale domain results after session changes | `src/layout.rs`, `src/domain_execution.rs`, `src/tui.rs`, `tests/tui_bentobox.rs` | V2-007,V2-110,V2-201 | Preset snapshots match ratios, pane ownership, capability visibility, and focus; periodic polling, true progress-Gantt, Learn/Review/Session domain content, and browser/PTY content stay open | 2800 |
-| V2-207 | PARTIAL | Persist per-profile/tab pane ratios, collapsed state, focus, and reset/migration through bounded `layout.json`; production TUI restores on startup and saves dirty mutations atomically | `src/layout.rs`, `src/config.rs`, `src/tui.rs`, `tests/` | V2-206 | Corrupt/out-of-range layout fails closed and leaves a valid prior config; full PTY persistence proof remains open | 1500 |
-| V2-208 | PARTIAL | Bounded workspace/resource collector, headless `resources`, and a live TUI Resources pane now exist; startup and `/resources` refreshes run through an independent single-slot bounded worker and retain the last good snapshot | `src/resources.rs`, `src/headless.rs`, `src/tui.rs`, `tests/tui_bentobox.rs` | V2-206,V2-207 | Non-blocking refresh and rendering are covered; periodic polling and portable disk metrics remain open | 1800 |
-| V2-209 | DEFERRED | Optional browser capability pane via an external, bounded snapshot adapter | `src/adapters/browser.rs`, feature docs, `tests/` | V2-206 | Feature is absent from default build; no browser process or credential leak by default | 2200 |
-| V2-210 | DEFERRED | Optional PTY terminal pane with explicit child ownership and approval | `src/adapters/pty.rs`, feature docs, `tests/` | V2-104,V2-206 | Feature is absent from default build; child, resize, signal, and cleanup tests pass when enabled | 2200 |
-
-### D. Headless parity, quality, and release gates
-
-| ID | State | Deliverable | Paths | Depends | Gate | Estimated LOC |
-|---|---|---|---|---|---|---:|
-| V2-301 | PARTIAL | Expose the currently declared events/commands over strict bounded JSONL while retaining stdout protocol-only; runtime admission, queue, start, cancellation, durable reconnect, session lifecycle/mailbox, and explicit user-shell transitions are now correlated and replayable, and `view_model` adapters/resources are available, but canonical block parity and complete worker-budget host wiring are not yet emitted | `src/protocol.rs`, `src/headless.rs`, `src/view_model.rs`, `src/governance.rs`, `tests/headless_protocol.rs`, `tests/` | V2-003,V2-005,V2-103 | Split/overlong/malformed frames, replay gaps, duplicate IDs, EOF, cancellation, mailbox/lifecycle, `!echo`, worker policy, and budget matrix; canonical block/event parity remains open | 2200 |
-| V2-302 | PARTIAL | Benchmark queue memory, stream latency, startup/RSS, render frames, and layout computation; the checked-in probe measures locked release size, cold headless exit/RSS for a new/empty session, 2,000 runtime round trips, 500 TestBackend renders, 60,000 layout computations, and deterministic render coalescing with raw samples and no p95 claim | `tools/bench_runtime.py`, `tools/runtime_budget_probe.rs`, `Docs/quality/runtime-budget-v2.md` | V2-002,V2-102,V2-110 | Current host passes repeatable limits; near-256 MiB journal startup/RSS, stream first-paint/end-to-end latency, and direct queue-memory measurement remain open | 700 |
-| V2-303 | PARTIAL | Apply the Tokio/reqwest/clap/SQLite decision gates using measured evidence; current evidence keeps all four deferred/rejected at their ownership boundary, with explicit reopen requirements, while the incomplete V2-302 stream/queue-memory evidence prevents final acceptance | `Docs/quality/technology-decision-v2.md`, `tools/` | V2-002,V2-302 | Any migration is all-at-once at its ownership boundary; rejected additions stay absent | 300 |
-| V2-304 | PARTIAL | Re-audit secrets, paths, approvals, diff content, external adapters, and redacted diagnostics; session symlink/O_NOFOLLOW, existing-only resume/session opens, over-limit journal refusal before permission mutation, headless status/session path redaction, and sibling domain-store listing negatives are now covered | `src/security.rs`, `src/config.rs`, `src/approval.rs`, `src/b3.rs`, `src/session.rs`, `src/headless.rs`, `tests/` | V2-103,V2-104,V2-106 | Negative tests prove no credential leak, absolute-path escape, unclassified or implicit shell escape, session-link mutation, missing-resume creation, oversized-journal mutation, domain-store corruption, worker/user origin confusion, or hidden side effect; the explicit V2-118 user-shell route remains policy-gated | 1300 |
-| V2-305 | PARTIAL | Run the ten-experience acceptance matrix in both TUI PTY and headless fixture lanes; user smoke installs a production no-fixture binary and, against local OpenAI-compatible Responses fixtures, proves Responses SSE, slow-provider EOF drain, bounded pre-write diff, approval, actual workspace write, provider continuation, and durable tool result. `tools/tui_approval_smoke.py --binary PATH` separately proves the installed production TUI approval/diff deny-and-allow path after folding tool logs. Its feature install covers TUI resize, exact multiline paste, stream interruption/restoration, and selected `/models`, `/doctor`, `/help`, `/diff`, `/attach`, `/compact`, `/resume`, `/compete`, and session-reopen paths | `tests/`, `tools/user_smoke.py`, `tools/tui_approval_smoke.py`, `tools/headless_smoke.sh`, `Docs/quality/` | V2-101,V2-102,V2-103,V2-104,V2-105,V2-106,V2-107,V2-108,V2-109,V2-110,V2-111,V2-301 | Complete remaining rows, especially cursor/history/paste-limit/narrow wrapping, atomic failure, history UI, socket-level cancel outside Responses body reads, and all resize classes; no compile-only acceptance | 1500 |
-| V2-306 | PARTIAL | Reconcile README/spec/Gantt, version notes, release archive, SBOM, and size receipt | `README.md`, `Docs/Zenpi_Execution_Spec.md`, `Docs/Zenpi_Execution_Gantt.md`, `Docs/quality/` | V2-303,V2-305 | Docs never call partial/deferred work complete; release reproduces the recorded size | 500 |
-
-### E. Reopened 2.1 requirements
-
-These rows began as `PLANNED` and are now `PARTIAL` where implementation and
-focused tests exist. Both statuses remain unchecked work, not product
-acceptance. The individual gates below record the remaining worker, session,
-and local-shell integration boundaries.
-
-| ID | State | Deliverable | Paths | Depends | Gate | Estimated LOC |
-|---|---|---|---|---|---|---:|
-| V2-112 | PARTIAL | Worker-scoped all-allow profile: grant the worker every declared capability only inside an immutable Blueprint item lease covering owned paths, tools/effects, commands, network hosts, budgets, cancellation, and non-exportable secret handles; credential paths and raw secrets remain deny-by-default; keep `user_shell`, `agent_tool`, and `blueprint_worker` origins distinct. The current gate, binding, approval, and budget foundations are implemented; host bootstrap and complete end-to-end lease admission remain open | `src/domains.rs`, `src/domain_execution.rs`, `src/tools.rs`, `src/approval.rs`, `src/governance.rs`, `tests/` | V2-006,V2-104,V2-201 | Preflight binds the allow profile to the Blueprint/Goal digest and lease; no global remembered approval or capability bleed between items; production host bootstrap must install the matching gate, binding, and budget reservation before any worker side effect | 1800 |
-| V2-113 | PARTIAL | Immutable prohibition-gate compiler and per-action enforcement: deny wins over allow for paths, commands, network, secrets, destructive effects, identity changes, Blueprint writes, and nested agents/schedulers/daemons/servers; unknown effects fail closed and every verdict carries a policy digest. Current tool gate and digest paths are implemented; hostile filesystem swap, arbitrary worker shell sandbox, and cross-platform containment remain open | `src/security.rs`, `src/tools.rs`, `src/b3.rs`, `src/domain_execution.rs`, `tests/` | V2-112 | Preflight and every action reject undeclared or prohibited effects before spawn; workers cannot mutate policy; digest and reason are present in claim, receipt, replay, and imported manifest; OS confinement tests must pass before acceptance | 1800 |
-| V2-114 | PARTIAL | Worker evidence and emergency cancellation: bounded lease renew/expiry, explicit blocked/denied/cancelled/failed terminal states, host-owned kill and child reaping, and TUI/headless proof for allow, deny, timeout, retry, and stale-lease paths. Core cancellation and tool reaping are implemented; CLI bootstrap, full worker evidence, and lease renewal remain open | `src/domain_execution.rs`, `src/core.rs`, `src/headless.rs`, `src/tui.rs`, `src/governance.rs`, `tests/` | V2-109,V2-113 | Host can cancel or reap without worker cooperation; no receipt or Goal transition implies implementation completion; retries are idempotent and preserve the policy digest; all states must be visible in both transports | 1800 |
-| V2-115 | PARTIAL | Durable cross-process session checkpoint and reconnect cursor: persist operation markers, event envelopes, request ledger, ACK state, and session/sequence identity so restart, reconnect, and stale-marker repair cannot duplicate or silently skip work. Headless WAL, locks, ACK/replay, and kill/restart evidence now exist; TUI reconnect and WAL lifecycle migration remain open | `src/session.rs`, `src/protocol.rs`, `src/headless.rs`, `src/tui.rs`, `tests/` | V2-105,V2-108,V2-301 | Two processes and a kill/restart fixture prove single-owner serialization, bounded replay, gap detection, duplicate suppression, and repair of an interrupted append without hidden daemons; export/import/delete/GC must preserve or explicitly retire reconnect state | 2200 |
-| V2-116 | PARTIAL | Session-to-session mailbox and queue: addressed envelopes with sender/recipient session IDs, request ID, digest, ordering, TTL, ACK/fail/claim/result, deduplication, conflict handling, offline inbox, and explicit access checks; fork/import remaps identity rather than copying a stale owner. Durable local mailbox and host transport wiring are implemented; TUI projection and non-Unix locking remain open | `src/session.rs`, `src/b3.rs`, `src/protocol.rs`, `src/headless.rs`, `src/tui.rs`, `tests/` | V2-006,V2-115 | Inter-session delivery is journal/file based and observable in both hosts; no provider call, implicit daemon, or cross-workspace credential transfer; restart and replay remain idempotent | 2200 |
-| V2-117 | PARTIAL | Codex-style session lifecycle parity: list agents/sessions, resume-last and queue an existing session, fork, archive, delete, unarchive, and migrate with explicit ownership and retention semantics; remote auth and provider-managed orchestration remain explicitly deferred. Backend and headless lifecycle dispatch are implemented; TUI parity and live-agent semantics remain open | `src/session.rs`, `src/slash.rs`, `src/headless.rs`, `src/tui.rs`, `tests/` | V2-108,V2-115,V2-116 | Every lifecycle action has a typed command, dry-run/confirmation where destructive, bounded receipt, restart-safe identity, and TUI/headless parity; no hidden remote control plane | 1600 |
-| V2-118 | PARTIAL | Codex-style single-leading-`!` local shell escape: `!cmd` (including `!echo hi`) is a `user_shell` operation, empty bang shows help, one prefix is trimmed, original input and output are journaled, bounded output is exposed to the next model turn as an explicit user-shell event, and the route is never the model `run_command` tool; any `!!` behavior is an explicitly separate zenpi extension, not assumed Codex parity. Core, headless, and real PTY allow/deny/output/reap paths are implemented; queue/cancel PTY and cross-platform acceptance remain open | `src/slash.rs`, `src/core.rs`, `src/tools.rs`, `src/headless.rs`, `src/tui.rs`, `src/protocol.rs`, `tests/`, `tools/tui_user_shell_smoke.py` | V2-005,V2-103,V2-104,V2-109,V2-301,V2-113 | Parse before provider submission; preserve pipes/redirects/quoting only under an explicit ShellEscapePolicy; bound output, NUL/length, timeout, cancel, signal, child reaping, cwd/env, approval, and prohibition gates; PTY/headless tests prove `!echo hi` output/error/exit, next-turn context, and zero provider calls, while a running shell queues rather than steers a model turn | 2200 |
-| V2-119 | PLANNED | Bind Blueprint execution receipts to a real external worker handoff | `src/domain_execution.rs`, `src/domains.rs`, `src/governance.rs`, `src/session.rs`, `src/headless.rs`, `src/tui.rs`, `tests/` | V2-006,V2-112,V2-113,V2-114,V2-115 | A dependency-ready item creates one atomic claim/request lease containing Blueprint/Goal/item digests, immutable prohibition policy, worker identity, attempt ID, and budget reservation; an external worker returns a checksum-valid evidence/result manifest; duplicate claims, stale leases, policy changes, and fabricated `recorded`/`control_plane_only` success remain unaccepted; no hidden scheduler or nested worker is introduced | 2600 |
-
-### F. Explicitly future GUI boundary
-
-| ID | State | Deliverable | Paths | Depends | Gate | Estimated LOC |
-|---|---|---|---|---|---|---:|
-| V2-401 | DEFERRED | Publish a stable core/headless/layout protocol that a future GUI can consume | `Docs/Zenpi_GUI_Future_Contract.md` | V2-003,V2-007 | Contract names macOS, Linux, and Windows without adding GUI dependencies now | 0 |
-| V2-402 | DEFERRED | Future macOS GUI workspace (Svelte-quality interaction target) | `Docs/Zenpi_GUI_Future_Contract.md` | V2-401 | Requires a separately approved blueprint/version and platform acceptance matrix | 0 |
-| V2-403 | DEFERRED | Future Linux/Windows GUI workspace (same shared protocol) | `Docs/Zenpi_GUI_Future_Contract.md` | V2-401 | Requires a separately approved blueprint/version and platform acceptance matrix | 0 |
-
-### G. Account service feature 2.3
-
-These proposed rows add no runtime acceptance. The detailed contracts are
-[provider/account routing](feat-provider-account-routing.md),
-[scheduler plugins](feat-account-scheduler-plugins.md), and
-[local broker](feat-account-broker.md). The matching CF row owns executable
-scope, rollback and validation. External research is separate evidence, not
-an instruction to reproduce another project's implementation. Spec section
-1.1 is the only product service exception; worker policy remains unchanged.
-This feature does not absorb independent Goal-flow changes.
-
-| ID | State | Deliverable | Paths | Depends | Gate | Estimated LOC |
-|---|---|---|---|---|---|---:|
-| V2-501 | PLANNED | Typed provider/account identities and canonical request/event adapters; executable scope CF-901 | `src/`, `tests/`, `Docs/` | V2-003,V2-104 | Protocol fixtures; capability/OAuth eligibility fails closed | 2600 |
-| V2-502 | PLANNED | One explicitly approved local broker with bounded authenticated IPC; executable scope CF-902 | `src/`, `tests/`, `Docs/` | V2-501,V2-113 | Multi-process startup, generation reuse, scoped authorization and lifecycle evidence | 2700 |
-| V2-503 | PLANNED | Single-owner durable model quota admission and recovery; executable scope CF-903 | `src/`, `tests/`, `Docs/` | V2-502 | Commit uncertainty, duplicate receipt, client journal failure and crash fixtures | 2800 |
-| V2-504 | PLANNED | Shared actual provider connections and bounded stream workers; executable scope CF-904 | `src/`, `tests/`, `Docs/` | V2-503 | No per-CLI pools; token isolation, partial body, slow reader and disconnect fixtures | 2600 |
-| V2-505 | PLANNED | Replaceable deterministic account scheduling strategies; executable scope CF-905 | `src/`, `tests/`, `Docs/` | V2-503 | Pinned/sticky/spread/auto, stale snapshot and shared scope fixtures | 2200 |
-| V2-506 | PLANNED | Optional bounded strategy plugins and version-safe replacement; executable scope CF-906 | `src/`, `tests/`, `Docs/` | V2-505 | Sandbox limits, quarantine, unchanged existing bindings and feature-off build | 2500 |
-| V2-507 | PLANNED | TUI/headless routing intervention and subagent overrides; executable scope CF-907 | `src/`, `tests/`, `Docs/` | V2-504,V2-505 | Scheduled versus applied changes, immutable active request and inherited budget limits | 2200 |
-| V2-508 | PLANNED | Explicit external broker adapter with one remote quota authority; executable scope CF-908 | `src/`, `tests/`, `Docs/` | V2-504,V2-505 | Endpoint authorization, remote outage, replay gaps and no local fail-open | 2000 |
-| V2-509 | PLANNED | Measured 5000-client service admission and control performance; executable scope CF-909 | `src/`, `tests/`, `Docs/` | V2-502,V2-503,V2-504,V2-505 | Raw bounded-load evidence; durable throughput not substituted by memory-only throughput | 1800 |
-| V2-510 | PLANNED | Installed account-service compatibility and security acceptance; executable scope CF-910 | `src/`, `tests/`, `Docs/` | V2-501,V2-502,V2-503,V2-504,V2-505,V2-506,V2-507,V2-508,V2-509 | Existing Profile/Session/v1 tools remain readable; two modes and frozen worker policy preserved | 1400 |
-
-### H. Master gate
-
-| ID | State | Deliverable | Paths | Depends | Gate | Estimated LOC |
-|---|---|---|---|---|---|---:|
-| V2-999 | PLANNED | Master acceptance, v1 archive/migration, Gantt regeneration, and final user receipt | `Docs/`, `tools/`, `.github/` | V2-001,V2-002,V2-003,V2-004,V2-005,V2-006,V2-007,V2-101,V2-102,V2-103,V2-104,V2-105,V2-106,V2-107,V2-108,V2-109,V2-110,V2-111,V2-112,V2-113,V2-114,V2-115,V2-116,V2-117,V2-118,V2-119,V2-201,V2-202,V2-203,V2-204,V2-205,V2-206,V2-207,V2-208,V2-301,V2-302,V2-303,V2-304,V2-305,V2-306,V2-501,V2-502,V2-503,V2-504,V2-505,V2-506,V2-507,V2-508,V2-509,V2-510 | All required rows `ACCEPTED`, zero unresolved partials, clean gates, and size receipt; deferred adapter/GUI rows are not lightweight v2 blockers | 0 |
-
-## 8. Acceptance matrix for the ten core experiences
-
-The installed smoke now includes the local Blueprint owner path: it installs
-the no-fixture binary, persists a valid Blueprint and linked Goal, runs two
-dependency-ordered bookkeeping steps across two processes, verifies private receipt
-recovery while the Goal remains running, and asserts that no provider request occurred.
-This executable evidence supersedes the older shorthand in the V2-205/V2-305
-row text; the remaining gaps listed in those rows are still intentionally open.
-
-The installed production smoke now covers `/blueprint run` as well as session
-GC: it persists a valid Blueprint and linked Goal, records two dependency-
-ordered bookkeeping steps across two processes, verifies private receipt recovery
-while the Goal remains running, and asserts that no provider request occurred. The following tests
-are mandatory evidence, not illustrative examples. The V2-205/V2-305 matrix
-still retains the remaining parity and UX gaps explicitly; this smoke is not a
-claim that the full v2 gate has passed:
-
-| Experience | Positive proof | Failure/edge proof |
-|---|---|---|
-| Multiline input | Type two lines with Shift-Enter, move the cursor across a UTF-8 boundary, submit one exact message; installed PTY smoke submits an exact bracketed paste | Paste at the byte limit, empty lines, history recall, narrow wrapping, and 1-cell prompt |
-| Streaming reply | Delayed fixture emits several deltas; TUI paints each before completion and headless emits ordered events | Slow consumer/backpressure, malformed SSE, dropped stream, refusal, and no synthesized success |
-| Tool status | One read, one write, and one command expose stable started/result states | Tool failure, cancellation, output truncation, duplicate call ID, and queue depth |
-| Confirmation | TUI and headless allow a permitted write/command after explicit approval | Deny, timeout, cancel, two pending approvals, and proof the handler was never called |
-| Recovery | Kill/restart after a durable operation marker and resume/retry once; reject an oversized startup journal before parsing or permission changes | Truncated tail, malformed record, stale active marker, retryable provider error, duplicate request, and near-cap valid-journal memory behavior |
-| File diff | Preview and final result contain bounded unified hunks and changed paths | New file, deletion-like replacement, large truncation, NUL/secret redaction, atomic write failure |
-| Log folding | Toggle a tool group and retain a count/status summary | Pending approval/error cannot be hidden; fold state survives resize and tab switch |
-| Session history | Open/replay/fork a session from the Session tab and headless command | Corrupt prefix, old sequence, missing file, and no provider call during replay |
-| Cancel/interrupt | Ctrl-C or `/cancel` stops a delayed provider/tool and returns to idle; a stalled Responses SSE body observes cancellation at the bounded poll interval | Half-line read, retry backoff, live-steer race, Chat/non-streaming or pre-body socket phases, child reaping, shutdown, and panic cleanup |
-| Resize | Exercise wide, standard, compact, narrow, 1x1, and transient zero-cell layouts | No overlap, panic, lost input, stale cursor, or terminal raw-mode/alternate-screen leak |
-
-Additional acceptance is required for Markdown block rendering, every slash
-command, all five tab presets, resource polling bounds, b3 digest/lease rules,
-near-cap valid-journal startup/RSS, and the remaining provider cancellation
-boundaries. The reopened 2.1 lanes must also prove worker allow plus
-prohibition-gate evidence (V2-112--V2-114), cross-process checkpoint and
-session mailbox/lifecycle/live-recipient recovery (V2-115--V2-117, V2-119),
-and explicit `!` user-shell TUI/headless parity with zero provider calls
-(V2-118). The default-build
-dependency/size gate is recorded separately in V2-002 and its host-specific
-receipt.
-
-## 9. Versioning and migration policy
-
-* `2.1.0` is a product-contract revision, not a claim that the rows are done.
-  Additive v2.1 fixes use `2.1.x`; protocol, event, or layout incompatibilities
-  require `3.0.0`.
-* Until `V2-999` is accepted, the v1 file and v1 Gantt remain authoritative
-  only for the historical v1 receipt and its validator. A worker must not mark
-  a v1 row complete to imply a v2 row is complete.
-* On acceptance, the Master will archive the v1 document, migrate stable IDs
-  with an explicit table, update the Spec and README, regenerate the same-name
-  Gantt, and run all structural and executable gates. A hand-edited Gantt or a
-  compile-only receipt is not a migration.
-* GUI, browser, PTY, Tokio/reqwest, clap, and SQLite work may not be smuggled
-  into the lightweight v2 binary by changing a dependency or adding an unlisted mode. Each requires
-  a row, an estimate, a gate, and (for a contract change) a new version.
-
-### 9.1 Historical `[x]` reopen map
-
-The v1 document remains the authoritative checklist, but the affected contract
-rows below have been explicitly reopened now (`[x]` -> `[ ]`). The Gantt is a
-read-only projection regenerated from that source. Untouched ZP foundation rows
-remain historical provenance; they are not being selectively falsified as
-unfinished. The v2 `PARTIAL` and `PLANNED` rows are additional unchecked work.
-
-The following document edits are recorded, not implementation acceptance:
-
-- Reopened worker approval and prohibition claims (`CF-402`, `CF-404`, `CF-405`).
-- Reopened checkpoint, reconnect, and replay claims (`CF-305`, `CF-306`, `CF-307`).
-- Reopened session lifecycle and interrupted-operation claims (`CF-503`, `CF-504`).
-- Reopened security and durable budget claims (`CF-701`, `CF-703`).
-- Added the explicit local `!` route claim (`CF-408`).
-- Added worker admission, mailbox, and live-recipient claims (`CF-409`, `CF-505`, `CF-506`) and external worker handoff (`V2-119`).
-- Aggregate acceptance (`CF-705`) remains open until V2-112--V2-119 scenarios pass.
-
-| Reopened v1 rows | Why the old receipt was insufficient | Replacement v2 rows |
-|---|---|---|
-| `CF-402`, `CF-404`, `CF-405` | Existing tool continuation and approval rows do not prove worker-scoped all-allow, immutable deny-wins gates, per-action policy evidence, or explicit user-shell origin | `V2-112`, `V2-113`, `V2-114` |
-| `CF-305`, `CF-306`, `CF-307` | Existing TUI/headless rows do not prove durable cross-process checkpoint, reconnect cursor, writer ownership, mailbox envelope parity, or replay deduplication | `V2-115`, `V2-116`, `V2-118` |
-| `CF-503`, `CF-504` | Existing session administration and recovery rows do not provide Codex lifecycle actions, operation idempotency, or explicit unknown-outcome retry/abandon semantics | `V2-115`, `V2-116`, `V2-117` |
-| `CF-701`, `CF-703` | Existing security and budget rows do not bind non-exportable secret handles, policy digests, worker leases, network/process budgets, or user-shell accounting | `V2-112`, `V2-113`, `V2-114` |
-| `CF-408` | The historical receipt had no accepted local `!echo` contract; current partial implementation and model `run_command` do not replace its full acceptance matrix | `V2-118` |
-| `CF-409` | Existing worker rows do not connect Blueprint execution receipts to a real external worker lease, immutable policy digest, and evidence manifest | `V2-112`, `V2-113`, `V2-114`, `V2-119` |
-| `CF-505`, `CF-506` | Existing session rows provide local mailbox/lifecycle pieces but do not prove durable recipient delivery, live-owner dispatch, result linkage, or offline/dead-owner handling | `V2-115`, `V2-116`, `V2-117`, `V2-119` |
-| `CF-408`, `CF-705` | The local `!echo` lane and aggregate acceptance must include all new policy, session IPC, lifecycle, live-recipient, and shell gates; both remain open | `V2-118`, `V2-119`, `V2-999` |
-
-## 10. Open decisions for the Master review
-
-1. Keep the lightweight synchronous provider boundary for v2.1 while retaining
-   bounded queues, joined shutdown, steer admission, and Responses-body
-   cancellation polling, or approve a complete Tokio+reqwest migration if
-   external abort is required for Chat/non-streaming or pre-body socket phases.
-2. Keep the hand-written parser plus typed slash registry until command
-   completion/help tests demonstrate a real need for clap.
-3. Keep JSONL as the source of truth; add SQLite only as an optional derived
-   index after a measured history workload.
-4. Keep browser and PTY panes disabled by default and model them as external
-   adapters, rather than making the lightweight binary a desktop shell.
-5. Accept `blueprint`, `goal`, and `learn` as first-class local domains now;
-   route `compete` and `loop` through b3ehive runtime handoffs with explicit
-   evidence instead of implementing a second scheduler inside zenpi.
-
-The recommended answer to "should we discuss and update the blueprint again?"
-is therefore **yes**: accept this v2 contract and audit first, then execute the
-rows in dependency order. Do not call the current v1 checkmarks proof that the
-ten experiences or the BentoBox/b3ehive product surface already exists.
+| question/ask-user、todowrite、webfetch、plan_exit、LSP 工具 | 不做 | pi 没有这些；模型可以直接用文字提问，而 question 工具会阻塞 headless worker |
+| 权限规则服务、子代理权限派生、shell arity 审计、Agent 目录、plan/build 提醒、按 session 的运行态控制（ZS1-188/189/193..196） | 不做 | 现有审批机制已足够；一个进程跑一个 agent，天然隔离 |
+| 细粒度的 LLM start/end 事件（ZS1-191）、通用认证方法与其他 OAuth（ZS1-197）、OpenSpec（ZS1-183）、动态模型目录 | 不做 | 遇到具体 bug 时再修，不搭框架 |
+| revert/undo、ACP 服务端、外部 agent 配置迁移 | 不做 | pi 没有，fork 和 tree 已经覆盖 |
+| tokio/async 重写、进程内多路复用、反应器框架 | 不做 | 用阻塞 channel 已经能满足"睡到下一个事件"的要求 |
+| 账户服务 broker、浏览器面板、GUI 边界（旧 V2-209/401..403/501..510） | 不做 | 单用户 CLI 不需要多租户服务；GUI 方向已由 B 块替代 |
+| `-p` 打印模式、pi 完整 RPC（`get_messages`、`export_html` 等） | 不做 | 单次运行由 ZE-242 的 Validator 保证（`printf … \| zenpi --mode headless --auto`），`-p` 只是一层包装 |
+| 全局清理 unwrap、pedantic lint、按文件限制行数、`pub` 可见性审计、类型化全部错误、MSRV 矩阵 | 不做 | codex-rust-deslop 没有这些要求；G-RUST 只管新增代码 |
+| 内嵌 tsnet/libtailscale、自己实现打洞/STUN/QUIC、Cloudflare Tunnel、ngrok、Tailscale whois 鉴权、内置语音 | 不做 | 会引入 Go 运行时，或带来数月工期、第三方账号绑定；whois 不如 zenpi 自己的设备密钥可靠；语音输入交给系统输入法 |
+| 薄传输层（TLS 里直接跑 headless JSONL，主机侧可少 6–7k 行，但要重写 Android 传输层） | 以后再做 | 当 v1 协议成为维护负担时再议 |
+| T2 盲中继（按 host 密钥寻址、只转发密文，约 900 行，不加依赖）、T3 iroh sidecar（独立二进制）、FCM 推送、mDNS/Wi‑Fi Direct | 以后再做 | 等用户明确拒绝使用 VPN、或需要真正的推送时再做 |
+| 流中途失败后重试、tree 导航的分支摘要、多处编辑 `edits[]`、read 读图片、`--thinking`/`--system-prompt` 参数、跨 session 的输入历史、`!!` shell、离线加密缓存之外的后台同步 | 以后再做 | 有价值，但不满足 §2 的任何一条标准 |
+
+## 8. 旧编号去向
+
+| 旧编号 | 去向 |
+|---|---|
+| ZP-xxx、ZS1 `[x]` | A0 基线 ZE-001..020 |
+| ZP-013 | 计入 ZE-013 |
+| ZS1-180/181/182/184 | ZE-107 |
+| ZS1-190 | ZE-220、ZE-221 |
+| ZS1-192 | ZE-230 |
+| ZS1-174/175/185 | 冻结 |
+| ZS1-183/188/189/191/193..197 | 不做 |
+| V2-001/002 | ZE-018、ZE-101、ZE-102 |
+| V2-003/004/103/111 | ZE-004/012 + ZE-241、ZE-250 |
+| V2-005/205 | ZE-011 + ZE-253 |
+| V2-006、V2-201..204 | ZE-016（冻结） |
+| V2-007/110/206/207 | ZE-012/013/015 |
+| V2-101/107 | ZE-011 |
+| V2-102/109 | ZE-241、ZE-300、ZE-301 |
+| V2-104/106 | ZE-107、ZE-251 |
+| V2-105/108 | ZE-231、ZE-232、ZE-236 |
+| V2-112..114/119 | ZE-107、ZE-214、ZE-260、ZE-308 |
+| V2-115 | ZE-303 |
+| V2-116..118 | ZE-002/010 |
+| V2-208 | ZE-017 |
+| V2-210 | ZE-014 |
+| V2-301 | ZE-240..243 |
+| V2-302/303 | ZE-403 |
+| V2-304 | ZE-200、ZE-231、ZE-303 |
+| V2-305 | ZE-400..402 |
+| V2-306 | ZE-406 |
+| V2-209/401..403/501..510 | 不做 |
+| S2-001/002/099 | ZE-100..102、ZE-599 |
+| S2-003/010..013/019..021/030..033/037 | ZE-502，以及 ZE-510..517 的收敛 |
+| S2-014 | ZE-512 |
+| S2-015..018 | ZE-511（冻结） |
+| S2-034..036 | ZE-518..534 |
+| S2-038 | ZE-544 |
+| S2-050..056 | ZE-500、ZE-590..592（其余冻结或不做） |
+| S2-070..073 | ZE-593 |
+| 3.x 的 ZE-103 | 并入 ZE-108、ZE-520 |
+| 3.x 的 ZE-310 | 由 ZE-520 取代 |
+| 3.x 的 ZE-405 | 由 B 块取代 |
+| 3.0 的 ZE-208 | 撤销：经核实，生产路径不受影响 |
+| 3.0 的 ZE-209 | 冻结 |
+
+## 9. 依据索引（learn 语料与调研）
+
+| 来源 | 落到的条目 |
+|---|---|
+| weiyangzen/pi-mono learn（`Docs/learn/stage1_pi_mono/files/`、`Docs/learn/files/pi-mono/`） | ZE-201、207、213、221、227、232、236、242；§7.2 中的 RPC 与 `-p` |
+| weiyangzen/codex-rust-deslop（`Docs/learn/files/codex-rust-deslop/`、`Docs/research/codex-rust-deslop.md`） | §2 原则 1、G-RUST、ZE-108、ZE-302、ZE-305、ZE-512 |
+| weiyangzen/b3ehive（`Docs/learn/files/b3ehive/`） | 全文格式、§4、ZE-109、ZE-260、ZE-308 |
+| zenpi 自审（`Docs/learn/stage1_pi_mono/targets/zenpi/`） | ZE-108、ZE-242、ZE-300、`vendor/crossterm` |
+| codex TUI 参考（`Docs/learn/stage1_pi_mono/references/codex/`） | ZE-251、ZE-255、ZE-309、ZE-402 |
+| redis ae/networking/aof（`Docs/learn/subsets/redis-account-broker/`） | §2 原则 2、§2.1、ZE-300..304、ZE-308、ZE-403、ZE-541 |
+| opencode runtime、agent_comms gap digest | ZE-220、230、232、260、308；其余见 §7.2 |
+| Stage 2 设计（`Docs/researches/android2unix*.md`、`Docs/stage2_android2unix_*.md`） | §3、B 块全部 |
+| Tailscale（how-tailscale-works、how-nat-traversal-works、key management、DERP、tsnet、Headscale） | §3.1 中的身份、控制面、连通性和拨号决策；ZE-515、ZE-516；§7.2 的网络取舍 |
+| iroh 1.x 实测（新增约 137 个 crate、需要 tokio、体积约 +45%）以及 webrtc-rs、boringtun、libp2p 评估 | §3.1 的连通性分层、§7.2 |
+| 移动端 agent 交互（Happy、Claude Code Remote Control、Codex 移动版、Omnara、Copilot、VibeTunnel、Blink、Termux） | §3.2、ZE-530..535、ZE-544、ZE-591 |

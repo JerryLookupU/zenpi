@@ -1,5 +1,7 @@
 # zenpi Execution Blueprint
 
+> **已被取代（2026-10-14，ZE-100）**：权威执行清单为 `Docs/Zenpi_Execution_Blueprint_v2.md`。本文件只作历史证据与规格参考，不再领取或勾选任务。
+
 ## Slash and persona revision (2026-09-06)
 
 The interactive surface is one unified workspace; project, goal, learn, review,
@@ -46,7 +48,9 @@ The latest receipt additionally covers live `/status`, `/review`, `/session list
 
 ```yaml
 schema_version: execution-blueprint/v1
-authoritative: true
+authoritative: false
+superseded_by: Docs/Zenpi_Execution_Blueprint_v2.md
+superseded_at: 2026-10-14
 repository_root: /Users/mac/Github/zenpi
 spec_path: Docs/Zenpi_Execution_Spec.md
 gantt_path: Docs/Zenpi_Execution_Gantt.md

@@ -1,5 +1,7 @@
 # zenpi Stage 1 v3 — pi-mono 差距执行 Blueprint
 
+> **已被取代（2026-10-14，ZE-100）**：权威执行清单为 `Docs/Zenpi_Execution_Blueprint_v2.md`。本文件只作历史证据与规格参考，不再领取或勾选任务。
+
 > 2026-09-13；用户已授权完整执行。保留现有BentoBox，强化顶部项目分页及Codex CLI交互体验。
 
 ```yaml
@@ -8,7 +10,9 @@ blueprint_version: 3.1.33
 revision_date: 2026-09-19
 review_date: 2026-09-19
 status: bootstrap-active
-authoritative: true
+authoritative: false
+superseded_by: Docs/Zenpi_Execution_Blueprint_v2.md
+superseded_at: 2026-10-14
 predecessor: none
 reference_audit: none
 stable_id_pattern: '^ZS1-[0-9]{3}$'
