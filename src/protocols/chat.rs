@@ -421,9 +421,9 @@ fn validate_json(payload: &Value) -> Result<Vec<ToolCall>, BackendError> {
         }
     }
     match string_field(choice, "finish_reason")? {
+        // Compatible servers often end complete tool calls with "stop".
         Some("tool_calls") if !calls.is_empty() => {}
-        Some("stop") if calls.is_empty() => {}
-        Some("length") => {}
+        Some("stop" | "length") => {}
         _ => return Err(invalid("Chat JSON missing or incomplete finish_reason")),
     }
     Ok(calls)
@@ -476,15 +476,24 @@ impl Stream {
             }
             self.completion.usage = parse_usage(usage);
         }
-        let choices = value
-            .get("choices")
-            .and_then(Value::as_array)
-            .ok_or_else(|| invalid("Chat chunk lacks choices"))?;
+        // A chunk without choices (usage-only or keep-alive) carries no delta.
+        let Some(choices) = value.get("choices").filter(|v| !v.is_null()) else {
+            return Ok(());
+        };
+        let choices = choices
+            .as_array()
+            .ok_or_else(|| invalid("Chat choices must be an array"))?;
         if choices.is_empty() {
             return Ok(());
         }
-        if choices.len() != 1 || choices[0].get("index").and_then(Value::as_u64) != Some(0) {
-            return Err(invalid("Chat must return one choice with index zero"));
+        if choices.len() != 1
+            || choices[0]
+                .get("index")
+                .is_some_and(|v| v.as_u64() != Some(0))
+        {
+            return Err(invalid(
+                "Chat must return one choice with index zero when supplied",
+            ));
         }
         if self.finish_reason.is_some() {
             return Err(invalid("Chat choice after finish_reason"));
@@ -583,7 +592,9 @@ impl Stream {
             .as_deref()
             .ok_or_else(|| invalid("Chat stream ended without finish_reason"))?;
         let truncated = reason == "length";
-        if !truncated && (reason == "tool_calls") == self.calls.is_empty() {
+        // "stop" beside complete tool calls is accepted (compatible servers);
+        // "tool_calls" without any call is still malformed.
+        if reason == "tool_calls" && self.calls.is_empty() {
             return Err(invalid("Chat finish_reason does not match tool calls"));
         }
         let mut ids = BTreeSet::new();

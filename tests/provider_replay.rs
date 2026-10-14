@@ -400,9 +400,8 @@ fn chat_length_finish_keeps_partial_text() {
 }
 
 #[test]
-fn chat_stop_with_tool_calls_is_currently_an_error() {
-    // Known bug, ZE-226 flips this: Chat must accept finish_reason=stop
-    // alongside complete tool calls.
+fn chat_stop_with_tool_calls_is_accepted() {
+    // ZE-226: finish_reason=stop alongside complete tool calls is accepted.
     let r = replay(Wire::Chat, "variant-stop-with-tool.sse");
     assert_trace(
         &r,
@@ -410,12 +409,15 @@ fn chat_stop_with_tool_calls_is_currently_an_error() {
             r#"created Some("chat319") Some("gpt-4.1")"#,
             "text BEFORE_TOOL_319",
             r#"tool_delta Some("durable_read_319") Some("read_file") {"path": "input.txt"}"#,
+            "text_done BEFORE_TOOL_319",
+            r#"tool durable_read_319 read_file {"path":"input.txt"}"#,
+            r#"completed Some("chat319") Some("gpt-4.1")"#,
         ],
     );
-    assert!(
-        r.error()
-            .contains("Chat finish_reason does not match tool calls")
-    );
+    let c = r.completion();
+    assert_eq!(c.content, "BEFORE_TOOL_319");
+    assert_eq!(c.stop_reason, StopReason::ToolUse);
+    assert_eq!(tool_call(c).0, "durable_read_319");
 }
 
 // ----------------------------------------------------------- responses
@@ -587,18 +589,57 @@ fn anthropic_max_tokens_keeps_partial_text() {
 }
 
 #[test]
-fn anthropic_unknown_event_is_currently_an_error() {
-    // Known bug, ZE-226 flips this: unknown Anthropic stream events must be
-    // ignored rather than failing the turn.
+fn anthropic_unknown_event_is_ignored() {
+    // ZE-226: unknown Anthropic stream events are ignored.
     let r = replay(Wire::Anthropic, "variant-unknown-event.sse");
     assert_trace(
         &r,
         &[
             r#"created Some("msg319") Some("claude-sonnet-4-6")"#,
             "text FRESH_FINAL_319",
+            "text_done FRESH_FINAL_319",
+            "usage 7/4/11",
+            r#"completed Some("msg319") Some("claude-sonnet-4-6")"#,
         ],
     );
-    assert!(r.error().contains("unsupported Anthropic stream event"));
+    assert_eq!(r.completion().content, "FRESH_FINAL_319");
+}
+
+#[test]
+fn anthropic_unknown_delta_type_is_ignored_but_mismatched_known_delta_fails() {
+    // ZE-226: a new delta kind (citations) on a text block is ignored; a known
+    // delta on the wrong block type still fails.
+    let body = |delta: &str| {
+        format!(
+            concat!(
+                "event: message_start\ndata: {{\"type\":\"message_start\",\"message\":{{\"type\":\"message\",\"id\":\"m1\",\"role\":\"assistant\",\"model\":\"claude-sonnet-4-6\",\"content\":[],\"stop_reason\":null,\"usage\":{{\"input_tokens\":1,\"output_tokens\":0}}}}}}\n\n",
+                "event: content_block_start\ndata: {{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{{\"type\":\"text\",\"text\":\"A\"}}}}\n\n",
+                "event: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{}}}\n\n",
+                "event: content_block_stop\ndata: {{\"type\":\"content_block_stop\",\"index\":0}}\n\n",
+                "event: message_delta\ndata: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"end_turn\"}},\"usage\":{{\"output_tokens\":1}}}}\n\n",
+                "event: message_stop\ndata: {{\"type\":\"message_stop\"}}\n\n",
+            ),
+            delta
+        )
+        .into_bytes()
+    };
+    let r = serve(
+        Wire::Anthropic,
+        "200 OK",
+        "text/event-stream",
+        body(r#"{"type":"citations_delta","citation":{"type":"char_location","cited_text":"x"}}"#),
+    );
+    assert_eq!(r.completion().content, "A");
+    let r = serve(
+        Wire::Anthropic,
+        "200 OK",
+        "text/event-stream",
+        body(r#"{"type":"input_json_delta","partial_json":"{}"}"#),
+    );
+    assert!(
+        r.error()
+            .contains("Anthropic delta type does not match block")
+    );
 }
 
 #[test]
@@ -752,18 +793,21 @@ fn gemini_max_tokens_keeps_partial_text() {
 }
 
 #[test]
-fn gemini_total_above_component_sum_is_currently_an_error() {
-    // Known bug, ZE-226 flips this: totalTokenCount only has to be >= the sum
-    // of the counted components (toolUsePromptTokenCount is not counted).
+fn gemini_total_above_component_sum_is_accepted() {
+    // ZE-226: totalTokenCount only has to be >= the sum of the counted
+    // components (toolUsePromptTokenCount is not counted); it is reported.
     let r = replay(Wire::Gemini, "variant-usage-total-exceeds-sum.sse");
     assert_trace(
         &r,
         &[
             r#"created Some("google319") Some("gemini-2.5-flash")"#,
             "text FRESH_FINAL_319",
+            "text_done FRESH_FINAL_319",
+            "usage 7/4/13",
+            r#"completed Some("google319") Some("gemini-2.5-flash")"#,
         ],
     );
-    assert!(r.error().contains("inconsistent/decreasing Gemini usage"));
+    assert_eq!(r.completion().content, "FRESH_FINAL_319");
 }
 
 // ------------------------------------------------- ZE-220 error bodies

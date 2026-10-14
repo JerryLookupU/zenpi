@@ -564,9 +564,11 @@ impl Fold {
             let total = input
                 .checked_add(output)
                 .ok_or_else(|| invalid("Gemini usage overflow"))?;
+            // totalTokenCount may also count fields not summed here (e.g.
+            // toolUsePromptTokenCount); it only has to cover the sum.
+            let reported = u.get("totalTokenCount").map(Value::as_u64);
             if cached > input
-                || u.get("totalTokenCount")
-                    .is_some_and(|v| v.as_u64() != Some(total))
+                || reported.is_some_and(|v| v.is_none_or(|v| v < total))
                 || self
                     .usage
                     .is_some_and(|old| input < old.input_tokens || output < old.output_tokens)
@@ -580,7 +582,7 @@ impl Fold {
             self.usage = Some(Usage {
                 input_tokens: input,
                 output_tokens: output,
-                total_tokens: total,
+                total_tokens: reported.flatten().unwrap_or(total),
             });
         }
         Ok(())

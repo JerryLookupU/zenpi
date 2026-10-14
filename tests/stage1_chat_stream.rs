@@ -175,7 +175,6 @@ fn incomplete_or_malformed_stream_never_publishes_success_or_ready_tools() {
         "data: [DONE]\n\n".into(),
         "data: {broken}\n\n".into(),
         event(partial_tool, json!("tool_calls")),
-        event(valid_tool.clone(), json!("stop")),
         event(valid_tool.clone(), json!("tool_calls")) + "data: {broken}\n\n",
         event(json!({"content":"x"}), json!("stop")) + "data: partial",
         event(json!({"content":"x"}), json!("stop"))
@@ -195,6 +194,44 @@ fn incomplete_or_malformed_stream_never_publishes_success_or_ready_tools() {
             "{body}"
         );
     }
+}
+
+#[test]
+fn stop_beside_complete_tool_calls_and_missing_choices_or_index_are_accepted() {
+    // ZE-226: compatible servers end complete tool calls with "stop", omit
+    // the choice index, or send chunks without choices.
+    let tool = json!({"tool_calls":[{"index":0,"id":"a","function":{"name":"write_file","arguments":"{}"}}]});
+    let body = format!(
+        "data: {}\n\n",
+        json!({"id":"stream-1","model":"fixture","choices":[{"delta":tool,"finish_reason":"stop"}]})
+    ) + "data: {\"id\":\"stream-1\",\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1}}\n\ndata: [DONE]\n\n";
+    let (result, events) = run(body);
+    let completion = result.unwrap();
+    assert_eq!(completion.tool_calls.len(), 1);
+    assert_eq!(completion.stop_reason, StopReason::ToolUse);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, ProviderEvent::ToolCallDone { .. }))
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let backend = OpenAiCompatibleBackend::new(
+        format!("http://{}", listener.local_addr().unwrap()),
+        None,
+        "fixture",
+    )
+    .unwrap();
+    let payload = json_completion(vec![json_call("call", "{}")], json!("stop"));
+    let peer = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        request_body(&mut stream);
+        write_json_response(&mut stream, &payload);
+    });
+    let completion = backend
+        .complete(CompletionRequest::new("json-stop", &[], None, &[]))
+        .unwrap();
+    peer.join().unwrap();
+    assert_eq!(completion.tool_calls.len(), 1);
 }
 
 #[test]
@@ -994,7 +1031,6 @@ fn invalid_json_completions() -> Vec<(&'static str, Value)> {
         ("filtered", json!("content_filter")),
         ("incomplete", json!("incomplete")),
         ("null terminal with tools", Value::Null),
-        ("stop with tools", json!("stop")),
     ] {
         cases.push((
             label,

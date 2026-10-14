@@ -680,7 +680,14 @@ impl Fold {
                         (Some("thinking"), "thinking_delta") => ("thinking", "thinking"),
                         (Some("thinking"), "signature_delta") => ("signature", "signature"),
                         (Some("tool_use"), "input_json_delta") => ("input", "partial_json"),
-                        _ => return Err(invalid("Anthropic delta type does not match block")),
+                        (
+                            _,
+                            "text_delta" | "thinking_delta" | "signature_delta"
+                            | "input_json_delta",
+                        ) => return Err(invalid("Anthropic delta type does not match block")),
+                        // Newer delta kinds (e.g. citations) carry nothing this
+                        // adapter keeps; ignoring them keeps the turn alive.
+                        _ => return Ok(()),
                     };
                     let t = string(d, key)?;
                     if field == "input" {
@@ -747,7 +754,9 @@ impl Fold {
                 }
                 self.done = true;
             }
-            _ => return Err(invalid("unsupported Anthropic stream event")),
+            // Unknown event types are ignored, as the Messages API asks of
+            // clients so new events can ship without breaking them.
+            _ => {}
         }
         Ok(())
     }
