@@ -178,10 +178,11 @@ jobs:
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
 
-      # verifyRoborazziDebug joins this step once ZE-519 adds Roborazzi.
-      - name: Run Android JVM unit tests and lint
+      # Portrait screenshot goldens (ZE-519) are recorded on macOS; the
+      # comparison tolerates 1% of pixels for Linux font rendering.
+      - name: Run Android JVM unit tests, lint and screenshot checks
         working-directory: android
-        run: ./gradlew --console=plain :app:testDebugUnitTest lint
+        run: ./gradlew --console=plain :app:testDebugUnitTest lint verifyRoborazziDebug
 
       - name: Run Rust/Kotlin interop tests (remote_android_*_interop)
         run: tools/build_android_interop_classes.sh --run

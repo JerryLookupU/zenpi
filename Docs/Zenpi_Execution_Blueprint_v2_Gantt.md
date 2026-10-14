@@ -5,9 +5,9 @@
 
 ```yaml
 source: Docs/Zenpi_Execution_Blueprint_v2.md
-source_sha256: d56395cee3ffb940016989c38f4fc1f2a12490e087bcb2cd3ce440b062e38a33
+source_sha256: 31f09291d797808cb5e7f1cd3df0a604634bf9bc5afde73eb482786e7464c43d
 blueprint_version: 4.0.0
-generated_at: 2026-10-14T18:30:58Z
+generated_at: 2026-10-14T18:32:56Z
 ```
 
 ## Dependency-order view
@@ -121,10 +121,10 @@ gantt
     ZE-516 网络 T1 叠加网：<br>• 主机端  --tailnet  按网卡地址识别 :ZE_516, after ZE_515, 1d
     ZE-517 流式对齐：把  live_text  目前 4 KiB 的整行预览改为逐 tok :ZE_517, after ZE_502, 1d
     ZE-518 拆分 Android UI：<br>• 把  PairingScreen （约 :done, ZE_518, after ZE_502, 1d
-    ZE-519 竖屏截图测试底座：Roborazzi，分辨率 360×800 和 412×915 :ZE_519, after ZE_518, 1d
+    ZE-519 竖屏截图测试底座：Roborazzi，分辨率 360×800 和 412×915 :done, ZE_519, after ZE_518, 1d
     ZE-530 对话主屏：<br>• 用 reverse 的  LazyColumn ，自动贴底 :ZE_530, after ZE_519 ZE_517, 1d
     ZE-531 审批：常驻审批条加底部面板。面板显示 i/N 和彩色补丁，点一次即决定，有待决审 :ZE_531, after ZE_530, 1d
-    ZE-532 抽屉收件箱：会话和项目按"需要你 / 运行中 / 空闲"分组，角标等于待审批数 :ZE_532, after ZE_518, 1d
+    ZE-532 抽屉收件箱：会话和项目按"需要你 / 运行中 / 空闲"分组，角标等于待审批数 :done, ZE_532, after ZE_518, 1d
     ZE-533 次级页与路由栈：<br>• Sessions：搜索和恢复 <br>• Diff： :ZE_533, after ZE_530, 1d
     ZE-534 输入框命令板：输入  /  时弹出底部面板，列出主机端的斜杠命令和资源 输入 :ZE_534, after ZE_530 ZE_253, 1d
     ZE-535 安全与无障碍：<br>• 默认开启  FLAG_SECURE  <br>• 支持 :ZE_535, after ZE_533, 1d
@@ -144,7 +144,7 @@ gantt
 
 ## Monitoring index
 
-Counts: open 40 · self-tested 5 · accepted 68 · total 113
+Counts: open 38 · self-tested 5 · accepted 70 · total 113
 
 | ID | Layer | State | Ready | Depends | Claim | Integration | Est. LOC | Title |
 |---|---|---|---|---|---|---|---:|---|
@@ -244,10 +244,10 @@ Counts: open 40 · self-tested 5 · accepted 68 · total 113
 | ZE-516 | B2 | open | no | ZE-515 | — | — | 600 | 网络 T1 叠加网：<br>• 主机端 `--tailnet` 按网卡地址识别 `100.64.0.0/10` 和 `fd7a:115c:a1e0::/48`，加入地址提示，不调用 Tailscale API；<br>• Android 只对这两个网段放行 `TRANSPORT_VPN`；<br>• 多提示拨号：局域网优先，失败后依次尝试下一个；任何一个 pin 不符都直接失败，不回退；<br>• 用户指南补上 Tailscale/Headscale 的配置，以及 `ssh -R` 兜底方案；<br>layer `B2` \| Depends: ZE-515 \| Owned paths: `src/remote/lan.rs`, `src/host_pair.rs`, `android/.../lifecycle/LanSocketRouting.kt`, `android/.../lifecycle/NetworkMonitor.kt`, `android/.../transport/HostClient.kt`, `Docs/stage2_android2unix_user_guide.md` \| Validators: CGNAT 和 fd7a 地址被识别为叠加网；局域网不可达时回退到 tailnet 提示；任一提示 pin 错误时直接失败；非叠加网段的 VPN 仍被拒绝 \| Estimated LOC: 600 |
 | ZE-517 | B2 | open | yes | ZE-502 | — | — | 600 | 流式对齐：把 `live_text` 目前 4 KiB 的整行预览改为逐 token 的增量，回放时顺序正确 |
 | ZE-518 | B2 | accepted | no | ZE-502 | ZE-518@blueprint-4.0.0 | accepted | 1800 | 拆分 Android UI：<br>• 把 `PairingScreen`（约 60 个参数）拆到 `ui/` 包，`PairingState`（约 90 个字段）拆成子状态；<br>• 修掉每秒一次的空转重组；<br>• 草稿只以 host、session、tab 的 id 为键，不含 revision，避免远端改名时清空草稿；<br>行为保持不变 |
-| ZE-519 | B2 | open | yes | ZE-518 | — | — | 400 | 竖屏截图测试底座：Roborazzi，分辨率 360×800 和 412×915，字号 1.0 和 1.3，覆盖明暗主题 |
+| ZE-519 | B2 | accepted | no | ZE-518 | ZE-519@blueprint-4.0.0 | accepted | 400 | 竖屏截图测试底座：Roborazzi，分辨率 360×800 和 412×915，字号 1.0 和 1.3，覆盖明暗主题 |
 | ZE-530 | B2 | open | no | ZE-519, ZE-517 | — | — | 1300 | 对话主屏：<br>• 用 reverse 的 `LazyColumn`，自动贴底，带流式行；<br>• 工具行默认折叠；<br>• 轻量 markdown：代码块、行内代码、列表，不引入第三方库；<br>• 底部固定输入框：发送 / steer / 停止三态，配 `ImeAction.Send` 和 `imePadding`；<br>• 顶栏放 Agent/Arch 模式切换、worktree chip 和模型 chip；<br>layer `B2` \| Depends: ZE-519, ZE-517 \| Owned paths: `android/.../ui/ConversationScreen.kt`, `android/.../ui/Markdown.kt`, `android/.../ui/Composer.kt` \| Validators: 截图黄金图；500 轮对话的 fixture 卡顿帧 < 5%；草稿在旋转后仍保留 \| Estimated LOC: 1300 |
 | ZE-531 | B2 | open | no | ZE-530 | — | — | 450 | 审批：常驻审批条加底部面板。面板显示 i/N 和彩色补丁，点一次即决定，有待决审批时无法关闭；可以开启生物识别确认 |
-| ZE-532 | B2 | open | yes | ZE-518 | — | — | 600 | 抽屉收件箱：会话和项目按"需要你 / 运行中 / 空闲"分组，角标等于待审批数；项目和 worktree 的管理入口移进抽屉 |
+| ZE-532 | B2 | accepted | no | ZE-518 | ZE-532@blueprint-4.0.0 | accepted | 600 | 抽屉收件箱：会话和项目按"需要你 / 运行中 / 空闲"分组，角标等于待审批数；项目和 worktree 的管理入口移进抽屉 |
 | ZE-533 | B2 | open | no | ZE-530 | — | — | 1800 | 次级页与路由栈：<br>• Sessions：搜索和恢复；<br>• Diff：全屏、逐文件、+/- 着色，返回时恢复原滚动位置；<br>• Terminal：按视口计算行列数，按键行在键盘上方，旋转后重新计算；<br>• Tasks；<br>• 模型面板；<br>layer `B2` \| Depends: ZE-530 \| Owned paths: `android/.../ui/nav/`, `android/.../ui/SessionsScreen.kt`, `android/.../ui/DiffScreen.kt`, `android/.../ui/TerminalScreen.kt`, `android/.../ui/TasksScreen.kt`, `android/.../ui/ModelSheet.kt` \| Validators: 原有的 Session、Diff、Terminal、Worker、ModelStatus 屏幕测试迁移后通过；返回栈测试；黄金图 \| Estimated LOC: 1800 |
 | ZE-534 | B2 | open | no | ZE-530, ZE-253 | — | — | 450 | 输入框命令板：输入 `/` 时弹出底部面板，列出主机端的斜杠命令和资源；输入 `@` 时弹出文件选择；不支持的桌面专属命令在面板中注明 |
 | ZE-535 | B2 | open | no | ZE-533 | — | — | 350 | 安全与无障碍：<br>• 默认开启 `FLAG_SECURE`；<br>• 支持深色和动态色；<br>• 同一个图标不再复用于多个功能；<br>• TalkBack 朗读内容不含 UUID，补上标题语义；<br>• release 构建开启 R8；<br>layer `B2` \| Depends: ZE-533 \| Owned paths: `android/.../ui/theme/`, `android/app/src/main/res/`, `android/app/build.gradle.kts` \| Validators: Compose `enableAccessibilityChecks` 通过；release 包能安装并完成配对；深色主题黄金图 \| Estimated LOC: 350 |
