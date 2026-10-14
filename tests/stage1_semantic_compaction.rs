@@ -275,7 +275,6 @@ fn real_http_summary_preserves_constraints_files_usage_and_iterative_restart() {
     a.set_summary_cost_limit(Some(20_000)).unwrap();
     let report = a.compact_context().unwrap();
     assert!(report.compacted);
-    assert!(report.checkpoint.is_none());
     let first = checkpoint(&a).unwrap();
     assert_eq!(first.summary_usage.output_tokens, 130);
     assert_eq!(first.summary_provider, "fixture");

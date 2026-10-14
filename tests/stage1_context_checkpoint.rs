@@ -351,29 +351,10 @@ fn checkpoint_recovery_child() {
 }
 
 #[test]
-fn legacy_digest_checkpoint_remains_readable_without_becoming_semantic() {
-    let turns: Vec<_> = (0..20)
-        .map(|i| {
-            Turn::new(
-                format!("t{i}"),
-                if i % 2 == 0 {
-                    TurnRole::User
-                } else {
-                    TurnRole::Assistant
-                },
-                "x".repeat(500),
-            )
-        })
-        .collect();
-    let budget = ContextBudget {
-        max_tokens: 1500,
-        reserved_output_tokens: 300,
-    };
-    let old = context::prepare_context(&turns, budget, &|| false)
-        .unwrap()
-        .checkpoint
-        .unwrap();
-    let json = serde_json::to_value(&old).unwrap();
-    assert!(serde_json::from_value::<SemanticCheckpoint>(json).is_err());
-    assert!(context::restore_checkpoint(&turns, &old).is_ok());
+fn legacy_digest_checkpoint_never_becomes_semantic() {
+    // Shape of the pre-ZE-235 deterministic digest marker.
+    let old = json!({"source_start":0,"source_end":10,"source_sha256":"ab",
+        "summary":"Compacted context checkpoint: 10 records",
+        "estimated_tokens_before":2600,"estimated_tokens_after":900});
+    assert!(serde_json::from_value::<SemanticCheckpoint>(old).is_err());
 }

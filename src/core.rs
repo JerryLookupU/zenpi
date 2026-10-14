@@ -525,7 +525,8 @@ pub struct CompactionReport {
     pub estimated_tokens_before: u64,
     pub estimated_tokens_after: u64,
     pub marker_sequence: u64,
-    pub checkpoint: Option<crate::context::CompactionCheckpoint>,
+    /// Reports serialized before ZE-235 also carry a legacy digest
+    /// `checkpoint` (always null since semantic compaction); it is ignored.
     #[serde(default)]
     pub semantic_checkpoint: Option<crate::context::SemanticCheckpoint>,
 }
@@ -3017,20 +3018,12 @@ impl Agent {
         let over = estimate.input_tokens > budget.max_tokens - budget.reserved_output_tokens;
         let triggered = force || (settings.enabled && used > window.saturating_sub(reserve));
         if !over && !triggered {
-            return Ok(PreparedContext {
-                turns,
-                checkpoint: None,
-                estimate,
-            });
+            return Ok(PreparedContext { turns, estimate });
         }
         // An early (threshold) compaction that cannot run leaves a context
         // that still fits; an over-budget or overflowed one fails explicitly.
         let required = over || force;
-        let unchanged = PreparedContext {
-            turns,
-            checkpoint: None,
-            estimate,
-        };
+        let unchanged = PreparedContext { turns, estimate };
         // Compaction rewrites history over a possibly broken tail. Leftover
         // unknown outcomes veto it; the turn must fail explicitly here rather
         // than send an over-budget request.
@@ -3401,7 +3394,6 @@ impl Agent {
             Ok(PreparedContext {
                 estimate: estimate_tokens(&turns),
                 turns,
-                checkpoint: None,
             })
         })();
         let status = match &outcome {
@@ -3482,7 +3474,6 @@ impl Agent {
             estimated_tokens_before: before.input_tokens,
             estimated_tokens_after: prepared.estimate.input_tokens,
             marker_sequence,
-            checkpoint: None,
             semantic_checkpoint: checkpoint,
         })
     }
@@ -9244,6 +9235,41 @@ fn extension_agent_error(error: crate::tools::ToolError) -> AgentError {
         BackendError::Cancelled.into()
     } else {
         AgentError::Tool(error)
+    }
+}
+
+#[cfg(test)]
+mod compaction_report_tests {
+    use super::CompactionReport;
+
+    #[test]
+    fn compaction_report_serializes_without_the_legacy_digest_checkpoint() {
+        let fields = serde_json::json!({
+            "compacted": false, "already_recorded": false, "source_turns": 3,
+            "prepared_turns": 3, "estimated_tokens_before": 40,
+            "estimated_tokens_after": 40, "marker_sequence": 7,
+        });
+        let report: CompactionReport = serde_json::from_value(fields.clone()).unwrap();
+        let mut serialized = serde_json::to_value(&report).unwrap();
+        assert_eq!(serialized["semantic_checkpoint"], serde_json::Value::Null);
+        serialized
+            .as_object_mut()
+            .unwrap()
+            .remove("semantic_checkpoint");
+        assert_eq!(serialized, fields);
+        // A report serialized before ZE-235 still reads, its digest checkpoint ignored.
+        for legacy in [
+            serde_json::Value::Null,
+            serde_json::json!({"source_start":0,"source_end":2,"source_sha256":"ab",
+                "summary":"Compacted context checkpoint","estimated_tokens_before":9,
+                "estimated_tokens_after":4}),
+        ] {
+            let mut old = fields.clone();
+            old["checkpoint"] = legacy;
+            old["semantic_checkpoint"] = serde_json::Value::Null;
+            let read: CompactionReport = serde_json::from_value(old).unwrap();
+            assert_eq!(read, report);
+        }
     }
 }
 
