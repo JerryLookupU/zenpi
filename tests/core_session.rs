@@ -558,10 +558,13 @@ fn user_shell_preserves_nonzero_signal_and_cancellation_evidence() {
     assert_eq!(signal["signal"], libc::SIGTERM);
     assert_eq!(signal["exit_code"], Value::Null);
     let start = std::time::Instant::now();
+    // Cancel once the child provably runs: a fixed delay can expire during
+    // the journal fsyncs before the spawn and test pre-spawn cancellation.
+    let started = dir.path().join("started");
     let cancelled = agent
         .run_user_shell_with_cancel(
-            "!(trap '' TERM; sleep 1; printf leaked > leaked) & wait",
-            || start.elapsed() > std::time::Duration::from_millis(50),
+            "!(trap '' TERM; : > started; sleep 1; printf leaked > leaked) & wait",
+            || started.exists(),
         )
         .unwrap();
     assert_eq!(cancelled["cancelled"], true);

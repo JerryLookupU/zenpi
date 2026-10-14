@@ -1861,10 +1861,18 @@ impl SessionStore {
         }
         let separator: &[u8] = if self.needs_separator { b"\n" } else { b"" };
         let observed = self.observed_bytes;
+        let durable = is_durability_boundary(&record);
         write_or_rollback(
             &mut file,
             &[separator, &encoded],
-            |file| file.sync_data(),
+            |file| {
+                if durable {
+                    JOURNAL_FSYNCS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    file.sync_data()
+                } else {
+                    Ok(())
+                }
+            },
             |file| file.set_len(observed).and_then(|()| file.sync_data()),
         )?;
         self.needs_separator = false;
@@ -1884,13 +1892,50 @@ impl SessionStore {
     }
 }
 
+static JOURNAL_FSYNCS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Session journal fsyncs issued by this process (ZE-304 / ZE-403 reports).
+pub fn journal_fsync_count() -> u64 {
+    JOURNAL_FSYNCS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Records whose loss in a crash is harmless are written without fsync and
+/// become durable with the next boundary record (ZE-304). Turns, operation
+/// starts and finishes and every other record stay synced, so an accepted
+/// turn is never lost.
+fn is_durability_boundary(record: &Value) -> bool {
+    !(record["kind"] == "event"
+        && matches!(
+            record["event"]["type"].as_str(),
+            Some("authorization_decided" | "tool_execution_started" | "tool_execution_finished")
+        ))
+}
+
 /// An append lock ends with this operation even if an unrelated concurrent
 /// fork briefly inherited its open file description before exec closes it.
 /// Closing only the parent's descriptor can otherwise leave the lock held.
 struct AppendLock<'a>(&'a File);
 
 impl<'a> AppendLock<'a> {
+    /// Appends wait for a concurrent appender instead of failing: the lock is
+    /// held only for one record (ZE-304).
     fn new(file: &'a File) -> Result<Self, SessionError> {
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            loop {
+                // SAFETY: `file` is a live descriptor borrowed for the call;
+                // `flock` neither retains nor closes it.
+                if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
+                    break;
+                }
+                let error = io::Error::last_os_error();
+                if error.kind() != io::ErrorKind::Interrupted {
+                    return Err(error.into());
+                }
+            }
+        }
+        #[cfg(not(unix))]
         lock_exclusive(file)?;
         Ok(Self(file))
     }
