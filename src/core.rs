@@ -4787,25 +4787,6 @@ impl Agent {
             self.release_turn_concurrency();
             return Err(error.into());
         }
-        if completion.content.trim().is_empty() {
-            let error = BackendError::EmptyResponse;
-            self.last_error = Some(error.to_string());
-            self.phase = AgentPhase::Idle;
-            self.active_turn_id = None;
-            self.input_port.set_scope(None);
-            self.active_attachments.clear();
-            self.active_resources = None;
-            self.active_resource_inputs.clear();
-            self.events.push(AgentEvent::Error {
-                message: error.to_string(),
-            });
-            self.session.finish_operation(
-                &provider_operation.operation_id,
-                crate::session::OperationOutcome::Failed,
-            )?;
-            self.release_turn_concurrency();
-            return Err(error.into());
-        }
         let mut assistant = Turn::with_parent(
             next_id("assistant"),
             turn_id.clone(),
@@ -5206,6 +5187,12 @@ impl Agent {
                     crate::input_queue::InputQueue::recover(&self.session, Default::default())
                         .map_err(|e| AgentError::Recovery(e.to_string()))?;
                 if !queue.has_pending() {
+                    // ZE-210: after tools ran, an empty or reasoning-only
+                    // final answer ends the turn normally (pi parity). A
+                    // turn that never called a tool still needs visible text.
+                    if tool_iterations == 0 && completion.content.trim().is_empty() {
+                        return Err(BackendError::EmptyResponse.into());
+                    }
                     return Ok(completion);
                 }
                 if input_continuations == max_input_continuations {

@@ -386,6 +386,11 @@ fn responses_input_items(turn: &Turn) -> Vec<Value> {
         TurnRole::Assistant => "assistant",
         TurnRole::Tool => unreachable!(),
     };
+    // ZE-210: an empty final answer carries nothing to replay; omit it rather
+    // than send an empty assistant message some providers reject.
+    if turn.role == TurnRole::Assistant && turn.content.is_empty() {
+        return Vec::new();
+    }
     vec![json!({
         "role": role,
         "content": turn.content,
@@ -446,11 +451,8 @@ fn extract_responses_content(payload: &Value) -> Result<String, BackendError> {
             }
         }
     }
-    if text.is_empty() {
-        return Err(BackendError::InvalidResponse(
-            "missing response output text".into(),
-        ));
-    }
+    // ZE-210: an output list with no text (e.g. reasoning only) is a valid,
+    // empty answer; only a missing or malformed output is rejected.
     Ok(text)
 }
 
@@ -559,20 +561,8 @@ fn read_responses_stream(
             "Responses stream ended without response.completed".into(),
         ));
     }
-    if content.trim().is_empty() {
-        if !tool_calls.is_empty() {
-            return Ok(Completion {
-                content,
-                usage,
-                model,
-                tool_calls,
-                response_id,
-                refusal,
-                annotations,
-            });
-        }
-        return Err(BackendError::EmptyResponse);
-    }
+    // ZE-210: response.completed with no text is a valid empty answer; the
+    // core decides whether an empty answer may end the turn.
     Ok(Completion {
         content,
         usage,
@@ -921,9 +911,6 @@ fn completion_from_responses_json(payload: &Value) -> Result<Completion, Backend
             Ok(String::new())
         }
     })?;
-    if content.trim().is_empty() && tool_calls.is_empty() {
-        return Err(BackendError::EmptyResponse);
-    }
     Ok(Completion {
         content,
         usage: payload.get("usage").and_then(parse_usage),

@@ -417,6 +417,15 @@ fn request_body_inner(
                 "user"
             }
         };
+        if role == "assistant"
+            && !blocks.iter().any(|b| {
+                b["type"] == "tool_use" || b["text"].as_str().is_some_and(|t| !t.is_empty())
+            })
+        {
+            // ZE-210: an empty or thinking-only final answer has nothing the
+            // API accepts on replay; omit it so the next user input follows.
+            continue;
+        }
         if blocks.is_empty() {
             return Err(config("empty Anthropic message"));
         }
@@ -780,9 +789,8 @@ impl Fold {
             content = text.clone();
             blocks.push(json!({"type":"text","text":text}));
         }
-        if content.trim().is_empty() && tool_calls.is_empty() && refusal.is_none() {
-            return Err(BackendError::EmptyResponse);
-        }
+        // ZE-210: message_stop with no text (or thinking only) is a valid
+        // empty answer; the core decides whether it may end the turn.
         let input = self.usage[0]
             .checked_add(self.usage[2])
             .and_then(|n| n.checked_add(self.usage[3]))

@@ -58,6 +58,7 @@ struct Script {
     replies: Vec<Reply>,
     cursor: AtomicUsize,
     requests: Mutex<Vec<Recorded>>,
+    bodies: Mutex<Vec<Value>>,
     stalled: AtomicBool,
 }
 
@@ -195,6 +196,10 @@ impl FakeServer {
     pub fn requests(&self) -> Vec<Recorded> {
         self.script.requests.lock().unwrap().clone()
     }
+    /// Raw request bodies, for wire-level assertions [`Recorded`] hides.
+    pub fn bodies(&self) -> Vec<Value> {
+        self.script.bodies.lock().unwrap().clone()
+    }
 }
 
 impl Drop for FakeServer {
@@ -238,6 +243,7 @@ fn serve(mut stream: TcpStream, wire: OpenAiWireApi, script: &Script) {
         bytes.extend_from_slice(&chunk[..n]);
     }
     let body: Value = serde_json::from_slice(&bytes[end..end + length]).unwrap();
+    script.bodies.lock().unwrap().push(body.clone());
     let (status, mime, payload) = match script.next(normalize(&body)) {
         Reply::Fail(message) => (
             "400 Bad Request",
