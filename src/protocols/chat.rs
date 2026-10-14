@@ -598,12 +598,8 @@ impl Stream {
                 &mut ids,
             )?);
         }
-        if self.completion.content.trim().is_empty()
-            && self.completion.tool_calls.is_empty()
-            && self.completion.refusal.is_none()
-        {
-            return Err(BackendError::EmptyResponse);
-        }
+        // ZE-210: a finished stream with no text (or reasoning only) is a
+        // valid empty answer; the core decides whether it may end the turn.
         self.completion
             .annotations
             .push(json!({"type":"chat_finish_reason", "finish_reason":reason}));
@@ -728,6 +724,15 @@ pub(super) fn encode_request(
         .iter()
         .map(|turn| chat_message(turn, provider, model))
         .collect::<Result<_, _>>()?;
+    // ZE-210: an empty final answer carries nothing to replay; omit it rather
+    // than send an empty assistant message some providers reject.
+    messages.retain(|message| {
+        message["role"] != "assistant"
+            || message.get("tool_calls").is_some()
+            || message["content"]
+                .as_str()
+                .is_none_or(|text| !text.is_empty())
+    });
     let attachments = attachments_for_context(request.turns, request.attachments);
     apply_chat_attachments(&mut messages, &attachments)?;
     strip_internal_turn_ids(&mut messages);
@@ -781,8 +786,10 @@ pub(super) fn read_response(
     let tool_calls = validate_json(&payload)?;
     let content = match extract_content(&payload) {
         Ok(content) => content,
+        // ZE-210: a null content beside tool calls or reasoning is an empty
+        // answer, not a malformed message.
         Err(BackendError::InvalidResponse(_))
-            if !tool_calls.is_empty()
+            if payload["choices"][0]["message"].is_object()
                 && payload["choices"][0]["message"]
                     .get("content")
                     .is_none_or(Value::is_null) =>
@@ -791,9 +798,6 @@ pub(super) fn read_response(
         }
         Err(error) => return Err(error),
     };
-    if content.trim().is_empty() && tool_calls.is_empty() {
-        return Err(BackendError::EmptyResponse);
-    }
     let mut completion = Completion {
         content,
         usage: payload.get("usage").and_then(parse_usage),
