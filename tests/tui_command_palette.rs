@@ -23,7 +23,7 @@ fn snapshot(root: &Path) -> std::sync::Arc<zenpi::resource_loader::ResourceSnaps
         "---\ndescription: Greeting template\n---\nHello $1\n",
     )
     .unwrap();
-    fs::write(root.join("prompts/review.md"), "Reserved name body\n").unwrap();
+    fs::write(root.join("prompts/diff.md"), "Reserved name body\n").unwrap();
     ResourceLoader::new(ResourcePaths {
         user_skills: root.join("missing-user"),
         project_skills: root.join("skills"),
@@ -277,7 +277,7 @@ fn catalog_contains_actual_explicit_resources_and_source_but_not_bodies() {
         Ok(InputRoute::Prompt(_))
     ));
     assert!(matches!(
-        state.route_catalog_input("/review"),
+        state.route_catalog_input("/diff"),
         Ok(InputRoute::Slash(_))
     ));
     assert!(state.route_catalog_input("/not-a-resource").is_err());
