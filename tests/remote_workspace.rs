@@ -28,6 +28,27 @@ fn pool(root: &Path) -> ProjectOwnerPool {
     pool
 }
 
+/// The single-file view used before ZE-510 split remote state into
+/// `remote-state.json`; written back, it is a legacy checkpoint.
+fn saved_state(root: &Path) -> Value {
+    let mut saved: Value =
+        serde_json::from_slice(&std::fs::read(root.join("project-workspace.json")).unwrap())
+            .unwrap();
+    if saved.get("remote_workspace").is_some() {
+        return saved;
+    }
+    let mut remote: Value = std::fs::read(root.join("remote-state.json"))
+        .map(|bytes| serde_json::from_slice(&bytes).unwrap())
+        .unwrap_or_else(|_| json!({"receipts":[]}));
+    remote["revision"] = saved
+        .as_object_mut()
+        .unwrap()
+        .remove("workspace_revision")
+        .unwrap();
+    saved["remote_workspace"] = remote;
+    saved
+}
+
 #[test]
 fn remote_session_rename_is_cas_bound_once_only_and_recovers_receipt() {
     use zenpi::remote::{host_adapter::HostAdapter, protocol::ExecutionState, sessions::rename};
@@ -1042,7 +1063,7 @@ fn remote_new_session_preserves_old_journal_and_retries_after_restart_without_re
         json!({}),
     );
     let checkpoint = root.join("project-workspace.json");
-    let mut saved: Value = serde_json::from_slice(&std::fs::read(&checkpoint).unwrap()).unwrap();
+    let mut saved: Value = saved_state(&root);
     saved["remote_workspace"]["receipts"].as_array_mut().unwrap().push(json!({"device_id":phone.id(),
         "request_id":"reserved-new","fingerprint":format!("{:x}",sha2::Sha256::digest(serde_json::to_vec(&pending).unwrap())),"result":null}));
     std::fs::write(&checkpoint, serde_json::to_vec(&saved).unwrap()).unwrap();
@@ -1842,7 +1863,7 @@ fn reasoning_selection_default_none_cas_and_restart_receipts_share_model_namespa
         rejected
     );
     let checkpoint = root.join("project-workspace.json");
-    let mut saved: Value = serde_json::from_slice(&std::fs::read(&checkpoint).unwrap()).unwrap();
+    let mut saved: Value = saved_state(&root);
     saved["remote_workspace"]
         .as_object_mut()
         .unwrap()
@@ -2256,8 +2277,7 @@ fn model_selection_invalid_busy_and_unresolved_reservations_do_not_repeat() {
         Some(ErrorCode::RequestIdConflict)
     );
     let checkpoint_path = root.join("project-workspace.json");
-    let mut checkpoint: Value =
-        serde_json::from_slice(&std::fs::read(&checkpoint_path).unwrap()).unwrap();
+    let mut checkpoint: Value = saved_state(&root);
     checkpoint["remote_workspace"]
         .as_object_mut()
         .unwrap()
@@ -2339,7 +2359,7 @@ fn model_request_binding_operation_corruption_fails_checkpoint_restore() {
     );
     select(&mut host, &registry, &phone, &req, false);
     let path = root.join("project-workspace.json");
-    let saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let saved: Value = saved_state(&root);
     let owner = host.owner(&project).unwrap();
     drop(host);
     for operation in ["cancel", "model_status", "unknown", "prompt"] {
@@ -4333,9 +4353,9 @@ fn remote_approval_one_shot_decision_is_digest_fenced_durable_and_separately_aut
                 })
                 .is_err()
         );
-        let saved: Value =
-            serde_json::from_slice(&std::fs::read(root.join("project-workspace.json")).unwrap())
-                .unwrap();
+        let saved: Value = saved_state(&root);
+        let durable = ["project-workspace.json", "remote-state.json"]
+            .map(|name| std::fs::read(root.join(name)).unwrap());
         assert_eq!(
             saved["remote_workspace"]["approval_receipts"][0]["binding"]["state"],
             "accepted"
@@ -4370,7 +4390,12 @@ fn remote_approval_one_shot_decision_is_digest_fenced_durable_and_separately_aut
                 .unwrap_err()
                 .contains("approval receipts")
         );
-        std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+        for (name, bytes) in ["project-workspace.json", "remote-state.json"]
+            .iter()
+            .zip(&durable)
+        {
+            std::fs::write(root.join(name), bytes).unwrap();
+        }
         let mut changed = command.clone();
         if let Message::Request { arguments, .. } = &mut changed.payload {
             arguments["decision"] = json!(if decision == ApprovalDecision::Allow {
@@ -4453,7 +4478,7 @@ fn remote_prompt_identity_fences_other_operations_restart_and_missing_journal() 
     });
     assert_eq!(accepted.execution_state, Some(ExecutionState::Accepted));
     let checkpoint = root.join("project-workspace.json");
-    let saved: Value = serde_json::from_slice(&std::fs::read(&checkpoint).unwrap()).unwrap();
+    let saved: Value = saved_state(&root);
     assert_eq!(
         saved["remote_workspace"]["prompt_bindings"]
             .as_array()
@@ -4602,8 +4627,7 @@ fn remote_prompt_identity_fences_other_operations_restart_and_missing_journal() 
         accepted
     );
     for field in ["fingerprint", "session_id", "device_id"] {
-        let mut corrupt: Value =
-            serde_json::from_slice(&std::fs::read(&checkpoint).unwrap()).unwrap();
+        let mut corrupt: Value = saved_state(&root);
         corrupt["remote_workspace"]["prompt_bindings"][0][field] = json!("");
         std::fs::write(&checkpoint, serde_json::to_vec(&corrupt).unwrap()).unwrap();
         let agent = Agent::with_echo(
@@ -4688,7 +4712,7 @@ fn remote_prompt_identity_is_project_independent_and_checkpoint_failure_never_su
     // A competing writer defeats reservation CAS before any runner admission.
     let checkpoint = root.join("project-workspace.json");
     let saved = std::fs::read(&checkpoint).unwrap();
-    let mut changed: Value = serde_json::from_slice(&saved).unwrap();
+    let mut changed: Value = saved_state(&root);
     changed["remote_workspace"]["revision"] = json!(999);
     std::fs::write(&checkpoint, serde_json::to_vec(&changed).unwrap()).unwrap();
     let fresh = request(
@@ -5125,8 +5149,7 @@ fn remote_cancel_reservations_and_failed_admission_survive_restart_without_reexe
             &command,
             Some((&original, phone.id())),
             || {
-                let mut saved: Value =
-                    serde_json::from_slice(&std::fs::read(&checkpoint).unwrap()).unwrap();
+                let mut saved: Value = saved_state(&root);
                 assert_eq!(
                     saved["remote_workspace"]["cancel_receipts"][0]["state"],
                     "unknown_outcome"
@@ -5229,7 +5252,7 @@ fn remote_cancel_checkpoint_conflict_refuses_side_effect_and_legacy_receipts_are
     );
     assert_eq!(result.execution_state, Some(ExecutionState::UnknownOutcome));
     let checkpoint = root.join("project-workspace.json");
-    let mut saved: Value = serde_json::from_slice(&std::fs::read(&checkpoint).unwrap()).unwrap();
+    let mut saved: Value = saved_state(&root);
     saved["remote_workspace"]
         .as_object_mut()
         .unwrap()
@@ -5257,7 +5280,7 @@ fn remote_cancel_checkpoint_conflict_refuses_side_effect_and_legacy_receipts_are
             .execution_state,
         Some(ExecutionState::Accepted)
     );
-    let saved: Value = serde_json::from_slice(&std::fs::read(&checkpoint).unwrap()).unwrap();
+    let saved: Value = saved_state(&root);
     for change in 0..5 {
         let mut invalid = saved.clone();
         match change {
@@ -5718,8 +5741,7 @@ fn operator_reconciles_observed_create_and_remove_without_git_replay() {
         "repair-remove",
         json!({"subtab_id":before_remove.active_id,"subtab_revision":before_remove.revision}),
     );
-    let before_checkpoint: Value =
-        serde_json::from_slice(&std::fs::read(&checkpoint).unwrap()).unwrap();
+    let before_checkpoint: Value = saved_state(&root);
     std::fs::write(path.join("keep.txt"), "original").unwrap();
     let removed = subtab::mutate(&mut host, &registry, &phone, &close).unwrap();
     let after_remove = host.subtab_state(&project).unwrap();
@@ -6503,7 +6525,7 @@ fn worker_journal_import_restores_cross_owner_request_binding_before_new_submiss
     runner.shutdown_and_join().unwrap();
     drop(host);
     let checkpoint = root.join("project-workspace.json");
-    let mut saved: Value = serde_json::from_slice(&std::fs::read(&checkpoint).unwrap()).unwrap();
+    let mut saved: Value = saved_state(&root);
     saved["remote_workspace"]["prompt_bindings"] = json!([]);
     std::fs::write(&checkpoint, serde_json::to_vec(&saved).unwrap()).unwrap();
     let mut host = pool(&root);
@@ -8616,7 +8638,7 @@ fn quota_crash_intent_is_unknown_on_remote_retry_and_local_cli_commits_without_e
         Some(ExecutionState::Succeeded)
     );
     let path = root.join("project-workspace.json");
-    let mut saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let mut saved: Value = saved_state(&root);
     // Reconstruct the exact persisted pre-application crash boundary.
     saved["subtabs"][&project] = json!(before);
     saved["remote_workspace"]["revision"] = json!(req.expected_revision.unwrap());
@@ -9041,14 +9063,14 @@ fn legacy_checkpoint_migrates_on_commit_and_malformed_retry_ledger_is_refused() 
     let initial = host.active_context().project_id.clone();
     host.select(&initial).unwrap();
     let path = temp.path().join("project-workspace.json");
-    let mut saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let mut saved: Value = saved_state(temp.path());
     saved.as_object_mut().unwrap().remove("remote_workspace");
     drop(host);
     std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
     let mut migrated = pool(temp.path());
     assert_eq!(migrated.workspace_revision(), 0);
     migrated.select(&initial).unwrap();
-    let mut saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let mut saved: Value = saved_state(temp.path());
     assert!(saved["remote_workspace"]["receipts"].is_array());
     saved["remote_workspace"]["receipts"] =
         json!([{"device_id":"bad", "request_id":"id", "fingerprint":"bad", "result":{}}]);

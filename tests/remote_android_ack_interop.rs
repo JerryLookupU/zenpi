@@ -152,11 +152,11 @@ fn android_cached_ack_and_resume_survive_host_restart_without_cursor_rollback() 
         assert_eq!(request.session_id.as_deref(), Some(session_id.as_str()));
     }
     let journal = std::fs::read(&path).unwrap();
-    let checkpoint = root.join("project-workspace.json");
+    let checkpoint = root.join("remote-state.json");
     let persisted = |sequence: u64| {
         let value: Value = serde_json::from_slice(&std::fs::read(&checkpoint).unwrap()).unwrap();
         assert_eq!(
-            value["remote_workspace"]["event_acks"],
+            value["event_acks"],
             json!([{"device_id":record.id,"project_id":project,
             "cursor":{"session_id":session_id,"next_sequence":sequence}}])
         );

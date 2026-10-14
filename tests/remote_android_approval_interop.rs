@@ -273,16 +273,10 @@ fn android_approval_decisions_are_one_shot_digest_fenced_and_restart_durable() {
         let duplicate = HostAdapter::dispatch_owned(&mut host, &registry, &device, command.clone());
         assert_eq!(duplicate, accepted);
         capture(&command, &duplicate);
-        let checkpoint_path = root.join("project-workspace.json");
+        let checkpoint_path = root.join("remote-state.json");
         let checkpoint = std::fs::read(&checkpoint_path).unwrap();
         let saved: Value = serde_json::from_slice(&checkpoint).unwrap();
-        assert_eq!(
-            saved["remote_workspace"]["approval_receipts"]
-                .as_array()
-                .unwrap()
-                .len(),
-            1
-        );
+        assert_eq!(saved["approval_receipts"].as_array().unwrap().len(), 1);
         assert!(!saved.to_string().contains("INTEROP_APPROVAL_PRIVATE"));
         let mut changed = command.clone();
         if let Message::Request { arguments, .. } = &mut changed.payload {

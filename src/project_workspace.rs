@@ -308,8 +308,8 @@ pub(crate) struct NewSessionPlan {
     old_path: PathBuf,
     workspace: ProjectWorkspace,
     sessions: std::collections::BTreeMap<String, PathBuf>,
-    checkpoint: PathBuf,
-    previous: Option<Vec<u8>>,
+    checkpoint: OwnerCheckpoint,
+    revision: u64,
     request_id: Option<String>,
     fingerprint: String,
     version: u16,
@@ -323,7 +323,8 @@ pub(crate) struct NewSessionCommit {
     pub(crate) context: ProjectContext,
     pub(crate) path: PathBuf,
     pub(crate) data: serde_json::Value,
-    checkpoint_bytes: Vec<u8>,
+    checkpoint: OwnerCheckpoint,
+    revision: u64,
     remote_workspace: RemoteWorkspaceState,
 }
 
@@ -383,7 +384,7 @@ impl NewSessionPlan {
             let mut sessions = self.sessions;
             sessions.insert(context.project_id.clone(), path.clone());
             let mut remote_workspace = self.remote_workspace;
-            remote_workspace.revision = remote_workspace
+            let revision = self
                 .revision
                 .checked_add(1)
                 .ok_or_else(|| AgentError::InvalidTurn("workspace revision exhausted".into()))?;
@@ -405,26 +406,29 @@ impl NewSessionPlan {
                 }
                 receipt.result = serde_json::json!({"request_id":id,"project_id":context.project_id,
                     "old_session_id":self.context.session_id,"new_session_id":context.session_id,
-                    "required_owner":owner,"workspace_revision":remote_workspace.revision,
+                    "required_owner":owner,"workspace_revision":revision,
                     "active_project_id":self.workspace.active().map(|tab| tab.id().as_str())});
             }
-            let bytes = serde_json::to_vec(&serde_json::json!({
-                "schema_version":1, "workspace":self.workspace, "sessions":sessions,
-                "remote_workspace":remote_workspace, "subtabs":self.subtabs
-            }))
-            .map_err(|e| AgentError::InvalidTurn(e.to_string()))?;
+            let bytes = core_checkpoint(&self.workspace, &sessions, revision, &self.subtabs)
+                .map_err(AgentError::InvalidTurn)?;
             file.verify()?;
             if cancelled() {
                 return Err(crate::backend::BackendError::Cancelled.into());
             }
-            write_owner_checkpoint(&self.checkpoint, self.previous.as_deref(), &bytes)
+            let mut checkpoint = self.checkpoint;
+            checkpoint
+                .commit(
+                    &bytes,
+                    self.remote_identity.is_some().then_some(&remote_workspace),
+                )
                 .map_err(AgentError::InvalidTurn)?;
             committed = Some(NewSessionCommit {
                 control: None,
                 context,
                 path,
                 data,
-                checkpoint_bytes: bytes,
+                checkpoint,
+                revision,
                 remote_workspace,
             });
             Ok(())
@@ -483,7 +487,10 @@ pub struct ProjectOwnerPool {
     contexts: std::collections::BTreeMap<String, ProjectContext>,
     /// Control handles per project owner, kept in step with `owners`.
     control: std::collections::BTreeMap<String, OwnerControl>,
-    checkpoint: Option<(PathBuf, Option<Vec<u8>>)>,
+    checkpoint: Option<OwnerCheckpoint>,
+    /// Bumped by every committed workspace change; kept in the project
+    /// checkpoint so a build without remote state still advances it.
+    revision: u64,
     remote_workspace: RemoteWorkspaceState,
     remote_owner: String,
     pending_remote_receipt: Option<WorkspaceReceipt>,
@@ -494,7 +501,6 @@ pub struct ProjectOwnerPool {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RemoteWorkspaceState {
-    revision: u64,
     receipts: Vec<WorkspaceReceipt>,
     #[serde(default)]
     cancel_receipts: Vec<CancelReceipt>,
@@ -526,6 +532,80 @@ impl EventAck {
     }
 }
 impl RemoteWorkspaceState {
+    /// Strict bounds and identity checks for state loaded from disk.
+    fn validate(&self, revision: u64) -> Result<(), String> {
+        let mut receipt_ids = BTreeSet::new();
+        if self.receipts.len() > 128
+            || self.receipts.iter().any(|receipt| {
+                !receipt.valid(revision)
+                    || !receipt_ids.insert((&receipt.device_id, &receipt.request_id))
+            })
+        {
+            return Err("invalid remote workspace receipts".into());
+        }
+        for receipt in &self.receipts {
+            if let Some(intent) = &receipt.quota_intent {
+                let base = &intent
+                    .before
+                    .tabs
+                    .first()
+                    .ok_or("missing quota intent main tab")?
+                    .root;
+                intent.validate(receipt, base)?;
+            }
+            if let Some(intent) = &receipt.worktree_intent {
+                // A later project close must not discard its deduplication
+                // intent or make the entire owner checkpoint unreadable.
+                let base = &intent
+                    .before
+                    .tabs
+                    .first()
+                    .ok_or("missing intent main tab")?
+                    .root;
+                intent.validate(receipt, base)?;
+            }
+        }
+        if self.cancel_receipts.len() > 128
+            || self.cancel_receipts.iter().any(|receipt| {
+                !receipt.valid() || !receipt_ids.insert((&receipt.device_id, &receipt.request_id))
+            })
+        {
+            return Err("invalid remote cancellation receipts".into());
+        }
+        if self.approval_receipts.len() > 128
+            || self.approval_receipts.iter().any(|receipt| {
+                !receipt.valid()
+                    || !receipt_ids
+                        .insert((&receipt.binding.device_id, &receipt.binding.request_id))
+            })
+        {
+            return Err("invalid remote approval receipts".into());
+        }
+        if self.steer_receipts.len() > 128
+            || self.steer_receipts.iter().any(|receipt| {
+                !receipt.valid() || !receipt_ids.insert((&receipt.device_id, &receipt.request_id))
+            })
+        {
+            return Err("invalid remote steering receipts".into());
+        }
+        if self.prompt_bindings.len() > 128
+            || self.prompt_bindings.iter().any(|binding| {
+                !binding.valid() || !receipt_ids.insert((&binding.device_id, &binding.request_id))
+            })
+        {
+            return Err("invalid remote prompt bindings".into());
+        }
+        let mut ack_ids = std::collections::BTreeSet::new();
+        if self.event_acks.len() > 128
+            || self.event_acks.iter().any(|ack| {
+                !ack.valid()
+                    || !ack_ids.insert((&ack.device_id, &ack.project_id, &ack.cursor.session_id))
+            })
+        {
+            return Err("invalid remote event acknowledgements".into());
+        }
+        Ok(())
+    }
     fn import_prompt_journals(
         &mut self,
         sessions: &std::collections::BTreeMap<String, PathBuf>,
@@ -1022,6 +1102,7 @@ impl ProjectOwnerPool {
             contexts: [(id.clone(), ProjectContext::from_agent(&id, &owner))].into(),
             control: [(id.clone(), control)].into(),
             checkpoint: None,
+            revision: 0,
             remote_workspace: RemoteWorkspaceState::default(),
             remote_owner: format!("{:x}", Sha256::digest(owner_nonce)),
             pending_remote_receipt: None,
@@ -1082,7 +1163,7 @@ impl ProjectOwnerPool {
         if !self.worker_handles(id).is_empty() {
             return Err("retire project worker owners before replacing its master session".into());
         }
-        let (path, previous) = self
+        let checkpoint = self
             .checkpoint
             .clone()
             .ok_or("new session requires a durable project owner checkpoint")?;
@@ -1096,8 +1177,8 @@ impl ProjectOwnerPool {
                 .clone(),
             workspace: self.workspace.clone(),
             sessions: self.sessions.clone(),
-            checkpoint: path,
-            previous,
+            checkpoint,
+            revision: self.revision,
             request_id,
             fingerprint,
             version,
@@ -1116,14 +1197,15 @@ impl ProjectOwnerPool {
             .get(&committed.context.project_id)
             .map(|context| context.session_id.clone());
         self.remote_workspace = committed.remote_workspace.clone();
+        self.revision = committed.revision;
         self.contexts.insert(
             committed.context.project_id.clone(),
             committed.context.clone(),
         );
         self.sessions
             .insert(committed.context.project_id.clone(), committed.path.clone());
-        if let Some((_, previous)) = &mut self.checkpoint {
-            *previous = Some(committed.checkpoint_bytes.clone());
+        if let Some(checkpoint) = &mut self.checkpoint {
+            *checkpoint = committed.checkpoint.clone();
         }
         if let Some(session) = previous_session {
             crate::remote::wakeup::notify(&session);
@@ -1156,17 +1238,11 @@ impl ProjectOwnerPool {
             worktree_intent: None,
             quota_intent: None,
         });
-        let (path, previous) = self
-            .checkpoint
+        let bytes = self.core_bytes()?;
+        self.checkpoint
             .as_mut()
-            .ok_or("missing new session checkpoint")?;
-        let bytes = serde_json::to_vec(
-            &serde_json::json!({"schema_version":1,"workspace":self.workspace,
-            "sessions":self.sessions,"remote_workspace":remote,"subtabs":self.subtabs}),
-        )
-        .map_err(|e| e.to_string())?;
-        write_owner_checkpoint(path, previous.as_deref(), &bytes)?;
-        *previous = Some(bytes);
+            .ok_or("missing new session checkpoint")?
+            .commit(&bytes, Some(&remote))?;
         self.remote_workspace = remote;
         let mut plan = self.new_session_plan(id, Some(request.into()), fingerprint.into(), 1)?;
         plan.remote_identity = Some((device.into(), self.workspace_owner().into()));
@@ -1228,9 +1304,9 @@ impl ProjectOwnerPool {
         context.session_id = session.session_id().to_owned();
         let mut remote_workspace = self.remote_workspace.clone();
         let changed = self.contexts.get(id) != Some(&context) || sessions != self.sessions;
+        let mut revision = self.revision;
         if changed {
-            remote_workspace.revision = remote_workspace
-                .revision
+            revision = revision
                 .checked_add(1)
                 .ok_or("workspace revision exhausted")?;
         }
@@ -1247,20 +1323,16 @@ impl ProjectOwnerPool {
                 return Err("resume reservation conflict".into());
             }
             receipt.result = serde_json::json!({"request_id":request,"project_id":id,"old_session_id":previous_session,
-                "new_session_id":context.session_id,"required_owner":owner,"workspace_revision":remote_workspace.revision,
+                "new_session_id":context.session_id,"required_owner":owner,"workspace_revision":revision,
                 "active_project_id":self.workspace.active().map(|tab|tab.id().as_str())});
         }
-        if let Some((path, previous)) = &mut self.checkpoint {
-            let bytes = serde_json::to_vec(&serde_json::json!({
-                "schema_version": 1, "workspace": self.workspace, "sessions": sessions,
-                "remote_workspace": remote_workspace, "subtabs":self.subtabs
-            }))
-            .map_err(|e| e.to_string())?;
-            write_owner_checkpoint(path, previous.as_deref(), &bytes)?;
-            *previous = Some(bytes);
+        if let Some(checkpoint) = &mut self.checkpoint {
+            let bytes = core_checkpoint(&self.workspace, &sessions, revision, &self.subtabs)?;
+            checkpoint.commit(&bytes, receipt.is_some().then_some(&remote_workspace))?;
         }
         self.sessions = sessions;
         self.contexts.insert(id.to_owned(), context);
+        self.revision = revision;
         self.remote_workspace = remote_workspace;
         if changed {
             crate::remote::wakeup::notify(&previous_session);
@@ -1278,22 +1350,22 @@ impl ProjectOwnerPool {
             .ok_or("missing session parent")?
             .join("project-workspace.json");
         let bytes = read_owner_checkpoint(&path)?;
+        let remote_bytes = read_owner_checkpoint(&path.with_file_name(REMOTE_STATE_FILE))?;
         let Some(bytes) = bytes else {
-            let mut remote = self.remote_workspace.clone();
-            let imported = remote.import_prompt_journals(&self.sessions)?;
-            let previous = if imported {
-                let bytes = serde_json::to_vec(
-                    &serde_json::json!({"schema_version":1,"workspace":self.workspace,
-                    "sessions":self.sessions,"remote_workspace":remote,"subtabs":self.subtabs}),
-                )
-                .map_err(|e| e.to_string())?;
-                write_owner_checkpoint(&path, None, &bytes)?;
-                Some(bytes)
-            } else {
-                None
+            // Remote state never outlives the project checkpoint it describes.
+            let mut checkpoint = OwnerCheckpoint {
+                path,
+                previous: None,
+                remote_previous: remote_bytes,
             };
+            let mut remote = RemoteWorkspaceState::default();
+            if remote.import_prompt_journals(&self.sessions)?
+                || checkpoint.remote_previous.is_some()
+            {
+                checkpoint.commit(&self.core_bytes()?, Some(&remote))?;
+            }
             self.remote_workspace = remote;
-            self.checkpoint = Some((path, previous));
+            self.checkpoint = Some(checkpoint);
             return Ok(false);
         };
         #[derive(Deserialize)]
@@ -1303,7 +1375,10 @@ impl ProjectOwnerPool {
             workspace: serde_json::Value,
             sessions: std::collections::BTreeMap<String, PathBuf>,
             #[serde(default)]
-            remote_workspace: RemoteWorkspaceState,
+            workspace_revision: u64,
+            /// Remote state written inside the project checkpoint before ZE-510.
+            #[serde(default)]
+            remote_workspace: Option<serde_json::Map<String, serde_json::Value>>,
             #[serde(default)]
             subtabs: std::collections::BTreeMap<String, crate::remote::subtab::SubtabState>,
         }
@@ -1311,6 +1386,18 @@ impl ProjectOwnerPool {
         if saved.schema_version != 1 {
             return Err("unsupported project owner checkpoint".into());
         }
+        let legacy = saved.remote_workspace.take();
+        let mut revision = saved.workspace_revision;
+        let remote_source = match legacy.clone() {
+            Some(mut legacy) => {
+                revision = legacy
+                    .remove("revision")
+                    .and_then(|revision| revision.as_u64())
+                    .ok_or("invalid legacy workspace revision")?;
+                Some(serde_json::to_vec(&legacy).map_err(|e| e.to_string())?)
+            }
+            None => remote_bytes.clone(),
+        };
         let workspace = ProjectWorkspace::from_json_bytes(
             &serde_json::to_vec(&saved.workspace).map_err(|e| e.to_string())?,
         )
@@ -1324,7 +1411,6 @@ impl ProjectOwnerPool {
         {
             return Err("invalid project session mapping".into());
         }
-        let mut receipt_ids = BTreeSet::new();
         for (id, state) in &saved.subtabs {
             let tab = workspace
                 .tabs()
@@ -1333,110 +1419,37 @@ impl ProjectOwnerPool {
                 .ok_or("subtabs belong to unknown project")?;
             state.validate(id, tab.cwd())?;
         }
-        if saved.remote_workspace.receipts.len() > 128
-            || saved.remote_workspace.receipts.iter().any(|receipt| {
-                !receipt.valid(saved.remote_workspace.revision)
-                    || !receipt_ids.insert((&receipt.device_id, &receipt.request_id))
-            })
-        {
-            return Err("invalid remote workspace receipts".into());
-        }
-        for receipt in &saved.remote_workspace.receipts {
-            if let Some(intent) = &receipt.quota_intent {
-                let base = &intent
-                    .before
-                    .tabs
-                    .first()
-                    .ok_or("missing quota intent main tab")?
-                    .root;
-                intent.validate(receipt, base)?;
-            }
-            if let Some(intent) = &receipt.worktree_intent {
-                // A later project close must not discard its deduplication
-                // intent or make the entire owner checkpoint unreadable.
-                let base = &intent
-                    .before
-                    .tabs
-                    .first()
-                    .ok_or("missing intent main tab")?
-                    .root;
-                intent.validate(receipt, base)?;
-            }
-        }
-        if saved.remote_workspace.cancel_receipts.len() > 128
-            || saved
-                .remote_workspace
-                .cancel_receipts
-                .iter()
-                .any(|receipt| {
-                    !receipt.valid()
-                        || !receipt_ids.insert((&receipt.device_id, &receipt.request_id))
-                })
-        {
-            return Err("invalid remote cancellation receipts".into());
-        }
-        if saved.remote_workspace.approval_receipts.len() > 128
-            || saved
-                .remote_workspace
-                .approval_receipts
-                .iter()
-                .any(|receipt| {
-                    !receipt.valid()
-                        || !receipt_ids
-                            .insert((&receipt.binding.device_id, &receipt.binding.request_id))
-                })
-        {
-            return Err("invalid remote approval receipts".into());
-        }
-        if saved.remote_workspace.steer_receipts.len() > 128
-            || saved.remote_workspace.steer_receipts.iter().any(|receipt| {
-                !receipt.valid() || !receipt_ids.insert((&receipt.device_id, &receipt.request_id))
-            })
-        {
-            return Err("invalid remote steering receipts".into());
-        }
-        if saved.remote_workspace.prompt_bindings.len() > 128
-            || saved
-                .remote_workspace
-                .prompt_bindings
-                .iter()
-                .any(|binding| {
-                    !binding.valid()
-                        || !receipt_ids.insert((&binding.device_id, &binding.request_id))
-                })
-        {
-            return Err("invalid remote prompt bindings".into());
-        }
-        let mut ack_ids = std::collections::BTreeSet::new();
-        if saved.remote_workspace.event_acks.len() > 128
-            || saved.remote_workspace.event_acks.iter().any(|ack| {
-                !ack.valid()
-                    || !ack_ids.insert((&ack.device_id, &ack.project_id, &ack.cursor.session_id))
-            })
-        {
-            return Err("invalid remote event acknowledgements".into());
-        }
+        let mut remote: RemoteWorkspaceState = remote_source
+            .map(|bytes| serde_json::from_slice(&bytes).map_err(|e| e.to_string()))
+            .transpose()?
+            .unwrap_or_default();
+        remote.validate(revision)?;
         // Import legacy journal admissions once, before any remote mutation can reuse their IDs.
-        let migrated_bytes = if saved
-            .remote_workspace
-            .import_prompt_journals(&saved.sessions)?
-        {
-            let migrated = serde_json::to_vec(&serde_json::json!({"schema_version":1,"workspace":saved.workspace,
-                "sessions":saved.sessions,"remote_workspace":saved.remote_workspace,"subtabs":saved.subtabs})).map_err(|e| e.to_string())?;
-            write_owner_checkpoint(&path, Some(&bytes), &migrated)?;
-            migrated
-        } else {
-            bytes
+        let imported = remote.import_prompt_journals(&saved.sessions)?;
+        let mut checkpoint = OwnerCheckpoint {
+            path,
+            previous: Some(bytes.clone()),
+            remote_previous: remote_bytes,
         };
+        if imported || legacy.is_some() {
+            checkpoint.commit(&bytes, Some(&remote))?;
+        }
+        if legacy.is_some() {
+            // Only now that remote-state.json holds it may the legacy copy go.
+            let bytes =
+                core_checkpoint(&saved.workspace, &saved.sessions, revision, &saved.subtabs)?;
+            checkpoint.commit(&bytes, None)?;
+        }
         // Adopt the checkpoint even when a saved project fails to prepare
         // (for example a stale saved model digest): a failed publish leaves
-        // the pool and the file untouched, so `bytes` stays the CAS baseline,
+        // the pool and the files untouched, so they stay the CAS baseline,
         // and a later new session still has a durable owner to commit against.
         // Restore is adoption, not a new checkpoint publication using stale in-memory receipts.
         self.checkpoint = None;
         let published = self.publish(workspace, &saved.sessions);
-        self.checkpoint = Some((path, Some(migrated_bytes)));
-        self.remote_workspace = saved.remote_workspace;
+        self.checkpoint = Some(checkpoint);
+        self.revision = revision;
+        self.remote_workspace = remote;
         published?;
         self.subtabs = saved.subtabs;
         Ok(true)
@@ -1798,14 +1811,11 @@ impl ProjectOwnerPool {
         let retired = self.retired_workers(project, &candidate);
         let mut subtabs = self.subtabs.clone();
         subtabs.insert(project.into(), candidate);
-        let (path, previous) = self
-            .checkpoint
+        let bytes = core_checkpoint(&self.workspace, &self.sessions, self.revision, &subtabs)?;
+        self.checkpoint
             .as_mut()
-            .ok_or("subtabs require a durable owner checkpoint")?;
-        let bytes = serde_json::to_vec(&serde_json::json!({"schema_version":1, "workspace":self.workspace, "sessions":self.sessions,
-            "remote_workspace":self.remote_workspace, "subtabs":subtabs})).map_err(|e| e.to_string())?;
-        write_owner_checkpoint(path, previous.as_deref(), &bytes)?;
-        *previous = Some(bytes);
+            .ok_or("subtabs require a durable owner checkpoint")?
+            .commit(&bytes, None)?;
         self.subtabs = subtabs;
         for (worker, mut guard) in workers.iter().zip(guards) {
             if retired.iter().any(|key| {
@@ -2048,7 +2058,7 @@ impl ProjectOwnerPool {
         if reserved.is_none() && remote.receipts.len() >= 128 {
             return Err("workspace receipt capacity exhausted".into());
         }
-        remote.revision = remote
+        let revision = self
             .revision
             .checked_add(1)
             .ok_or("workspace revision exhausted")?;
@@ -2067,7 +2077,7 @@ impl ProjectOwnerPool {
             })
             .and_then(|request| request.required_owner.as_deref())
             .unwrap_or(&self.remote_owner);
-        let result = serde_json::json!({"workspace_revision":remote.revision, "active_project_id":self.workspace.active().map(|tab| tab.id().as_str()),
+        let result = serde_json::json!({"workspace_revision":revision, "active_project_id":self.workspace.active().map(|tab| tab.id().as_str()),
             "required_owner":receipt_owner, "project_id":project, "active_subtab_id":candidate.active_id, "subtab_revision":candidate.revision});
         let receipt = WorkspaceReceipt {
             device_id: device.into(),
@@ -2084,15 +2094,13 @@ impl ProjectOwnerPool {
         }
         let mut subtabs = self.subtabs.clone();
         subtabs.insert(project.into(), candidate);
-        let (path, previous) = self
-            .checkpoint
+        let bytes = core_checkpoint(&self.workspace, &self.sessions, revision, &subtabs)?;
+        self.checkpoint
             .as_mut()
-            .ok_or("subtabs require a durable owner checkpoint")?;
-        let bytes = serde_json::to_vec(&serde_json::json!({"schema_version":1, "workspace":self.workspace, "sessions":self.sessions,
-            "remote_workspace":remote, "subtabs":subtabs})).map_err(|e| e.to_string())?;
-        write_owner_checkpoint(path, previous.as_deref(), &bytes)?;
-        *previous = Some(bytes);
+            .ok_or("subtabs require a durable owner checkpoint")?
+            .commit(&bytes, Some(&remote))?;
         self.subtabs = subtabs;
+        self.revision = revision;
         for (worker, mut guard) in guards {
             if retired.iter().any(|key| {
                 self.worker_owners
@@ -2171,17 +2179,11 @@ impl ProjectOwnerPool {
             .validate(&receipt, base)?;
         let mut remote = self.remote_workspace.clone();
         remote.receipts.push(receipt);
-        let (path, previous) = self
-            .checkpoint
+        let bytes = self.core_bytes()?;
+        self.checkpoint
             .as_mut()
-            .ok_or("quota mutation requires durable checkpoint")?;
-        let bytes = serde_json::to_vec(
-            &serde_json::json!({"schema_version":1,"workspace":self.workspace,
-            "sessions":self.sessions,"remote_workspace":remote,"subtabs":self.subtabs}),
-        )
-        .map_err(|error| error.to_string())?;
-        write_owner_checkpoint(path, previous.as_deref(), &bytes)?;
-        *previous = Some(bytes);
+            .ok_or("quota mutation requires durable checkpoint")?
+            .commit(&bytes, Some(&remote))?;
         self.remote_workspace = remote;
         Ok(())
     }
@@ -2348,17 +2350,11 @@ impl ProjectOwnerPool {
             }),
             quota_intent: None,
         });
-        let (path, previous) = self
-            .checkpoint
+        let bytes = self.core_bytes()?;
+        self.checkpoint
             .as_mut()
-            .ok_or("Git mutation requires durable checkpoint")?;
-        let bytes = serde_json::to_vec(
-            &serde_json::json!({"schema_version":1,"workspace":self.workspace,
-            "sessions":self.sessions,"remote_workspace":remote,"subtabs":self.subtabs}),
-        )
-        .map_err(|e| e.to_string())?;
-        write_owner_checkpoint(path, previous.as_deref(), &bytes)?;
-        *previous = Some(bytes);
+            .ok_or("Git mutation requires durable checkpoint")?
+            .commit(&bytes, Some(&remote))?;
         self.remote_workspace = remote;
         Ok(())
     }
@@ -2492,7 +2488,15 @@ impl ProjectOwnerPool {
         &self.remote_owner
     }
     pub fn workspace_revision(&self) -> u64 {
-        self.remote_workspace.revision
+        self.revision
+    }
+    fn core_bytes(&self) -> Result<Vec<u8>, String> {
+        core_checkpoint(
+            &self.workspace,
+            &self.sessions,
+            self.revision,
+            &self.subtabs,
+        )
     }
     pub fn has_workspace_checkpoint(&self) -> bool {
         self.checkpoint.is_some()
@@ -2582,12 +2586,12 @@ impl ProjectOwnerPool {
             }
             remote.event_acks.push(ack);
         }
-        let (path, previous) = self.checkpoint.as_mut().ok_or(ErrorCode::InvalidRequest)?;
-        let bytes = serde_json::to_vec(&serde_json::json!({"schema_version":1,"workspace":self.workspace,"sessions":self.sessions,
-            "remote_workspace":remote,"subtabs":self.subtabs})).map_err(|_| ErrorCode::InternalError)?;
-        write_owner_checkpoint(path, previous.as_deref(), &bytes)
+        let bytes = self.core_bytes().map_err(|_| ErrorCode::InternalError)?;
+        self.checkpoint
+            .as_mut()
+            .ok_or(ErrorCode::InvalidRequest)?
+            .commit(&bytes, Some(&remote))
             .map_err(|_| ErrorCode::InternalError)?;
-        *previous = Some(bytes);
         self.remote_workspace = remote;
         Ok(cursor.clone())
     }
@@ -2631,14 +2635,11 @@ impl ProjectOwnerPool {
         }
         let mut remote = self.remote_workspace.clone();
         remote.prompt_bindings.push(binding);
-        let (path, previous) = self
-            .checkpoint
+        let bytes = self.core_bytes()?;
+        self.checkpoint
             .as_mut()
-            .ok_or("prompt requires durable checkpoint")?;
-        let bytes = serde_json::to_vec(&serde_json::json!({"schema_version":1,"workspace":self.workspace,"sessions":self.sessions,
-            "remote_workspace":remote,"subtabs":self.subtabs})).map_err(|e| e.to_string())?;
-        write_owner_checkpoint(path, previous.as_deref(), &bytes)?;
-        *previous = Some(bytes);
+            .ok_or("prompt requires durable checkpoint")?
+            .commit(&bytes, Some(&remote))?;
         self.remote_workspace = remote;
         Ok(())
     }
@@ -2892,14 +2893,11 @@ impl ProjectOwnerPool {
                 .map_err(|_| "steering identity conflict or capacity")?;
             remote.steer_receipts.push(receipt);
         }
-        let (path, previous) = self
-            .checkpoint
+        let bytes = self.core_bytes()?;
+        self.checkpoint
             .as_mut()
-            .ok_or("steering requires durable checkpoint")?;
-        let bytes = serde_json::to_vec(&serde_json::json!({"schema_version":1,"workspace":self.workspace,"sessions":self.sessions,
-            "remote_workspace":remote,"subtabs":self.subtabs})).map_err(|e| e.to_string())?;
-        write_owner_checkpoint(path, previous.as_deref(), &bytes)?;
-        *previous = Some(bytes);
+            .ok_or("steering requires durable checkpoint")?
+            .commit(&bytes, Some(&remote))?;
         self.remote_workspace = remote;
         Ok(())
     }
@@ -2947,14 +2945,11 @@ impl ProjectOwnerPool {
                 .map_err(|_| "approval receipt conflict or capacity")?;
             remote.approval_receipts.push(receipt);
         }
-        let (path, previous) = self
-            .checkpoint
+        let bytes = self.core_bytes()?;
+        self.checkpoint
             .as_mut()
-            .ok_or("approval requires durable checkpoint")?;
-        let bytes = serde_json::to_vec(&serde_json::json!({"schema_version":1,"workspace":self.workspace,"sessions":self.sessions,
-            "remote_workspace":remote,"subtabs":self.subtabs})).map_err(|e| e.to_string())?;
-        write_owner_checkpoint(path, previous.as_deref(), &bytes)?;
-        *previous = Some(bytes);
+            .ok_or("approval requires durable checkpoint")?
+            .commit(&bytes, Some(&remote))?;
         self.remote_workspace = remote;
         Ok(())
     }
@@ -3003,14 +2998,11 @@ impl ProjectOwnerPool {
             }
             remote.cancel_receipts.push(receipt);
         }
-        let (path, previous) = self
-            .checkpoint
+        let bytes = self.core_bytes()?;
+        self.checkpoint
             .as_mut()
-            .ok_or("cancellation requires durable checkpoint")?;
-        let bytes = serde_json::to_vec(&serde_json::json!({"schema_version":1,"workspace":self.workspace,"sessions":self.sessions,
-            "remote_workspace":remote,"subtabs":self.subtabs})).map_err(|e| e.to_string())?;
-        write_owner_checkpoint(path, previous.as_deref(), &bytes)?;
-        *previous = Some(bytes);
+            .ok_or("cancellation requires durable checkpoint")?
+            .commit(&bytes, Some(&remote))?;
         self.remote_workspace = remote;
         Ok(())
     }
@@ -3026,7 +3018,6 @@ impl ProjectOwnerPool {
             return Err("remote workspace requires an available durable checkpoint".into());
         }
         let revision = self
-            .remote_workspace
             .revision
             .checked_add(1)
             .ok_or("workspace revision exhausted")?;
@@ -3330,9 +3321,9 @@ impl ProjectOwnerPool {
         } else {
             Vec::new()
         };
+        let mut revision = self.revision;
         if changed {
-            remote_workspace.revision = remote_workspace
-                .revision
+            revision = revision
                 .checked_add(1)
                 .ok_or("workspace revision exhausted")?;
         }
@@ -3342,11 +3333,14 @@ impl ProjectOwnerPool {
             }
             remote_workspace.receipts.push(receipt.clone());
         }
-        if let Some((path, previous)) = &mut self.checkpoint {
-            let bytes = serde_json::to_vec(&serde_json::json!({"schema_version": 1, "workspace": candidate, "sessions": next_sessions,
-                "remote_workspace": remote_workspace, "subtabs":subtabs})).map_err(|e| e.to_string())?;
-            write_owner_checkpoint(path, previous.as_deref(), &bytes)?;
-            *previous = Some(bytes);
+        if let Some(checkpoint) = &mut self.checkpoint {
+            let bytes = core_checkpoint(&candidate, &next_sessions, revision, &subtabs)?;
+            checkpoint.commit(
+                &bytes,
+                self.pending_remote_receipt
+                    .is_some()
+                    .then_some(&remote_workspace),
+            )?;
         }
         for agent in &mut replaced_guards {
             agent.close();
@@ -3395,6 +3389,7 @@ impl ProjectOwnerPool {
         }
         self.sessions = next_sessions;
         self.workspace = candidate;
+        self.revision = revision;
         self.remote_workspace = remote_workspace;
         self.subtabs = subtabs;
         if changed {
@@ -3476,16 +3471,84 @@ pub(crate) fn read_owner_checkpoint(path: &Path) -> Result<Option<Vec<u8>>, Stri
     }
     Ok(Some(bytes))
 }
+/// Remote receipts, acknowledgements and intents live beside the project
+/// checkpoint, never inside it (ZE-510): a build without the remote feature
+/// reads `project-workspace.json` alone and never sees remote state.
+pub(crate) const REMOTE_STATE_FILE: &str = "remote-state.json";
+
+fn core_checkpoint(
+    workspace: &impl Serialize,
+    sessions: &std::collections::BTreeMap<String, PathBuf>,
+    revision: u64,
+    subtabs: &std::collections::BTreeMap<String, crate::remote::subtab::SubtabState>,
+) -> Result<Vec<u8>, String> {
+    serde_json::to_vec(
+        &serde_json::json!({"schema_version":1, "workspace":workspace,
+        "sessions":sessions, "workspace_revision":revision, "subtabs":subtabs}),
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Compare-and-replace baselines of the two owner checkpoint files.
+#[derive(Debug, Clone)]
+struct OwnerCheckpoint {
+    path: PathBuf,
+    previous: Option<Vec<u8>>,
+    remote_previous: Option<Vec<u8>>,
+}
+
+impl OwnerCheckpoint {
+    /// Replace the core checkpoint and, when given, the remote state, under
+    /// one lock; an unchanged file is only checked. Core lands first: a crash between the two renames leaves a remote
+    /// reservation unresolved, an unknown outcome, never a remote result the
+    /// workspace does not show.
+    fn commit(&mut self, core: &[u8], remote: Option<&RemoteWorkspaceState>) -> Result<(), String> {
+        let remote = remote
+            .map(serde_json::to_vec)
+            .transpose()
+            .map_err(|e| e.to_string())?;
+        let remote_path = self.path.with_file_name(REMOTE_STATE_FILE);
+        let mut writes = vec![(self.path.as_path(), self.previous.as_deref(), core)];
+        if let Some(bytes) = &remote {
+            writes.push((
+                remote_path.as_path(),
+                self.remote_previous.as_deref(),
+                bytes.as_slice(),
+            ));
+        }
+        write_owner_files(&writes)?;
+        self.previous = Some(core.to_vec());
+        if remote.is_some() {
+            self.remote_previous = remote;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
 fn write_owner_checkpoint(
     path: &Path,
     previous: Option<&[u8]>,
     bytes: &[u8],
 ) -> Result<(), String> {
+    write_owner_files(&[(path, previous, bytes)])
+}
+
+/// Each write is `(path, expected current bytes, replacement)`; a replacement
+/// equal to the current bytes is only checked. The first path's lock guards them all,
+/// every file is checked before any is staged, and every replacement is
+/// durable before the first rename.
+type OwnerFileWrite<'a> = (&'a Path, Option<&'a [u8]>, &'a [u8]);
+fn write_owner_files(writes: &[OwnerFileWrite<'_>]) -> Result<(), String> {
     use std::io::Write;
-    if bytes.len() > MAX_PROJECT_WORKSPACE_BYTES {
+    let (first, _, _) = writes.first().ok_or("no project checkpoint to write")?;
+    if writes
+        .iter()
+        .any(|(_, _, bytes)| bytes.len() > MAX_PROJECT_WORKSPACE_BYTES)
+    {
         return Err("project checkpoint exceeds byte limit".into());
     }
-    let lock_path = path.with_extension("lock");
+    let lock_path = first.with_extension("lock");
     let mut options = std::fs::OpenOptions::new();
     options.read(true).write(true).create(true);
     #[cfg(unix)]
@@ -3523,34 +3586,47 @@ fn write_owner_checkpoint(
         }
     }
     let _guard = Unlock(lock);
-    if read_owner_checkpoint(path)?.as_deref() != previous {
-        return Err(
-            "project checkpoint changed in another host; reopen the host before modifying projects"
-                .into(),
-        );
+    for (path, previous, _) in writes {
+        if read_owner_checkpoint(path)?.as_deref() != *previous {
+            return Err(
+                "project checkpoint changed in another host; reopen the host before modifying projects"
+                    .into(),
+            );
+        }
     }
-    let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(&temporary).map_err(|e| e.to_string())?;
+    let mut staged = Vec::new();
     let result = (|| -> std::io::Result<()> {
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        std::fs::rename(&temporary, path)?;
+        for (path, previous, bytes) in writes {
+            if Some(*bytes) == *previous {
+                continue;
+            }
+            let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = options.open(&temporary)?;
+            staged.push((temporary, *path));
+            file.write_all(bytes)?;
+            file.sync_all()?;
+        }
+        for (temporary, path) in &staged {
+            std::fs::rename(temporary, path)?;
+        }
+        staged.clear();
         std::fs::File::open(
-            path.parent()
+            first
+                .parent()
                 .ok_or_else(|| std::io::Error::other("missing checkpoint parent"))?,
         )?
         .sync_all()?;
         Ok(())
     })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temporary);
+    for (temporary, _) in staged {
+        let _ = std::fs::remove_file(temporary);
     }
     result.map_err(|e| e.to_string())
 }
@@ -4248,6 +4324,61 @@ mod quota_intent_tests {
         assert_eq!(pool.unresolved_quota_intents().len(), 1);
     }
     #[test]
+    fn remote_state_stays_out_of_the_project_checkpoint_and_legacy_state_moves_out() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let (mut pool, request, candidate, digest) = fixture(&root);
+        let device = "a".repeat(64);
+        pool.reserve_remote_quota(&device, &request, &digest, &candidate)
+            .unwrap();
+        let core = root.join("project-workspace.json");
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&core).unwrap()).unwrap();
+        let keys: Vec<_> = saved.as_object().unwrap().keys().cloned().collect();
+        assert_eq!(
+            keys,
+            [
+                "schema_version",
+                "sessions",
+                "subtabs",
+                "workspace",
+                "workspace_revision"
+            ]
+        );
+        let remote: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join(REMOTE_STATE_FILE)).unwrap()).unwrap();
+        assert_eq!(remote["receipts"][0]["request_id"], "quota-intent");
+        let owner = pool.active();
+        drop(pool);
+        // A pre-split checkpoint carries the same state inline; restoring it
+        // moves the state out before the inline copy is dropped.
+        let mut legacy = saved.clone();
+        let revision = legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("workspace_revision")
+            .unwrap();
+        let mut inline = remote.clone();
+        inline["revision"] = revision;
+        legacy["remote_workspace"] = inline;
+        std::fs::write(&core, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        std::fs::remove_file(root.join(REMOTE_STATE_FILE)).unwrap();
+        let mut restored = ProjectOwnerPool::new(owner).unwrap();
+        assert!(restored.restore_checkpoint().unwrap());
+        assert_eq!(restored.unresolved_quota_intents().len(), 1);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&std::fs::read(&core).unwrap()).unwrap(),
+            saved
+        );
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(
+                &std::fs::read(root.join(REMOTE_STATE_FILE)).unwrap()
+            )
+            .unwrap(),
+            remote
+        );
+    }
+    #[test]
     fn checkpoint_refuses_corrupt_quota_intents_without_starting_workers() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().canonicalize().unwrap();
@@ -4256,13 +4387,13 @@ mod quota_intent_tests {
         pool.reserve_remote_quota(&device, &request, &digest, &candidate)
             .unwrap();
         let owner = pool.active();
-        let path = root.join("project-workspace.json");
+        let path = root.join(REMOTE_STATE_FILE);
         let saved: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         drop(pool);
         for field in ["candidate", "request", "before", "unknown"] {
             let mut corrupt = saved.clone();
-            let intent = &mut corrupt["remote_workspace"]["receipts"][0]["quota_intent"];
+            let intent = &mut corrupt["receipts"][0]["quota_intent"];
             match field {
                 "candidate" => intent["candidate"]["tabs"][0]["concurrency"] = serde_json::json!(4),
                 "request" => {
