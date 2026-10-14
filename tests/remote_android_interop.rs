@@ -871,3 +871,183 @@ fn current_host_frames_form_an_android_replay_and_gap_fixture() {
         std::fs::write(path, bytes).unwrap();
     }
 }
+
+#[test]
+#[ignore = "needs Android JVM classes; run tools/build_android_interop_classes.sh --run"]
+fn android_reducer_rebuilds_streamed_live_text_in_order_across_replay() {
+    use zenpi::{backend::ProviderEvent, remote::live_text::LivePromptText};
+    let classpath = std::env::var("ZENPI_ANDROID_INTEROP_CLASSPATH").unwrap();
+    let java = std::env::var("ZENPI_ANDROID_INTEROP_JAVA").unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let mut session =
+        SessionStore::open_in_workspace(root.path().join("session.jsonl"), root.path()).unwrap();
+    session
+        .append_turn(Turn::new("seed", TurnRole::User, "stream seed"))
+        .unwrap();
+    let session_id = session.session_id().to_owned();
+    let backend = OpenAiCompatibleBackend::new("http://127.0.0.1:9", None, "fixture").unwrap();
+    let owner = Arc::new(Mutex::new(Agent::new(session, Box::new(backend))));
+    let pool = Arc::new(Mutex::new(ProjectOwnerPool::new(owner).unwrap()));
+    let project = pool.lock().unwrap().active_context().project_id.clone();
+    let adapter = HostAdapter::new(pool);
+    let registry =
+        Arc::new(DeviceRegistry::new(root.path().join("devices.json"), "a".repeat(64)).unwrap());
+    let random = ring::rand::SystemRandom::new();
+    let doc = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &random).unwrap();
+    let key =
+        EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, doc.as_ref(), &random).unwrap();
+    let encode = |bytes: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
+    let public = encode(key.public_key().as_ref());
+    let proof = pairing_proof_message(&"a".repeat(64), "token", "pair", "phone", &public);
+    let signature = encode(key.sign(&random, &proof).unwrap().as_ref());
+    let record = registry
+        .verify_pair_and_register("token", "pair", "phone", &public, &signature, || true)
+        .unwrap();
+    registry
+        .set_permissions(&record.id, 1, vec![Capability::Read], vec![project.clone()])
+        .unwrap();
+    let mut challenge = DeviceChallenge::new("a".repeat(64)).unwrap();
+    let signature = encode(
+        key.sign(&random, &challenge.proof_message(&record.id))
+            .unwrap()
+            .as_ref(),
+    );
+    let device = challenge
+        .authenticate(&registry, &record.id, &signature)
+        .unwrap();
+    let exchange = |request: &Envelope, frames: &[Envelope]| {
+        let mut wire = Vec::new();
+        for frame in frames {
+            write_frame(&mut wire, frame).unwrap();
+        }
+        json!({"request":request,"wire_base64":STANDARD.encode(wire)})
+    };
+    let mut fixture = serde_json::Map::new();
+    for (id, operation) in [
+        ("listing", Operation::WorkspaceList),
+        ("initial", Operation::Inspect),
+    ] {
+        let read = request(
+            id,
+            &project,
+            &session_id,
+            Message::Request {
+                operation,
+                arguments: json!({}),
+            },
+        );
+        let frames =
+            HostAdapter::wire_frames(adapter.dispatch(&registry, &device, read.clone())).unwrap();
+        fixture.insert(id.into(), exchange(&read, &frames));
+    }
+    // The prompt progress a desktop-attached host lists for this device.
+    let prompt = request(
+        "android-stream-prompt",
+        &project,
+        &session_id,
+        Message::Request {
+            operation: Operation::Prompt,
+            arguments: json!({"text":"stream"}),
+        },
+    );
+    let texts = LivePromptText::default();
+    let tokens = [
+        "Stream",
+        "ing to",
+        " the",
+        " phone",
+        " api_key=SEC",
+        "RET then",
+        " 中文",
+        " done\n",
+    ];
+    let final_text = "Streaming to the phone, final";
+    let mut published = Vec::new();
+    let subscribe = |id: &str, feed: &mut dyn FnMut()| {
+        let request = request(
+            id,
+            &project,
+            &session_id,
+            Message::Subscribe {
+                cursor: EventCursor {
+                    session_id: session_id.clone(),
+                    next_sequence: 1,
+                },
+                limit: 128,
+                duration_ms: 1000,
+            },
+        );
+        let mut frames = Vec::new();
+        subscription::serve_with_view(
+            &request,
+            |read| adapter.dispatch(&registry, &device, read),
+            || {
+                feed();
+                let mut view =
+                    subscription::view(&request, |read| adapter.dispatch(&registry, &device, read))?;
+                if let Some(view) = view.as_mut() {
+                    let mut status = json!({"request_id":"android-stream-prompt","project_id":project,
+                        "session_id":session_id,"state":"running"});
+                    if let Some(text) =
+                        texts.projected(device.id(), &project, &session_id, "android-stream-prompt")
+                    {
+                        status["stream_text"] = json!(text);
+                    }
+                    view["listing"]["projects"][0]["prompt_statuses"] = json!([status]);
+                }
+                Ok(view)
+            },
+            |frame| {
+                frames.push(frame);
+                Ok(())
+            },
+        )
+        .unwrap();
+        exchange(&request, &frames)
+    };
+    let mut fed = 0;
+    let stream = subscribe("stream", &mut || {
+        let event = match tokens.get(fed) {
+            Some(token) => ProviderEvent::TextDelta {
+                delta: (*token).into(),
+            },
+            None if fed == tokens.len() => ProviderEvent::TextDone {
+                text: final_text.into(),
+            },
+            None => return,
+        };
+        texts.update(&prompt, device.id(), &event);
+        fed += 1;
+        if let Some(text) =
+            texts.projected(device.id(), &project, &session_id, "android-stream-prompt")
+            && published.last() != Some(&text)
+        {
+            published.push(text);
+        }
+    });
+    let replay = subscribe("replay", &mut || {});
+    assert_eq!(
+        published.last().map(String::as_str),
+        Some(final_text),
+        "{published:?}"
+    );
+    assert!(published.iter().all(|text| !text.contains("SECRET")));
+    fixture.insert("stream".into(), stream);
+    fixture.insert("replay".into(), replay);
+    fixture.insert("request_id".into(), json!("android-stream-prompt"));
+    fixture.insert("published".into(), json!(published));
+    fixture.insert("final".into(), json!(final_text));
+    let path = root.path().join("stream.json");
+    std::fs::write(&path, serde_json::to_vec(&fixture).unwrap()).unwrap();
+    let status = std::process::Command::new(&java)
+        .args([
+            format!("-Dzenpi.stream.fixture={}", path.display()),
+            "-cp".into(),
+            classpath,
+            "org.junit.runner.JUnitCore".into(),
+            "zenpi.AndroidRustStreamTest".into(),
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success(), "Android JVM stream reducer failed");
+}

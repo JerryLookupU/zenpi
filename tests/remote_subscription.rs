@@ -805,3 +805,136 @@ fn failed_journal_append_never_signals_a_durable_change() {
     assert_eq!(std::fs::read(&path).unwrap(), before);
     assert!(!signal.wait(observed, std::time::Duration::ZERO));
 }
+
+/// Android's reducer rule: keep `stream_offset` scalar values of the held
+/// text, then append `stream_delta`. Returns each applied (offset, held length).
+fn apply_live_deltas(held: &mut Option<String>, frames: &[Envelope]) -> Vec<(usize, usize)> {
+    let mut applied = Vec::new();
+    for frame in frames {
+        let Message::Response { result } = &frame.payload else {
+            continue;
+        };
+        let Some(view) = result.get("subscription_view") else {
+            continue;
+        };
+        let project = &view["listing"]["projects"][0];
+        assert!(project["desktop_stream_text"].is_null());
+        assert!(project.get("desktop_stream_offset").is_none());
+        let status = &project["prompt_statuses"][0];
+        assert!(status.get("stream_text").is_none(), "{status}");
+        let Some(offset) = status["stream_offset"].as_u64() else {
+            *held = None;
+            continue;
+        };
+        let offset = usize::try_from(offset).unwrap();
+        let base = held.take().unwrap_or_default();
+        let length = base.chars().count();
+        assert!(offset <= length, "gap: {offset} > {base:?}");
+        applied.push((offset, length));
+        *held = Some(
+            base.chars().take(offset).collect::<String>()
+                + status["stream_delta"].as_str().unwrap(),
+        );
+    }
+    applied
+}
+
+#[test]
+fn live_text_streams_as_ordered_token_deltas_and_replay_neither_repeats_nor_skips() {
+    use zenpi::{backend::ProviderEvent, remote::live_text::LivePromptText};
+    let session = "live-text-delta-session";
+    let subscribe = |duration_ms| {
+        let mut value = request();
+        value.session_id = Some(session.into());
+        value.payload = Message::Subscribe {
+            cursor: EventCursor {
+                session_id: session.into(),
+                next_sequence: 0,
+            },
+            limit: 128,
+            duration_ms,
+        };
+        value
+    };
+    let mut prompt = subscribe(0);
+    prompt.id = Some("prompt".into());
+    let texts = LivePromptText::default();
+    let view = || {
+        let mut status = json!({"request_id":"prompt","state":"running"});
+        if let Some(text) = texts.projected("device", "project", session, "prompt") {
+            status["stream_text"] = json!(text);
+        }
+        json!({"listing":{"projects":[{"id":"project","desktop_stream_text":null,"prompt_statuses":[status]}]}})
+    };
+    let serve = |request: &Envelope, mut feed: Box<dyn FnMut() + '_>| {
+        let mut frames = Vec::new();
+        subscription::serve_with_view(
+            request,
+            |resume| HostAdapter::failure(&resume, ErrorCode::Busy),
+            || {
+                feed();
+                Ok(Some(view()))
+            },
+            |frame| {
+                frames.push(frame);
+                Ok(())
+            },
+        )
+        .unwrap();
+        frames
+    };
+    let tokens = [
+        "Stream",
+        "ing per",
+        " token",
+        " api_key=SEC",
+        "RET ok",
+        " 中文 ",
+        "end\n",
+    ];
+    let mut fed = 0;
+    let frames = serve(
+        &subscribe(1000),
+        Box::new(|| {
+            let event = match tokens.get(fed) {
+                Some(token) => ProviderEvent::TextDelta {
+                    delta: (*token).into(),
+                },
+                None if fed == tokens.len() => ProviderEvent::TextDone {
+                    text: "Streaming per token, final".into(),
+                },
+                None => return,
+            };
+            texts.update(&prompt, "device", &event);
+            fed += 1;
+        }),
+    );
+    let mut held = None;
+    let applied = apply_live_deltas(&mut held, &frames);
+    // Every new token boundary arrives once and in order as a pure append;
+    // only the final text, which differs after "token", rewrites a suffix.
+    // The first token has no boundary yet, so it publishes nothing.
+    let (last, appended) = applied.split_last().unwrap();
+    assert_eq!(appended.len(), tokens.len() - 1);
+    assert!(appended.iter().all(|(offset, length)| offset == length));
+    let streamed = "Streaming per token api_key=<redacted> ok 中文 end\n";
+    assert_eq!(
+        *last,
+        ("Streaming per token".len(), streamed.chars().count())
+    );
+    assert_eq!(held.as_deref(), Some("Streaming per token, final"));
+    let wire = serde_json::to_string(&frames).unwrap();
+    assert!(!wire.contains("SEC\"") && !wire.contains("SECRET"));
+    assert_eq!(wire.matches("Stream").count(), 1);
+    assert!(wire.contains("api_key=<redacted> "));
+
+    // A reconnect replays from offset 0: the held copy is replaced, not doubled.
+    let frames = serve(&subscribe(1000), Box::new(|| {}));
+    assert_eq!(apply_live_deltas(&mut held, &frames), [(0, 26)]);
+    assert_eq!(held.as_deref(), Some("Streaming per token, final"));
+    // A finished stream disappears from the view and is forgotten on both sides.
+    texts.remove(&prompt, "device");
+    let frames = serve(&subscribe(1000), Box::new(|| {}));
+    assert!(apply_live_deltas(&mut held, &frames).is_empty());
+    assert_eq!(held, None);
+}

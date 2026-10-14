@@ -423,3 +423,38 @@ fn desktop_preview_is_session_scoped_and_guard_clears_on_return_and_unwind() {
     });
     assert!(text.projected("project", "session").is_none());
 }
+
+#[test]
+fn deltas_publish_each_whole_token_and_hold_back_the_unfinished_one() {
+    let texts = LivePromptText::default();
+    let request = request();
+    let mut published = Vec::new();
+    for delta in [
+        "Hel",
+        "lo wor",
+        "ld, api_",
+        "key=STREAM",
+        "_SECRET and",
+        " 中文",
+        "\n",
+    ] {
+        texts.update(
+            &request,
+            "device",
+            &ProviderEvent::TextDelta {
+                delta: delta.into(),
+            },
+        );
+        published.push(texts.projected("device", "project", "session", "request"));
+    }
+    let expected = [
+        None,
+        Some("Hello "),
+        Some("Hello world, "),
+        Some("Hello world, "),
+        Some("Hello world, api_key=<redacted> "),
+        Some("Hello world, api_key=<redacted> and "),
+        Some("Hello world, api_key=<redacted> and 中文\n"),
+    ];
+    assert_eq!(published, expected.map(|value| value.map(str::to_owned)));
+}

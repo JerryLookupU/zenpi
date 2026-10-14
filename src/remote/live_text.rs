@@ -1,4 +1,9 @@
-//! Transient complete-line provider text; never a durable transcript cursor.
+//! Transient provider text published token by token; never a durable transcript cursor.
+//!
+//! Text becomes publishable at each whitespace boundary, so the redactor sees
+//! a whole token (and every earlier line) before any of it leaves the host.
+//! Subscriptions send successive snapshots as ordered, offset-addressed
+//! deltas (`subscription::live_text_deltas`).
 
 use crate::backend::ProviderEvent;
 use std::collections::BTreeMap;
@@ -120,11 +125,17 @@ impl LivePromptText {
             value.raw.clear();
         }
         value.raw.push_str(text);
-        // Do not publish a partial credential-bearing line before its redactor can see it.
+        // Publish per token, but never a partial credential-bearing word
+        // before its redactor can see it whole.
         value.complete = if replace {
             value.raw.len()
         } else {
-            value.raw.rfind('\n').map_or(0, |at| at + 1)
+            value
+                .raw
+                .char_indices()
+                .rev()
+                .find(|(_, character)| character.is_whitespace())
+                .map_or(0, |(at, character)| at + character.len_utf8())
         };
         super::wakeup::notify(session);
     }
