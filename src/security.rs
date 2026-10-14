@@ -588,15 +588,57 @@ pub fn is_secret_key(key: &str) -> bool {
         .any(|candidate| normalized == *candidate || normalized.ends_with(candidate))
 }
 
+/// Name fragments that mark an environment variable as secret-bearing. A
+/// variable is withheld from children when its ASCII-uppercased name contains
+/// any of them (so `OPENAI_API_KEY`, `GH_TOKEN`, `AWS_SECRET_ACCESS_KEY`,
+/// `AWS_SESSION_TOKEN`, `PGPASSWORD`, `NPM_CONFIG__AUTH`, ... are all dropped).
+const SECRET_ENVIRONMENT_FRAGMENTS: &[&str] = &[
+    "KEY",
+    "TOKEN",
+    "SECRET",
+    "PASSWORD",
+    "PASSWD",
+    "CREDENTIAL",
+    "AUTH",
+    "COOKIE",
+    "JWT",
+];
+
+/// Variables that match a fragment above but carry no secret: they name an
+/// agent socket that git/ssh need to reach the user's keys, not the keys.
+const PUBLIC_ENVIRONMENT_NAMES: &[&str] = &["SSH_AUTH_SOCK", "GPG_AGENT_INFO"];
+
+/// Whether an environment variable must be withheld from child processes.
+///
+/// Rule: the ASCII-uppercased name contains one of `KEY`, `TOKEN`, `SECRET`,
+/// `PASSWORD`, `PASSWD`, `CREDENTIAL`, `AUTH`, `COOKIE` or `JWT`, unless it is an
+/// explicitly public agent-socket name (`SSH_AUTH_SOCK`, `GPG_AGENT_INFO`).
+pub fn is_secret_environment_name(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    !PUBLIC_ENVIRONMENT_NAMES.contains(&upper.as_str())
+        && SECRET_ENVIRONMENT_FRAGMENTS
+            .iter()
+            .any(|fragment| upper.contains(fragment))
+}
+
+/// Environment for every child process Zenpi spawns (run_command, ripgrep,
+/// extensions, project git). Callers `env_clear()` and apply exactly this
+/// list. Like pi, children inherit the user's environment (`PATH`, `HOME`,
+/// `USER`, `SHELL`, `TMPDIR`, locale, git/ssh settings, ...) so toolchains
+/// such as cargo, npm and brew resolve; every secret-bearing variable (see
+/// [`is_secret_environment_name`]) and every non-UTF-8 entry is removed.
+/// `PATH` and `LANG` fall back to safe defaults when the parent lacks them.
 pub fn child_environment() -> Vec<(String, String)> {
-    [
-        ("PATH", "/usr/bin:/bin"),
-        ("LANG", "C.UTF-8"),
-        ("LC_ALL", "C.UTF-8"),
-    ]
-    .into_iter()
-    .map(|(key, value)| (key.to_owned(), value.to_owned()))
-    .collect()
+    let mut environment: Vec<(String, String)> = std::env::vars_os()
+        .filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?)))
+        .filter(|(key, _)| !key.is_empty() && !is_secret_environment_name(key))
+        .collect();
+    for (key, default) in [("PATH", "/usr/bin:/bin"), ("LANG", "C.UTF-8")] {
+        if !environment.iter().any(|(name, _)| name == key) {
+            environment.push((key.to_owned(), default.to_owned()));
+        }
+    }
+    environment
 }
 
 pub fn restrict_private_file(path: &Path) -> io::Result<()> {

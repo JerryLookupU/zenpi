@@ -1,5 +1,6 @@
 use zenpi::security::{
-    SecretError, SecretHandle, SecretScope, child_environment, redact_json, redact_text,
+    SecretError, SecretHandle, SecretScope, child_environment, is_secret_environment_name,
+    redact_json, redact_text,
 };
 
 const FIXTURE_SECRET: &str = "sk-fixture-secret-123456";
@@ -136,11 +137,68 @@ fn filtered_child_environment_contains_no_credential_names() {
     let environment = child_environment();
     assert!(environment.iter().any(|(key, _)| key == "PATH"));
     assert!(environment.iter().all(|(key, _)| {
-        !key.contains("KEY")
-            && !key.contains("TOKEN")
-            && !key.contains("AUTH")
-            && !key.contains("PASSWORD")
+        let key = key.to_ascii_uppercase();
+        key == "SSH_AUTH_SOCK"
+            || key == "GPG_AGENT_INFO"
+            || (!key.contains("KEY")
+                && !key.contains("TOKEN")
+                && !key.contains("AUTH")
+                && !key.contains("PASSWORD"))
     }));
+}
+
+#[test]
+fn child_environment_inherits_user_variables_and_drops_secret_names() {
+    // SAFETY: only this test reads or writes these fixture variable names.
+    unsafe {
+        std::env::set_var("ZENPI_ZE200_PLAIN", "visible");
+        std::env::set_var("ZENPI_ZE200_FIXTURE_API_KEY", FIXTURE_SECRET);
+    }
+    let environment = child_environment();
+    let get = |name: &str| {
+        environment
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.clone())
+    };
+    assert_eq!(get("ZENPI_ZE200_PLAIN").as_deref(), Some("visible"));
+    assert_eq!(get("ZENPI_ZE200_FIXTURE_API_KEY"), None);
+    assert_eq!(get("PATH"), std::env::var("PATH").ok());
+    if let Ok(home) = std::env::var("HOME") {
+        assert_eq!(get("HOME"), Some(home));
+    }
+    assert!(environment.iter().all(|(_, value)| value != FIXTURE_SECRET));
+    for secret in [
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "GEMINI_API_KEY",
+        "ZENPI_API_KEY",
+        "EXA_API_KEY",
+        "GITHUB_TOKEN",
+        "GH_TOKEN",
+        "NPM_TOKEN",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "PGPASSWORD",
+        "my_client_secret",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "NPM_CONFIG__AUTH",
+        "WAVETERM_JWT",
+    ] {
+        assert!(is_secret_environment_name(secret), "{secret} kept");
+    }
+    for public in [
+        "PATH",
+        "HOME",
+        "USER",
+        "SHELL",
+        "TMPDIR",
+        "LANG",
+        "CARGO_HOME",
+        "SSH_AUTH_SOCK",
+    ] {
+        assert!(!is_secret_environment_name(public), "{public} dropped");
+    }
 }
 
 #[test]
