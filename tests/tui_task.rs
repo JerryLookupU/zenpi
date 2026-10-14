@@ -105,6 +105,7 @@ fn wait_for(
 fn production_loop_streams_an_answer_and_exits() {
     init_home();
     let _one = ONE_TUI.lock().unwrap_or_else(|poison| poison.into_inner());
+    reset_home();
     let workspace = tempfile::tempdir().unwrap();
     let session_path = workspace.path().join("session.jsonl");
     let provider = ScriptedBackend::new([text(ANSWER)]);
@@ -226,6 +227,20 @@ struct Running {
     _one: std::sync::MutexGuard<'static, ()>,
 }
 
+/// Empty the shared home so no checkpoint from an earlier TUI (whose
+/// workspace is gone) reaches the next one. Call while holding `ONE_TUI`.
+fn reset_home() {
+    let home = HOME.get().expect("init_home first").path();
+    for entry in std::fs::read_dir(home).unwrap().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            std::fs::remove_dir_all(&path).unwrap();
+        } else {
+            std::fs::remove_file(&path).unwrap();
+        }
+    }
+}
+
 fn init_home() {
     HOME.get_or_init(|| {
         let home = tempfile::tempdir().unwrap();
@@ -244,6 +259,8 @@ static ONE_TUI: Mutex<()> = Mutex::new(());
 
 fn start(replies: Vec<Reply>) -> Running {
     init_home();
+    let one = ONE_TUI.lock().unwrap_or_else(|poison| poison.into_inner());
+    reset_home();
     let workspace = tempfile::tempdir().unwrap();
     let provider = ScriptedBackend::new(replies);
     let mut agent = Agent::new(
@@ -262,7 +279,6 @@ fn start(replies: Vec<Reply>) -> Running {
         events: receiver,
         screen: Arc::clone(&screen),
     };
-    let one = ONE_TUI.lock().unwrap_or_else(|poison| poison.into_inner());
     let tui = thread::spawn(move || zenpi::tui::run_async_with_harness(agent, harness));
     Running {
         _one: one,

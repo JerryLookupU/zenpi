@@ -21,8 +21,15 @@ jobs:
         uses: actions/checkout@v4
 
       # search/find run the real rg (tests/stage1_search.rs requires it).
-      - name: Install ripgrep
-        run: sudo apt-get update && sudo apt-get install -y ripgrep
+      # ripgrep 14 under-reports `stats.searches` with `--sort path`, so use
+      # the same 15.x release as development rather than apt's 14.
+      - name: Install ripgrep 15
+        run: |
+          curl -fsSL -o /tmp/rg.tar.gz \
+            https://github.com/BurntSushi/ripgrep/releases/download/15.0.0/ripgrep-15.0.0-x86_64-unknown-linux-musl.tar.gz
+          tar -xzf /tmp/rg.tar.gz -C /tmp
+          sudo install /tmp/ripgrep-15.0.0-x86_64-unknown-linux-musl/rg /usr/local/bin/rg
+          rg --version
 
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable

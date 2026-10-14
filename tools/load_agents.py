@@ -160,8 +160,18 @@ def linux_stats(pid: int) -> dict | None:
     except (OSError, IndexError, ValueError):
         return None
     switches = sum(int(status.get(key, "0").strip()) for key in ("voluntary_ctxt_switches", "nonvoluntary_ctxt_switches"))
+    # PSS charges shared pages (binary text, libc) proportionally; VmRSS
+    # would count them in full for every one of the N agents.
+    rss_kb = int(status.get("VmRSS", "0 kB").split()[0])
+    try:
+        for line in Path(f"/proc/{pid}/smaps_rollup").read_text().splitlines():
+            if line.startswith("Pss:"):
+                rss_kb = int(line.split()[1])
+                break
+    except OSError:
+        pass
     return {
-        "rss": int(status.get("VmRSS", "0 kB").split()[0]) * 1024,
+        "rss": rss_kb * 1024,
         # utime and stime are fields 14 and 15; `stat` starts at field 3.
         "cpu_s": (int(stat[11]) + int(stat[12])) / CLOCK_TICKS,
         "csw": switches,
