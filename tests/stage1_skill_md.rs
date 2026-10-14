@@ -367,7 +367,6 @@ mod model_tools {
     };
     use tempfile::tempdir;
     use zenpi::{
-        backend::{Backend, BackendError, Completion, CompletionRequest},
         core::{Agent, TurnInputRequest},
         session::SessionStore,
         skills::{ModelSkillTools, SkillInvocation, SkillSet},
@@ -608,15 +607,6 @@ mod model_tools {
             Ok(json!({}))
         }
     }
-    struct NamesBackend(Arc<Mutex<Vec<String>>>);
-    impl Backend for NamesBackend {
-        crate::support::controlled_local_backend!();
-        fn complete(&self, request: CompletionRequest<'_>) -> Result<Completion, BackendError> {
-            *self.0.lock().unwrap() = request.tools.iter().map(|tool| tool.name.clone()).collect();
-            Ok(Completion::text("ok"))
-        }
-    }
-
     #[test]
     fn duplicate_tool_registration_preserves_registry_and_existing_agent_runtime() {
         let dir = tempdir().unwrap();
@@ -625,10 +615,11 @@ mod model_tools {
         registry.register(NamedTool("read_skill_resource")).unwrap();
         assert!(shared.register(&mut registry).is_err());
         assert!(registry.definition("load_skill").is_none());
-        let names = Arc::new(Mutex::new(Vec::new()));
+        let backend =
+            crate::support::scripted::ScriptedBackend::new([crate::support::scripted::text("ok")]);
         let mut agent = Agent::new(
             SessionStore::open(dir.path().join("s")).unwrap(),
-            Box::new(NamesBackend(names.clone())),
+            Box::new(backend.clone()),
         );
         let mut old = ToolRegistry::new();
         old.register(NamedTool("original")).unwrap();
@@ -647,7 +638,7 @@ mod model_tools {
                 .is_err()
         );
         agent.process(TurnInputRequest::new("inspect")).unwrap();
-        assert_eq!(*names.lock().unwrap(), ["original"]);
+        assert_eq!(backend.requests().last().unwrap().tools, ["original"]);
     }
 
     #[test]

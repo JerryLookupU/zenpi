@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-104",
+  "claim_id": "ZE-104@blueprint-4.0.0",
+  "from": "worker",
+  "to": "master",
+  "summary": "Shared scripted provider in tests/support/scripted.rs: one Vec<Reply> (Text/Call/Fail/Stall) drives an in-process ScriptedBackend (Clone handle, records normalized requests, Stall blocks until cancel) and a FakeServer (std TcpListener thread) serving Responses, Chat Completions and Anthropic Messages SSE. Both paths record the same Recorded{messages,tools,tool_results} form. Migrated 6 hand-written mock backends (core_session: FailingBackend, SlowBackend, ToolLoopBackend, WriteToolBackend; session_new: Writes; stage1_skill_md: NamesBackend).",
+  "changed_files": [
+    "tests/support/mod.rs",
+    "tests/support/scripted.rs",
+    "tests/support_selftest.rs",
+    "tests/core_session.rs",
+    "tests/session_new.rs",
+    "tests/stage1_skill_md.rs",
+    "Docs/quality/ze/ZE-104.json"
+  ],
+  "diff_stat": "6 files changed, 512 insertions(+), 128 deletions(-) (excluding this handoff)",
+  "commands_run": [
+    "cargo fmt --all -- --check",
+    "cargo test --locked --test support_selftest",
+    "cargo test --locked --test core_session --test session_new --test stage1_skill_md",
+    "cargo test --locked --no-run",
+    "cargo clippy --locked --test support_selftest --test core_session --test session_new --test stage1_skill_md",
+    "cargo clippy --locked --all-targets -- -D warnings"
+  ],
+  "validation_result": {
+    "support_selftest": "pass 2/2: same script (read_file tool round-trip + 2 prompts) yields identical 3-request sequence in-process and over HTTP via OpenAiCompatibleBackend for responses, chat_completions, anthropic_messages; Stall holds turn until cancel -> BackendError::Cancelled",
+    "migrated_tests": "core_session 39 pass, session_new 14 pass, stage1_skill_md 21 pass (2 ignored, pre-existing)",
+    "all_test_targets_build": "pass (cargo test --no-run)",
+    "G-RUST": "fmt clean; clippy -D warnings fails on pre-existing lib errors (dead code in src/), which stops linting before test targets; targeted clippy on the 4 touched test targets reports no warnings in tests/"
+  },
+  "notes": "No src/ changes. scripted.rs carries #![allow(dead_code)] because every test binary that declares mod support compiles it (tests only; G-RUST allow rule covers src/ only). Reply::Stall is in-process only; FakeServer panics if a Stall is served. Reply::Fail maps to HTTP 400 on the wire. Google wire not scripted. FakeServer echoes the request model so Anthropic serving-model checks pass. Exhausted scripts repeat their last reply. LOC: 467 new lines vs 400 budget, offset by 128 deleted mock lines (net +384).",
+  "created_at": "2026-10-14T11:30:17Z",
+  "digest": "ab9df871478f6d043c166f8e7b0f9941910f995a453696a2679031a965ad6de6"
+}

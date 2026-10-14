@@ -702,34 +702,17 @@ fn durable_pending_input_blocks_new_but_unknown_operation_does_not() {
 // The provider is deterministic here; the JSONL owner, session checkpoint,
 // approval policy, immutable worker gate and filesystem tool are real.
 fn new_policy_agent(root: &Path) -> Agent {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use zenpi::backend::{Backend, BackendError, Completion, CompletionRequest};
-    struct Writes(AtomicUsize);
-    impl Backend for Writes {
-        crate::support::controlled_local_backend!();
-        fn complete(&self, _: CompletionRequest<'_>) -> Result<Completion, BackendError> {
-            let call = self.0.fetch_add(1, Ordering::SeqCst);
-            let mut response = Completion::text("policy fixture reply");
-            if call.is_multiple_of(2) {
-                response.content.clear();
-                response.tool_calls.push(zenpi::tools::ToolCall {
-                    id: format!("write-{}", call / 2),
-                    name: "write_file".into(),
-                    arguments: json!({
-                        "path": format!("note-{}.txt", call / 2),
-                        "content": "policy fixture write"
-                    }),
-                });
-            }
-            Ok(response)
-        }
-        fn name(&self) -> &str {
-            "new-policy-fixture"
-        }
-    }
+    use support::scripted::{ScriptedBackend, call, text};
+    let script = (0..16).flat_map(|n| {
+        let args = json!({"path": format!("note-{n}.txt"), "content": "policy fixture write"});
+        [
+            call(&format!("write-{n}"), "write_file", args),
+            text("policy fixture reply"),
+        ]
+    });
     let mut agent = Agent::new(
         SessionStore::open_in_workspace(root.join("initial.jsonl"), root).unwrap(),
-        Box::new(Writes(AtomicUsize::new(0))),
+        Box::new(ScriptedBackend::new(script)),
     );
     agent.set_tools(
         ToolRegistry::with_all_builtins().unwrap(),

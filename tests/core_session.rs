@@ -2,6 +2,7 @@ mod support;
 
 use serde_json::{Map, Value, json};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use support::scripted::{Reply, ScriptedBackend, call, text};
 use tempfile::tempdir;
 use zenpi::{
     backend::{Backend, BackendError, Completion, CompletionRequest},
@@ -12,26 +13,8 @@ use zenpi::{
     },
 };
 
-struct FailingBackend;
-impl Backend for FailingBackend {
-    crate::support::controlled_local_backend!();
-    fn complete(&self, _: CompletionRequest<'_>) -> Result<Completion, BackendError> {
-        Err(BackendError::Transport("offline".into()))
-    }
-}
-
-struct SlowBackend;
-
-impl Backend for SlowBackend {
-    crate::support::controlled_local_backend!();
-    fn complete(&self, _: CompletionRequest<'_>) -> Result<Completion, BackendError> {
-        std::thread::sleep(std::time::Duration::from_millis(25));
-        Ok(Completion::text("must not persist"))
-    }
-}
-
-struct ToolLoopBackend {
-    calls: AtomicUsize,
+fn failing() -> ScriptedBackend {
+    ScriptedBackend::new([Reply::Fail("offline".into())])
 }
 
 #[test]
@@ -80,58 +63,6 @@ fn agent_live_owner_api_claims_and_completes_a_mailbox_request() {
     assert_eq!(recipient_view.result, Some(json!({"status":"ok"})));
 }
 
-impl Backend for ToolLoopBackend {
-    crate::support::controlled_local_backend!();
-    fn complete(&self, request: CompletionRequest<'_>) -> Result<Completion, BackendError> {
-        let call = self.calls.fetch_add(1, Ordering::SeqCst);
-        if call == 0 {
-            assert_eq!(request.tools.len(), 1);
-            return Ok(Completion {
-                content: String::new(),
-                usage: None,
-                model: None,
-                tool_calls: vec![ToolCall {
-                    id: "call-1".into(),
-                    name: "constant".into(),
-                    arguments: json!({}),
-                }],
-                response_id: None,
-                refusal: None,
-                annotations: Vec::new(),
-            });
-        }
-        assert!(request.turns.iter().any(|turn| turn.role == TurnRole::Tool));
-        Ok(Completion::text("tool result incorporated"))
-    }
-}
-
-struct WriteToolBackend {
-    calls: AtomicUsize,
-}
-
-impl Backend for WriteToolBackend {
-    crate::support::controlled_local_backend!();
-    fn complete(&self, _: CompletionRequest<'_>) -> Result<Completion, BackendError> {
-        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
-            Ok(Completion {
-                content: String::new(),
-                usage: None,
-                model: None,
-                tool_calls: vec![ToolCall {
-                    id: "write-call".into(),
-                    name: "write_file".into(),
-                    arguments: json!({"path": "blocked.txt", "content": "blocked"}),
-                }],
-                response_id: None,
-                refusal: None,
-                annotations: Vec::new(),
-            })
-        } else {
-            Ok(Completion::text("unexpected continuation"))
-        }
-    }
-}
-
 #[derive(Clone, Copy)]
 struct ConstantTool;
 
@@ -176,9 +107,14 @@ fn workspace_write_reserves_disk_budget_before_side_effect() {
     let path = root.join("session.jsonl");
     let mut agent = Agent::new(
         SessionStore::open(&path).unwrap(),
-        Box::new(WriteToolBackend {
-            calls: AtomicUsize::new(0),
-        }),
+        Box::new(ScriptedBackend::new([
+            call(
+                "write-call",
+                "write_file",
+                json!({"path": "blocked.txt", "content": "blocked"}),
+            ),
+            text("unexpected continuation"),
+        ])),
     );
     agent.set_tools(
         ToolRegistry::with_all_builtins().unwrap(),
@@ -608,7 +544,7 @@ fn user_shell_is_local_and_persists_next_turn_context() {
 #[test]
 fn user_shell_preserves_nonzero_signal_and_cancellation_evidence() {
     let dir = tempdir().unwrap();
-    let mut agent = shell_agent(dir.path(), Box::new(FailingBackend));
+    let mut agent = shell_agent(dir.path(), Box::new(failing()));
     let nonzero = agent
         .run_user_shell_with_cancel("!printf out; printf err >&2; exit 7", || false)
         .unwrap();
@@ -641,7 +577,7 @@ fn user_shell_preserves_nonzero_signal_and_cancellation_evidence() {
 #[test]
 fn user_shell_separate_approval_and_precancel_never_spawn() {
     let dir = tempdir().unwrap();
-    let mut agent = shell_agent(dir.path(), Box::new(FailingBackend));
+    let mut agent = shell_agent(dir.path(), Box::new(failing()));
     let mut policy = zenpi::approval::ApprovalPolicy {
         mode: zenpi::approval::ApprovalMode::Headless,
         ..Default::default()
@@ -674,7 +610,7 @@ fn user_shell_separate_approval_and_precancel_never_spawn() {
 #[test]
 fn user_shell_caps_both_streams_before_journaling_control_bytes() {
     let dir = tempdir().unwrap();
-    let mut agent = shell_agent(dir.path(), Box::new(FailingBackend));
+    let mut agent = shell_agent(dir.path(), Box::new(failing()));
     let output = agent
         .run_user_shell_with_cancel(
             "!head -c 300000 /dev/zero; head -c 300000 /dev/zero >&2",
@@ -693,7 +629,7 @@ fn user_shell_caps_both_streams_before_journaling_control_bytes() {
 #[test]
 fn user_shell_crash_recovery_never_invents_a_model_tool_call() {
     let dir = tempdir().unwrap();
-    let mut agent = shell_agent(dir.path(), Box::new(FailingBackend));
+    let mut agent = shell_agent(dir.path(), Box::new(failing()));
     agent
         .session_mut()
         .append_event(json!({
@@ -727,7 +663,7 @@ fn user_shell_crash_recovery_never_invents_a_model_tool_call() {
 #[test]
 fn unbound_worker_cannot_escape_through_user_shell_origin() {
     let dir = tempdir().unwrap();
-    let mut agent = shell_agent(dir.path(), Box::new(FailingBackend));
+    let mut agent = shell_agent(dir.path(), Box::new(failing()));
     agent.set_tools(
         ToolRegistry::with_all_builtins().unwrap(),
         ToolContext::new(dir.path())
@@ -749,7 +685,7 @@ fn unbound_worker_cannot_escape_through_user_shell_origin() {
 fn backend_failure_keeps_the_user_turn_and_returns_idle() {
     let dir = tempdir().unwrap();
     let store = SessionStore::open(dir.path().join("failed.jsonl")).unwrap();
-    let mut agent = Agent::new(store, Box::new(FailingBackend));
+    let mut agent = Agent::new(store, Box::new(failing()));
     assert!(matches!(
         agent.process(TurnInputRequest::new("keep")),
         Err(AgentError::Backend(_))
@@ -762,7 +698,7 @@ fn backend_failure_keeps_the_user_turn_and_returns_idle() {
 fn provider_transport_failure_is_unknown_and_vetoes_automation_not_turns() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("provider-unknown.jsonl");
-    let mut agent = Agent::new(SessionStore::open(&path).unwrap(), Box::new(FailingBackend));
+    let mut agent = Agent::new(SessionStore::open(&path).unwrap(), Box::new(failing()));
     assert!(matches!(
         agent.process(TurnInputRequest::new("may have reached provider")),
         Err(AgentError::Backend(BackendError::Transport(_)))
@@ -865,12 +801,11 @@ fn provider_tool_calls_execute_and_continue_until_final_text() {
     let mut registry = ToolRegistry::new();
     registry.register(ConstantTool).unwrap();
     let context = ToolContext::new(workspace.path()).unwrap();
-    let mut agent = Agent::new(
-        session,
-        Box::new(ToolLoopBackend {
-            calls: AtomicUsize::new(0),
-        }),
-    );
+    let backend = ScriptedBackend::new([
+        call("call-1", "constant", json!({})),
+        text("tool result incorporated"),
+    ]);
+    let mut agent = Agent::new(session, Box::new(backend.clone()));
     agent.set_tools(registry, context, SideEffectPolicy::read_only());
 
     let result = agent
@@ -892,13 +827,19 @@ fn provider_tool_calls_execute_and_continue_until_final_text() {
         event,
         zenpi::core::AgentEvent::ToolResult { success: true, .. }
     )));
+    let requests = backend.requests();
+    assert_eq!(requests[0].tools, ["constant"]);
+    assert_eq!(requests[1].tool_results, 1);
 }
 
 #[test]
 fn cancellation_is_checked_before_assistant_persistence() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("cancel.jsonl");
-    let mut agent = Agent::new(SessionStore::open(&path).unwrap(), Box::new(SlowBackend));
+    let mut agent = Agent::new(
+        SessionStore::open(&path).unwrap(),
+        Box::new(ScriptedBackend::new([text("must not persist")])),
+    );
     let error = agent
         .process_with_cancel(TurnInputRequest::new("cancel me"), || true)
         .expect_err("cancelled turn must not return an assistant");
