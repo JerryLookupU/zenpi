@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-309",
+  "claim_id": "ZE-309@blueprint-4.0.0",
+  "from": "worker",
+  "to": "master",
+  "summary": "TUI render cost: per-message rendered-row cache (a streaming delta re-renders only its message; rows are Arc-shared so reassembly copies pointers); the project checkpoint no longer carries the transcript and transcript/stream mutations no longer dirty it; checkpoint/layout writes wait for 1 s of input quiet; the unconditional 250 ms checkpoint-tick redraw and 20 ms pairing redraw are gone (pairing redraws on key or once per second for its countdown); the 500 ms session-browser refresh redraws only when its projection changed; lapsed footer/copy notices clear themselves. The event-loop wait still honours the ordinary paste-burst deadline (ordinary_paste_wait, already present).",
+  "changed_files": [
+    "src/tui.rs",
+    "tests/tui_idle_cost.rs",
+    "tests/tui_composer.rs",
+    "tests/tui_interaction.rs",
+    "tests/tui_project_workspace.rs",
+    "tests/tui_transcript_ux.rs",
+    "Docs/quality/ze/ZE-309.json"
+  ],
+  "diff_stat": "6 files changed, 524 insertions(+), 206 deletions(-) (excluding this handoff)",
+  "commands_run": [
+    "cargo fmt --all",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo clippy --locked --all-targets --all-features -- -D warnings",
+    "cargo test --locked --all-features --no-fail-fast --test tui_approval_focus --test tui_bentobox --test tui_busy_diff --test tui_command_palette --test tui_composer --test tui_directory_picker --test tui_goal_owner --test tui_idle_cost --test tui_interaction --test tui_logs --test tui_markdown --test tui_preview_graphemes --test tui_project_workspace --test tui_resize --test tui_task_tool_order --test tui_task --test tui_transcript_ux",
+    "cargo test --locked --all-features --lib tui",
+    "cargo test --locked --all-features --no-fail-fast",
+    "cargo test --locked --all-features --lib rejected_resume_commit_keeps_old_extension -- --test-threads=1",
+    "A/B tui_idle_cost and render_cost_tests against HEAD src/tui.rs"
+  ],
+  "validation_result": {
+    "fmt": "ok",
+    "clippy_default": "ok",
+    "clippy_all_features": "ok",
+    "tui_suites": "all 17 tui_* suites pass",
+    "lib_tui": "64 passed",
+    "full_suite": "all targets pass except 1 load flake (core::extension_resume_commit_tests::rejected_resume_commit_keeps_old_extension_live_until_successful_retry, CommandTimeout under load) which passes with --test-threads=1",
+    "streaming_frame_debug_build": "before: 11 msgs 2.8 ms vs 2001 msgs 42.5 ms (15x); after: 2.6 ms vs 4.9 ms; messages re-rendered per streaming frame: 1 regardless of length; cached frame flat (2.68 vs 2.64 ms)",
+    "checkpoint": "before: a 2001-message transcript was serialized into a 209 KB checkpoint (11 ms) and dirtied by every stream delta and key; after: 1 KB, stream deltas do not dirty it",
+    "typing_writes": "before: 6 checkpoint writes during 1.5 s of typing; after: 0, written once after 1 s of quiet",
+    "idle_frames_2s": "before: 12 (250 ms checkpoint tick + 500 ms session-browser refresh); after: 0",
+    "paste_burst": "ordinary_paste_burst_bounds_the_event_loop_wait: wait <= burst timeout + 1 ms and the burst flushes at that deadline"
+  },
+  "notes": "Deviations: (1) tests outside the owned path: new tests/tui_idle_cost.rs drives the production loop via TuiHarness (needs its own process for ZENPI_HOME); four existing tests encoded transcript-in-checkpoint and were updated (budget crowding now uses arch console messages). (2) The session-browser 500 ms refresh redrew unconditionally at 2 Hz; not named in the row but required by the quiet-idle validator. (3) Expiring footer/copy notices previously relied on the 250 ms tick; they now clear on expiry. Already existed: the event-loop timeout already included the paste-burst deadline (ordinary_paste_wait); only a validator was added. Kept: the arch console log stays in the checkpoint draft (no other durable owner, not dirtied by streaming); legacy 'messages' fields in old checkpoints are ignored and the session journal reloads the transcript. The loop still polls at the 100 ms poll interval to service runtime/mailbox sources (no draw, no write). Streaming-frame reassembly is O(min(rows, MAX_RENDER_LINES)) pointer copies, hence the residual 2.6 -> 4.9 ms in a debug build.",
+  "created_at": "2026-10-14T20:08:16Z",
+  "digest": "b3abcc398eb16a9df360e392987e4009396821b19624312afdcd684fe98f469a"
+}

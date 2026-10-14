@@ -10,6 +10,7 @@
 pub(crate) mod bootstrap;
 
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::io;
 use std::sync::{Arc, Mutex};
@@ -86,6 +87,14 @@ pub const RESOURCE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 /// refreshes far less often than the local host monitor (ZS1-158).
 pub const LAN_REFRESH_INTERVAL: Duration = Duration::from_secs(120);
 const MIN_LOOP_INTERVAL: Duration = Duration::from_millis(1);
+const FOOTER_NOTICE_TTL: Duration = Duration::from_secs(4);
+const COPY_NOTICE_TTL: Duration = Duration::from_secs(5);
+/// Durable writes wait until input has been quiet this long, so typing never
+/// writes the project checkpoint or layout file (ZE-309).
+const CHECKPOINT_QUIET: Duration = Duration::from_secs(1);
+const CHECKPOINT_INTERVAL: Duration = Duration::from_millis(250);
+/// The pairing screen shows a seconds countdown; it needs no faster redraw.
+const PAIRING_REDRAW: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MessageRole {
@@ -952,7 +961,9 @@ const MAX_CLIPBOARD_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone)]
 struct TranscriptRow {
-    line: Line<'static>,
+    /// Shared so reassembling the window after a delta copies pointers, not
+    /// spans (ZE-309).
+    line: Arc<Line<'static>>,
     position: Option<(u64, usize)>,
 }
 
@@ -2248,7 +2259,6 @@ impl LocalDiffScope {
                     draft.ux.message_offset = draft.ux.message_offset.saturating_add(1);
                 }
             }
-            state.project_checkpoint_dirty = true;
             state.dirty = true;
         }
     }
@@ -2606,12 +2616,16 @@ impl SessionBrowserHost {
                     .is_some_and(|request| request.key == key)
                 {
                     let request = self.active.take().expect("matched active request");
+                    // The 500 ms background refresh redraws only when the
+                    // projection changed, so an idle loop stays quiet (ZE-309).
+                    let mut refreshed = request.original.is_some() || projection.receipt.is_some();
                     // Check the complete key, including query and generation,
                     // and the live project/session before projecting any part.
                     if self.desired.as_ref() == Some(&key) && scope.as_ref() == Some(&key.scope) {
                         state.session_browser_refresh.last_checked = Some(Instant::now());
                         if let Ok(rows) = projection.rows {
                             let selected = state.selected_session_browser_path();
+                            let previous_cursor = state.session_browser_cursor;
                             state.session_browser_cursor = if request.original.is_some()
                                 && key.query.is_some()
                             {
@@ -2625,6 +2639,9 @@ impl SessionBrowserHost {
                                             .min(rows.len().saturating_sub(1))
                                     })
                             };
+                            refreshed |= state.session_browser_cursor != previous_cursor
+                                || state.session_browser != rows
+                                || state.session_browser_refresh.query != key.query;
                             state.session_browser = rows;
                             state.session_browser_refresh.query = key.query.clone();
                             if request.original.is_some() && key.query.is_some() {
@@ -2657,8 +2674,10 @@ impl SessionBrowserHost {
                                 }
                             }
                         }
-                        state.dirty = true;
-                        changed = true;
+                        if refreshed {
+                            state.dirty = true;
+                            changed = true;
+                        }
                     }
                 }
             }
@@ -2986,6 +3005,9 @@ pub struct TuiState {
     spinner_tick: usize,
     last_area: Rect,
     cached_transcript: Option<(u16, Vec<TranscriptRow>)>,
+    /// Rendered rows per transcript message (ZE-309); a streaming delta
+    /// re-renders only its own message when the window is reassembled.
+    message_rows: MessageRowCache,
     dirty: bool,
 }
 
@@ -3123,6 +3145,7 @@ impl TuiState {
             spinner_tick: 0,
             last_area: Rect::default(),
             cached_transcript: None,
+            message_rows: MessageRowCache::default(),
             dirty: true,
         }
     }
@@ -3158,7 +3181,7 @@ impl TuiState {
             .and_then(crate::persona::normalize)
             .unwrap_or("INTJ")
             .into();
-        self.cached_transcript = None;
+        self.invalidate_transcript();
         self.session_name = session.session_name().map(str::to_owned);
         self.current_session_path = Some(session.path().display().to_string());
         let snapshot = SessionPaneSnapshot::from_session(session);
@@ -3393,7 +3416,7 @@ impl TuiState {
         self.gantt_snapshot = draft.gantt_snapshot;
         self.gantt_status = draft.gantt_status.unwrap_or(GanttPaneStatus::Idle);
         self.preferred_column = None;
-        self.cached_transcript = None;
+        self.invalidate_transcript();
         self.palette_dismissed = false;
         self.project_metadata
             .entry(self.project_name.clone())
@@ -3948,7 +3971,7 @@ impl TuiState {
         self.project_drafts.remove(name);
         self.approval_views.remove(name);
         self.scheduled_inputs.retain(|entry| entry.project != name);
-        self.cached_transcript = None;
+        self.invalidate_transcript();
         self.dirty = true;
         self.project_checkpoint_dirty = true;
         true
@@ -4128,7 +4151,7 @@ impl TuiState {
         }
         self.project_workspace = Some(workspace);
         self.project_checkpoint_dirty = true;
-        self.cached_transcript = None;
+        self.invalidate_transcript();
         Ok(())
     }
 
@@ -4232,14 +4255,6 @@ impl TuiState {
             .project_tabs
             .iter()
             .map(|name| {
-                let messages = if name == self.active_project() {
-                    self.messages.clone()
-                } else {
-                    self.project_transcripts
-                        .get(name)
-                        .cloned()
-                        .unwrap_or_default()
-                };
                 let layout = if name == self.active_project() {
                     Some(self.workspace_layout.clone())
                 } else {
@@ -4285,7 +4300,6 @@ impl TuiState {
                     "name": name,
                     "metadata": self.project_metadata.get(name),
                     "layout": layout,
-                    "messages": messages,
                     "subtabs": subtabs,
                     "active_subtab": active_subtab,
                 })
@@ -4547,16 +4561,9 @@ impl TuiState {
                 {
                     self.project_layouts.insert(name.to_owned(), layout);
                 }
-                if let Some(messages) = state.get("messages")
-                    && let Ok(messages) =
-                        serde_json::from_value::<VecDeque<TuiMessage>>(messages.clone())
-                    && messages.len() <= self.max_messages
-                    && messages
-                        .iter()
-                        .all(|message| message.text.len() <= MAX_MESSAGE_BYTES)
-                {
-                    self.project_transcripts.insert(name.to_owned(), messages);
-                }
+                // The transcript is not part of the checkpoint (ZE-309): the
+                // session journal is its durable owner and reloads it. A
+                // legacy `messages` field is ignored.
                 if self.project_workspace.is_none()
                     && let Some(metadata) = state.get("metadata")
                     && let Ok(metadata) =
@@ -4610,7 +4617,7 @@ impl TuiState {
             );
             self.set_status("Paste metadata recovered; full draft retained");
         }
-        self.cached_transcript = None;
+        self.invalidate_transcript();
         self.dirty = true;
         true
     }
@@ -5325,7 +5332,7 @@ impl TuiState {
     pub fn set_tool_logs_folded(&mut self, folded: bool) {
         if self.fold_tool_logs != folded {
             self.fold_tool_logs = folded;
-            self.cached_transcript = None;
+            self.invalidate_transcript();
             self.scroll = 0;
             self.dirty = true;
         }
@@ -5379,17 +5386,20 @@ impl TuiState {
             ToolRunStatus::Failed => crate::view_model::ToolStatus::Failed,
             ToolRunStatus::Cancelled => crate::view_model::ToolStatus::Cancelled,
         };
+        let mut changed = false;
         for message in &mut self.messages {
             for block in &mut message.blocks {
                 if let crate::view_model::ViewBlock::ToolStatus { status, .. } = block
                     && *status == crate::view_model::ToolStatus::Running
                 {
                     *status = terminal;
-                    self.project_checkpoint_dirty = true;
-                    self.dirty = true;
-                    self.cached_transcript = None;
+                    changed = true;
                 }
             }
+        }
+        if changed {
+            self.dirty = true;
+            self.invalidate_transcript();
         }
         let running = self
             .messages
@@ -5427,8 +5437,7 @@ impl TuiState {
                 && message.text != text
             {
                 message.text = bound_text(text);
-                self.cached_transcript = None;
-                self.project_checkpoint_dirty = true;
+                self.invalidate_message_rows(index);
                 self.dirty = true;
             }
             return;
@@ -5438,6 +5447,23 @@ impl TuiState {
 
     pub fn invalidate(&mut self) {
         self.dirty = true;
+    }
+
+    /// Drop every rendered transcript row; used when the message set, ids,
+    /// folding, or presentation may have changed wholesale.
+    fn invalidate_transcript(&mut self) {
+        self.cached_transcript = None;
+        self.message_rows.rows.clear();
+    }
+
+    /// Re-render only the message at `index` on the next frame (ZE-309).
+    fn invalidate_message_rows(&mut self, index: usize) {
+        self.cached_transcript = None;
+        let id = self
+            .transcript_ux
+            .message_offset
+            .saturating_add(index as u64);
+        self.message_rows.rows.remove(&id);
     }
 
     pub fn take_dirty(&mut self) -> bool {
@@ -5475,8 +5501,30 @@ impl TuiState {
     fn live_footer_notice(&self) -> Option<&str> {
         self.footer_notice
             .as_ref()
-            .filter(|(_, at)| at.elapsed() < Duration::from_secs(4))
+            .filter(|(_, at)| at.elapsed() < FOOTER_NOTICE_TTL)
             .map(|(text, _)| text.as_str())
+    }
+
+    /// Drop lapsed time-limited notices and mark the frame dirty, so their
+    /// removal is drawn without a periodic redraw (ZE-309).
+    fn expire_notices(&mut self) {
+        if self
+            .footer_notice
+            .as_ref()
+            .is_some_and(|(_, at)| at.elapsed() >= FOOTER_NOTICE_TTL)
+        {
+            self.footer_notice = None;
+            self.dirty = true;
+        }
+        if self
+            .transcript_ux
+            .copy_notice
+            .as_ref()
+            .is_some_and(|(_, at)| at.elapsed() >= COPY_NOTICE_TTL)
+        {
+            self.transcript_ux.copy_notice = None;
+            self.dirty = true;
+        }
     }
 
     pub fn set_busy(&mut self, busy: bool) {
@@ -5542,7 +5590,7 @@ impl TuiState {
             self.streaming_job_id = None;
             self.streaming_message_started = false;
             self.streaming_block = None;
-            self.cached_transcript = None;
+            self.invalidate_transcript();
             self.scroll = 0;
             self.project_checkpoint_dirty = true;
             self.dirty = true;
@@ -5562,7 +5610,6 @@ impl TuiState {
             self.messages.pop_front();
             self.transcript_ux.message_offset = self.transcript_ux.message_offset.saturating_add(1);
         }
-        self.project_checkpoint_dirty = true;
         self.dirty = true;
     }
 
@@ -5582,7 +5629,6 @@ impl TuiState {
             self.messages.pop_front();
             self.transcript_ux.message_offset = self.transcript_ux.message_offset.saturating_add(1);
         }
-        self.project_checkpoint_dirty = true;
         self.dirty = true;
     }
 
@@ -6374,8 +6420,7 @@ impl TuiState {
         {
             last.text.push_str(chunk);
             self.streaming_role = Some(role);
-            self.cached_transcript = None;
-            self.project_checkpoint_dirty = true;
+            self.invalidate_message_rows(self.messages.len() - 1);
             self.dirty = true;
             return;
         }
@@ -6429,10 +6474,9 @@ impl TuiState {
             self.streaming_message_started = true;
             return;
         }
-        if let Some(message) = self.messages.iter_mut().rev().find(|m| m.role == role) {
-            message.text.push_str(chunk.as_ref());
-            self.cached_transcript = None;
-            self.project_checkpoint_dirty = true;
+        if let Some(index) = self.messages.iter().rposition(|m| m.role == role) {
+            self.messages[index].text.push_str(chunk.as_ref());
+            self.invalidate_message_rows(index);
             self.dirty = true;
             self.streaming_role = Some(role);
         } else {
@@ -6468,8 +6512,7 @@ impl TuiState {
         {
             if message.text != content {
                 message.text = content;
-                self.cached_transcript = None;
-                self.project_checkpoint_dirty = true;
+                self.invalidate_message_rows(index);
                 self.dirty = true;
             }
             self.streaming_role = None;
@@ -6598,15 +6641,15 @@ impl TuiState {
                     return;
                 };
                 let key = format!("job-{job_id}:{block_id}");
-                if let Some(message) = self
+                if let Some(index) = self
                     .messages
-                    .iter_mut()
-                    .find(|message| message.block_id.as_ref() == Some(&key))
+                    .iter()
+                    .position(|message| message.block_id.as_ref() == Some(&key))
                 {
+                    let message = &mut self.messages[index];
                     message.text = bound_text(output.clone());
                     message.blocks = vec![block.clone()];
-                    self.cached_transcript = None;
-                    self.project_checkpoint_dirty = true;
+                    self.invalidate_message_rows(index);
                     self.dirty = true;
                 } else {
                     self.push_message_block(MessageRole::Tool, output.clone(), block.clone());
@@ -6639,6 +6682,7 @@ impl TuiState {
                     return;
                 }
                 let prefix = format!("job-{job_id}:");
+                let mut changed = false;
                 for message in &mut self.messages {
                     if message
                         .block_id
@@ -6654,12 +6698,14 @@ impl TuiState {
                                 && id == call_id
                             {
                                 *state = *status;
-                                self.project_checkpoint_dirty = true;
-                                self.cached_transcript = None;
-                                self.dirty = true;
+                                changed = true;
                             }
                         }
                     }
+                }
+                if changed {
+                    self.invalidate_transcript();
+                    self.dirty = true;
                 }
                 let status = match status {
                     crate::view_model::ToolStatus::Succeeded => ToolRunStatus::Succeeded,
@@ -6740,26 +6786,25 @@ impl TuiState {
             return;
         }
         if self.transcript_ux.reasoning_job == Some(job) {
-            if let Some(message) = self
+            if let Some(index) = self
                 .messages
-                .iter_mut()
-                .rev()
-                .find(|m| m.role == MessageRole::Reasoning)
+                .iter()
+                .rposition(|m| m.role == MessageRole::Reasoning)
             {
+                let message = &mut self.messages[index];
                 let remaining = MAX_MESSAGE_BYTES.saturating_sub(message.text.len());
                 message.text.push_str(truncate_bytes(delta, remaining));
+                self.invalidate_message_rows(index);
             }
         } else {
             self.push_message(MessageRole::Reasoning, delta.to_owned());
             self.transcript_ux.reasoning_job = Some(job);
         }
-        self.cached_transcript = None;
-        self.project_checkpoint_dirty = true;
         self.dirty = true;
     }
     pub fn toggle_reasoning(&mut self) -> bool {
         self.transcript_ux.reasoning_folded = !self.transcript_ux.reasoning_folded;
-        self.cached_transcript = None;
+        self.invalidate_transcript();
         self.project_checkpoint_dirty = true;
         self.dirty = true;
         self.transcript_ux.reasoning_folded
@@ -8125,7 +8170,7 @@ impl TuiState {
                 .row_weights
                 .insert(bottom, total - split);
             self.layout_dirty = true;
-            self.cached_transcript = None;
+            self.invalidate_transcript();
         } else if let Some((left, right, origin, initial)) = self.dragging_split
             && matches!(mouse.kind, MouseEventKind::Drag(MouseButton::Left))
             && self.workspace_area.width > 0
@@ -8140,7 +8185,7 @@ impl TuiState {
             ratios.set(right, total - value);
             self.workspace_layout.set_ratios(ratios);
             self.layout_dirty = true;
-            self.cached_transcript = None;
+            self.invalidate_transcript();
         }
         if let Some(pane) = panes.iter().find(|pane| pane.rect.contains(position))
             && matches!(
@@ -9645,7 +9690,7 @@ impl TuiState {
         let area = frame.area();
         if area != self.last_area {
             self.last_area = area;
-            self.cached_transcript = None;
+            self.invalidate_transcript();
             self.input_scroll = 0;
         }
         let prompt_width = usize::from(area.width.saturating_sub(2)).max(1);
@@ -9719,7 +9764,7 @@ impl TuiState {
                     self.transcript_ux
                         .copy_notice
                         .as_ref()
-                        .filter(|(_, t)| t.elapsed() < Duration::from_secs(5))
+                        .filter(|(_, t)| t.elapsed() < COPY_NOTICE_TTL)
                         .map(|(text, _)| format!(" | {text}"))
                         .unwrap_or_default(),
                     Style::default().fg(Color::Cyan),
@@ -9835,12 +9880,17 @@ impl TuiState {
             .as_ref()
             .is_none_or(|(cached_width, _)| *cached_width != inner.width)
         {
+            let mut cache = std::mem::take(&mut self.message_rows);
             let messages = self.transcript_messages();
             let lines = transcript_window(
-                messages.iter().map(|(id, message)| (*id, message)),
+                messages.iter().map(|(id, message)| {
+                    (*id, message.as_ref(), matches!(message, Cow::Borrowed(_)))
+                }),
                 width,
                 &self.persona,
+                &mut cache,
             );
+            self.message_rows = cache;
             self.cached_transcript = Some((inner.width, lines));
         }
         let lines = self
@@ -9870,10 +9920,9 @@ impl TuiState {
             max_scroll.saturating_sub(self.scroll.min(max_scroll))
         };
         let scroll = max_scroll.saturating_sub(start);
-        if self.scroll != scroll {
-            self.scroll = scroll;
-            self.project_checkpoint_dirty = true;
-        }
+        // A render-time clamp follows streamed rows; it is not a user edit
+        // and must not schedule a checkpoint write (ZE-309).
+        self.scroll = scroll;
         self.transcript_ux.last_start = start;
         self.transcript_ux.visible_rows = visible;
         if self.scroll == 0 {
@@ -9887,7 +9936,7 @@ impl TuiState {
         let displayed = if start < end {
             lines[start..end]
                 .iter()
-                .map(|row| row.line.clone())
+                .map(|row| Line::clone(&row.line))
                 .collect()
         } else {
             Vec::new()
@@ -9909,7 +9958,7 @@ impl TuiState {
     /// Build the render-only message view.  Folding never mutates the
     /// canonical bounded queue, which means expanding the logs restores the
     /// exact lifecycle entries and ordinary transcript ordering.
-    fn transcript_messages(&self) -> VecDeque<(u64, TuiMessage)> {
+    fn transcript_messages(&self) -> VecDeque<(u64, Cow<'_, TuiMessage>)> {
         let mut visible = VecDeque::new();
         let mut folded = 0usize;
         for (index, message) in self.messages.iter().enumerate() {
@@ -9920,15 +9969,15 @@ impl TuiState {
             if message.role == MessageRole::Reasoning && self.transcript_ux.reasoning_folded {
                 visible.push_back((
                     id,
-                    TuiMessage::new(
+                    Cow::Owned(TuiMessage::new(
                         MessageRole::Reasoning,
                         format!("{} bytes · collapsed · Alt-R expand", message.text.len()),
-                    ),
+                    )),
                 ));
             } else if message.role == MessageRole::Tool && self.fold_tool_logs {
                 folded = folded.saturating_add(1);
             } else {
-                visible.push_back((id, message.clone()));
+                visible.push_back((id, Cow::Borrowed(message)));
             }
         }
         if folded > 0 {
@@ -9937,10 +9986,10 @@ impl TuiState {
                 self.transcript_ux
                     .message_offset
                     .saturating_add(self.messages.len() as u64),
-                TuiMessage::new(
+                Cow::Owned(TuiMessage::new(
                     MessageRole::System,
                     format!("{folded} tool log{suffix} folded; press Ctrl-O to expand"),
-                ),
+                )),
             ));
         }
         visible
@@ -10340,7 +10389,7 @@ impl TuiState {
         }
         if area != self.last_area {
             self.last_area = area;
-            self.cached_transcript = None;
+            self.invalidate_transcript();
             self.input_scroll = 0;
         }
         let prompt_width = usize::from(area.width.saturating_sub(2)).max(1);
@@ -13134,7 +13183,7 @@ pub fn dispatch_slash_command(
                     return SlashDispatchAction::Continue;
                 }
                 state.persona = agent.persona().into();
-                state.cached_transcript = None;
+                state.invalidate_transcript();
                 state.set_status(format!("Persona {}", state.persona));
             } else {
                 state.push_message(MessageRole::Error, "persona requires an idle owner");
@@ -14556,7 +14605,7 @@ impl ProjectRuntimeHost {
             self.restore_subtab_view(state, id)?;
         }
         state.project_checkpoint_dirty = true;
-        state.cached_transcript = None;
+        state.invalidate_transcript();
         Ok(())
     }
     fn restore_subtab_view(&self, state: &mut TuiState, project: &str) -> Result<(), String> {
@@ -15165,7 +15214,7 @@ impl ProjectRuntimeHost {
             );
             state.project_workspace = Some(workspace);
             state.project_checkpoint_dirty = true;
-            state.cached_transcript = None;
+            state.invalidate_transcript();
             state.ensure_conversation_hot_zone();
             if let Ok(agent) = self.pool.active().try_lock() {
                 let changed = state
@@ -15315,7 +15364,7 @@ impl ProjectRuntimeHost {
         }
         state.project_workspace = Some(workspace);
         state.project_checkpoint_dirty = true;
-        state.cached_transcript = None;
+        state.invalidate_transcript();
         state.set_status(project_status);
         // A running existing owner needs no lock to switch its saved view.
         if let Ok(agent) = self.active(state).try_lock() {
@@ -15614,7 +15663,7 @@ fn finish_turn_reasoning(state: &mut TuiState, job: u64, turn: &crate::core::Tur
             .find(|m| m.role == MessageRole::Reasoning)
         {
             message.text = bound_text(text);
-            state.cached_transcript = None;
+            state.invalidate_transcript();
             state.dirty = true;
         }
     } else {
@@ -18303,7 +18352,9 @@ fn run_tui_loop(
     if let Ok(agent) = shared.try_lock() {
         input_controls.remember_owner(state.active_project(), &agent);
     }
-    let mut last_checkpoint = Instant::now() - Duration::from_millis(250);
+    let mut last_checkpoint = Instant::now() - CHECKPOINT_INTERVAL;
+    let mut last_input = Instant::now() - CHECKPOINT_QUIET;
+    let mut pairing_drawn: Option<Instant> = None;
     let mut submitted_inputs: HashMap<crate::runtime::JobId, SubmittedInput> = HashMap::new();
     let mut stream_buffers: HashMap<crate::runtime::JobId, Arc<Mutex<TuiProviderEventBuffer>>> =
         HashMap::new();
@@ -18682,17 +18733,21 @@ fn run_tui_loop(
                 }
             }
             if pairing_visible {
-                let _qr_colors = crate::host_pair::QrColorGuard::enter();
                 let host = remote_host.as_mut().expect("pairing host");
-                let mut render_result = Ok(());
-                terminal.draw(|frame| {
-                    render_result = host.render(frame);
-                })?;
-                render_result?;
+                if pairing_drawn.is_none_or(|at| at.elapsed() >= PAIRING_REDRAW) {
+                    let _qr_colors = crate::host_pair::QrColorGuard::enter();
+                    let mut render_result = Ok(());
+                    terminal.draw(|frame| {
+                        render_result = host.render(frame);
+                    })?;
+                    render_result?;
+                    pairing_drawn = Some(Instant::now());
+                }
                 if events.poll(Duration::from_millis(20))?
                     && let Event::Key(key) = events.read()?
                     && key.kind == KeyEventKind::Press
                 {
+                    pairing_drawn = None;
                     match key.code {
                         KeyCode::Esc => {
                             host.cancel_invite()?;
@@ -19381,7 +19436,9 @@ fn run_tui_loop(
                 state.select_project_tab(index);
                 shared = project_host.active(&state);
             }
-            if last_checkpoint.elapsed() >= Duration::from_millis(250) {
+            if last_checkpoint.elapsed() >= CHECKPOINT_INTERVAL
+                && last_input.elapsed() >= CHECKPOINT_QUIET
+            {
                 if state.layout_dirty() && !layout_persistence.disabled {
                     match layout_persistence.save(&state) {
                         Ok(()) => {
@@ -19406,7 +19463,6 @@ fn run_tui_loop(
                     let result = layout_persistence.save_project_checkpoint(&state);
                     state.checkpoint_result(result);
                 }
-                scheduler.request();
                 last_checkpoint = Instant::now();
             }
             if editor
@@ -19422,6 +19478,7 @@ fn run_tui_loop(
             }
             let now = Instant::now();
             state.flush_ordinary_paste(now);
+            state.expire_notices();
             if (state.is_busy() || state.master_busy() || state.resources_zoom_has_busy())
                 && now.saturating_duration_since(last_tick) >= poll_interval
             {
@@ -19467,6 +19524,7 @@ fn run_tui_loop(
                 state.pump_shell();
                 continue;
             }
+            last_input = Instant::now();
             let mut processed = 0usize;
             loop {
                 let event = events
@@ -19527,6 +19585,7 @@ fn run_tui_loop(
                             match host.refresh(Duration::from_secs(options.duration_seconds)) {
                                 Ok(()) => {
                                     pairing_visible = true;
+                                    pairing_drawn = None;
                                 }
                                 Err(error) => {
                                     state.set_status(format!("Pairing unavailable: {error}"))
@@ -21708,91 +21767,138 @@ fn transcript_lines(
         messages
             .iter()
             .enumerate()
-            .map(|(id, message)| (id as u64, message)),
+            .map(|(id, message)| (id as u64, message, false)),
         width,
         persona,
+        &mut MessageRowCache::default(),
     )
     .into_iter()
-    .map(|row| row.line)
+    .map(|row| Arc::unwrap_or_clone(row.line))
     .collect()
+}
+
+/// Rendered rows of transcript messages at one width and persona (ZE-309).
+/// Entries are keyed by stable message id; mutation sites drop the entry of
+/// the message they change, so a streaming delta re-renders one message.
+#[derive(Debug, Clone, Default)]
+struct MessageRowCache {
+    width: usize,
+    persona: String,
+    rows: HashMap<u64, Vec<TranscriptRow>>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static MESSAGE_RENDERS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Render every visual row of one message, tagged with its source position.
+fn message_rows(id: u64, message: &TuiMessage, width: usize, persona: &str) -> Vec<TranscriptRow> {
+    #[cfg(test)]
+    MESSAGE_RENDERS.with(|count| count.set(count.get() + 1));
+    let prefix = if message.role == MessageRole::Reasoning {
+        "◇ Reasoning: "
+    } else {
+        "● "
+    };
+    let style = if message.role == MessageRole::Assistant {
+        Style::default().fg(crate::persona::color(persona))
+    } else {
+        message.role.style()
+    };
+    // Provider prose gets the small Markdown renderer; user prompts,
+    // tool output, and errors stay literal so metadata or diff markers do
+    // not acquire surprising presentation semantics.
+    // Live output text is already the complete literal projection of its
+    // canonical block; retain that block for inspection without printing
+    // the same snapshot twice in the conversation pane.
+    let block_text = if message.blocks.is_empty() || message.block_id.is_some() {
+        None
+    } else {
+        Some(
+            message
+                .blocks
+                .iter()
+                .map(view_block_text)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+    };
+    let display_text = block_text
+        .as_deref()
+        .map(|blocks| format!("{}\n{}", message.text, blocks))
+        .unwrap_or_else(|| message.text.clone());
+    let rendered = match message.role {
+        MessageRole::Assistant | MessageRole::System => {
+            crate::render::render_markdown_tail_prefixed_with_metadata(
+                prefix,
+                &display_text,
+                width,
+                style,
+            )
+        }
+        MessageRole::User | MessageRole::Tool | MessageRole::Error | MessageRole::Reasoning => {
+            crate::render::render_plain_tail_prefixed_with_metadata(
+                prefix,
+                &display_text,
+                width,
+                style,
+            )
+        }
+    };
+    let omitted_visual_lines = rendered.omitted_visual_lines;
+    rendered
+        .lines
+        .into_iter()
+        .enumerate()
+        .map(|(line_index, line)| TranscriptRow {
+            line: Arc::new(line),
+            // Keep the identity in the message's full visual layout as
+            // its retained tail advances during streaming at this width.
+            position: Some((id, omitted_visual_lines + line_index)),
+        })
+        .collect()
 }
 
 /// Build a recent display window without rendering the entire oldest prefix.
 /// Source positions identify rows even when the retained window moves forward.
+/// Messages flagged cacheable reuse `cache` rows; the cache keeps only the
+/// messages that this window visited, so it stays bounded by the window.
 fn transcript_window<'a>(
-    messages: impl DoubleEndedIterator<Item = (u64, &'a TuiMessage)>,
+    messages: impl DoubleEndedIterator<Item = (u64, &'a TuiMessage, bool)>,
     width: usize,
     persona: &str,
+    cache: &mut MessageRowCache,
 ) -> Vec<TranscriptRow> {
     let width = width.max(1);
+    if cache.width != width || cache.persona != persona {
+        cache.rows.clear();
+        cache.width = width;
+        cache.persona = persona.to_owned();
+    }
+    let mut previous = std::mem::take(&mut cache.rows);
     let max_lines = MAX_RENDER_LINES
         .min(crate::render::MAX_MARKDOWN_CELLS / width)
         .max(1);
     let mut result = VecDeque::new();
     let mut messages = messages.rev().peekable();
     let mut omitted = false;
-    while let Some((id, message)) = messages.next() {
-        let prefix = if message.role == MessageRole::Reasoning {
-            "◇ Reasoning: "
-        } else {
-            "● "
-        };
-        let style = if message.role == MessageRole::Assistant {
-            Style::default().fg(crate::persona::color(persona))
-        } else {
-            message.role.style()
-        };
-        // Provider prose gets the small Markdown renderer; user prompts,
-        // tool output, and errors stay literal so metadata or diff markers do
-        // not acquire surprising presentation semantics.
-        // Live output text is already the complete literal projection of its
-        // canonical block; retain that block for inspection without printing
-        // the same snapshot twice in the conversation pane.
-        let block_text = if message.blocks.is_empty() || message.block_id.is_some() {
-            None
-        } else {
-            Some(
-                message
-                    .blocks
-                    .iter()
-                    .map(view_block_text)
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            )
-        };
-        let display_text = block_text
-            .as_deref()
-            .map(|blocks| format!("{}\n{}", message.text, blocks))
-            .unwrap_or_else(|| message.text.clone());
-        let rendered = match message.role {
-            MessageRole::Assistant | MessageRole::System => {
-                crate::render::render_markdown_tail_prefixed_with_metadata(
-                    prefix,
-                    &display_text,
-                    width,
-                    style,
-                )
-            }
-            MessageRole::User | MessageRole::Tool | MessageRole::Error | MessageRole::Reasoning => {
-                crate::render::render_plain_tail_prefixed_with_metadata(
-                    prefix,
-                    &display_text,
-                    width,
-                    style,
-                )
-            }
-        };
+    while let Some((id, message, cacheable)) = messages.next() {
+        let rows = previous
+            .remove(&id)
+            .filter(|_| cacheable)
+            .unwrap_or_else(|| message_rows(id, message, width, persona));
         let remaining = max_lines.saturating_sub(result.len());
-        let skipped = rendered.lines.len().saturating_sub(remaining);
-        let omitted_visual_lines = rendered.omitted_visual_lines;
-        omitted |= omitted_visual_lines > 0;
-        for (line_index, line) in rendered.lines.into_iter().enumerate().rev().take(remaining) {
-            result.push_front(TranscriptRow {
-                line,
-                // Keep the identity in the message's full visual layout as
-                // its retained tail advances during streaming at this width.
-                position: Some((id, omitted_visual_lines + line_index)),
-            });
+        let skipped = rows.len().saturating_sub(remaining);
+        omitted |= rows
+            .first()
+            .and_then(|row| row.position)
+            .is_some_and(|(_, first)| first > 0);
+        for row in rows.iter().rev().take(remaining) {
+            result.push_front(row.clone());
+        }
+        if cacheable {
+            cache.rows.insert(id, rows);
         }
         if result.len() == max_lines {
             omitted |= skipped > 0 || messages.peek().is_some();
@@ -21802,10 +21908,10 @@ fn transcript_window<'a>(
     if omitted {
         result.pop_front();
         result.push_front(TranscriptRow {
-            line: Line::from(Span::styled(
+            line: Arc::new(Line::from(Span::styled(
                 truncate_to_width("[Earlier rows omitted from this view]", width),
                 Style::default().fg(Color::DarkGray),
-            )),
+            ))),
             position: None,
         });
     }
@@ -22783,11 +22889,10 @@ mod tests {
                 .unwrap()
                 .push_agent(progress(OutputStream::Stdout, text));
             drain_tui_provider_events(&mut state, 71, &events);
-            assert!(
-                state.project_checkpoint_dirty(),
-                "tool snapshot must persist without keys"
-            );
-            assert!(state.project_checkpoint().to_string().contains(text));
+            // ZE-309: snapshots update the view, never the checkpoint.
+            assert!(state.messages().any(|m| m.text.contains(text)));
+            assert!(!state.project_checkpoint_dirty());
+            assert!(!state.project_checkpoint().to_string().contains(text));
         }
         events
             .lock()
@@ -23841,5 +23946,119 @@ mod local_diff_host_tests {
         settle(&mut host, &mut state);
         assert_eq!(state.input(), "new draft");
         assert_eq!(state.messages().last().unwrap().role, MessageRole::Error);
+    }
+}
+
+#[cfg(test)]
+mod render_cost_tests {
+    //! ZE-309 render-cost validators.
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    fn transcript(pairs: usize) -> TuiState {
+        let mut state = TuiState::new(DEFAULT_MAX_MESSAGES);
+        for index in 0..pairs {
+            state.push_message(MessageRole::User, format!("question {index}"));
+            state.push_message(
+                MessageRole::Assistant,
+                format!("answer {index}\n\n- **item** `code`\n- second line of prose"),
+            );
+        }
+        state.begin_stream_for_job(1);
+        state.append_stream_for_job(1, MessageRole::Assistant, "streaming");
+        state
+    }
+
+    fn renders() -> usize {
+        MESSAGE_RENDERS.with(std::cell::Cell::get)
+    }
+
+    /// Best-of-N frame time after a streaming delta, plus the most messages
+    /// any one of those frames rendered.
+    fn streaming_frame_cost(state: &mut TuiState) -> (Duration, usize) {
+        let mut terminal = Terminal::new(TestBackend::new(140, 40)).unwrap();
+        terminal
+            .draw(|f| state.render_bentobox(f, "zenpi"))
+            .unwrap();
+        let mut most = 0;
+        let best = (0..20)
+            .map(|_| {
+                state.append_stream_for_job(1, MessageRole::Assistant, " delta");
+                let before = renders();
+                let start = Instant::now();
+                terminal
+                    .draw(|f| state.render_bentobox(f, "zenpi"))
+                    .unwrap();
+                let elapsed = start.elapsed();
+                most = most.max(renders() - before);
+                elapsed
+            })
+            .min()
+            .unwrap();
+        (best, most)
+    }
+
+    #[test]
+    fn streaming_frame_cost_stays_flat_as_the_transcript_grows() {
+        let mut short = transcript(5);
+        let mut long = transcript(1_000);
+        let (short_cost, short_renders) = streaming_frame_cost(&mut short);
+        let (long_cost, long_renders) = streaming_frame_cost(&mut long);
+        eprintln!(
+            "ZE-309 streaming frame: 11 messages {short_cost:?}, 2001 messages {long_cost:?}"
+        );
+        // Only the streaming message is re-rendered, whatever the length.
+        assert_eq!((short_renders, long_renders), (1, 1));
+        // Reassembly copies row pointers only; before ZE-309 this was ~15x.
+        assert!(
+            long_cost < short_cost * 4,
+            "frame cost scaled: {short_cost:?} -> {long_cost:?}"
+        );
+        // The cached rows still match a cold render of the same transcript.
+        let mut terminal = Terminal::new(TestBackend::new(140, 40)).unwrap();
+        terminal.draw(|f| long.render_bentobox(f, "zenpi")).unwrap();
+        let warm = terminal.backend().buffer().clone();
+        long.invalidate_transcript();
+        terminal.draw(|f| long.render_bentobox(f, "zenpi")).unwrap();
+        assert_eq!(&warm, terminal.backend().buffer());
+    }
+
+    #[test]
+    fn transcript_is_not_checkpointed_and_streaming_never_dirties_it() {
+        let mut state = transcript(3);
+        state.clear_project_checkpoint_dirty();
+        state.append_stream_for_job(1, MessageRole::Assistant, " more");
+        state.append_reasoning_for_job(1, "thinking");
+        state.push_message(MessageRole::Tool, "tool log");
+        state.finish_stream_for_job(1, MessageRole::Assistant, "final answer");
+        assert!(!state.project_checkpoint_dirty());
+        let checkpoint = state.project_checkpoint().to_string();
+        assert!(!checkpoint.contains("question 0"), "{checkpoint}");
+        assert!(!checkpoint.contains("final answer"), "{checkpoint}");
+    }
+
+    #[test]
+    fn ordinary_paste_burst_bounds_the_event_loop_wait() {
+        let mut state = TuiState::default();
+        let start = Instant::now();
+        for (offset, ch) in "abc".chars().enumerate() {
+            state.handle_event_at(
+                Event::Key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE)),
+                start + Duration::from_millis(offset as u64),
+            );
+        }
+        let last = start + Duration::from_millis(2);
+        assert_eq!(state.input(), "", "burst is still buffered");
+        // An idle loop would block for the full poll interval; the burst
+        // deadline shortens it so the paste flushes within its timeout.
+        let wait = state.ordinary_paste_wait(last, Duration::from_secs(60));
+        assert!(wait <= state.ordinary_paste_timeout() + Duration::from_millis(1));
+        assert!(state.flush_ordinary_paste(last + wait));
+        assert_eq!(state.input(), "abc");
+        assert_eq!(
+            state.ordinary_paste_wait(last + wait, Duration::from_secs(60)),
+            Duration::from_secs(60),
+            "no deadline once flushed"
+        );
     }
 }

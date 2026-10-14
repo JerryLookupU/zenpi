@@ -273,6 +273,8 @@ fn reasoning_preference_survives_project_switch_and_checkpoint() {
     let saved = state.project_checkpoint();
     let mut restored = TuiState::default();
     assert!(restored.restore_project_checkpoint(&saved));
+    // The transcript itself reloads from the session journal (ZE-309).
+    restored.push_message(MessageRole::Reasoning, "first reasoning");
     assert!(render(&mut restored, 140, 40).contains("first reasoning"));
 }
 #[test]
