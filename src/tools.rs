@@ -2975,15 +2975,12 @@ impl RunCommandTool {
             })?;
         make_pipe_nonblocking(&stdout)?;
         make_pipe_nonblocking(&stderr)?;
-        let stop = Arc::new(AtomicBool::new(false));
-        let stdout_stop = Arc::clone(&stop);
-        let stderr_stop = Arc::clone(&stop);
-        let stdout_thread = std::thread::spawn(move || {
-            read_limited_stream(stdout, output_cap, &stdout_stop, stdout_capture)
-        });
-        let stderr_thread = std::thread::spawn(move || {
-            read_limited_stream(stderr, output_cap, &stderr_stop, stderr_capture)
-        });
+        // One thread pumps both pipes and watches the child: it sleeps in
+        // poll(2) until output, the deadline or the next cancellation check.
+        let mut pumps = [
+            StreamPump::new(stdout.into(), output_cap, stdout_capture),
+            StreamPump::new(stderr.into(), output_cap, stderr_capture),
+        ];
         let deadline = timeout_ms.map(|ms| Instant::now() + Duration::from_millis(ms));
         let mut was_cancelled = false;
         let mut timed_out = false;
@@ -2997,24 +2994,36 @@ impl RunCommandTool {
                 Ok(None) => {}
                 Err(error) => break Err(ToolError::Io(error)),
             }
-            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            let now = Instant::now();
+            if deadline.is_some_and(|deadline| now >= deadline) {
                 timed_out = true;
                 break Ok(None);
             }
-            std::thread::sleep(Duration::from_millis(5));
+            let mut wait = deadline.map_or(CANCEL_POLL, |deadline| {
+                deadline.saturating_duration_since(now).min(CANCEL_POLL)
+            });
+            if pumps.iter().all(StreamPump::done) {
+                // Both pipes closed: the child is exiting, so reap it promptly.
+                wait = wait.min(EXIT_POLL);
+            }
+            pump_streams(&mut pumps, wait);
         };
         // A command's descendants do not outlive its operation, even if the
         // shell exits successfully or closes its own stdout before they do.
         child.cleanup();
-        stop.store(true, Ordering::SeqCst);
-        let stdout = stdout_thread
-            .join()
-            .map_err(|_| ToolError::CommandFailed("stdout reader panicked".into()))?;
-        let stderr = stderr_thread
-            .join()
-            .map_err(|_| ToolError::CommandFailed("stderr reader panicked".into()))?;
-        let mut stdout = stdout?;
-        let mut stderr = stderr?;
+        // Drain what the killed group left behind; a pipe still held open by
+        // an escaped descendant ends the drain as truncated.
+        let drain_until = Instant::now() + DRAIN_GRACE;
+        while !pumps.iter().all(StreamPump::done) {
+            let left = drain_until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            pump_streams(&mut pumps, left);
+        }
+        let [stdout, stderr] = pumps;
+        let mut stdout = stdout.finish();
+        let mut stderr = stderr.finish();
         let command_complete = !was_cancelled && !timed_out && status.is_ok();
         if let Some(capture) = capture {
             for stream in [&mut stdout, &mut stderr] {
@@ -3500,17 +3509,13 @@ fn terminate_process_tree(child: &mut std::process::Child) {
     #[cfg(unix)]
     {
         if let Ok(pid) = i32::try_from(child.id()) {
-            // Negative PID addresses the process group created above.
-            // SAFETY: `pid` is the live child ID returned by `std::process`;
-            // the child was placed in its own process group before spawning.
-            // `kill` borrows no Rust memory and errors are intentionally
-            // tolerated because the process may have exited concurrently.
-            unsafe {
-                libc::kill(-pid, libc::SIGTERM);
-            }
-            std::thread::sleep(Duration::from_millis(50));
-            // The leader may have died while a descendant ignored SIGTERM.
-            // SAFETY: same process-group invariant as the SIGTERM call.
+            // Negative PID addresses the process group created above. Like
+            // pi's process-tree kill: SIGKILL with no grace sleep.
+            // SAFETY: `pid` is the child ID returned by `std::process`; the
+            // child leads its own process group, and a group ID is not reused
+            // while any member lives, so this is sound even after the leader
+            // was reaped. `kill` borrows no Rust memory and errors are
+            // tolerated because the group may already be gone.
             unsafe {
                 libc::kill(-pid, libc::SIGKILL);
             }
@@ -3684,63 +3689,144 @@ struct LimitedStream {
     artifact: Option<crate::tool_output::ArtifactWriter>,
 }
 
-fn read_limited_stream<R: Read>(
-    mut reader: R,
+/// Longest sleep between cancellation checks while a child runs.
+pub(crate) const CANCEL_POLL: Duration = Duration::from_millis(100);
+/// Reap interval once both pipes closed and the child is exiting.
+const EXIT_POLL: Duration = Duration::from_millis(5);
+/// Bound on draining pipes after the process group was killed.
+const DRAIN_GRACE: Duration = Duration::from_millis(100);
+
+/// Block until any of `read` is readable or closed, any of `write` is
+/// writable, or `timeout` elapses. With no descriptors this is a plain sleep.
+#[cfg(unix)]
+pub(crate) fn wait_ready(
+    read: &[std::os::fd::RawFd],
+    write: &[std::os::fd::RawFd],
+    timeout: Duration,
+) {
+    if read.is_empty() && write.is_empty() {
+        std::thread::sleep(timeout);
+        return;
+    }
+    let record = |fd, events| libc::pollfd {
+        fd,
+        events,
+        revents: 0,
+    };
+    let mut polls: Vec<libc::pollfd> = read
+        .iter()
+        .map(|&fd| record(fd, libc::POLLIN))
+        .chain(write.iter().map(|&fd| record(fd, libc::POLLOUT)))
+        .collect();
+    let millis = timeout.as_millis().clamp(1, i32::MAX as u128) as i32;
+    // SAFETY: `polls` is an initialized array of `polls.len()` records whose
+    // descriptors the caller keeps open for the duration of the call. Errors
+    // (EINTR included) just end the wait early; callers re-check their state.
+    unsafe {
+        libc::poll(polls.as_mut_ptr(), polls.len() as libc::nfds_t, millis);
+    }
+}
+
+#[cfg(not(unix))]
+pub(crate) fn wait_ready(_read: &[i32], _write: &[i32], timeout: Duration) {
+    std::thread::sleep(timeout.min(Duration::from_millis(5)));
+}
+
+/// Read every pump that has data, sleeping in poll(2) up to `timeout` first.
+fn pump_streams(pumps: &mut [StreamPump], timeout: Duration) {
+    use std::os::fd::AsRawFd;
+    let fds: Vec<_> = pumps
+        .iter()
+        .filter(|pump| !pump.done())
+        .map(|pump| pump.file.as_raw_fd())
+        .collect();
+    wait_ready(&fds, &[], timeout);
+    for pump in pumps.iter_mut().filter(|pump| !pump.done()) {
+        pump.read_available();
+    }
+}
+
+/// A non-blocking pipe reader that keeps the tail, where errors usually are.
+struct StreamPump {
+    file: std::fs::File,
     max: usize,
-    stop: &AtomicBool,
-    mut artifact: Option<crate::tool_output::ArtifactWriter>,
-) -> Result<LimitedStream, ToolError> {
-    let mut bytes = Vec::with_capacity(max.min(64 * 1024));
-    let mut buffer = [0_u8; 8192];
-    let mut truncated = false;
-    let mut eof = false;
-    let mut error = None;
-    loop {
-        let count = match reader.read(&mut buffer) {
-            Ok(count) => count,
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                if stop.load(Ordering::SeqCst) {
-                    truncated = true;
-                    break;
+    bytes: Vec<u8>,
+    truncated: bool,
+    eof: bool,
+    error: Option<io::Error>,
+    artifact: Option<crate::tool_output::ArtifactWriter>,
+}
+
+impl StreamPump {
+    fn new(
+        fd: std::os::fd::OwnedFd,
+        max: usize,
+        artifact: Option<crate::tool_output::ArtifactWriter>,
+    ) -> Self {
+        Self {
+            file: fd.into(),
+            max,
+            bytes: Vec::with_capacity(max.min(64 * 1024)),
+            truncated: false,
+            eof: false,
+            error: None,
+            artifact,
+        }
+    }
+
+    fn done(&self) -> bool {
+        self.eof || self.error.is_some()
+    }
+
+    fn read_available(&mut self) {
+        let mut buffer = [0_u8; 8192];
+        loop {
+            let count = match self.file.read(&mut buffer) {
+                Ok(0) => {
+                    self.eof = true;
+                    return;
                 }
-                std::thread::sleep(Duration::from_millis(2));
-                continue;
+                Ok(count) => count,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => return,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => {
+                    self.error = Some(error);
+                    return;
+                }
+            };
+            if let Some(writer) = &mut self.artifact {
+                // Continue draining after a spill failure. The writer permanently
+                // records the failure and marks its terminal artifact incomplete.
+                let _ = writer.append(&buffer[..count]);
             }
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Err(read_error) => {
-                error = Some(read_error);
-                break;
+            // Trim in amortized batches.
+            self.bytes.extend_from_slice(&buffer[..count]);
+            if self.bytes.len() > self.max.saturating_mul(2).max(16 * 1024) {
+                let excess = self.bytes.len() - self.max;
+                self.bytes.drain(..excess);
+                self.truncated = true;
             }
-        };
-        if count == 0 {
-            eof = true;
-            break;
-        }
-        if let Some(writer) = &mut artifact {
-            // Continue draining after a spill failure. The writer permanently
-            // records the failure and marks its terminal artifact incomplete.
-            let _ = writer.append(&buffer[..count]);
-        }
-        // Keep the tail, where errors usually are; trim in amortized batches.
-        bytes.extend_from_slice(&buffer[..count]);
-        if bytes.len() > max.saturating_mul(2).max(16 * 1024) {
-            let excess = bytes.len() - max;
-            bytes.drain(..excess);
-            truncated = true;
         }
     }
-    if bytes.len() > max {
-        let excess = bytes.len() - max;
-        bytes.drain(..excess);
-        truncated = true;
+
+    fn finish(mut self) -> LimitedStream {
+        // Stopped before EOF: the command's output is not complete.
+        if !self.done() {
+            self.truncated = true;
+        }
+        if self.bytes.len() > self.max {
+            let excess = self.bytes.len() - self.max;
+            self.bytes.drain(..excess);
+            self.truncated = true;
+        }
+        LimitedStream {
+            bytes: self.bytes,
+            truncated: self.truncated,
+            eof: self.eof,
+            error: self.error,
+            artifact: self.artifact,
+        }
     }
-    Ok(LimitedStream {
-        bytes,
-        truncated,
-        eof,
-        error,
-        artifact,
-    })
 }
 
 pub(crate) fn validate_call(call: &ToolCall) -> Result<(), ToolError> {

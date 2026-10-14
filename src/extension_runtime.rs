@@ -663,8 +663,25 @@ fn exchange_frame(
             };
         }
         if !progress {
-            std::thread::sleep(
-                Duration::from_millis(5).min(timeout.saturating_sub(started.elapsed())),
+            // Sleep in poll(2) until stdin drains, stdout has data or closes,
+            // or the next cancellation check.
+            use std::os::fd::AsRawFd;
+            let read: Vec<_> = (!eof).then(|| stdout.as_raw_fd()).into_iter().collect();
+            let write: Vec<_> = stdin
+                .as_ref()
+                .map(|pipe| pipe.as_raw_fd())
+                .into_iter()
+                .collect();
+            let wait = if read.is_empty() && write.is_empty() {
+                // Exchange done: the child is exiting, so reap it promptly.
+                Duration::from_millis(5)
+            } else {
+                crate::tools::CANCEL_POLL
+            };
+            crate::tools::wait_ready(
+                &read,
+                &write,
+                wait.min(timeout.saturating_sub(started.elapsed())),
             );
         }
     }

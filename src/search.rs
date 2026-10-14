@@ -448,7 +448,22 @@ impl SearchBackend {
                 // A signal-terminated child has no code; treat it as failure.
                 break RunEnd::Exited(status.code().unwrap_or(-1));
             }
-            std::thread::sleep(Duration::from_millis(2));
+            // Sleep in poll(2) until output, EOF or the next cancellation check.
+            use std::os::fd::AsRawFd;
+            let open: Vec<_> = [(out_eof, stdout.as_raw_fd()), (err_eof, stderr.as_raw_fd())]
+                .into_iter()
+                .filter(|(closed, _)| !closed)
+                .map(|(_, fd)| fd)
+                .collect();
+            let wait = if open.is_empty() {
+                // Both pipes closed: the child is exiting, so reap it promptly.
+                Duration::from_millis(5)
+            } else {
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(crate::tools::CANCEL_POLL)
+            };
+            crate::tools::wait_ready(&open, &[], wait);
         };
         child.cleanup();
         Ok(RunOutcome { end, stderr: err })

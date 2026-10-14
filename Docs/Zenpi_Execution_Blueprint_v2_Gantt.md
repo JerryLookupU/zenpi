@@ -5,9 +5,9 @@
 
 ```yaml
 source: Docs/Zenpi_Execution_Blueprint_v2.md
-source_sha256: 31f09291d797808cb5e7f1cd3df0a604634bf9bc5afde73eb482786e7464c43d
+source_sha256: d38497113552c18c5178f3f2d493a7f9584bf3ac590f7a9d71ed1147f0c1eed5
 blueprint_version: 4.0.0
-generated_at: 2026-10-14T18:32:56Z
+generated_at: 2026-10-14T18:42:59Z
 ```
 
 ## Dependency-order view
@@ -92,7 +92,7 @@ gantt
     section A3
     ZE-300 headless 去轮询（对应 redis ae：睡到下一个真实截止时间）：<b :active, ZE_300, after ZE_243, 1d
     ZE-301 传输层：进程内共享一个  ureq  Agent （keep-alive 连接池 :active, ZE_301, after ZE_105, 1d
-    ZE-302 工具、搜索、扩展的读取改用  poll(2)  阻塞等待：单个线程同时监听两个 :ZE_302, after ZE_201 ZE_207, 1d
+    ZE-302 工具、搜索、扩展的读取改用  poll(2)  阻塞等待：单个线程同时监听两个 :active, ZE_302, after ZE_201 ZE_207, 1d
     ZE-303 reconnect WAL 收敛（对应 redis aof：只对确认点做持久化， :active, ZE_303, after ZE_243, 1d
     ZE-304 session 日志的 fsync 策略：只对 turn、 operation_ :ZE_304, after ZE_231, 1d
     ZE-305 session 内存瘦身：去掉  records  Vec<Value>  和 :ZE_305, after ZE_232, 1d
@@ -144,7 +144,7 @@ gantt
 
 ## Monitoring index
 
-Counts: open 38 · self-tested 5 · accepted 70 · total 113
+Counts: open 37 · self-tested 6 · accepted 70 · total 113
 
 | ID | Layer | State | Ready | Depends | Claim | Integration | Est. LOC | Title |
 |---|---|---|---|---|---|---|---:|---|
@@ -218,7 +218,7 @@ Counts: open 38 · self-tested 5 · accepted 70 · total 113
 | ZE-260 | A2 | accepted | no | — | ZE-260@blueprint-4.0.0 | accepted | 130 | DAG 正确性：<br>• worker 默认用 `current_exe()`；<br>• 存储满时 `send` 返回错误，不再静默丢弃；<br>• 写入改为临时文件 + fsync + rename 的原子写；<br>• 消息体按字节限制；<br>• 回收子进程；<br>• `dag_spawn` 限制深度 ≤ 3，且扇出不超过父节点租约；<br>layer `A2` \| Depends: — \| Owned paths: `src/dag.rs`, `src/tools.rs`, `tests/dag.rs` \| Validators: `dag_send_full_mailbox_errors`；`dag_spawn_defaults_to_current_exe`；写到一半被截断后存储仍可读；第 4 层 spawn 被拒绝 \| Estimated LOC: 130 |
 | ZE-300 | A3 | self-tested | yes | ZE-243 | ZE-300@blueprint-4.0.0 | handoff | 300 | headless 去轮询（对应 redis ae：睡到下一个真实截止时间）：<br>• stdin、runtime、审批三类唤醒合并为一个阻塞 channel；<br>• `worker_loop` 改用 condvar，job 完成时主动唤醒；<br>• job 线程创建失败时发出类型化的 `SpawnFailed`，并继续消化排队中的任务；<br>• shutdown 之后再 submit 时显式返回 `Rejected`；<br>layer `A3` \| Depends: ZE-243 \| Owned paths: `src/headless.rs`, `src/runtime.rs` \| Validators: 空闲进程 10 s 内 `ru_nvcsw` 增量 ≤ 50；200 个进程都卡在 10 s 的脚本化 provider 上时，总 CPU < 单核的 1%；stdout 读端暂停 5 s 期间，stdin 发出的 cancel 在 250 ms 内送达 job；注入 spawn 失败后，下一个排队任务仍能完成 \| Estimated LOC: 300 |
 | ZE-301 | A3 | self-tested | yes | ZE-105 | ZE-301@blueprint-4.0.0 | handoff | 180 | 传输层：进程内共享一个 `ureq::Agent`（keep-alive 连接池、共享 TLS 配置）；在连接器内通过 `RequestControl` 的 Arc 标志实现取消，删除每个请求的发送线程和 5 ms park 轮询（实现：取消回调经线程局部作用域对连接器、解析器和池化连接可见；取消无唤醒 fd，按 250 ms 兜底轮询；body 不再用 100 ms 接收超时轮询） |
-| ZE-302 | A3 | open | yes | ZE-201, ZE-207 | — | — | 220 | 工具、搜索、扩展的读取改用 `poll(2)` 阻塞等待：单个线程同时监听两个 fd 和子进程，poll 超时取"工具截止时间"与"100 ms 取消检查"中较小的一个；删除 2–5 ms 的 sleep 循环和固定 50 ms 等待；进程组信号只发给尚未被回收的 leader；改动涉及的 `unsafe` 一律加 `// SAFETY:` 注释 |
+| ZE-302 | A3 | self-tested | yes | ZE-201, ZE-207 | ZE-302@blueprint-4.0.0 | handoff | 220 | 工具、搜索、扩展的读取改用 `poll(2)` 阻塞等待：单个线程同时监听两个 fd 和子进程，poll 超时取"工具截止时间"与"100 ms 取消检查"中较小的一个；删除 2–5 ms 的 sleep 循环和固定 50 ms 等待；进程组直接 SIGKILL（同 pi，无宽限 sleep；进程组 ID 在组内仍有成员时不会被复用，leader 已回收后发给组也安全）；改动涉及的 `unsafe` 一律加 `// SAFETY:` 注释 |
 | ZE-303 | A3 | self-tested | yes | ZE-243 | ZE-303@blueprint-4.0.0 | handoff | 260 | reconnect WAL 收敛（对应 redis aof：只对确认点做持久化，写失败视为"提交不确定"，日志超阈值在线重写）：<br>• `Event` 记录只追加不 fsync（崩溃丢失的事件按 replay_floor 处理），只对 Reserved、Terminal、Ack 三类记录 fsync，且 Terminal 先 fsync 再写 stdout；<br>• 任何一次追加失败后回滚截断并毒化日志，之后的追加与重写都返回"commit uncertain"；<br>• 超过 `ZENPI_WAL_COMPACT_BYTES`（默认 32 MiB）且为上次压缩后大小的 2 倍时，用 write、`sync_all`、rename、目录 fsync 在线重写为活状态；<br>• 重新打开时丢弃撕裂的末尾追加；<br>• 请求 ID 账本只计未决 ID，已完成 ID 按 FIFO 修剪（16384）；<br>• 干净关闭后保留 WAL 以维持跨进程幂等；export/delete/GC 只在 owner 存活或 WAL 仍有未决证据（无终态的 reservation、撕裂、无法解析）时拒绝，delete/GC 连同 WAL 一起删除；<br>layer `A3` \| Depends: ZE-243 \| Owned paths: `src/session.rs`, `src/headless.rs`, `tests/headless_wal.rs`, `tests/headless_wal_compaction.rs`, `tests/session_maintenance_owner.rs` \| Validators: `cargo test --locked --all-features --test headless_wal --test headless_wal_compaction --test session_maintenance_owner`；lib 单测 `identified_request_ledger_never_fills_permanently`（2 万次带 ID 请求从不 `ledger_full`）、`reconnect_wal_drops_a_torn_append_and_poisons_after_a_failed_one`、`closed_settled_or_empty_reconnect_wal_does_not_block_export_or_delete`、`gc_reconnect_preserves_closed_torn_malformed_and_nonfile_states` \| Estimated LOC: 260 |
 | ZE-304 | A3 | open | yes | ZE-231 | — | — | 60 | session 日志的 fsync 策略：只对 turn、`operation_*` 和终态记录 fsync，其他记录在下一个边界时一起刷盘。崩溃时最多丢失最后一个边界之后的记录，不会丢失任何已接受的 turn。flock 改为阻塞等待，不再用 `LOCK_NB`。注意 macOS 上 `sync_data` 走的是 `F_FULLFSYNC`，单次代价较高 |
 | ZE-305 | A3 | open | no | ZE-232 | — | — | 260 | session 内存瘦身：去掉 `records: Vec<Value>` 和 `event_values` 这两份重复副本（只保留序号、类型、偏移，需要时重新解析）；缓存已校验过的 checkpoint；`tree_ancestry_turns` 不再克隆整棵树 |
