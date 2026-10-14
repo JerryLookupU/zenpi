@@ -313,6 +313,7 @@ pub(crate) struct NewSessionPlan {
     request_id: Option<String>,
     fingerprint: String,
     version: u16,
+    #[cfg(feature = "remote")]
     remote_workspace: RemoteWorkspaceState,
     subtabs: std::collections::BTreeMap<String, crate::worktree::subtab::SubtabState>,
 }
@@ -325,6 +326,7 @@ pub(crate) struct NewSessionCommit {
     pub(crate) data: serde_json::Value,
     checkpoint: OwnerCheckpoint,
     revision: u64,
+    #[cfg(feature = "remote")]
     remote_workspace: RemoteWorkspaceState,
 }
 
@@ -383,11 +385,13 @@ impl NewSessionPlan {
             )?;
             let mut sessions = self.sessions;
             sessions.insert(context.project_id.clone(), path.clone());
-            let mut remote_workspace = self.remote_workspace;
             let revision = self
                 .revision
                 .checked_add(1)
                 .ok_or_else(|| AgentError::InvalidTurn("workspace revision exhausted".into()))?;
+            #[cfg(feature = "remote")]
+            let mut remote_workspace = self.remote_workspace;
+            #[cfg(feature = "remote")]
             if let Some((device, owner)) = &self.remote_identity {
                 let id = self.request_id.as_deref().ok_or_else(|| {
                     AgentError::InvalidTurn("missing remote new session identity".into())
@@ -415,12 +419,18 @@ impl NewSessionPlan {
             if cancelled() {
                 return Err(crate::backend::BackendError::Cancelled.into());
             }
+            #[cfg(feature = "remote")]
+            let remote = self
+                .remote_identity
+                .is_some()
+                .then(|| remote_workspace.to_bytes())
+                .transpose()
+                .map_err(AgentError::InvalidTurn)?;
+            #[cfg(not(feature = "remote"))]
+            let remote: Option<Vec<u8>> = None;
             let mut checkpoint = self.checkpoint;
             checkpoint
-                .commit(
-                    &bytes,
-                    self.remote_identity.is_some().then_some(&remote_workspace),
-                )
+                .commit(&bytes, remote.as_deref())
                 .map_err(AgentError::InvalidTurn)?;
             committed = Some(NewSessionCommit {
                 control: None,
@@ -429,6 +439,7 @@ impl NewSessionPlan {
                 data,
                 checkpoint,
                 revision,
+                #[cfg(feature = "remote")]
                 remote_workspace,
             });
             Ok(())
@@ -491,13 +502,18 @@ pub struct ProjectOwnerPool {
     /// Bumped by every committed workspace change; kept in the project
     /// checkpoint so a build without remote state still advances it.
     revision: u64,
+    #[cfg(feature = "remote")]
     remote_workspace: RemoteWorkspaceState,
+    #[cfg(feature = "remote")]
     remote_owner: String,
+    #[cfg(feature = "remote")]
     pending_remote_receipt: Option<WorkspaceReceipt>,
     subtabs: std::collections::BTreeMap<String, crate::worktree::subtab::SubtabState>,
+    #[cfg(feature = "remote")]
     worker_owners: std::collections::BTreeMap<String, crate::worktree::worker::WorkerOwner>,
 }
 
+#[cfg(feature = "remote")]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RemoteWorkspaceState {
@@ -514,6 +530,7 @@ struct RemoteWorkspaceState {
     event_acks: Vec<EventAck>,
 }
 
+#[cfg(feature = "remote")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EventAck {
@@ -521,6 +538,7 @@ struct EventAck {
     project_id: String,
     cursor: crate::remote::protocol::EventCursor,
 }
+#[cfg(feature = "remote")]
 impl EventAck {
     fn valid(&self) -> bool {
         [&self.device_id, &self.project_id].iter().all(|id| {
@@ -531,7 +549,11 @@ impl EventAck {
         }) && crate::remote::auth::valid_identifier(&self.cursor.session_id)
     }
 }
+#[cfg(feature = "remote")]
 impl RemoteWorkspaceState {
+    fn to_bytes(&self) -> Result<Vec<u8>, String> {
+        serde_json::to_vec(self).map_err(|e| e.to_string())
+    }
     /// Strict bounds and identity checks for state loaded from disk.
     fn validate(&self, revision: u64) -> Result<(), String> {
         let mut receipt_ids = BTreeSet::new();
@@ -690,6 +712,7 @@ impl RemoteWorkspaceState {
         Ok(changed)
     }
 }
+#[cfg(feature = "remote")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PromptBinding {
@@ -704,12 +727,15 @@ struct PromptBinding {
     project_id: String,
     session_id: String,
 }
+#[cfg(feature = "remote")]
 fn prompt_operation() -> crate::remote::protocol::Operation {
     crate::remote::protocol::Operation::Prompt
 }
+#[cfg(feature = "remote")]
 fn is_prompt_operation(operation: &crate::remote::protocol::Operation) -> bool {
     *operation == prompt_operation()
 }
+#[cfg(feature = "remote")]
 impl PromptBinding {
     fn valid(&self) -> bool {
         use crate::remote::auth::valid_identifier;
@@ -736,6 +762,7 @@ impl PromptBinding {
             && valid_identifier(&self.session_id)
     }
 }
+#[cfg(feature = "remote")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ApprovalReceipt {
@@ -743,6 +770,7 @@ struct ApprovalReceipt {
     digest: String,
     decision: crate::approval::ApprovalDecision,
 }
+#[cfg(feature = "remote")]
 impl ApprovalReceipt {
     fn valid(&self) -> bool {
         self.binding.valid()
@@ -761,6 +789,7 @@ impl ApprovalReceipt {
         result
     }
 }
+#[cfg(feature = "remote")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CancelReceipt {
@@ -773,6 +802,7 @@ struct CancelReceipt {
     state: crate::remote::protocol::ExecutionState,
     code: Option<crate::remote::protocol::ErrorCode>,
 }
+#[cfg(feature = "remote")]
 impl CancelReceipt {
     fn valid(&self) -> bool {
         use crate::remote::{auth::valid_identifier, protocol::ExecutionState};
@@ -805,6 +835,7 @@ impl CancelReceipt {
         }
     }
 }
+#[cfg(feature = "remote")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WorkspaceReceipt {
@@ -818,6 +849,7 @@ struct WorkspaceReceipt {
     quota_intent: Option<QuotaIntent>,
 }
 
+#[cfg(feature = "remote")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct QuotaIntent {
@@ -825,6 +857,7 @@ struct QuotaIntent {
     before: crate::worktree::subtab::SubtabState,
     candidate: crate::worktree::subtab::SubtabState,
 }
+#[cfg(feature = "remote")]
 impl QuotaIntent {
     fn validate(&self, receipt: &WorkspaceReceipt, base: &Path) -> Result<(), String> {
         use crate::remote::protocol::{Message, Operation};
@@ -895,6 +928,7 @@ impl QuotaIntent {
     }
 }
 
+#[cfg(feature = "remote")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WorktreeIntent {
@@ -904,6 +938,7 @@ struct WorktreeIntent {
     path: PathBuf,
     branch: Option<String>,
 }
+#[cfg(feature = "remote")]
 impl WorktreeIntent {
     fn validate(&self, receipt: &WorkspaceReceipt, base: &Path) -> Result<(), String> {
         use crate::remote::protocol::{Message, Operation};
@@ -992,6 +1027,7 @@ impl WorktreeIntent {
         Ok(())
     }
 }
+#[cfg(feature = "remote")]
 impl WorkspaceReceipt {
     fn valid(&self, revision: u64) -> bool {
         let hex = |value: &str| {
@@ -1104,10 +1140,14 @@ impl ProjectOwnerPool {
             control: [(id.clone(), control)].into(),
             checkpoint: None,
             revision: 0,
+            #[cfg(feature = "remote")]
             remote_workspace: RemoteWorkspaceState::default(),
+            #[cfg(feature = "remote")]
             remote_owner: format!("{:x}", Sha256::digest(owner_nonce)),
+            #[cfg(feature = "remote")]
             pending_remote_receipt: None,
             subtabs: Default::default(),
+            #[cfg(feature = "remote")]
             worker_owners: Default::default(),
             sessions: [(id, session.clone())].into(),
             overrides: owner.project_overrides(),
@@ -1161,6 +1201,7 @@ impl ProjectOwnerPool {
         fingerprint: String,
         version: u16,
     ) -> Result<NewSessionPlan, String> {
+        #[cfg(feature = "remote")]
         if !self.worker_handles(id).is_empty() {
             return Err("retire project worker owners before replacing its master session".into());
         }
@@ -1183,6 +1224,7 @@ impl ProjectOwnerPool {
             request_id,
             fingerprint,
             version,
+            #[cfg(feature = "remote")]
             remote_workspace: self.remote_workspace.clone(),
             subtabs: self.subtabs.clone(),
         })
@@ -1193,11 +1235,15 @@ impl ProjectOwnerPool {
             self.control
                 .insert(committed.context.project_id.clone(), control.clone());
         }
+        #[cfg(feature = "remote")]
         let previous_session = self
             .contexts
             .get(&committed.context.project_id)
             .map(|context| context.session_id.clone());
-        self.remote_workspace = committed.remote_workspace.clone();
+        #[cfg(feature = "remote")]
+        {
+            self.remote_workspace = committed.remote_workspace.clone();
+        }
         self.revision = committed.revision;
         self.contexts.insert(
             committed.context.project_id.clone(),
@@ -1208,12 +1254,14 @@ impl ProjectOwnerPool {
         if let Some(checkpoint) = &mut self.checkpoint {
             *checkpoint = committed.checkpoint.clone();
         }
+        #[cfg(feature = "remote")]
         if let Some(session) = previous_session {
             crate::remote::wakeup::notify(&session);
         }
         self.notify_workspace_sessions();
     }
 
+    #[cfg(feature = "remote")]
     /// Reserve a remote identity before the existing replacement transaction.
     pub(crate) fn remote_new_session_plan(
         &mut self,
@@ -1243,7 +1291,7 @@ impl ProjectOwnerPool {
         self.checkpoint
             .as_mut()
             .ok_or("missing new session checkpoint")?
-            .commit(&bytes, Some(&remote))?;
+            .commit(&bytes, Some(&remote.to_bytes()?))?;
         self.remote_workspace = remote;
         let mut plan = self.new_session_plan(id, Some(request.into()), fingerprint.into(), 1)?;
         plan.remote_identity = Some((device.into(), self.workspace_owner().into()));
@@ -1260,6 +1308,7 @@ impl ProjectOwnerPool {
         self.commit_resumed_session_receipt(id, session, None)
     }
 
+    #[cfg(feature = "remote")]
     pub(crate) fn commit_remote_resumed_session(
         &mut self,
         id: &str,
@@ -1293,17 +1342,18 @@ impl ProjectOwnerPool {
         session: &crate::session::SessionStore,
         receipt: Option<(&str, &str, &str, &str)>,
     ) -> Result<(), String> {
+        #[cfg(feature = "remote")]
         if !self.worker_handles(id).is_empty() {
             return Err("retire project worker owners before resuming a master session".into());
         }
         let mut context = self.contexts.get(id).ok_or("project not found")?.clone();
+        #[cfg(feature = "remote")]
         let previous_session = context.session_id.clone();
         let path = session.path().canonicalize().map_err(|e| e.to_string())?;
         validate_path_text(&path).map_err(|e| e.to_string())?;
         let mut sessions = self.sessions.clone();
         sessions.insert(id.to_owned(), path);
         context.session_id = session.session_id().to_owned();
-        let mut remote_workspace = self.remote_workspace.clone();
         let changed = self.contexts.get(id) != Some(&context) || sessions != self.sessions;
         let mut revision = self.revision;
         if changed {
@@ -1311,10 +1361,13 @@ impl ProjectOwnerPool {
                 .checked_add(1)
                 .ok_or("workspace revision exhausted")?;
         }
+        if receipt.is_some() && !changed {
+            return Err("remote resume must replace current session".into());
+        }
+        #[cfg(feature = "remote")]
+        let mut remote_workspace = self.remote_workspace.clone();
+        #[cfg(feature = "remote")]
         if let Some((device, request, fingerprint, owner)) = receipt {
-            if !changed {
-                return Err("remote resume must replace current session".into());
-            }
             let receipt = remote_workspace
                 .receipts
                 .iter_mut()
@@ -1329,13 +1382,24 @@ impl ProjectOwnerPool {
         }
         if let Some(checkpoint) = &mut self.checkpoint {
             let bytes = core_checkpoint(&self.workspace, &sessions, revision, &self.subtabs)?;
-            checkpoint.commit(&bytes, receipt.is_some().then_some(&remote_workspace))?;
+            #[cfg(feature = "remote")]
+            let remote = receipt
+                .is_some()
+                .then(|| remote_workspace.to_bytes())
+                .transpose()?;
+            #[cfg(not(feature = "remote"))]
+            let remote: Option<Vec<u8>> = None;
+            checkpoint.commit(&bytes, remote.as_deref())?;
         }
         self.sessions = sessions;
         self.contexts.insert(id.to_owned(), context);
         self.revision = revision;
-        self.remote_workspace = remote_workspace;
+        #[cfg(feature = "remote")]
+        {
+            self.remote_workspace = remote_workspace;
+        }
         if changed {
+            #[cfg(feature = "remote")]
             crate::remote::wakeup::notify(&previous_session);
             self.notify_workspace_sessions();
         }
@@ -1351,21 +1415,27 @@ impl ProjectOwnerPool {
             .ok_or("missing session parent")?
             .join("project-workspace.json");
         let bytes = read_owner_checkpoint(&path)?;
-        let remote_bytes = read_owner_checkpoint(&path.with_file_name(REMOTE_STATE_FILE))?;
+        let remote_path = path.with_file_name(REMOTE_STATE_FILE);
         let Some(bytes) = bytes else {
-            // Remote state never outlives the project checkpoint it describes.
-            let mut checkpoint = OwnerCheckpoint {
+            let checkpoint = OwnerCheckpoint {
                 path,
                 previous: None,
-                remote_previous: remote_bytes,
+                remote_previous: None,
             };
-            let mut remote = RemoteWorkspaceState::default();
-            if remote.import_prompt_journals(&self.sessions)?
-                || checkpoint.remote_previous.is_some()
-            {
-                checkpoint.commit(&self.core_bytes()?, Some(&remote))?;
-            }
-            self.remote_workspace = remote;
+            #[cfg(feature = "remote")]
+            let checkpoint = {
+                // Remote state never outlives the project checkpoint it describes.
+                let mut checkpoint = checkpoint;
+                checkpoint.remote_previous = read_owner_checkpoint(&remote_path)?;
+                let mut remote = RemoteWorkspaceState::default();
+                if remote.import_prompt_journals(&self.sessions)?
+                    || checkpoint.remote_previous.is_some()
+                {
+                    checkpoint.commit(&self.core_bytes()?, Some(&remote.to_bytes()?))?;
+                }
+                self.remote_workspace = remote;
+                checkpoint
+            };
             self.checkpoint = Some(checkpoint);
             return Ok(false);
         };
@@ -1387,18 +1457,18 @@ impl ProjectOwnerPool {
         if saved.schema_version != 1 {
             return Err("unsupported project owner checkpoint".into());
         }
-        let legacy = saved.remote_workspace.take();
         let mut revision = saved.workspace_revision;
-        let remote_source = match legacy.clone() {
-            Some(mut legacy) => {
+        let legacy = saved
+            .remote_workspace
+            .take()
+            .map(|mut legacy| {
                 revision = legacy
                     .remove("revision")
                     .and_then(|revision| revision.as_u64())
                     .ok_or("invalid legacy workspace revision")?;
-                Some(serde_json::to_vec(&legacy).map_err(|e| e.to_string())?)
-            }
-            None => remote_bytes.clone(),
-        };
+                serde_json::to_vec(&legacy).map_err(|e| e.to_string())
+            })
+            .transpose()?;
         let workspace = ProjectWorkspace::from_json_bytes(
             &serde_json::to_vec(&saved.workspace).map_err(|e| e.to_string())?,
         )
@@ -1420,22 +1490,40 @@ impl ProjectOwnerPool {
                 .ok_or("subtabs belong to unknown project")?;
             state.validate(id, tab.cwd())?;
         }
-        let mut remote: RemoteWorkspaceState = remote_source
-            .map(|bytes| serde_json::from_slice(&bytes).map_err(|e| e.to_string()))
-            .transpose()?
-            .unwrap_or_default();
-        remote.validate(revision)?;
-        // Import legacy journal admissions once, before any remote mutation can reuse their IDs.
-        let imported = remote.import_prompt_journals(&saved.sessions)?;
         let mut checkpoint = OwnerCheckpoint {
             path,
             previous: Some(bytes.clone()),
-            remote_previous: remote_bytes,
+            remote_previous: None,
         };
-        if imported || legacy.is_some() {
-            checkpoint.commit(&bytes, Some(&remote))?;
+        // Only a remote build reads remote state; any build moves a legacy
+        // inline copy out unchanged.
+        if cfg!(feature = "remote") || legacy.is_some() {
+            checkpoint.remote_previous = read_owner_checkpoint(&remote_path)?;
         }
+        // Never adopt a checkpoint naming an unreadable journal; a remote
+        // build proves this while importing journal admissions below.
+        #[cfg(not(feature = "remote"))]
+        for path in saved.sessions.values() {
+            crate::session::SessionStore::open_existing(path).map_err(|e| e.to_string())?;
+        }
+        #[cfg(feature = "remote")]
+        let remote = {
+            let mut remote: RemoteWorkspaceState = legacy
+                .as_ref()
+                .or(checkpoint.remote_previous.as_ref())
+                .map(|bytes| serde_json::from_slice(bytes).map_err(|e| e.to_string()))
+                .transpose()?
+                .unwrap_or_default();
+            remote.validate(revision)?;
+            // Import legacy journal admissions once, before any remote mutation can reuse their IDs.
+            if remote.import_prompt_journals(&saved.sessions)? || legacy.is_some() {
+                checkpoint.commit(&bytes, Some(&remote.to_bytes()?))?;
+            }
+            remote
+        };
         if legacy.is_some() {
+            #[cfg(not(feature = "remote"))]
+            checkpoint.commit(&bytes, legacy.as_deref())?;
             // Only now that remote-state.json holds it may the legacy copy go.
             let bytes =
                 core_checkpoint(&saved.workspace, &saved.sessions, revision, &saved.subtabs)?;
@@ -1450,7 +1538,10 @@ impl ProjectOwnerPool {
         let published = self.publish(workspace, &saved.sessions);
         self.checkpoint = Some(checkpoint);
         self.revision = revision;
-        self.remote_workspace = remote;
+        #[cfg(feature = "remote")]
+        {
+            self.remote_workspace = remote;
+        }
         published?;
         self.subtabs = saved.subtabs;
         Ok(true)
@@ -1495,6 +1586,7 @@ impl ProjectOwnerPool {
         Ok(crate::worktree::subtab::SubtabExecution { tab, project_root })
     }
 
+    #[cfg(feature = "remote")]
     /// Check the whole ownership range before preparing any new journals.
     pub(crate) fn worker_capacity_available(
         &self,
@@ -1520,6 +1612,7 @@ impl ProjectOwnerPool {
         Ok(self.worker_owners.len() + missing <= crate::worktree::worker::MAX_WORKER_OWNERS)
     }
 
+    #[cfg(feature = "remote")]
     /// Prepare an independent slot from host-owned subtab state, not a client path.
     pub fn worker_owner(
         &mut self,
@@ -1579,6 +1672,7 @@ impl ProjectOwnerPool {
         Ok(owner)
     }
 
+    #[cfg(feature = "remote")]
     /// Stage exclusive new slots against a durable, unresolved growth intent.
     pub(crate) fn claim_quota_growth(
         &mut self,
@@ -1706,6 +1800,7 @@ impl ProjectOwnerPool {
         Ok(added)
     }
 
+    #[cfg(feature = "remote")]
     /// Worker controls remain reachable without taking an execution lock.
     pub fn worker_handles(&self, project: &str) -> Vec<crate::worktree::worker::WorkerOwner> {
         self.worker_owners
@@ -1715,6 +1810,7 @@ impl ProjectOwnerPool {
             .collect()
     }
 
+    #[cfg(feature = "remote")]
     /// Retire idle owners before replacing their master. Caller-held handles
     /// keep leases alive, but closed Agents cannot admit another turn.
     pub fn retire_worker_owners(&mut self, project: &str) -> Result<(), String> {
@@ -1738,6 +1834,7 @@ impl ProjectOwnerPool {
         Ok(())
     }
 
+    #[cfg(feature = "remote")]
     fn retired_workers(
         &self,
         project: &str,
@@ -1797,8 +1894,11 @@ impl ProjectOwnerPool {
         {
             return Err("invalid subtab revision transition".into());
         }
+        #[cfg(feature = "remote")]
         let workers = self.worker_handles(project);
+        #[cfg(feature = "remote")]
         let mut guards = Vec::new();
+        #[cfg(feature = "remote")]
         for worker in &workers {
             let guard = worker
                 .agent()
@@ -1809,6 +1909,7 @@ impl ProjectOwnerPool {
             }
             guards.push(guard);
         }
+        #[cfg(feature = "remote")]
         let retired = self.retired_workers(project, &candidate);
         let mut subtabs = self.subtabs.clone();
         subtabs.insert(project.into(), candidate);
@@ -1818,6 +1919,7 @@ impl ProjectOwnerPool {
             .ok_or("subtabs require a durable owner checkpoint")?
             .commit(&bytes, None)?;
         self.subtabs = subtabs;
+        #[cfg(feature = "remote")]
         for (worker, mut guard) in workers.iter().zip(guards) {
             if retired.iter().any(|key| {
                 self.worker_owners
@@ -1827,9 +1929,11 @@ impl ProjectOwnerPool {
                 guard.close();
             }
         }
+        #[cfg(feature = "remote")]
         for key in retired {
             self.worker_owners.remove(&key);
         }
+        #[cfg(feature = "remote")]
         if let Some(context) = self.contexts.get(project) {
             crate::remote::wakeup::notify(&context.session_id);
         }
@@ -1859,6 +1963,7 @@ impl ProjectOwnerPool {
         candidate.revision = 1;
         self.commit_subtabs(project, 0, candidate)
     }
+    #[cfg(feature = "remote")]
     pub(crate) fn commit_remote_subtabs(
         &mut self,
         project: &str,
@@ -1870,6 +1975,7 @@ impl ProjectOwnerPool {
         self.commit_remote_subtabs_inner(project, candidate, device, request, fingerprint, None)
     }
 
+    #[cfg(feature = "remote")]
     pub(crate) fn quota_candidate(
         &self,
         device: &str,
@@ -1923,6 +2029,7 @@ impl ProjectOwnerPool {
         Ok(intent.candidate.clone())
     }
 
+    #[cfg(feature = "remote")]
     pub(crate) fn commit_runtime_quota(
         &mut self,
         device: &str,
@@ -1959,6 +2066,7 @@ impl ProjectOwnerPool {
         )
     }
 
+    #[cfg(feature = "remote")]
     fn commit_remote_subtabs_inner(
         &mut self,
         project: &str,
@@ -2103,7 +2211,7 @@ impl ProjectOwnerPool {
         self.checkpoint
             .as_mut()
             .ok_or("subtabs require a durable owner checkpoint")?
-            .commit(&bytes, Some(&remote))?;
+            .commit(&bytes, Some(&remote.to_bytes()?))?;
         self.subtabs = subtabs;
         self.revision = revision;
         for (worker, mut guard) in guards {
@@ -2123,6 +2231,7 @@ impl ProjectOwnerPool {
         Ok(result)
     }
 
+    #[cfg(feature = "remote")]
     /// Reserve exact identity before any scheduler application. This does not
     /// change configured quota or prove a runtime applied it.
     pub(crate) fn reserve_remote_quota(
@@ -2188,12 +2297,13 @@ impl ProjectOwnerPool {
         self.checkpoint
             .as_mut()
             .ok_or("quota mutation requires durable checkpoint")?
-            .commit(&bytes, Some(&remote))?;
+            .commit(&bytes, Some(&remote.to_bytes()?))?;
         self.remote_workspace = remote;
         Ok(())
     }
 
     // Quota receipts commit against the global workspace revision, even across projects.
+    #[cfg(feature = "remote")]
     pub(crate) fn quota_intent_pending(&self) -> bool {
         self.remote_workspace
             .receipts
@@ -2201,6 +2311,7 @@ impl ProjectOwnerPool {
             .any(|receipt| receipt.result.is_null() && receipt.quota_intent.is_some())
     }
 
+    #[cfg(feature = "remote")]
     /// Local operator evidence only; no automatic replay or runtime claim.
     pub fn unresolved_quota_intents(&self) -> Vec<serde_json::Value> {
         self.remote_workspace.receipts.iter().filter_map(|receipt| {
@@ -2214,6 +2325,7 @@ impl ProjectOwnerPool {
         }).collect()
     }
 
+    #[cfg(feature = "remote")]
     /// Explicit local acceptance after the old runtime has stopped. Commit
     /// configuration, never replay a scheduler command or start workers.
     pub fn reconcile_quota_intent(
@@ -2318,6 +2430,7 @@ impl ProjectOwnerPool {
         )
     }
 
+    #[cfg(feature = "remote")]
     /// Persist the exact identity before a Git mutation. A crash or ambiguous
     /// result remains null/unknown and cannot automatically execute again.
     pub(crate) fn reserve_remote_subtab_git(
@@ -2360,11 +2473,12 @@ impl ProjectOwnerPool {
         self.checkpoint
             .as_mut()
             .ok_or("Git mutation requires durable checkpoint")?
-            .commit(&bytes, Some(&remote))?;
+            .commit(&bytes, Some(&remote.to_bytes()?))?;
         self.remote_workspace = remote;
         Ok(())
     }
 
+    #[cfg(feature = "remote")]
     /// Local operator surface only. No capability secrets or executable replay.
     pub fn unresolved_worktree_intents(&self) -> Vec<serde_json::Value> {
         self.remote_workspace.receipts.iter().filter(|receipt| receipt.result.is_null() && receipt.quota_intent.is_none()).map(|receipt| {
@@ -2377,6 +2491,7 @@ impl ProjectOwnerPool {
         }).collect()
     }
 
+    #[cfg(feature = "remote")]
     /// Accept the observed filesystem result, never rerun Git or delete data.
     /// A caller must be the local operator, not an authenticated remote peer.
     pub fn reconcile_worktree_intent(
@@ -2490,12 +2605,14 @@ impl ProjectOwnerPool {
     pub fn workspace(&self) -> &ProjectWorkspace {
         &self.workspace
     }
+    #[cfg(feature = "remote")]
     pub fn workspace_owner(&self) -> &str {
         &self.remote_owner
     }
     pub fn workspace_revision(&self) -> u64 {
         self.revision
     }
+    #[cfg(feature = "remote")]
     fn core_bytes(&self) -> Result<Vec<u8>, String> {
         core_checkpoint(
             &self.workspace,
@@ -2507,6 +2624,7 @@ impl ProjectOwnerPool {
     pub fn has_workspace_checkpoint(&self) -> bool {
         self.checkpoint.is_some()
     }
+    #[cfg(feature = "remote")]
     pub(crate) fn prompt_binding(
         &self,
         device: &str,
@@ -2520,6 +2638,7 @@ impl ProjectOwnerPool {
             crate::remote::protocol::Operation::Prompt,
         )
     }
+    #[cfg(feature = "remote")]
     pub(crate) fn owner_request_binding(
         &self,
         device: &str,
@@ -2561,6 +2680,7 @@ impl ProjectOwnerPool {
             None => Ok(false),
         }
     }
+    #[cfg(feature = "remote")]
     pub(crate) fn acknowledge_events(
         &mut self,
         device: &str,
@@ -2596,12 +2716,16 @@ impl ProjectOwnerPool {
         self.checkpoint
             .as_mut()
             .ok_or(ErrorCode::InvalidRequest)?
-            .commit(&bytes, Some(&remote))
+            .commit(
+                &bytes,
+                Some(&remote.to_bytes().map_err(|_| ErrorCode::InternalError)?),
+            )
             .map_err(|_| ErrorCode::InternalError)?;
         self.remote_workspace = remote;
         Ok(cursor.clone())
     }
 
+    #[cfg(feature = "remote")]
     pub(crate) fn bind_remote_prompt(
         &mut self,
         device: &str,
@@ -2615,6 +2739,7 @@ impl ProjectOwnerPool {
             crate::remote::protocol::Operation::Prompt,
         )
     }
+    #[cfg(feature = "remote")]
     pub(crate) fn bind_owner_request(
         &mut self,
         device: &str,
@@ -2645,10 +2770,11 @@ impl ProjectOwnerPool {
         self.checkpoint
             .as_mut()
             .ok_or("prompt requires durable checkpoint")?
-            .commit(&bytes, Some(&remote))?;
+            .commit(&bytes, Some(&remote.to_bytes()?))?;
         self.remote_workspace = remote;
         Ok(())
     }
+    #[cfg(feature = "remote")]
     fn reject_prompt_identity(
         &self,
         device: &str,
@@ -2664,6 +2790,7 @@ impl ProjectOwnerPool {
         }
         Ok(())
     }
+    #[cfg(feature = "remote")]
     pub(crate) fn workspace_receipt(
         &self,
         device: &str,
@@ -2703,6 +2830,7 @@ impl ProjectOwnerPool {
             None => Ok(None),
         }
     }
+    #[cfg(feature = "remote")]
     pub(crate) fn cancel_receipt(
         &self,
         device: &str,
@@ -2753,6 +2881,7 @@ impl ProjectOwnerPool {
             None => Ok(None),
         }
     }
+    #[cfg(feature = "remote")]
     pub(crate) fn approval_receipt(
         &self,
         device: &str,
@@ -2798,6 +2927,7 @@ impl ProjectOwnerPool {
             None => Ok(None),
         }
     }
+    #[cfg(feature = "remote")]
     fn reject_steer_identity(
         &self,
         device: &str,
@@ -2813,6 +2943,7 @@ impl ProjectOwnerPool {
         }
         Ok(())
     }
+    #[cfg(feature = "remote")]
     pub(crate) fn steer_receipt(
         &self,
         device: &str,
@@ -2860,6 +2991,7 @@ impl ProjectOwnerPool {
             None => Ok(None),
         }
     }
+    #[cfg(feature = "remote")]
     pub(crate) fn commit_steer_receipt(
         &mut self,
         device: &str,
@@ -2903,10 +3035,11 @@ impl ProjectOwnerPool {
         self.checkpoint
             .as_mut()
             .ok_or("steering requires durable checkpoint")?
-            .commit(&bytes, Some(&remote))?;
+            .commit(&bytes, Some(&remote.to_bytes()?))?;
         self.remote_workspace = remote;
         Ok(())
     }
+    #[cfg(feature = "remote")]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn commit_approval_receipt(
         &mut self,
@@ -2955,10 +3088,11 @@ impl ProjectOwnerPool {
         self.checkpoint
             .as_mut()
             .ok_or("approval requires durable checkpoint")?
-            .commit(&bytes, Some(&remote))?;
+            .commit(&bytes, Some(&remote.to_bytes()?))?;
         self.remote_workspace = remote;
         Ok(())
     }
+    #[cfg(feature = "remote")]
     pub(crate) fn commit_cancel_receipt(
         &mut self,
         device: &str,
@@ -3008,10 +3142,11 @@ impl ProjectOwnerPool {
         self.checkpoint
             .as_mut()
             .ok_or("cancellation requires durable checkpoint")?
-            .commit(&bytes, Some(&remote))?;
+            .commit(&bytes, Some(&remote.to_bytes()?))?;
         self.remote_workspace = remote;
         Ok(())
     }
+    #[cfg(feature = "remote")]
     /// Commit the workspace and retry receipt in the same compare-and-replace checkpoint.
     pub(crate) fn publish_remote_workspace(
         &mut self,
@@ -3064,6 +3199,7 @@ impl ProjectOwnerPool {
         let agent = self.prepare_arch_owner(id)?;
         Ok(self.register_arch_owner(id, agent))
     }
+    #[cfg(feature = "remote")]
     pub(crate) fn existing_arch_owner(
         &self,
         id: &str,
@@ -3184,6 +3320,7 @@ impl ProjectOwnerPool {
                 agent.close();
             }
         }
+        #[cfg(feature = "remote")]
         for worker in self.worker_owners.values() {
             if let Ok(mut agent) = worker.agent().lock() {
                 agent.close();
@@ -3230,6 +3367,7 @@ impl ProjectOwnerPool {
         saved_sessions: &std::collections::BTreeMap<String, PathBuf>,
     ) -> Result<(), String> {
         let tab = candidate.active().ok_or("no active project")?;
+        #[cfg(feature = "remote")]
         let mut remote_workspace = self.remote_workspace.clone();
         let id = tab.id().as_str().to_owned();
         let mut subtabs = self.subtabs.clone();
@@ -3281,6 +3419,7 @@ impl ProjectOwnerPool {
             }
             replaced_guards.push(agent);
         }
+        #[cfg(feature = "remote")]
         let replaced_workers: Vec<_> = self
             .worker_owners
             .iter()
@@ -3290,7 +3429,9 @@ impl ProjectOwnerPool {
             })
             .map(|(key, worker)| (key.clone(), worker.clone()))
             .collect();
+        #[cfg(feature = "remote")]
         let mut worker_guards = Vec::new();
+        #[cfg(feature = "remote")]
         for (_, worker) in &replaced_workers {
             let agent = worker
                 .agent()
@@ -3316,9 +3457,13 @@ impl ProjectOwnerPool {
                     .map_err(|e| e.to_string())?,
                 )
             };
-        let changed = candidate != self.workspace
-            || next_sessions != self.sessions
-            || self.pending_remote_receipt.is_some();
+        #[cfg(feature = "remote")]
+        let pending_receipt = self.pending_remote_receipt.is_some();
+        #[cfg(not(feature = "remote"))]
+        let pending_receipt = false;
+        let changed =
+            candidate != self.workspace || next_sessions != self.sessions || pending_receipt;
+        #[cfg(feature = "remote")]
         let previous_sessions: Vec<_> = if changed {
             self.contexts
                 .values()
@@ -3333,6 +3478,7 @@ impl ProjectOwnerPool {
                 .checked_add(1)
                 .ok_or("workspace revision exhausted")?;
         }
+        #[cfg(feature = "remote")]
         if let Some(receipt) = &self.pending_remote_receipt {
             if remote_workspace.receipts.len() >= 128 {
                 return Err("workspace receipt capacity exhausted".into());
@@ -3341,19 +3487,24 @@ impl ProjectOwnerPool {
         }
         if let Some(checkpoint) = &mut self.checkpoint {
             let bytes = core_checkpoint(&candidate, &next_sessions, revision, &subtabs)?;
-            checkpoint.commit(
-                &bytes,
-                self.pending_remote_receipt
-                    .is_some()
-                    .then_some(&remote_workspace),
-            )?;
+            #[cfg(feature = "remote")]
+            let remote = self
+                .pending_remote_receipt
+                .is_some()
+                .then(|| remote_workspace.to_bytes())
+                .transpose()?;
+            #[cfg(not(feature = "remote"))]
+            let remote: Option<Vec<u8>> = None;
+            checkpoint.commit(&bytes, remote.as_deref())?;
         }
         for agent in &mut replaced_guards {
             agent.close();
         }
+        #[cfg(feature = "remote")]
         for mut agent in worker_guards {
             agent.close();
         }
+        #[cfg(feature = "remote")]
         for (key, _) in &replaced_workers {
             self.worker_owners.remove(key);
         }
@@ -3396,9 +3547,13 @@ impl ProjectOwnerPool {
         self.sessions = next_sessions;
         self.workspace = candidate;
         self.revision = revision;
-        self.remote_workspace = remote_workspace;
+        #[cfg(feature = "remote")]
+        {
+            self.remote_workspace = remote_workspace;
+        }
         self.subtabs = subtabs;
         if changed {
+            #[cfg(feature = "remote")]
             for session in previous_sessions {
                 crate::remote::wakeup::notify(&session);
             }
@@ -3407,6 +3562,7 @@ impl ProjectOwnerPool {
         Ok(())
     }
     fn notify_workspace_sessions(&self) {
+        #[cfg(feature = "remote")]
         for context in self.contexts.values() {
             crate::remote::wakeup::notify(&context.session_id);
         }
@@ -3508,24 +3664,20 @@ impl OwnerCheckpoint {
     /// one lock; an unchanged file is only checked. Core lands first: a crash between the two renames leaves a remote
     /// reservation unresolved, an unknown outcome, never a remote result the
     /// workspace does not show.
-    fn commit(&mut self, core: &[u8], remote: Option<&RemoteWorkspaceState>) -> Result<(), String> {
-        let remote = remote
-            .map(serde_json::to_vec)
-            .transpose()
-            .map_err(|e| e.to_string())?;
+    fn commit(&mut self, core: &[u8], remote: Option<&[u8]>) -> Result<(), String> {
         let remote_path = self.path.with_file_name(REMOTE_STATE_FILE);
         let mut writes = vec![(self.path.as_path(), self.previous.as_deref(), core)];
-        if let Some(bytes) = &remote {
+        if let Some(bytes) = remote {
             writes.push((
                 remote_path.as_path(),
                 self.remote_previous.as_deref(),
-                bytes.as_slice(),
+                bytes,
             ));
         }
         write_owner_files(&writes)?;
         self.previous = Some(core.to_vec());
-        if remote.is_some() {
-            self.remote_previous = remote;
+        if let Some(bytes) = remote {
+            self.remote_previous = Some(bytes.to_vec());
         }
         Ok(())
     }
@@ -3968,6 +4120,7 @@ fn validate_worktree_removal_before(
     Ok(())
 }
 
+#[cfg(feature = "remote")]
 fn validate_registered_worktree(project: &Path, path: &Path) -> Result<(), String> {
     validate_registered_worktree_before(
         project,
@@ -4065,7 +4218,7 @@ fn managed_worktree_path(
     Ok((project, path))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "remote"))]
 mod quota_intent_tests {
     use super::*;
     use crate::remote::protocol::{Channel, Envelope, Message, Operation};

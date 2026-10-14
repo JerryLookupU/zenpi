@@ -1,3 +1,5 @@
+#![cfg(feature = "remote")]
+
 use std::{
     sync::atomic::{AtomicBool, Ordering},
     sync::{Arc, mpsc},

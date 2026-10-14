@@ -1,3 +1,5 @@
+#![cfg(feature = "remote")]
+
 use std::{
     path::Path,
     sync::{Arc, Condvar, Mutex, mpsc},

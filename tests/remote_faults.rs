@@ -1,3 +1,4 @@
+#![cfg(feature = "remote")]
 //! Deterministic transport faults; real socket/TLS/address-change gates are separate.
 
 use std::io::{self, Cursor, Read, Write};

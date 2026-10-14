@@ -1,3 +1,5 @@
+#![cfg(feature = "remote")]
+
 use std::{
     io::Read,
     net::TcpStream,

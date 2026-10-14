@@ -4644,6 +4644,7 @@ fn run_async_stdio<R: io::Read + Send + 'static, W: Write>(
                             Ok(AsyncProcessResult::Turn(ProcessResult {
                                 submission,
                                 assistant,
+                                #[cfg(feature = "remote")]
                                 worker_history_evidence: None,
                             }))
                         }
@@ -4675,6 +4676,7 @@ fn run_async_stdio<R: io::Read + Send + 'static, W: Write>(
                             Ok(AsyncProcessResult::Turn(ProcessResult {
                                 submission,
                                 assistant,
+                                #[cfg(feature = "remote")]
                                 worker_history_evidence: None,
                             }))
                         }

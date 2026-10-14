@@ -1,3 +1,5 @@
+#![cfg(feature = "remote")]
+
 use zenpi::backend::ProviderEvent;
 use zenpi::remote::{
     live_text::{LivePromptText, MAX_LIVE_TEXT_BYTES},

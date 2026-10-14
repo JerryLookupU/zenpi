@@ -1,3 +1,5 @@
+#![cfg(feature = "remote")]
+
 use serde_json::{Value, json};
 use std::{
     path::Path,

@@ -1,3 +1,5 @@
+#![cfg(feature = "remote")]
+
 use ratatui::style::Color;
 use std::{
     io::{BufRead, BufReader},

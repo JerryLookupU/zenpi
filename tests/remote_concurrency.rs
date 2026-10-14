@@ -1,3 +1,5 @@
+#![cfg(feature = "remote")]
+
 mod support;
 
 use std::{

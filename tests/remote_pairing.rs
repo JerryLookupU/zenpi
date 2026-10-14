@@ -1,3 +1,5 @@
+#![cfg(feature = "remote")]
+
 use std::{sync::Arc, time::Duration};
 use zenpi::remote::pairing::{HostIdentity, InviteIssuer, PairingInvite, unix_seconds};
 

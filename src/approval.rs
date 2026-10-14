@@ -268,6 +268,7 @@ pub struct ApprovalResponse {
 pub struct ApprovalCoordinator {
     inner: Arc<(Mutex<CoordinatorState>, Condvar)>,
     cancellation_epoch: Arc<AtomicU64>,
+    #[cfg(feature = "remote")]
     notification_session: Arc<Mutex<Option<Arc<str>>>>,
 }
 
@@ -286,10 +287,12 @@ struct CoordinatorState {
 pub struct AcceptedApproval {
     pub request: ApprovalRequest,
     pub response: ApprovalResponse,
+    #[cfg(feature = "remote")]
     pub remote: Option<RemoteApprovalActor>,
 }
 
 /// Host-authenticated attribution, never accepted from tool arguments or a local response.
+#[cfg(feature = "remote")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RemoteApprovalActor {
     pub device_id: String,
@@ -299,6 +302,7 @@ pub struct RemoteApprovalActor {
     pub session_id: String,
     pub request_digest: String,
 }
+#[cfg(feature = "remote")]
 impl RemoteApprovalActor {
     fn validate(&self, digest: &str) -> Result<(), ApprovalError> {
         let hex = |value: &str| {
@@ -322,11 +326,13 @@ impl RemoteApprovalActor {
         Ok(())
     }
 }
+#[cfg(feature = "remote")]
 impl AcceptedApproval {
-    pub(crate) fn annotate_remote(&self, event: &mut serde_json::Value) {
+    pub(crate) fn with_remote(&self, mut event: serde_json::Value) -> serde_json::Value {
         if let Some(remote) = &self.remote {
             event["remote"] = serde_json::json!(remote);
         }
+        event
     }
 }
 
@@ -341,6 +347,7 @@ impl ApprovalCoordinator {
         Self {
             inner: Arc::new((Mutex::new(CoordinatorState::default()), Condvar::new())),
             cancellation_epoch: Arc::new(AtomicU64::new(0)),
+            #[cfg(feature = "remote")]
             notification_session: Arc::new(Mutex::new(None)),
         }
     }
@@ -349,25 +356,34 @@ impl ApprovalCoordinator {
         coordinator.bind_notification_session(session);
         coordinator
     }
+    /// Remote hosts wake the session's subscribers; without them nothing listens.
     pub(crate) fn bind_notification_session(&self, session: &str) {
-        let mut scope = self
-            .notification_session
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        if let Some(previous) = scope.as_deref() {
-            crate::remote::wakeup::notify(previous);
+        #[cfg(feature = "remote")]
+        {
+            let mut scope = self
+                .notification_session
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if let Some(previous) = scope.as_deref() {
+                crate::remote::wakeup::notify(previous);
+            }
+            *scope = Some(Arc::from(session));
+            crate::remote::wakeup::notify(session);
         }
-        *scope = Some(Arc::from(session));
-        crate::remote::wakeup::notify(session);
+        #[cfg(not(feature = "remote"))]
+        let _ = session;
     }
     fn notify_session(&self) {
         crate::runtime::notify_event_hook();
-        let scope = self
-            .notification_session
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        if let Some(session) = scope.as_deref() {
-            crate::remote::wakeup::notify(session);
+        #[cfg(feature = "remote")]
+        {
+            let scope = self
+                .notification_session
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if let Some(session) = scope.as_deref() {
+                crate::remote::wakeup::notify(session);
+            }
         }
     }
 
@@ -568,7 +584,7 @@ impl ApprovalCoordinator {
         &self,
         response: ApprovalResponse,
     ) -> Result<ApprovalRequest, ApprovalError> {
-        self.respond_fenced(response, None, None)
+        self.respond_fenced(response, None, |_| ())
     }
 
     /// Compare the complete request and claim its answer in the same critical section.
@@ -582,9 +598,10 @@ impl ApprovalCoordinator {
                 "remote response must be one-shot".into(),
             ));
         }
-        self.respond_fenced(response, Some(digest), None)
+        self.respond_fenced(response, Some(digest), |_| ())
     }
 
+    #[cfg(feature = "remote")]
     pub fn respond_remote(
         &self,
         response: ApprovalResponse,
@@ -597,14 +614,16 @@ impl ApprovalCoordinator {
                 "remote response must be one-shot".into(),
             ));
         }
-        self.respond_fenced(response, Some(digest), Some(actor))
+        self.respond_fenced(response, Some(digest), |accepted| {
+            accepted.remote = Some(actor)
+        })
     }
 
     fn respond_fenced(
         &self,
         response: ApprovalResponse,
         digest: Option<&str>,
-        remote: Option<RemoteApprovalActor>,
+        attribute: impl FnOnce(&mut AcceptedApproval),
     ) -> Result<ApprovalRequest, ApprovalError> {
         if response.request_id.trim().is_empty()
             || response.request_id.len() > MAX_APPROVAL_ID_BYTES
@@ -642,11 +661,14 @@ impl ApprovalCoordinator {
             .pending
             .remove(&response.request_id)
             .ok_or(ApprovalError::UnknownRequest)?;
-        state.accepted.push(AcceptedApproval {
+        let mut accepted = AcceptedApproval {
             request: request.clone(),
             response: response.clone(),
-            remote,
-        });
+            #[cfg(feature = "remote")]
+            remote: None,
+        };
+        attribute(&mut accepted);
+        state.accepted.push(accepted);
         state
             .decisions
             .insert(response.request_id.clone(), response);
@@ -724,6 +746,7 @@ impl ApprovalCoordinator {
                 if let Some(request) = state.pending.remove(&request_id) {
                     state.accepted.push(AcceptedApproval {
                         request,
+                        #[cfg(feature = "remote")]
                         remote: None,
                         response: ApprovalResponse {
                             request_id: request_id.clone(),

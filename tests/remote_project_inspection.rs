@@ -1,3 +1,5 @@
+#![cfg(feature = "remote")]
+
 use std::{
     process::Command,
     sync::{Arc, Mutex},

@@ -88,6 +88,7 @@ fn wait_for_pending(
     panic!("approval request did not become pending");
 }
 
+#[cfg(feature = "remote")]
 fn remote_actor(
     request: &zenpi::approval::ApprovalRequest,
     session: &str,
@@ -128,6 +129,7 @@ fn tui_approval_owner_rejects_missing_coordinator() {
     }));
 }
 
+#[cfg(feature = "remote")]
 #[test]
 fn digest_fenced_one_shot_answers_use_existing_audit_before_tool_boundary() {
     for decision in [ApprovalDecision::Allow, ApprovalDecision::Deny] {
@@ -230,6 +232,7 @@ fn digest_fenced_one_shot_answers_use_existing_audit_before_tool_boundary() {
     }
 }
 
+#[cfg(feature = "remote")]
 #[test]
 fn simultaneous_local_and_remote_answers_have_one_winner_and_exact_actor_audit() {
     for _ in 0..8 {
@@ -292,6 +295,7 @@ fn simultaneous_local_and_remote_answers_have_one_winner_and_exact_actor_audit()
     }
 }
 
+#[cfg(feature = "remote")]
 #[test]
 fn remote_actor_is_retracted_on_audit_failure_even_without_local_reveal() {
     use zenpi::{

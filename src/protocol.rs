@@ -653,6 +653,11 @@ fn validate_id(id: Option<&str>) -> Result<(), ProtocolError> {
     validate_identifier(id, "id")
 }
 
+/// A request, session or subtab identifier: non-blank, bounded, no control characters.
+pub fn valid_identifier(value: &str) -> bool {
+    validate_identifier(value, "id").is_ok()
+}
+
 fn validate_identifier(value: &str, field: &'static str) -> Result<(), ProtocolError> {
     if value.trim().is_empty() {
         return Err(ProtocolError::EmptyField { field });

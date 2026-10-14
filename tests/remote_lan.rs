@@ -1,3 +1,5 @@
+#![cfg(feature = "remote")]
+
 use std::net::IpAddr;
 use zenpi::remote::lan::{local_addresses, select};
 

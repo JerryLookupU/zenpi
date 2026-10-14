@@ -1,3 +1,5 @@
+#![cfg(feature = "remote")]
+
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use ring::signature::{ECDSA_P256_SHA256_ASN1_SIGNING, EcdsaKeyPair, KeyPair};
 use serde_json::json;

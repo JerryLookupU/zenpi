@@ -1,3 +1,5 @@
+#![cfg(feature = "remote")]
+
 #[path = "support/sequential_host.rs"]
 mod sequential_host;
 mod support;

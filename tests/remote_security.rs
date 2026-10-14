@@ -1,3 +1,4 @@
+#![cfg(feature = "remote")]
 //! Stage 2 security target wrapper. The adversarial authentication and ACL
 //! coverage lives in the production integration target so it is always built
 //! by Cargo's locked test surface.

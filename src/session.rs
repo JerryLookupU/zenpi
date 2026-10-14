@@ -987,6 +987,7 @@ impl SessionStore {
                 .expect("tree was prepared")
                 .commit_turn(entry);
         }
+        #[cfg(feature = "remote")]
         crate::remote::wakeup::notify(self.session_id());
         Ok(())
     }
@@ -1330,6 +1331,7 @@ impl SessionStore {
         self.append_json(&json!({ "kind": "event", "event": &event }))?;
         self.event_values.push(event);
         self.events += 1;
+        #[cfg(feature = "remote")]
         crate::remote::wakeup::notify(self.session_id());
         Ok(())
     }

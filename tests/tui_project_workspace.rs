@@ -341,8 +341,11 @@ fn shared_resume_checkpoint_failure_preserves_actual_owner_draft_layout_and_meta
     let owner = host.active(&state);
     owner.lock().unwrap().set_persona("ESFP").unwrap();
     let old_session = owner.lock().unwrap().session().session_id().to_owned();
+    #[cfg(feature = "remote")]
     let old_signal = zenpi::remote::wakeup::watch(&old_session).unwrap();
+    #[cfg(feature = "remote")]
     let target_signal = zenpi::remote::wakeup::watch(&target_id).unwrap();
+    #[cfg(feature = "remote")]
     let observed = (old_signal.revision(), target_signal.revision());
     state.set_input("keep unsent draft 世界");
     state.push_message(MessageRole::Assistant, "keep old transcript");
@@ -358,6 +361,7 @@ fn shared_resume_checkpoint_failure_preserves_actual_owner_draft_layout_and_meta
     );
     fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
     assert!(result.is_err());
+    #[cfg(feature = "remote")]
     assert_eq!((old_signal.revision(), target_signal.revision()), observed);
     assert_eq!(state.project_checkpoint(), before);
     assert_eq!(fs::read(&checkpoint).unwrap(), saved);
@@ -371,7 +375,9 @@ fn shared_resume_checkpoint_failure_preserves_actual_owner_draft_layout_and_meta
         },
     )
     .unwrap();
+    #[cfg(feature = "remote")]
     assert_ne!(old_signal.revision(), observed.0);
+    #[cfg(feature = "remote")]
     assert_ne!(target_signal.revision(), observed.1);
     assert_eq!(owner.lock().unwrap().session().session_id(), target_id);
     assert_eq!(owner.lock().unwrap().persona(), "ISTJ");
@@ -397,6 +403,7 @@ fn stale_resume_writer_and_busy_owner_leave_the_tui_checkpoint_unchanged() {
     let root = tempdir().unwrap();
     let target = root.path().join("alternate.jsonl");
     let replacement = SessionStore::open_in_workspace(&target, root.path()).unwrap();
+    #[cfg(feature = "remote")]
     let target_signal = zenpi::remote::wakeup::watch(replacement.session_id()).unwrap();
     drop(replacement);
     let (mut state, mut host) = host(root.path());
@@ -407,8 +414,10 @@ fn stale_resume_writer_and_busy_owner_leave_the_tui_checkpoint_unchanged() {
         path: target.display().to_string(),
     };
     let owner = host.active(&state);
+    #[cfg(feature = "remote")]
     let old_signal =
         zenpi::remote::wakeup::watch(owner.lock().unwrap().session().session_id()).unwrap();
+    #[cfg(feature = "remote")]
     let observed = (old_signal.revision(), target_signal.revision());
     state.set_busy(true);
     assert!(
@@ -436,6 +445,7 @@ fn stale_resume_writer_and_busy_owner_leave_the_tui_checkpoint_unchanged() {
     );
     assert_eq!(state.project_checkpoint(), before);
     assert_eq!(fs::read(checkpoint).unwrap(), changed);
+    #[cfg(feature = "remote")]
     assert_eq!((old_signal.revision(), target_signal.revision()), observed);
 }
 

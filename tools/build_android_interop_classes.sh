@@ -6,7 +6,8 @@
 #   tools/build_android_interop_classes.sh --run    # build, then run the 8 suites
 #
 # On GitHub Actions the two ZENPI_ANDROID_INTEROP_* variables are also appended
-# to $GITHUB_ENV so later steps can call `cargo test -- --ignored` directly.
+# to $GITHUB_ENV so later steps can call `cargo test --features remote -- --ignored`
+# directly.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -50,5 +51,5 @@ for suite in ack approval session terminal workspace worktree model ""; do
     test=remote_android${suite:+_$suite}_interop
     echo "== $test"
     mkdir -p "$home/$test"
-    ZENPI_HOME="$home/$test" cargo test --locked --test "$test" -- --ignored --test-threads=1
+    ZENPI_HOME="$home/$test" cargo test --locked --features remote --test "$test" -- --ignored --test-threads=1
 done

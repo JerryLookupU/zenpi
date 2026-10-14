@@ -1,6 +1,8 @@
 //! Host-owned layer-2 identities. Display names and vector indices are not identities.
 
+#[cfg(feature = "remote")]
 use crate::project_workspace::ProjectOwnerPool;
+#[cfg(feature = "remote")]
 use crate::remote::{
     auth::{AuthenticatedDevice, DeviceRegistry},
     protocol::{Envelope, ErrorCode, Message, Operation},
@@ -8,6 +10,7 @@ use crate::remote::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+#[cfg(feature = "remote")]
 pub fn listing(
     pool: &ProjectOwnerPool,
     registry: &DeviceRegistry,
@@ -39,6 +42,7 @@ pub fn listing(
     }).map_err(|error| error.remote_code())?
 }
 
+#[cfg(feature = "remote")]
 pub fn mutate(
     pool: &mut ProjectOwnerPool,
     registry: &DeviceRegistry,

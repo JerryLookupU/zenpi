@@ -318,6 +318,7 @@ fn running_request_rejects_new_without_cancelling_old_work_then_allows_retry() {
     wire.finish();
 }
 
+#[cfg(feature = "remote")]
 #[test]
 fn committed_new_session_wakes_other_workspace_subscribers_without_repeating_on_retry() {
     let root = tempdir().unwrap();

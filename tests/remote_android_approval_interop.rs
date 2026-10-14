@@ -1,3 +1,5 @@
+#![cfg(feature = "remote")]
+
 use base64::{
     Engine,
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},

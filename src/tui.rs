@@ -94,6 +94,7 @@ const COPY_NOTICE_TTL: Duration = Duration::from_secs(5);
 const CHECKPOINT_QUIET: Duration = Duration::from_secs(1);
 const CHECKPOINT_INTERVAL: Duration = Duration::from_millis(250);
 /// The pairing screen shows a seconds countdown; it needs no faster redraw.
+#[cfg(feature = "remote")]
 const PAIRING_REDRAW: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -11993,6 +11994,7 @@ impl TuiState {
             .unwrap_or(false)
             && self.pty_scope == scope;
         if !current {
+            #[cfg(feature = "remote")]
             let previous_scope = self.pty_scope.clone();
             self.pty_shell = crate::pty_shell::PtyShell::spawn(cwd).ok();
             self.pty_scope = if self.pty_shell.is_some() {
@@ -12000,9 +12002,11 @@ impl TuiState {
             } else {
                 None
             };
+            #[cfg(feature = "remote")]
             if let Some((_, session)) = previous_scope {
                 crate::remote::wakeup::notify(&session);
             }
+            #[cfg(feature = "remote")]
             if let Some((_, session)) = &self.pty_scope {
                 crate::remote::wakeup::notify(session);
             }
@@ -12016,6 +12020,7 @@ impl TuiState {
             && shell.pump()
         {
             self.dirty = true;
+            #[cfg(feature = "remote")]
             if let Some((_, session)) = &self.pty_scope {
                 crate::remote::wakeup::notify(session);
             }
@@ -12028,6 +12033,7 @@ impl TuiState {
         self.pty_shell.is_some()
     }
 
+    #[cfg(feature = "remote")]
     fn remote_terminal(
         &self,
         pool: &crate::project_workspace::ProjectOwnerPool,
@@ -14427,6 +14433,7 @@ pub fn dispatch_slash_command(
 /// session and tool root. Preparing another project never locks a running one.
 pub struct ProjectRuntimeHost {
     pool: crate::project_workspace::ProjectOwnerPool,
+    #[cfg(feature = "remote")]
     worktrees: crate::worktree::worktree_host::WorktreeHost,
 }
 impl ProjectRuntimeHost {
@@ -14450,6 +14457,7 @@ impl ProjectRuntimeHost {
         drop(owner);
         let mut host = Self {
             pool: crate::project_workspace::ProjectOwnerPool::new(Arc::clone(&agent))?,
+            #[cfg(feature = "remote")]
             worktrees: crate::worktree::worktree_host::WorktreeHost::default(),
         };
         // ZS1-180: propagate the pool's auto-approval mode into the view so
@@ -14692,18 +14700,27 @@ impl ProjectRuntimeHost {
             .expect("committed project owner")
     }
 
+    #[cfg(feature = "remote")]
     pub fn remote_workspace_identity(&self) -> (&str, u64) {
         (self.pool.workspace_owner(), self.pool.workspace_revision())
     }
 
+    #[cfg(feature = "remote")]
     pub fn poll_remote_workers(&mut self) {
         self.worktrees.poll(&mut self.pool);
     }
 
+    #[cfg(feature = "remote")]
     pub fn remote_workers_busy(&self, project: &str) -> bool {
         self.worktrees.busy(project)
     }
+    /// No remote host, so no remote worker can hold a project.
+    #[cfg(not(feature = "remote"))]
+    pub fn remote_workers_busy(&self, _project: &str) -> bool {
+        false
+    }
 
+    #[cfg(feature = "remote")]
     fn selected_host_subtab(
         &self,
         state: &TuiState,
@@ -14734,6 +14751,7 @@ impl ProjectRuntimeHost {
         Ok(tabs.active_id)
     }
 
+    #[cfg(feature = "remote")]
     pub fn dispatch_local_worktree_status(&self, state: &mut TuiState, input: &str) -> bool {
         if !matches!(slash::parse(input), Ok(Some(SlashCommand::Status))) {
             return false;
@@ -14787,6 +14805,7 @@ impl ProjectRuntimeHost {
         true
     }
 
+    #[cfg(feature = "remote")]
     pub fn cancel_active_worktree_tasks(&mut self, state: &mut TuiState) -> bool {
         let project = state.active_project().to_owned();
         if !self.worktrees.busy(&project) {
@@ -14803,6 +14822,7 @@ impl ProjectRuntimeHost {
         true
     }
 
+    #[cfg(feature = "remote")]
     pub fn dispatch_local_worktree_cancel(&mut self, state: &mut TuiState, input: &str) -> bool {
         if !self.remote_workers_busy(state.active_project())
             || !matches!(slash::parse(input), Ok(Some(SlashCommand::Cancel)))
@@ -14816,10 +14836,12 @@ impl ProjectRuntimeHost {
         true
     }
 
+    #[cfg(feature = "remote")]
     pub fn shutdown_remote_workers(&mut self, deadline: Instant) {
         std::mem::take(&mut self.worktrees).shutdown(&self.pool, deadline);
     }
 
+    #[cfg(feature = "remote")]
     fn cancel_remote_worker(
         &mut self,
         registry: &crate::remote::auth::DeviceRegistry,
@@ -14831,6 +14853,7 @@ impl ProjectRuntimeHost {
     }
 
     /// Remote and local control publish through the same pool; only the view is reconciled here.
+    #[cfg(feature = "remote")]
     pub fn dispatch_remote(
         &mut self,
         state: &mut TuiState,
@@ -15389,6 +15412,7 @@ impl ProjectRuntimeHost {
     }
 }
 
+#[cfg(feature = "remote")]
 impl Drop for ProjectRuntimeHost {
     fn drop(&mut self) {
         self.shutdown_remote_workers(Instant::now() + crate::runtime::DEFAULT_SHUTDOWN_GRACE);
@@ -16271,14 +16295,19 @@ struct TuiRequest {
     owner: Option<Arc<Mutex<crate::core::Agent>>>,
     text: String,
     kind: TuiRequestKind,
+    #[cfg(feature = "remote")]
     remote_prompt: bool,
+    #[cfg(feature = "remote")]
     remote_identity: Option<(crate::remote::protocol::Envelope, String)>,
+    /// Streams a desktop turn's text to remote subscribers of its project.
+    #[cfg(feature = "remote")]
     local_preview_project: Option<String>,
     execution: Option<Result<crate::worktree::subtab::SubtabExecution, String>>,
     provider_events: Arc<Mutex<TuiProviderEventBuffer>>,
 }
 
 impl TuiRequest {
+    #[cfg(feature = "remote")]
     fn preview_local_model(&mut self, project: &str, arch: bool) {
         if !arch && self.kind == TuiRequestKind::Model && self.remote_identity.is_none() {
             self.local_preview_project = Some(project.to_owned());
@@ -16295,8 +16324,11 @@ impl TuiRequest {
                 owner: None,
                 text,
                 kind,
+                #[cfg(feature = "remote")]
                 remote_prompt: false,
+                #[cfg(feature = "remote")]
                 remote_identity: None,
+                #[cfg(feature = "remote")]
                 local_preview_project: None,
                 execution: None,
                 provider_events: Arc::clone(&provider_events),
@@ -17040,7 +17072,7 @@ fn render_user_shell_result(state: &mut TuiState, result: &serde_json::Value) {
     state.set_status(status);
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "remote"))]
 mod local_remote_preview_tests {
     use super::*;
 
@@ -17930,9 +17962,16 @@ pub fn run_async_with_profile(
     agent: crate::core::Agent,
     profile: Option<String>,
 ) -> Result<(), crate::error::ZenpiError> {
-    run_async_with_remote(agent, profile, None)
+    run_tui_loop(
+        agent,
+        profile,
+        #[cfg(feature = "remote")]
+        None,
+        TuiIo::Terminal,
+    )
 }
 
+#[cfg(feature = "remote")]
 pub fn run_async_with_remote(
     agent: crate::core::Agent,
     profile: Option<String>,
@@ -17950,13 +17989,30 @@ pub fn run_async_with_harness(
     agent: crate::core::Agent,
     harness: TuiHarness,
 ) -> Result<(), crate::error::ZenpiError> {
-    run_tui_loop(agent, None, None, TuiIo::Harness(harness))
+    run_tui_loop(
+        agent,
+        None,
+        #[cfg(feature = "remote")]
+        None,
+        TuiIo::Harness(harness),
+    )
+}
+
+/// A desktop prompt: its text plus any `@file` attachments it names.
+fn local_turn_input(
+    agent: &mut crate::core::Agent,
+    text: String,
+) -> Result<crate::core::TurnInputRequest, crate::core::AgentError> {
+    let attachments = crate::slash_actions::prompt_attachments(agent, &text)?;
+    Ok(crate::core::TurnInputRequest::new(text)
+        .with_mode(crate::protocol::TurnMode::StartOrSteer)
+        .with_attachments(attachments))
 }
 
 fn run_tui_loop(
     agent: crate::core::Agent,
     profile: Option<String>,
-    remote: Option<crate::host_pair::HostPairOptions>,
+    #[cfg(feature = "remote")] remote: Option<crate::host_pair::HostPairOptions>,
     io: TuiIo,
 ) -> Result<(), crate::error::ZenpiError> {
     use crate::core::AgentError;
@@ -17972,13 +18028,20 @@ fn run_tui_loop(
     let mut approvals: std::collections::BTreeMap<String, crate::project_workspace::OwnerControl> =
         std::collections::BTreeMap::new();
     let worker_state = Arc::clone(&shared);
+    #[cfg(feature = "remote")]
     let remote_progress = Arc::new(crate::remote::command::PromptProgress::default());
+    #[cfg(feature = "remote")]
     let worker_progress = Arc::clone(&remote_progress);
     // Keep provider events bounded independently of the transcript. A slow
     // terminal must not turn an unbounded stream into unbounded memory.
     let runner = BackgroundRunner::spawn(
         move |mut request: TuiRequest, token| -> Result<TuiJobResult, AgentError> {
-            if token.is_cancelled() && request.remote_identity.is_none() {
+            // A remote prompt still records its terminal state when cancelled.
+            #[cfg(feature = "remote")]
+            let local = request.remote_identity.is_none();
+            #[cfg(not(feature = "remote"))]
+            let local = true;
+            if token.is_cancelled() && local {
                 return Err(AgentError::Backend(crate::backend::BackendError::Cancelled));
             }
             let mut agent = request
@@ -17987,6 +18050,7 @@ fn run_tui_loop(
                 .unwrap_or(&worker_state)
                 .lock()
                 .map_err(|_| AgentError::InvalidTurn("agent lock poisoned".into()))?;
+            #[cfg(feature = "remote")]
             if let Some((envelope, device)) = &request.remote_identity {
                 crate::remote::command::persist_progress(
                     &mut agent,
@@ -18002,6 +18066,7 @@ fn run_tui_loop(
                 );
             }
             let tool_events = Arc::clone(&request.provider_events);
+            #[cfg(feature = "remote")]
             let desktop_preview = request.local_preview_project.as_deref().map(|project| {
                 worker_progress
                     .desktop_text()
@@ -18019,24 +18084,23 @@ fn run_tui_loop(
                     |agent| -> Result<TuiJobResult, AgentError> {
                         Ok(match request.kind {
                             TuiRequestKind::Model => {
+                                #[cfg(feature = "remote")]
                                 let input = if request.remote_prompt {
                                     crate::remote::command::prompt_input(agent, request.text)?
                                 } else {
-                                    let attachments = crate::slash_actions::prompt_attachments(
-                                        agent,
-                                        &request.text,
-                                    )?;
-                                    crate::core::TurnInputRequest::new(request.text)
-                                        .with_mode(crate::protocol::TurnMode::StartOrSteer)
-                                        .with_attachments(attachments)
+                                    local_turn_input(agent, request.text)?
                                 };
+                                #[cfg(not(feature = "remote"))]
+                                let input = local_turn_input(agent, request.text)?;
                                 TuiJobResult::Model(agent.process_with_cancel_and_events(
                                     input,
                                     || token.is_cancelled(),
                                     &mut |event| {
+                                        #[cfg(feature = "remote")]
                                         if let Some(preview) = &desktop_preview {
                                             preview.update(&event);
                                         }
+                                        #[cfg(feature = "remote")]
                                         if let Some((envelope, device)) = &request.remote_identity {
                                             worker_progress
                                                 .provider_event(envelope, device, &event);
@@ -18086,6 +18150,7 @@ fn run_tui_loop(
                 Some(Err(error)) => Err(AgentError::InvalidTurn(error)),
                 None => run(&mut agent),
             };
+            #[cfg(feature = "remote")]
             if let Some((envelope, device)) = &request.remote_identity {
                 use crate::remote::protocol::ExecutionState;
                 let status = match &result {
@@ -18344,8 +18409,11 @@ fn run_tui_loop(
     let mut active_job_project: Option<String> = None;
     let mut active_job_owner: Option<Arc<Mutex<crate::core::Agent>>> = None;
     let mut active_job_is_arch = false;
+    #[cfg(feature = "remote")]
     let mut active_remote_prompt: Option<(crate::remote::protocol::Envelope, String)> = None;
+    #[cfg(feature = "remote")]
     let mut cancel_admissions = crate::remote::command::CancelAdmissions;
+    #[cfg(feature = "remote")]
     let mut steer_admissions = crate::remote::command::SteerAdmissions::default();
     let mut pending_inputs = TuiPendingInputs::default();
     let mut input_controls = TuiInputControls::default();
@@ -18354,15 +18422,20 @@ fn run_tui_loop(
     }
     let mut last_checkpoint = Instant::now() - CHECKPOINT_INTERVAL;
     let mut last_input = Instant::now() - CHECKPOINT_QUIET;
+    #[cfg(feature = "remote")]
     let mut pairing_drawn: Option<Instant> = None;
     let mut submitted_inputs: HashMap<crate::runtime::JobId, SubmittedInput> = HashMap::new();
     let mut stream_buffers: HashMap<crate::runtime::JobId, Arc<Mutex<TuiProviderEventBuffer>>> =
         HashMap::new();
     let mut pending_approvals = VecDeque::new();
+    #[cfg(feature = "remote")]
     let mut remote_host = None;
+    #[cfg(feature = "remote")]
     let mut remote_mailbox = None;
+    #[cfg(feature = "remote")]
     let mut pairing_visible = false;
     let loop_result = (|| -> Result<(), crate::error::ZenpiError> {
+        #[cfg(feature = "remote")]
         if let Some(options) = remote.as_ref() {
             let (adapter, mailbox) = crate::remote::host_adapter::HostAdapter::owner_thread();
             remote_host = Some(crate::host_pair::PairingHost::start(
@@ -18376,12 +18449,14 @@ fn run_tui_loop(
             if guard.termination_requested() {
                 break;
             }
+            #[cfg(feature = "remote")]
             project_host.poll_remote_workers();
             if state.project_checkpoint_dirty()
                 && let Err(error) = project_host.sync_subtab_view(&mut state)
             {
                 state.set_status(format!("subtab checkpoint rejected: {error}"));
             }
+            #[cfg(feature = "remote")]
             if let Some(mailbox) = remote_mailbox.as_ref() {
                 steer_admissions.poll(&mut project_host.pool);
                 let mut admitted: std::collections::BTreeSet<String> =
@@ -18733,6 +18808,7 @@ fn run_tui_loop(
                     scheduler.request();
                 }
             }
+            #[cfg(feature = "remote")]
             if pairing_visible {
                 let host = remote_host.as_mut().expect("pairing host");
                 if pairing_drawn.is_none_or(|at| at.elapsed() >= PAIRING_REDRAW) {
@@ -19348,7 +19424,10 @@ fn run_tui_loop(
                 state.select_project_tab(index);
             }
             if active_job.is_none() {
-                active_remote_prompt = None;
+                #[cfg(feature = "remote")]
+                {
+                    active_remote_prompt = None;
+                }
                 active_job_project = None;
                 active_job_owner = None;
                 active_job_is_arch = false;
@@ -19386,6 +19465,7 @@ fn run_tui_loop(
                 let (request, events) = TuiRequest::with_kind(request_text, kind);
                 let mut request = request;
                 request.owner = Some(Arc::clone(&owner));
+                #[cfg(feature = "remote")]
                 request.preview_local_model(state.active_project(), arch_queued);
                 if !arch_queued && kind != TuiRequestKind::ResourceControl {
                     request.execution =
@@ -19567,37 +19647,47 @@ fn run_tui_loop(
                 };
                 match action {
                     TuiAction::OpenPairing => {
-                        if active_job.is_some()
-                            || state.is_busy()
-                            || state.master_busy()
-                            || !pending_inputs.projects.is_empty()
-                            || new_sessions.active.is_some()
-                            || !input_controls.pending.is_empty()
-                            || input_controls
-                                .ports
-                                .values()
-                                .any(|port| port.has_pending() || port.is_preparing())
-                            || !pending_approvals.is_empty()
+                        #[cfg(feature = "remote")]
                         {
-                            state.set_status("Pairing unavailable while work is running or queued");
-                        } else if let (Some(host), Some(options)) =
-                            (remote_host.as_mut(), remote.as_ref())
-                        {
-                            match host.refresh(Duration::from_secs(options.duration_seconds)) {
-                                Ok(()) => {
-                                    pairing_visible = true;
-                                    pairing_drawn = None;
+                            if active_job.is_some()
+                                || state.is_busy()
+                                || state.master_busy()
+                                || !pending_inputs.projects.is_empty()
+                                || new_sessions.active.is_some()
+                                || !input_controls.pending.is_empty()
+                                || input_controls
+                                    .ports
+                                    .values()
+                                    .any(|port| port.has_pending() || port.is_preparing())
+                                || !pending_approvals.is_empty()
+                            {
+                                state.set_status(
+                                    "Pairing unavailable while work is running or queued",
+                                );
+                            } else if let (Some(host), Some(options)) =
+                                (remote_host.as_mut(), remote.as_ref())
+                            {
+                                match host.refresh(Duration::from_secs(options.duration_seconds)) {
+                                    Ok(()) => {
+                                        pairing_visible = true;
+                                        pairing_drawn = None;
+                                    }
+                                    Err(error) => {
+                                        state.set_status(format!("Pairing unavailable: {error}"))
+                                    }
                                 }
-                                Err(error) => {
-                                    state.set_status(format!("Pairing unavailable: {error}"))
-                                }
+                            } else {
+                                state.set_status("Remote pairing is not enabled for this desktop");
                             }
-                        } else {
-                            state.set_status("Remote pairing is not enabled for this desktop");
+                            scheduler.request();
+                            if pairing_visible {
+                                continue 'outer;
+                            }
                         }
-                        scheduler.request();
-                        if pairing_visible {
-                            continue 'outer;
+                        #[cfg(not(feature = "remote"))]
+                        {
+                            state.set_status("Remote pairing is not enabled for this desktop");
+                            scheduler.request();
                         }
                     }
                     TuiAction::RespondApproval {
@@ -19702,10 +19792,12 @@ fn run_tui_loop(
                     TuiAction::Submit(text) => {
                         // Consumed exactly once: true only for an arch lane turn.
                         let arch_submit = state.take_arch_submit_pending();
+                        #[cfg(feature = "remote")]
                         if project_host.dispatch_local_worktree_status(&mut state, &text) {
                             scheduler.request();
                             continue 'outer;
                         }
+                        #[cfg(feature = "remote")]
                         if project_host.remote_workers_busy(state.active_project()) {
                             if project_host.dispatch_local_worktree_cancel(&mut state, &text) {
                                 scheduler.request();
@@ -20426,6 +20518,7 @@ fn run_tui_loop(
                                     let (request, events) = TuiRequest::new(text);
                                     let mut request = request;
                                     request.owner = Some(Arc::clone(&owner));
+                                    #[cfg(feature = "remote")]
                                     request
                                         .preview_local_model(state.active_project(), arch_submit);
                                     if !arch_submit {
@@ -20475,6 +20568,7 @@ fn run_tui_loop(
                         }
                     }
                     TuiAction::Interrupt => {
+                        #[cfg(feature = "remote")]
                         if project_host.cancel_active_worktree_tasks(&mut state) {
                             scheduler.request();
                             continue 'outer;
@@ -20605,8 +20699,9 @@ fn run_tui_loop(
         }
         Ok(())
     })();
-    let remote_shutdown = remote_host.as_mut().map_or(Ok(()), |host| host.shutdown());
-    let loop_result = loop_result.and(remote_shutdown);
+    #[cfg(feature = "remote")]
+    let loop_result = loop_result.and(remote_host.as_mut().map_or(Ok(()), |host| host.shutdown()));
+    #[cfg(feature = "remote")]
     drop(remote_mailbox);
     editor.shutdown(&mut state);
     state.finish_ordinary_paste();
@@ -20641,9 +20736,12 @@ fn run_tui_loop(
     // Terminal I/O can fail while a provider job is still active. Always
     // cancel and join the owned runtime before returning that error; relying
     // on `Drop` would detach a worker when its command queue is full.
+    #[cfg(feature = "remote")]
     let worker_deadline = Instant::now() + crate::runtime::DEFAULT_SHUTDOWN_GRACE;
+    #[cfg(feature = "remote")]
     project_host.worktrees.request_shutdown(worker_deadline);
     let join_result = runner.shutdown_and_join();
+    #[cfg(feature = "remote")]
     project_host.shutdown_remote_workers(worker_deadline);
     let new_session_join_result =
         new_sessions.shutdown(&mut state, &mut project_host, &mut input_controls);
