@@ -1962,43 +1962,19 @@ impl Backend for OpenAiCompatibleBackend {
                     OpenAiWireApi::GoogleGenerativeAi => "google",
                     _ => "openai",
                 });
-        for turn in turns {
+        // ZE-227: turns from another provider, wire or model are replayed as
+        // plain text and tool calls (see `protocols::history`); only history
+        // the target owns is checked as native replay.
+        let transformed = crate::protocols::history::transform(
+            turns,
+            crate::protocols::history::Target {
+                wire: wire_api,
+                provider,
+                model,
+            },
+        );
+        for turn in transformed.as_deref().unwrap_or(turns) {
             chat::validate_history(turn, provider, model, wire_api.as_str())?;
-            for a in turn
-                .metadata
-                .as_ref()
-                .and_then(|m| m.get("annotations"))
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter(|a| a["type"] == "native_history")
-            {
-                if a["wire"] != wire_api.as_str() || a["provider"] != provider {
-                    return Err(BackendError::Configuration(
-                        "native history provider/wire cannot represent selected model".into(),
-                    ));
-                }
-                let opaque = a
-                    .get("blocks")
-                    .and_then(Value::as_array)
-                    .is_some_and(|blocks| {
-                        blocks.iter().any(|b| {
-                            matches!(b["type"].as_str(), Some("thinking" | "redacted_thinking"))
-                        })
-                    })
-                    || a.get("parts")
-                        .and_then(Value::as_array)
-                        .is_some_and(|parts| {
-                            parts.iter().any(|p| {
-                                p.get("thoughtSignature").is_some() || p["thought"] == true
-                            })
-                        });
-                if opaque && a["model"] != model {
-                    return Err(BackendError::Configuration(
-                        "opaque signed history cannot move to another model".into(),
-                    ));
-                }
-            }
         }
         Ok(())
     }

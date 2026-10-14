@@ -26,6 +26,9 @@ pub const CAPABILITIES: ProviderCapabilities = ProviderCapabilities {
     reasoning: true,
 };
 const WIRE: &str = "google_generative_ai";
+/// Gemini 3 accepts this in place of a thought signature on a call it did
+/// not produce (pi `SKIP_THOUGHT_SIGNATURE`).
+const SKIP_THOUGHT_SIGNATURE: &str = "skip_thought_signature_validator";
 const MAX_PARTS: usize = 2048;
 const MAX_HISTORY: usize = 256 * 1024;
 const MAX_FRAME: usize = 256 * 1024;
@@ -246,7 +249,24 @@ fn assistant_parts(
         ));
     }
     if !calls.is_empty() {
-        return Err(config("Gemini tool history requires original native parts"));
+        // ZE-227: calls another model made carry no Gemini parts. They are
+        // sent ID-less; Gemini 3 validates a signature on the first call of a
+        // step, which pi waives with the documented skip sentinel.
+        let mut parts = vec![];
+        if !turn.content.is_empty() {
+            parts.push(json!({"text":turn.content}));
+        }
+        for (index, call) in calls.iter().enumerate() {
+            if !call.arguments.is_object() || !name(&call.name) {
+                return Err(config("invalid saved Gemini calls"));
+            }
+            let mut part = json!({"functionCall":{"name":call.name,"args":call.arguments}});
+            if index == 0 && model.starts_with("gemini-3") {
+                part["thoughtSignature"] = json!(SKIP_THOUGHT_SIGNATURE);
+            }
+            parts.push(part);
+        }
+        return Ok((parts, calls));
     }
     Ok((vec![json!({"text":turn.content})], calls))
 }

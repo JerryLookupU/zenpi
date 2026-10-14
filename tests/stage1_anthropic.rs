@@ -388,25 +388,29 @@ fn native_history_integrity_and_cross_wire_are_authoritative() {
         )),
         Err(BackendError::Configuration(_))
     ));
+    // ZE-227: another wire or model replays the turn as text and tool calls,
+    // so encoding succeeds and only the closed fixture port fails.
     let chat = OpenAiCompatibleBackend::new("http://127.0.0.1:1", None, "gpt-4.1").unwrap();
-    assert!(matches!(
-        chat.complete(CompletionRequest::new(
-            "u",
-            &[user.clone(), a.clone(), result.clone()],
-            None,
-            &[tool()]
-        )),
-        Err(BackendError::Configuration(_))
+    let cross_wire = chat.complete(CompletionRequest::new(
+        "u",
+        &[user.clone(), a.clone(), result.clone()],
+        None,
+        &[tool()],
     ));
-    assert!(matches!(
-        b.complete(CompletionRequest::new(
-            "u",
-            &[user, a, result],
-            Some("other"),
-            &[tool()]
-        )),
-        Err(BackendError::Configuration(_))
+    assert!(
+        matches!(cross_wire, Err(ref e) if !matches!(e, BackendError::Configuration(_))),
+        "{cross_wire:?}"
+    );
+    let other_model = b.complete(CompletionRequest::new(
+        "u",
+        &[user, a, result],
+        Some("other"),
+        &[tool()],
     ));
+    assert!(
+        matches!(other_model, Err(ref e) if !matches!(e, BackendError::Configuration(_))),
+        "{other_model:?}"
+    );
 }
 
 #[test]

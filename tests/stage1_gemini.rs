@@ -742,7 +742,7 @@ fn first_text_precedes_finish_and_split_utf8_crlf_is_supported() {
 }
 
 #[test]
-fn model_selection_rejects_opaque_history_before_journal_but_plain_text_can_switch() {
+fn model_selection_moves_opaque_history_to_another_model_and_plain_text_can_switch() {
     use zenpi::{core::Agent, session::SessionStore};
     let (url, _, h) = serve(vec![(
         "application/json".into(),
@@ -760,9 +760,9 @@ fn model_selection_rejects_opaque_history_before_journal_but_plain_text_can_swit
     a.metadata = Some(json!({"annotations":c.annotations}));
     session.append_turn(a).unwrap();
     let mut agent = Agent::new(session, Box::new(backend("http://127.0.0.1:1".into())));
-    let before = std::fs::read(&path).unwrap();
-    assert!(agent.set_model(Some("compatible-future".into())).is_err());
-    assert_eq!(std::fs::read(&path).unwrap(), before);
+    // ZE-227: the signed turn replays on another model as plain text, so the
+    // switch is accepted (and switching back keeps the signed replay).
+    agent.set_model(Some("compatible-future".into())).unwrap();
     agent.set_model(Some(MODEL.into())).unwrap();
     let path = dir.path().join("plain.jsonl");
     let mut session = SessionStore::open(&path).unwrap();
@@ -805,7 +805,7 @@ fn production_incomplete_stream_never_executes_and_restart_stays_readable() {
 }
 
 #[test]
-fn resume_rejects_saved_model_incompatible_with_signed_history_without_changing_owner() {
+fn resume_moves_signed_history_to_the_saved_model() {
     use zenpi::{core::Agent, session::SessionStore};
     let dir = tempdir().unwrap();
     let target = dir.path().join("target.jsonl");
@@ -823,13 +823,14 @@ fn resume_rejects_saved_model_incompatible_with_signed_history_without_changing_
     let old = dir.path().join("old.jsonl");
     let mut agent = Agent::new(SessionStore::open(&old).unwrap(), Box::new(b));
     let before = agent.snapshot();
-    let bytes = std::fs::read(&old).unwrap();
-    assert!(agent.resume_session(&target).is_err());
-    assert_eq!(
+    // ZE-227: a saved model other than the signer is no longer a conflict;
+    // the signed turn is replayed to it as plain text.
+    agent.resume_session(&target).unwrap();
+    assert_ne!(
         agent.snapshot().session.session_id,
         before.session.session_id
     );
-    assert_eq!(std::fs::read(&old).unwrap(), bytes);
+    assert_eq!(agent.model(), Some("future-model"));
 }
 
 #[test]
