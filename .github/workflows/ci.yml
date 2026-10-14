@@ -20,6 +20,10 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
+      # search/find run the real rg (tests/stage1_search.rs requires it).
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -40,7 +44,7 @@ jobs:
         # Several integration fixtures bind short-lived loopback listeners;
         # serial execution avoids OS-level port/resource contention while
         # retaining the complete all-targets matrix.
-        run: cargo test --all-targets --all-features --locked -- --test-threads=1
+        run: cargo test --all-targets --all-features --locked --no-fail-fast -- --test-threads=1
 
       - name: Validate authoritative blueprint and Gantt
         run: |
