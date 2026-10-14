@@ -41,7 +41,7 @@ class NetworkMonitor(context: Context, private val changed: (Long?) -> Unit) {
                         network.networkHandle to NetworkLinkStamp(links.interfaceName, links.mtu,
                             links.linkAddresses.map { LanAddressState(it.address.hostAddress, it.prefixLength, it.flags, it.scope) }.toSet(),
                             links.routes.map { NetworkRouteStamp(it.destination.address.hostAddress, it.destination.prefixLength,
-                                it.gateway?.hostAddress, it.type, it.`interface`) }.toSet()) else null
+                                it.gateway?.hostAddress, it.typeCompat, it.`interface`) }.toSet()) else null
                 }.toMap()
                 connectivity.activeNetwork?.networkHandle to locals
             } ?: return

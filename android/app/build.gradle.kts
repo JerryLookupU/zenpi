@@ -11,6 +11,18 @@ val verifyPairingEntry by tasks.registering(Exec::class) {
     commandLine("python3", "tools/validate_stage2_android_entry.py")
 }
 tasks.named("preBuild") { dependsOn(verifyRemoteSchema, verifyPairingEntry) }
+// Rust interop tests (tests/remote_android_*interop.rs) launch JUnitCore on
+// the freshly compiled JVM unit-test classes; this records that classpath.
+val writeInteropClasspath by tasks.registering {
+    val unitTests = tasks.named<Test>("testDebugUnitTest")
+    val classpath = unitTests.map { it.classpath }
+    val output = layout.buildDirectory.file("interop/classpath.txt")
+    dependsOn(classpath)
+    outputs.file(output)
+    doLast {
+        output.get().asFile.writeText(classpath.get().files.joinToString(File.pathSeparator))
+    }
+}
 android {
     namespace = "zenpi"
     compileSdk = 35

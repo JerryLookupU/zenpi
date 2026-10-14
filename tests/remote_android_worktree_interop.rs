@@ -71,7 +71,7 @@ fn views(
 }
 
 #[test]
-#[ignore = "requires freshly compiled Kotlin JVM classes; source checker owns execution"]
+#[ignore = "needs Android JVM classes; run tools/build_android_interop_classes.sh --run"]
 fn android_worktree_crud_quota_and_dirty_refusal_roundtrip_through_rust() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();

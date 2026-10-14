@@ -57,7 +57,7 @@ impl Drop for Pending {
 }
 
 #[test]
-#[ignore = "requires freshly compiled Kotlin classes; run by Android source checker"]
+#[ignore = "needs Android JVM classes; run tools/build_android_interop_classes.sh --run"]
 fn android_approval_decisions_are_one_shot_digest_fenced_and_restart_durable() {
     for decision in [ApprovalDecision::Allow, ApprovalDecision::Deny] {
         let temp = tempfile::tempdir().unwrap();

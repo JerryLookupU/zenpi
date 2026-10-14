@@ -154,7 +154,7 @@ fn views(
 }
 
 #[test]
-#[ignore = "requires current Kotlin JVM classes; executed by Android source checker"]
+#[ignore = "needs Android JVM classes; run tools/build_android_interop_classes.sh --run"]
 fn android_worker_reads_use_real_desktop_tasks_and_restart_journals() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
@@ -493,7 +493,7 @@ fn android_worker_reads_use_real_desktop_tasks_and_restart_journals() {
 }
 
 #[test]
-#[ignore = "requires current Kotlin JVM classes; executed by Android source checker"]
+#[ignore = "needs Android JVM classes; run tools/build_android_interop_classes.sh --run"]
 fn android_read_only_history_pages_use_real_desktop_journal() {
     let history_id = |index| {
         if index == 0 {
@@ -732,7 +732,7 @@ fn android_read_only_history_pages_use_real_desktop_journal() {
 }
 
 #[test]
-#[ignore = "requires current Kotlin JVM classes; executed by Android source checker"]
+#[ignore = "needs Android JVM classes; run tools/build_android_interop_classes.sh --run"]
 fn android_read_only_diff_pages_use_real_desktop_git() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
@@ -908,7 +908,7 @@ fn android_read_only_diff_pages_use_real_desktop_git() {
 }
 
 #[test]
-#[ignore = "requires current Kotlin JVM classes; executed by Android source checker"]
+#[ignore = "needs Android JVM classes; run tools/build_android_interop_classes.sh --run"]
 fn android_read_only_files_use_real_desktop_owner() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
@@ -1092,7 +1092,7 @@ fn android_read_only_files_use_real_desktop_owner() {
 }
 
 #[test]
-#[ignore = "requires current Kotlin JVM classes; executed by Android source checker"]
+#[ignore = "needs Android JVM classes; run tools/build_android_interop_classes.sh --run"]
 fn android_resource_paging_reload_and_restart_use_real_desktop_catalog() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
@@ -1323,7 +1323,7 @@ fn android_resource_paging_reload_and_restart_use_real_desktop_catalog() {
 }
 
 #[test]
-#[ignore = "requires current Kotlin JVM classes; executed by Android source checker"]
+#[ignore = "needs Android JVM classes; run tools/build_android_interop_classes.sh --run"]
 fn android_model_reasoning_cas_and_restart_receipts_use_real_desktop_owner() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
