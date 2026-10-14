@@ -13,7 +13,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import kotlinx.coroutines.delay
 import zenpi.pairing.PairingInvite
-import zenpi.transport.RemoteApproval
 
 /** Project-level dialogs; discarded when the host or session changes. */
 @Stable
@@ -23,7 +22,6 @@ class WorkspaceUiState {
     var newSessionTarget by mutableStateOf<Pair<String, String>?>(null)
     var renameSessionTarget by mutableStateOf<Pair<String, String>?>(null)
     var sessionNameDraft by mutableStateOf("")
-    var approvalDecision by mutableStateOf<Pair<RemoteApproval, String>?>(null)
 }
 
 /** Subtab dialogs; discarded when the host, session or subtab projection changes. */

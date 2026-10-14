@@ -168,7 +168,6 @@ fun AppShell(state: PairingState, actions: PairingActions, inlineSwitcher: Boole
     if (state.sessionsOpen) SessionsDialog(state, scope, actions)
     if (state.terminalOpen) TerminalHistoryDialog(state, actions)
     state.transcriptTurn?.let { TranscriptDialog(state, it, actions) }
-    workspaceUi.approvalDecision?.let { (target, decision) -> ApprovalDecisionDialog(state, target, decision, workspaceUi, actions) }
     WorkspaceDialogs(state, scope, workspaceUi, directory, actions)
     SubtabDialogs(state, scope, subtabUi, actions)
 }

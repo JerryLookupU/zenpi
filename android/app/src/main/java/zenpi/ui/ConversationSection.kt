@@ -35,7 +35,7 @@ private val activePromptStates = setOf("accepted", "running")
 
 /**
  * Session controls for an authorized host that have no secondary page yet: session toolbar,
- * approvals, message and task statuses, the task composer and the terminal. The conversation,
+ * message and task statuses, the task composer and the terminal. The conversation,
  * its composer and the model chip live in [ConversationScreen].
  */
 @Composable
@@ -44,7 +44,6 @@ fun WorkspaceSection(scope: ScreenScope, projection: HostProjection, workspaceUi
     val selected = scope.selected
     SessionToolbar(scope, projection, workspaceUi, actions)
     Text(projection.phase ?: "Unavailable", style = MaterialTheme.typography.labelLarge)
-    ApprovalCards(state, selected, workspaceUi)
     PromptStatuses(state, projection, selected, actions)
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
         IconButton(onClick = { actions.workerStatuses(-1) }, enabled = WorkerStatusReadPolicy.browse(state)) {

@@ -83,7 +83,7 @@ import zenpi.ui.dialogs.ResourcesDialog
 /**
  * The main screen for an authorized host: a top bar (switcher, Agent/Arch mode, worktree and
  * model chips), the conversation as a reverse [LazyColumn] that sticks to the newest turn and
- * its streaming row, and the bottom-pinned [Composer]. [header] holds the session controls that
+ * its streaming row, and the bottom-pinned [ApprovalPanel] bar and [Composer]. [header] holds the session controls that
  * have no secondary page yet; it scrolls in as the oldest list item.
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -100,6 +100,7 @@ fun ConversationScreen(scope: ScreenScope, projection: HostProjection, prompt: D
             // The keyboard lifts the composer, and shrinks the list above it, whether or not a composer is shown.
             Surface(tonalElevation = if (composer) 3.dp else 0.dp) {
                 Column(Modifier.navigationBarsPadding().imePadding()) {
+                    ApprovalPanel(scope, actions)
                     // Scrollable so a 5-line draft at a large font never pushes the composer off a small screen.
                     if (composer) Column(Modifier.heightIn(max = 280.dp).verticalScroll(rememberScrollState())
                         .padding(horizontal = 12.dp, vertical = 8.dp)) {

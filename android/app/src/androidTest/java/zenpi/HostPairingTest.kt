@@ -347,9 +347,10 @@ class HostPairingTest {
                             assertEquals("approval-$decision.txt", preview.path)
                             assertTrue(preview.patch.contains("+approved-$decision"))
                             assertFalse(preview.withheld)
-                            compose.onNodeWithText("Awaiting approval").performScrollTo().assertIsDisplayed()
-                            compose.onNodeWithContentDescription("${if (decision == "allow") "Allow" else "Deny"} approval ${target.requestId}").performScrollTo().assertIsEnabled().performClick()
+                            compose.onNodeWithContentDescription("${if (decision == "allow") "Allow" else "Deny"} approval ${target.requestId}").assertIsEnabled()
+                            compose.onNodeWithContentDescription("Review approvals").performClick()
                             compose.waitForIdle()
+                            compose.onNodeWithText("Awaiting approval").assertIsDisplayed()
                             compose.onNodeWithText("approval-$decision.txt").assertIsDisplayed()
                             compose.onNodeWithText("+approved-$decision", substring = true).assertIsDisplayed()
                             delay(350)
@@ -360,7 +361,7 @@ class HostPairingTest {
                             approvalBitmap.recycle()
                             compose.onNodeWithText(if (decision == "allow") "Allow once" else "Deny").performClick()
                             compose.waitUntil(timeoutMillis = 3000) {
-                                compose.onAllNodesWithText(if (decision == "allow") "Allow this tool once?" else "Deny this tool?").fetchSemanticsNodes().isEmpty()
+                                compose.onAllNodesWithTag("approval-sheet").fetchSemanticsNodes().isEmpty()
                             }
                             val answer = "STAGE2_APPROVAL_${decision.uppercase()}_DONE"
                             repeat(100) {

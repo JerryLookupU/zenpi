@@ -64,13 +64,13 @@ class SessionScopeScreenTest {
         compose.runOnIdle { assertEquals(emptyList<String>(), sent) }
     }
 
-    @Test fun approvalConfirmationCannotResurrectWhenReturningToAnOldSession() {
+    @Test fun approvalSheetCannotResurrectWhenReturningToAnOldSession() {
         val approval = RemoteApproval("approval", "project", "old", "turn", "call", "write_file", "workspace_write", "agent_tool", "d".repeat(64))
         val original = projection.copy(projects = listOf(project.copy(pendingApprovals = listOf(approval), approvalControl = true)))
         val state = mutableStateOf(PairingState(phase = PairingPhase.CONNECTED, host = host, projection = original))
         var decisions = 0
         compose.setContent { MaterialTheme { PairingScreen(state.value, {}, {}, {}, onApprove = { _, _ -> decisions++ }) } }
-        compose.onNodeWithContentDescription("Allow approval approval").performScrollTo().performClick()
+        compose.onNodeWithContentDescription("Review approvals").performClick()
         compose.onNodeWithText("Allow once").assertIsEnabled()
         compose.runOnIdle { state.value = state.value.copy(projection = projection.copy(sessionId = "new", projects = listOf(project.copy(sessionId = "new")))) }
         compose.onNodeWithText("Allow once").assertDoesNotExist()

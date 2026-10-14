@@ -1255,7 +1255,7 @@ class PairingViewModel @JvmOverloads constructor(application: Application, priva
         executeWorkspace(command)
     }
     fun approve(target: zenpi.transport.RemoteApproval, decision: String) {
-        if (!foreground || !networkAvailable || !ApprovalDecisionPolicy.allows(mutable.value, target)) return
+        if (!foreground || !networkAvailable || !ApprovalDecisionPolicy.decides(mutable.value, target)) return
         val projection = mutable.value.projection ?: return
         val command = runCatching { WorkspaceCommand.approve(projection, target, decision) }.getOrElse { return }
         executeWorkspace(command)
