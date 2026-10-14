@@ -837,6 +837,23 @@ enum AsyncProcessResult {
 struct BufferedEvent<T> {
     event: T,
     serialized_bytes: usize,
+    /// Position in the request's single production order. Provider deltas
+    /// and agent/tool lifecycle events keep separate byte budgets, but are
+    /// merged by this value so the wire shows them in causal order.
+    order: u64,
+}
+
+/// One entry of a request mailbox, in the order the worker produced it.
+enum MailboxEvent {
+    Provider(ProviderEvent),
+    Agent(AgentEvent),
+}
+
+/// Everything detached from a request mailbox by one drain.
+struct MailboxDrain {
+    events: Vec<MailboxEvent>,
+    provider_dropped: DroppedEvents,
+    agent_dropped: DroppedEvents,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -866,6 +883,7 @@ struct AsyncEventBuffer {
     agent_bytes: usize,
     provider_dropped: DroppedEvents,
     agent_dropped: DroppedEvents,
+    next_order: u64,
 }
 
 const EVENT_MAILBOX_POISONED: &str = "headless event mailbox mutex poisoned";
@@ -919,26 +937,15 @@ fn is_priority_agent_event(event: &AgentEvent) -> bool {
         )
 }
 
-fn buffered_admission_prefix_len(events: &[BufferedEvent<AgentEvent>]) -> Option<usize> {
-    // A request normally publishes one marker, but a recovery/reissue path
-    // may append more than one lifecycle event before the host polls. Drain
-    // through the *last* marker so every admission remains ahead of provider
-    // output even when ordinary agent events are interleaved.
-    events
-        .iter()
-        .rposition(|event| is_admission_event(&event.event))
-        .map(|last_admission| last_admission.saturating_add(1))
-}
-
-fn admission_prefix_len(events: &[AgentEvent]) -> Option<usize> {
-    events
-        .iter()
-        .rposition(is_admission_event)
-        .map(|last_admission| last_admission.saturating_add(1))
-}
-
 impl AsyncEventBuffer {
+    fn next_order(&mut self) -> u64 {
+        let order = self.next_order;
+        self.next_order = self.next_order.saturating_add(1);
+        order
+    }
+
     fn push_provider(&mut self, event: ProviderEvent) {
+        let order = self.next_order();
         let serialized_bytes = serialized_event_len(&event);
         let next_bytes = self.provider_bytes.checked_add(serialized_bytes);
         if self.provider.len() < MAX_ASYNC_PROVIDER_EVENTS
@@ -948,6 +955,7 @@ impl AsyncEventBuffer {
             self.provider.push(BufferedEvent {
                 event,
                 serialized_bytes,
+                order,
             });
         } else {
             self.provider_dropped.record(serialized_bytes);
@@ -955,6 +963,7 @@ impl AsyncEventBuffer {
     }
 
     fn push_agent(&mut self, event: AgentEvent) {
+        let order = self.next_order();
         let serialized_bytes = serialized_event_len(&event);
         if is_priority_agent_event(&event) {
             // Admission and tool lifecycle boundaries take priority over
@@ -982,6 +991,7 @@ impl AsyncEventBuffer {
                     self.agent.push(BufferedEvent {
                         event,
                         serialized_bytes,
+                        order,
                     });
                     return;
                 }
@@ -1014,50 +1024,45 @@ impl AsyncEventBuffer {
             self.agent.push(BufferedEvent {
                 event,
                 serialized_bytes,
+                order,
             });
         } else {
             self.agent_dropped.record(serialized_bytes);
         }
     }
 
-    fn take_provider(&mut self) -> (Vec<ProviderEvent>, DroppedEvents) {
-        let events = std::mem::take(&mut self.provider)
-            .into_iter()
-            .map(|buffered| buffered.event)
-            .collect();
+    /// Detach every buffered event as one causally ordered sequence. Both
+    /// queues are already sorted by production order (pushes append and
+    /// eviction only removes), so a linear merge restores the interleaving
+    /// in which the worker produced provider deltas and tool lifecycle.
+    fn take_ordered(&mut self) -> MailboxDrain {
+        let provider = std::mem::take(&mut self.provider);
+        let agent = std::mem::take(&mut self.agent);
         self.provider_bytes = 0;
-        let dropped = std::mem::take(&mut self.provider_dropped);
-        (events, dropped)
-    }
-
-    fn take_agent(&mut self) -> (Vec<AgentEvent>, DroppedEvents) {
-        let events = std::mem::take(&mut self.agent)
-            .into_iter()
-            .map(|buffered| buffered.event)
-            .collect();
         self.agent_bytes = 0;
-        let dropped = std::mem::take(&mut self.agent_dropped);
-        (events, dropped)
-    }
-
-    /// Admission markers are produced immediately after `Agent::submit`,
-    /// before the provider starts. Keep them ahead of streamed provider
-    /// events even when the host polls the request before it completes. Agent
-    /// construction may also preload recovery errors, so include any prefix
-    /// before the first admission marker rather than requiring the marker to
-    /// be the first queued event. Drain through the last marker to cover
-    /// interleaved recovery/reissue events; any later AgentEvents remain
-    /// buffered until the provider trace is drained.
-    fn take_admission(&mut self) -> Vec<AgentEvent> {
-        let Some(admission_end) = buffered_admission_prefix_len(&self.agent) else {
-            return Vec::new();
-        };
-        let drained = self.agent.drain(..admission_end).collect::<Vec<_>>();
-        let drained_bytes = drained.iter().fold(0_usize, |total, buffered| {
-            total.saturating_add(buffered.serialized_bytes)
-        });
-        self.agent_bytes = self.agent_bytes.saturating_sub(drained_bytes);
-        drained.into_iter().map(|buffered| buffered.event).collect()
+        let mut events = Vec::with_capacity(provider.len().saturating_add(agent.len()));
+        let mut provider = provider.into_iter().peekable();
+        let mut agent = agent.into_iter().peekable();
+        loop {
+            let take_provider = match (provider.peek(), agent.peek()) {
+                (Some(next_provider), Some(next_agent)) => next_provider.order < next_agent.order,
+                (Some(_), None) => true,
+                (None, Some(_)) => false,
+                (None, None) => break,
+            };
+            if take_provider {
+                if let Some(buffered) = provider.next() {
+                    events.push(MailboxEvent::Provider(buffered.event));
+                }
+            } else if let Some(buffered) = agent.next() {
+                events.push(MailboxEvent::Agent(buffered.event));
+            }
+        }
+        MailboxDrain {
+            events,
+            provider_dropped: std::mem::take(&mut self.provider_dropped),
+            agent_dropped: std::mem::take(&mut self.agent_dropped),
+        }
     }
 }
 
@@ -4110,99 +4115,13 @@ fn drain_provider_events<W: Write>(
     sequence: &mut u64,
     replay: &mut ReplayState,
 ) -> Result<(), HeadlessError> {
-    for work in jobs.values() {
-        replay.emission_project = Some(work.project.clone());
-        // `ProviderEvent` deliberately contains no turn ID.  The async
-        // request owns the correlation captured from `TurnSubmission`, so
-        // read it from `AsyncWork` rather than probing the event JSON.
-        // Snapshot the mailbox before doing JSON encoding or writing to the
-        // client. A slow stdout consumer must not hold the request lock and
-        // stall the provider worker (or a future lifecycle callback).
-        let (work_turn_id, agent_events, (provider_events, dropped), (live_events, live_dropped)) =
-            match work.events.lock() {
-                Ok(mut events) => {
-                    // Admission markers must be observed before any provider delta
-                    // for the same request. `Agent::submit` publishes them before
-                    // it enters the provider, and the per-request buffer preserves
-                    // that relationship.
-                    // Read correlation after acquiring the publication lock. Reading
-                    // it before the mailbox could capture None, then drain events
-                    // published by a just-admitted turn with missing correlation.
-                    let turn_id = work
-                        .turn_id
-                        .lock()
-                        .map_err(|_| event_mailbox_headless_error())?
-                        .clone();
-                    (
-                        turn_id,
-                        events.take_admission(),
-                        events.take_provider(),
-                        events.take_agent(),
-                    )
-                }
-                Err(_) => return Err(event_mailbox_headless_error()),
-            };
-        write_buffered_events(
-            output,
-            sequence,
-            work.id.clone(),
-            agent_events,
-            Some(replay),
-        )?;
-        for event in provider_events {
-            let mut value = serde_json::to_value(&event)?;
-            let current = *sequence;
-            if let Some(block) = provider_event_block(&event)
-                && let Some(object) = value.as_object_mut()
-            {
-                object.insert("block".into(), block);
-            }
-            match crate::view_model::ViewEvent::from_provider_event(
-                current,
-                work.id.clone(),
-                work_turn_id.as_deref(),
-                None,
-                &event,
-            ) {
-                Ok(view) => value
-                    .as_object_mut()
-                    .expect("provider event is an object")
-                    .insert("view".into(), serde_json::to_value(view)?),
-                Err(error) => value
-                    .as_object_mut()
-                    .expect("provider event is an object")
-                    .insert(
-                        "view_error".into(),
-                        json!({"code":"view_model_error","message": error.to_string()}),
-                    ),
-            };
-            let mut envelope =
-                StdioEvent::new(current, work.id.clone(), work_turn_id.clone(), value);
-            envelope.project = replay.emission_project.clone();
-            *sequence = sequence.saturating_add(1);
-            let line = encode_line(&envelope)?;
-            replay.remember_event(current, line.clone())?;
-            output.write_all(line.as_bytes())?;
-        }
-        write_buffered_events(output, sequence, work.id.clone(), live_events, Some(replay))?;
-        write_dropped_event(
-            output,
-            sequence,
-            replay,
-            work.id.clone(),
-            work_turn_id.clone(),
-            EventMailboxStream::Agent,
-            live_dropped,
-        )?;
-        write_dropped_event(
-            output,
-            sequence,
-            replay,
-            work.id.clone(),
-            work_turn_id,
-            EventMailboxStream::Provider,
-            dropped,
-        )?;
+    // Runtime job IDs are allocated in admission order; iterate them in that
+    // order rather than in HashMap order so concurrent requests interleave
+    // deterministically on the wire.
+    let mut ordered: Vec<_> = jobs.iter().collect();
+    ordered.sort_unstable_by_key(|(job_id, _)| job_id.get());
+    for (_, work) in ordered {
+        drain_job_mailbox(work, output, sequence, replay)?;
     }
     output.flush()?;
     Ok(())
@@ -4282,73 +4201,46 @@ fn drain_approval_events<W: Write>(
     Ok(())
 }
 
-fn drain_provider_events_for_job<W: Write>(
+/// Write one request's mailbox in production order. `ProviderEvent`
+/// deliberately contains no turn ID; correlation is carried by the request
+/// metadata captured when the submission was accepted.
+fn drain_job_mailbox<W: Write>(
     work: &AsyncWork,
     output: &mut W,
     sequence: &mut u64,
     replay: &mut ReplayState,
 ) -> Result<(), HeadlessError> {
     replay.emission_project = Some(work.project.clone());
-    // Raw provider events have no turn_id field; correlation is carried by
-    // the request metadata captured when the submission was accepted.
-    let work_turn_id = work
-        .turn_id
-        .lock()
-        .map_err(|_| event_mailbox_headless_error())?
-        .clone();
     // Detach all buffered data before serializing or writing. Holding this
-    // mutex across client I/O would let a slow consumer pause the worker.
-    let (admission_events, (provider_events, dropped), (live_events, live_dropped)) =
-        match work.events.lock() {
-            Ok(mut events) => (
-                events.take_admission(),
-                events.take_provider(),
-                events.take_agent(),
-            ),
-            Err(_) => return Err(event_mailbox_headless_error()),
-        };
-    write_buffered_events(
-        output,
-        sequence,
-        work.id.clone(),
-        admission_events,
-        Some(replay),
-    )?;
-    for event in provider_events {
-        let mut value = serde_json::to_value(&event)?;
-        if let Some(block) = provider_event_block(&event)
-            && let Some(object) = value.as_object_mut()
-        {
-            object.insert("block".into(), block);
+    // mutex across client I/O would let a slow consumer stall the worker.
+    // Read the turn correlation under the publication lock: reading it first
+    // could capture None and then drain events of a just-admitted turn.
+    let (work_turn_id, drained) = match work.events.lock() {
+        Ok(mut events) => {
+            let turn_id = work
+                .turn_id
+                .lock()
+                .map_err(|_| event_mailbox_headless_error())?
+                .clone();
+            (turn_id, events.take_ordered())
         }
-        let current = *sequence;
-        match crate::view_model::ViewEvent::from_provider_event(
-            current,
-            work.id.clone(),
-            work_turn_id.as_deref(),
-            None,
-            &event,
-        ) {
-            Ok(view) => value
-                .as_object_mut()
-                .expect("provider event is an object")
-                .insert("view".into(), serde_json::to_value(view)?),
-            Err(error) => value
-                .as_object_mut()
-                .expect("provider event is an object")
-                .insert(
-                    "view_error".into(),
-                    json!({"code":"view_model_error","message": error.to_string()}),
-                ),
-        };
-        let mut envelope = StdioEvent::new(current, work.id.clone(), work_turn_id.clone(), value);
-        envelope.project = replay.emission_project.clone();
-        *sequence = sequence.saturating_add(1);
-        let line = encode_line(&envelope)?;
-        replay.remember_event(current, line.clone())?;
-        output.write_all(line.as_bytes())?;
+        Err(_) => return Err(event_mailbox_headless_error()),
+    };
+    for event in drained.events {
+        match event {
+            MailboxEvent::Agent(event) => {
+                write_agent_event_line(output, sequence, work.id.clone(), &event, Some(replay))?;
+            }
+            MailboxEvent::Provider(event) => write_provider_event_line(
+                output,
+                sequence,
+                replay,
+                work.id.clone(),
+                work_turn_id.clone(),
+                &event,
+            )?,
+        }
     }
-    write_buffered_events(output, sequence, work.id.clone(), live_events, Some(replay))?;
     write_dropped_event(
         output,
         sequence,
@@ -4356,7 +4248,7 @@ fn drain_provider_events_for_job<W: Write>(
         work.id.clone(),
         work_turn_id.clone(),
         EventMailboxStream::Agent,
-        live_dropped,
+        drained.agent_dropped,
     )?;
     write_dropped_event(
         output,
@@ -4365,8 +4257,48 @@ fn drain_provider_events_for_job<W: Write>(
         work.id.clone(),
         work_turn_id,
         EventMailboxStream::Provider,
-        dropped,
+        drained.provider_dropped,
     )?;
+    Ok(())
+}
+
+fn write_provider_event_line<W: Write>(
+    output: &mut W,
+    sequence: &mut u64,
+    replay: &mut ReplayState,
+    request_id: Option<String>,
+    turn_id: Option<String>,
+    event: &ProviderEvent,
+) -> Result<(), HeadlessError> {
+    let mut value = serde_json::to_value(event)?;
+    if let Some(block) = provider_event_block(event)
+        && let Some(object) = value.as_object_mut()
+    {
+        object.insert("block".into(), block);
+    }
+    let current = *sequence;
+    let view = match crate::view_model::ViewEvent::from_provider_event(
+        current,
+        request_id.clone(),
+        turn_id.as_deref(),
+        None,
+        event,
+    ) {
+        Ok(view) => ("view", serde_json::to_value(view)?),
+        Err(error) => (
+            "view_error",
+            json!({"code":"view_model_error","message": error.to_string()}),
+        ),
+    };
+    if let Some(object) = value.as_object_mut() {
+        object.insert(view.0.into(), view.1);
+    }
+    let mut envelope = StdioEvent::new(current, request_id, turn_id, value);
+    envelope.project = replay.emission_project.clone();
+    *sequence = sequence.saturating_add(1);
+    let line = encode_line(&envelope)?;
+    replay.remember_event(current, line.clone())?;
+    output.write_all(line.as_bytes())?;
     Ok(())
 }
 
@@ -5111,50 +5043,17 @@ fn handle_runtime_event<W: Write>(
                     .map_err(|error| io::Error::other(format!("new session created and committed at {}; reconnect to recover receipt: {error}", committed.path.display())))?;
                 *event_sequence = (*event_sequence).max(replay.next_sequence);
             }
-            let event_request_id = meta.id.clone();
             if let Some(request_id) = meta.id.as_ref() {
                 request_to_job.remove(request_id);
             }
-            // Snapshot all lifecycle events before writing the terminal
-            // response.  A client must be able to treat that response as a
-            // strict completion boundary: once it is observed, no progress
-            // event for the same request may still be waiting behind it.
-            let (agent_events, agent_dropped) = meta
-                .events
-                .lock()
-                .map_err(|_| event_mailbox_headless_error())
-                .map(|mut events| events.take_agent())?;
-            let mut agent_events = agent_events;
-            let admission_end = admission_prefix_len(&agent_events).unwrap_or(0);
-            let admission_events = agent_events.drain(..admission_end).collect::<Vec<_>>();
-            // Provider deltas and lifecycle markers precede the one terminal
-            // response, even when the worker and output loop become ready on
-            // the same tick.  The two buffers are drained here (rather than
-            // from the global Agent) so queued jobs cannot be mis-correlated.
-            write_buffered_events(
-                output,
-                event_sequence,
-                event_request_id.clone(),
-                admission_events,
-                Some(replay),
-            )?;
-            drain_provider_events_for_job(&meta, output, event_sequence, replay)?;
-            write_buffered_events(
-                output,
-                event_sequence,
-                event_request_id.clone(),
-                agent_events,
-                Some(replay),
-            )?;
-            write_dropped_event(
-                output,
-                event_sequence,
-                replay,
-                event_request_id,
-                completed_turn_id,
-                EventMailboxStream::Agent,
-                agent_dropped,
-            )?;
+            // Drain the whole mailbox before writing the terminal response.
+            // A client must be able to treat that response as a strict
+            // completion boundary: once it is observed, no progress event
+            // for the same request may still be waiting behind it. The
+            // per-request mailbox (rather than the global Agent queue) keeps
+            // queued jobs from being mis-correlated.
+            drain_job_mailbox(&meta, output, event_sequence, replay)?;
+            output.flush()?;
             match outcome {
                 JobOutcome::Succeeded(result) => {
                     let data = match result {
@@ -9459,37 +9358,53 @@ fn write_buffered_events<W: Write>(
 ) -> Result<(), HeadlessError> {
     let mut replay = replay;
     for event in events {
-        let mut value = serde_json::to_value(&event)?;
-        if let Some(block) = agent_event_block(&event)
-            && let Some(object) = value.as_object_mut()
-        {
-            object.insert("block".into(), block);
-        }
-        let turn_id = value
-            .get("turn_id")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned);
-        let current = *sequence;
-        let view =
-            crate::view_model::ViewEvent::from_agent_event(current, request_id.clone(), &event)?;
-        value
-            .as_object_mut()
-            .expect("agent event is an object")
-            .insert("view".into(), serde_json::to_value(view)?);
-        let mut envelope = StdioEvent::new(current, request_id.clone(), turn_id, value);
-        envelope.project = replay
-            .as_ref()
-            .and_then(|state| state.emission_project.clone());
-        let line = encode_line(&envelope)?;
-        *sequence = sequence.saturating_add(1);
-        // Lifecycle events are replayable just like provider deltas. This
-        // keeps resume suffixes complete after a reconnect.
-        if let Some(replay) = replay.as_deref_mut() {
-            replay.remember_event(current, line.clone())?;
-        }
-        output.write_all(line.as_bytes())?;
+        write_agent_event_line(
+            output,
+            sequence,
+            request_id.clone(),
+            &event,
+            replay.as_deref_mut(),
+        )?;
     }
     output.flush()?;
+    Ok(())
+}
+
+fn write_agent_event_line<W: Write>(
+    output: &mut W,
+    sequence: &mut u64,
+    request_id: Option<String>,
+    event: &AgentEvent,
+    replay: Option<&mut ReplayState>,
+) -> Result<(), HeadlessError> {
+    let mut value = serde_json::to_value(event)?;
+    if let Some(block) = agent_event_block(event)
+        && let Some(object) = value.as_object_mut()
+    {
+        object.insert("block".into(), block);
+    }
+    let turn_id = value
+        .get("turn_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let current = *sequence;
+    let view = crate::view_model::ViewEvent::from_agent_event(current, request_id.clone(), event)?;
+    value
+        .as_object_mut()
+        .expect("agent event is an object")
+        .insert("view".into(), serde_json::to_value(view)?);
+    let mut envelope = StdioEvent::new(current, request_id, turn_id, value);
+    envelope.project = replay
+        .as_ref()
+        .and_then(|state| state.emission_project.clone());
+    let line = encode_line(&envelope)?;
+    *sequence = sequence.saturating_add(1);
+    // Lifecycle events are replayable just like provider deltas. This keeps
+    // resume suffixes complete after a reconnect.
+    if let Some(replay) = replay {
+        replay.remember_event(current, line.clone())?;
+    }
+    output.write_all(line.as_bytes())?;
     Ok(())
 }
 
@@ -9648,6 +9563,30 @@ mod replay_session_tests {
 mod async_event_buffer_tests {
     use super::*;
 
+    fn agent_events(drained: MailboxDrain) -> (Vec<AgentEvent>, DroppedEvents) {
+        let events = drained
+            .events
+            .into_iter()
+            .filter_map(|event| match event {
+                MailboxEvent::Agent(event) => Some(event),
+                MailboxEvent::Provider(_) => None,
+            })
+            .collect();
+        (events, drained.agent_dropped)
+    }
+
+    fn provider_events(drained: MailboxDrain) -> (Vec<ProviderEvent>, DroppedEvents) {
+        let events = drained
+            .events
+            .into_iter()
+            .filter_map(|event| match event {
+                MailboxEvent::Provider(event) => Some(event),
+                MailboxEvent::Agent(_) => None,
+            })
+            .collect();
+        (events, drained.provider_dropped)
+    }
+
     #[test]
     fn admission_still_takes_priority_over_a_full_tool_lifecycle_mailbox() {
         let mut buffer = AsyncEventBuffer::default();
@@ -9662,9 +9601,10 @@ mod async_event_buffer_tests {
             turn_id: "admitted".into(),
             mode: crate::protocol::TurnMode::StartIfIdle,
         });
-        assert!(buffer.take_admission().iter().any(|e| matches!(e,
+        let (events, dropped) = agent_events(buffer.take_ordered());
+        assert!(events.iter().any(|e| matches!(e,
             AgentEvent::TurnAccepted { turn_id, .. } if turn_id == "admitted")));
-        assert!(buffer.agent_dropped.count > 0);
+        assert!(dropped.count > 0);
     }
 
     #[test]
@@ -9699,7 +9639,7 @@ mod async_event_buffer_tests {
         assert!(buffer.provider.is_empty());
         assert_eq!(buffer.provider_bytes, 0);
 
-        let (events, dropped) = buffer.take_provider();
+        let (events, dropped) = provider_events(buffer.take_ordered());
         assert!(events.is_empty());
         assert_eq!(
             dropped,
@@ -9730,7 +9670,7 @@ mod async_event_buffer_tests {
         assert_eq!(buffer.provider.len(), 1);
         assert_eq!(buffer.provider_bytes, first_bytes);
 
-        let (events, dropped) = buffer.take_provider();
+        let (events, dropped) = provider_events(buffer.take_ordered());
         assert_eq!(events.len(), 1);
         assert_eq!(dropped.count, 1);
         assert_eq!(dropped.bytes, second_bytes as u64);
@@ -9742,7 +9682,7 @@ mod async_event_buffer_tests {
             response_id: None,
             model: None,
         });
-        assert_eq!(buffer.take_provider().0.len(), 1);
+        assert_eq!(provider_events(buffer.take_ordered()).0.len(), 1);
     }
 
     #[test]
@@ -9761,7 +9701,7 @@ mod async_event_buffer_tests {
         buffer.push_agent(accepted);
         assert_eq!(buffer.agent_bytes, recovery_bytes + accepted_bytes);
 
-        let admission = buffer.take_admission();
+        let admission = agent_events(buffer.take_ordered()).0;
         assert_eq!(admission.len(), 2);
         assert!(buffer.agent.is_empty());
         assert_eq!(buffer.agent_bytes, 0);
@@ -9775,7 +9715,7 @@ mod async_event_buffer_tests {
         assert!(buffer.agent.is_empty());
         assert_eq!(buffer.agent_bytes, 0);
 
-        let (events, dropped) = buffer.take_agent();
+        let (events, dropped) = agent_events(buffer.take_ordered());
         assert!(events.is_empty());
         assert_eq!(dropped.count, 1);
         assert_eq!(dropped.bytes, oversized_bytes as u64);
@@ -9803,7 +9743,7 @@ mod async_event_buffer_tests {
         assert_eq!(buffer.agent.len(), MAX_ASYNC_AGENT_EVENTS);
         assert!(buffer.agent.iter().any(|event| event.event == accepted));
         assert_eq!(buffer.agent_dropped.count, 1);
-        let admission = buffer.take_admission();
+        let admission = agent_events(buffer.take_ordered()).0;
         assert!(admission.iter().any(|event| event == &accepted));
     }
 
@@ -9838,11 +9778,52 @@ mod async_event_buffer_tests {
         assert_eq!(buffer.agent_dropped.count, 1);
         assert_eq!(buffer.agent_dropped.bytes, filler_bytes as u64);
         assert!(
-            buffer
-                .take_admission()
+            agent_events(buffer.take_ordered())
+                .0
                 .iter()
                 .any(|event| event == &accepted)
         );
+    }
+
+    #[test]
+    fn mailbox_drains_provider_and_tool_events_in_production_order() {
+        let mut buffer = AsyncEventBuffer::default();
+        buffer.push_agent(AgentEvent::TurnAccepted {
+            turn_id: "turn".into(),
+            mode: crate::protocol::TurnMode::StartOrSteer,
+        });
+        buffer.push_provider(ProviderEvent::TextDelta {
+            delta: "before".into(),
+        });
+        buffer.push_agent(AgentEvent::ToolCall {
+            turn_id: "turn".into(),
+            call_id: "call".into(),
+            tool: "run_command".into(),
+        });
+        buffer.push_agent(AgentEvent::ToolResult {
+            turn_id: "turn".into(),
+            call_id: "call".into(),
+            success: true,
+        });
+        buffer.push_provider(ProviderEvent::TextDelta {
+            delta: "after".into(),
+        });
+        let labels: Vec<String> = buffer
+            .take_ordered()
+            .events
+            .into_iter()
+            .map(|event| match event {
+                MailboxEvent::Provider(ProviderEvent::TextDelta { delta }) => delta,
+                MailboxEvent::Provider(_) => "provider".into(),
+                MailboxEvent::Agent(AgentEvent::TurnAccepted { .. }) => "accepted".into(),
+                MailboxEvent::Agent(AgentEvent::ToolCall { .. }) => "call".into(),
+                MailboxEvent::Agent(AgentEvent::ToolResult { .. }) => "result".into(),
+                MailboxEvent::Agent(_) => "agent".into(),
+            })
+            .collect();
+        assert_eq!(labels, ["accepted", "before", "call", "result", "after"]);
+        assert!(buffer.provider.is_empty() && buffer.agent.is_empty());
+        assert_eq!((buffer.provider_bytes, buffer.agent_bytes), (0, 0));
     }
 
     #[test]
@@ -9861,8 +9842,22 @@ mod async_event_buffer_tests {
         buffer.push_agent(first.clone());
         buffer.push_agent(middle.clone());
         buffer.push_agent(second.clone());
+        buffer.push_provider(ProviderEvent::TextDelta {
+            delta: "after admission".into(),
+        });
 
-        let drained = buffer.take_admission();
+        let drained = buffer.take_ordered().events;
+        assert!(matches!(
+            drained.last(),
+            Some(MailboxEvent::Provider(ProviderEvent::TextDelta { .. }))
+        ));
+        let drained = drained
+            .into_iter()
+            .filter_map(|event| match event {
+                MailboxEvent::Agent(event) => Some(event),
+                MailboxEvent::Provider(_) => None,
+            })
+            .collect::<Vec<_>>();
         assert_eq!(drained, vec![first, middle, second]);
         assert!(buffer.agent.is_empty());
         assert_eq!(buffer.agent_bytes, 0);
