@@ -67,7 +67,7 @@ class MainActivity : ComponentActivity() {
 /** Routes every screen intent to [PairingViewModel]; the camera launch stays with the Activity. */
 private class ViewModelActions(private val model: PairingViewModel, private val onScan: () -> Unit) : PairingActions {
     override fun scan() = onScan()
-    override fun confirm(code: String) = model.confirm(code)
+    override fun confirm() = model.confirm()
     override fun cancel() = model.cancel()
     override fun forget() = model.forget()
     override fun refresh(projectId: String?) = model.refresh(projectId)

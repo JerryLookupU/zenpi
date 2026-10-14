@@ -42,17 +42,13 @@ class PairingScreenTest {
         compose.onNodeWithTag("paired-device-id").assertDoesNotExist()
         compose.onNodeWithContentDescription("Copy device ID").assertDoesNotExist()
     }
-    @Test fun safetyCodeRequiresHumanEntryAndCancelIsAccessible() {
-        val invite = invite(); var confirmed: String? = null; var cancelled = false
+    @Test fun confirmationRequiresHumanTapAndCancelIsAccessible() {
+        val invite = invite(); var confirmed = false; var cancelled = false
         var state by androidx.compose.runtime.mutableStateOf(PairingState(PairingPhase.CONFIRMING, invite))
-        compose.setContent { MaterialTheme { PairingScreen(state, {}, { confirmed = it }, { cancelled = true }) } }
-        compose.onAllNodesWithText("Confirm host").filter(hasClickAction()).onFirst().assertIsNotEnabled()
-        compose.onNodeWithText("Desktop safety code").performTextInput(invite.safetyCode)
-        compose.onNodeWithText("Desktop safety code").performImeAction()
-        compose.waitForIdle()
+        compose.setContent { MaterialTheme { PairingScreen(state, {}, { confirmed = true }, { cancelled = true }) } }
         compose.onAllNodesWithText("Confirm host").filter(hasClickAction()).onFirst().performScrollTo().assertIsEnabled().performClick()
-        compose.waitUntil(timeoutMillis = 3000) { confirmed != null }
-        assertEquals(invite.safetyCode, confirmed)
+        compose.waitUntil(timeoutMillis = 3000) { confirmed }
+        assertTrue(confirmed)
         val screenshot = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()
         val file = java.io.File(androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().targetContext.filesDir, "pairing-confirmation.png")
         file.outputStream().use { screenshot.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
@@ -60,28 +56,20 @@ class PairingScreenTest {
         val token = Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(32) { 1 })
         val replacement = PairingInvite.parse("zenpi://pair?v=1&address=192.168.50.55%3A7777&fingerprint=${invite.fingerprint}&token=$token&expires=${invite.expiresAt}")
         compose.runOnIdle { state = PairingState(PairingPhase.CONFIRMING, replacement) }
-        compose.onNodeWithText("Desktop safety code").assert(SemanticsMatcher.expectValue(
-            androidx.compose.ui.semantics.SemanticsProperties.EditableText, androidx.compose.ui.text.AnnotatedString("")))
-        compose.onAllNodesWithText("Confirm host").filter(hasClickAction()).onFirst().assertIsNotEnabled()
-        compose.onNodeWithText("Desktop safety code").performTextInput(replacement.safetyCode)
         compose.onAllNodesWithText("Confirm host").filter(hasClickAction()).onFirst().assertIsEnabled()
         for (bad in listOf(state.copy(resetting = true), state.copy(resetRequired = true), state.copy(pendingRevoke = "pending"))) {
             compose.runOnIdle { state = bad }
-            compose.onNodeWithText("Desktop safety code").assertIsNotEnabled()
             compose.onAllNodesWithText("Confirm host").filter(hasClickAction()).onFirst().assertIsNotEnabled()
         }
         val expired = PairingInvite.parse("zenpi://pair?v=1&address=192.168.50.55%3A7777&fingerprint=${invite.fingerprint}&token=$token&expires=1060", 1000)
         compose.runOnIdle { state = PairingState(PairingPhase.CONFIRMING, expired) }
-        compose.onNodeWithText("Desktop safety code").assertIsNotEnabled()
         compose.onAllNodesWithText("Confirm host").filter(hasClickAction()).onFirst().assertIsNotEnabled()
         var elapsed = 0L
         val wall = System.currentTimeMillis() / 1000
         val monotonicInvite = PairingInvite.parse("zenpi://pair?v=1&address=192.168.50.55%3A7777&fingerprint=${invite.fingerprint}&token=$token&expires=${wall + 120}", wall) { elapsed }
         compose.runOnIdle { state = PairingState(PairingPhase.CONFIRMING, monotonicInvite) }
-        compose.onNodeWithText("Desktop safety code").performTextInput(monotonicInvite.safetyCode)
         compose.onAllNodesWithText("Confirm host").filter(hasClickAction()).onFirst().assertIsEnabled()
         compose.runOnIdle { elapsed = 120_000_000_000; state = state.copy(scanError = "Clock fixture changed") }
-        compose.onNodeWithText("Desktop safety code").assertIsNotEnabled()
         compose.onAllNodesWithText("Confirm host").filter(hasClickAction()).onFirst().assertIsNotEnabled()
         compose.runOnIdle { elapsed = 0; state = state.copy(scanError = null) }
         compose.onAllNodesWithText("Confirm host").filter(hasClickAction()).onFirst().assertIsNotEnabled()

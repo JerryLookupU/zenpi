@@ -54,7 +54,7 @@ fn connection_handshakes_refuse_all_routing_and_explicit_null_authority() {
         json!({"type":"welcome","selected_version":1}),
         json!({"type":"challenge","nonce":"A".repeat(43),"host_fingerprint":"a".repeat(64)}),
         json!({"type":"pair","token":"A".repeat(43),"fingerprint":"a".repeat(64),
-            "safety_code":"123456","device_name":"phone","public_key":public,"signature":"proof"}),
+            "device_name":"phone","public_key":public,"signature":"proof"}),
         json!({"type":"authenticate","device_id":"a".repeat(64),"signature":"proof"}),
         json!({"type":"revoke_status","device_id":"a".repeat(64),"request_id":"original","signature":"proof"}),
     ];

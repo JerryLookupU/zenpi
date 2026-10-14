@@ -47,8 +47,9 @@ internal object AuthenticationReceipt {
             if (!flag.isJsonPrimitive || !flag.asJsonPrimitive.isBoolean) throw WireException("Invalid authentication receipt")
             return flag.asBoolean
         }
+        flag("control_available")
         if (!deviceId.matches(Regex("[0-9a-f]{64}")) || FrameCodec.string(value, "device_id") != deviceId
-            || !flag("authenticated") || flag("control_available")) throw WireException("Device authentication refused")
+            || !flag("authenticated")) throw WireException("Device authentication refused")
         return value["device_revision"]?.let { revision ->
             if (!revision.isJsonPrimitive || !revision.asJsonPrimitive.isNumber
                 || !revision.toString().matches(Regex("[1-9][0-9]*"))

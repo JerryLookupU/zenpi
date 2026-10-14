@@ -9,6 +9,7 @@ import zenpi.transport.FrameCodec
 import zenpi.transport.HostProjection
 import zenpi.transport.WireException
 import zenpi.transport.WorkspaceCommand
+import zenpi.pairing.AddressHint
 import zenpi.state.ProjectionCacheCodec
 import zenpi.state.ProjectionCommitPolicy
 import java.io.File
@@ -19,7 +20,17 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
-data class PairedHost(val host: String, val port: Int, val fingerprint: String, val deviceId: String)
+/**
+ * [fingerprint] pins the host: its key id `sha256(SPKI)`, or for a host saved before
+ * ZE-515 ([legacyPin]) the certificate hash, migrated to the key id on next connect.
+ */
+data class PairedHost(val host: String, val port: Int, val fingerprint: String, val deviceId: String, val legacyPin: Boolean = false,
+    /** The QR's later hints, in order, dialed after [host]:[port] fails to connect (ZE-516). */
+    val fallbacks: List<AddressHint> = emptyList()) {
+    val hints: List<AddressHint> get() = listOf(AddressHint(
+        if (runCatching { zenpi.lifecycle.LanRoutePolicy.overlay(java.net.InetAddress.getByName(host)) }.getOrDefault(false)) "tailnet" else "lan",
+        host, port)) + fallbacks
+}
 data class SavedHostState(val host: PairedHost, val projection: HostProjection?, val pendingWorkspace: WorkspaceCommand? = null, val pendingRevoke: String? = null)
 data class ResumeSnapshot internal constructor(val state: SavedHostState, internal val stamp: String)
 
@@ -48,6 +59,15 @@ class PairedHostStore(context: Context, namespace: String = "v1") {
         val next = RePairPolicy.state(read(), host)
         write(host, next.projection?.let(ProjectionCacheCodec::encode), null, checkActive = checkActive)
         next
+    }
+    /** Re-pin a v1-saved host to its key id, keeping display, cursors and pending requests. */
+    fun migratePin(host: PairedHost, hostId: String, checkActive: () -> Unit = {}): PairedHost = synchronized(storageLock) {
+        checkActive()
+        require(host.legacyPin && hostId.matches(Regex("[0-9a-f]{64}")))
+        val saved = requireHost(host)
+        val migrated = host.copy(fingerprint = hostId, legacyPin = false)
+        write(migrated, saved.projection?.let(ProjectionCacheCodec::encode), saved.pendingWorkspace, saved.pendingRevoke, checkActive)
+        migrated
     }
     fun saveProjection(host: PairedHost, projection: HostProjection, checkActive: () -> Unit = {}) = synchronized(storageLock) {
         checkActive()
@@ -96,7 +116,8 @@ class PairedHostStore(context: Context, namespace: String = "v1") {
     private fun write(host: PairedHost, projection: JsonObject?, pending: WorkspaceCommand?, pendingRevoke: String? = null,
         checkActive: () -> Unit = {}) {
         reset.requireAvailable()
-        require(host.port in 1..65535 && validLiteralHost(host.host) && host.fingerprint.matches(Regex("[0-9a-f]{64}")) && host.deviceId.matches(Regex("[0-9a-f]{64}")))
+        require(host.port in 1..65535 && validLiteralHost(host.host) && host.fingerprint.matches(Regex("[0-9a-f]{64}")) && host.deviceId.matches(Regex("[0-9a-f]{64}"))
+            && validFallbacks(host))
         val value = JsonObject().apply {
             addProperty("schema_version", 1); addProperty("channel", "control"); addProperty("id", "local-metadata")
             addProperty("execution_state", "succeeded")
@@ -104,6 +125,10 @@ class PairedHostStore(context: Context, namespace: String = "v1") {
                 addProperty("type", "response"); add("result", JsonObject().apply {
                     addProperty("host", host.host); addProperty("port", host.port)
                     addProperty("fingerprint", host.fingerprint); addProperty("device_id", host.deviceId)
+                    if (!host.legacyPin) addProperty("pin", "host_id")
+                    if (host.fallbacks.isNotEmpty()) add("fallbacks", com.google.gson.JsonArray().apply { host.fallbacks.forEach { hint ->
+                        add(JsonObject().apply { addProperty("kind", hint.kind); addProperty("host", hint.host); addProperty("port", hint.port) })
+                    } })
                     projection?.let { add("projection", it) }
                     pending?.let { add("pending_workspace", WorkspaceCommand.restore(it.envelope).envelope) }
                     pendingRevoke?.let { addProperty("pending_revoke", it) }
@@ -172,12 +197,27 @@ class PairedHostStore(context: Context, namespace: String = "v1") {
             throw WireException("Invalid encrypted host metadata payload")
         val result = payload["result"]?.asJsonObject ?: throw WireException("Missing encrypted host metadata result")
         check(result.keySet().containsAll(setOf("host", "port", "fingerprint", "device_id"))
-            && result.keySet().all { it in setOf("host", "port", "fingerprint", "device_id", "projection", "pending_workspace", "pending_revoke") })
+            && result.keySet().all { it in setOf("host", "port", "fingerprint", "device_id", "pin", "fallbacks", "projection", "pending_workspace", "pending_revoke") })
+        // Records written before ZE-515 carry no pin kind: they pin the certificate hash.
+        val legacyPin = !result.has("pin")
+        check(legacyPin || FrameCodec.string(result, "pin") == "host_id")
         val portValue = result["port"]
         check(portValue.isJsonPrimitive && portValue.asJsonPrimitive.isNumber && portValue.toString().matches(Regex("[1-9][0-9]{0,4}")))
         val port = portValue.asInt
-        val host = PairedHost(FrameCodec.string(result, "host"), port, FrameCodec.string(result, "fingerprint"), FrameCodec.string(result, "device_id"))
-        check(port in 1..65535 && validLiteralHost(host.host) && host.fingerprint.matches(Regex("[0-9a-f]{64}")) && host.deviceId.matches(Regex("[0-9a-f]{64}")))
+        val primary = FrameCodec.string(result, "host")
+        // Records written before ZE-516 hold only the primary address.
+        val fallbacks = result["fallbacks"]?.let { value ->
+            check(value.isJsonArray && value.asJsonArray.size() in 1..3)
+            value.asJsonArray.map { entry ->
+                val hint = entry.asJsonObject
+                check(hint.keySet() == setOf("kind", "host", "port") && hint["port"].asJsonPrimitive.isNumber
+                    && hint["port"].toString().matches(Regex("[1-9][0-9]{0,4}")))
+                AddressHint(FrameCodec.string(hint, "kind"), FrameCodec.string(hint, "host"), hint["port"].asInt)
+            }
+        } ?: emptyList()
+        val host = PairedHost(primary, port, FrameCodec.string(result, "fingerprint"), FrameCodec.string(result, "device_id"), legacyPin, fallbacks)
+        check(port in 1..65535 && validLiteralHost(host.host) && host.fingerprint.matches(Regex("[0-9a-f]{64}")) && host.deviceId.matches(Regex("[0-9a-f]{64}"))
+            && validFallbacks(host))
         val pendingRevoke = if (result.has("pending_revoke")) FrameCodec.string(result, "pending_revoke").also {
             check(java.util.UUID.fromString(it).toString() == it && !result.has("pending_workspace"))
         } else null
@@ -200,6 +240,10 @@ class PairedHostStore(context: Context, namespace: String = "v1") {
         file.delete()
         reset.finish()
     }
+
+    private fun validFallbacks(host: PairedHost): Boolean = host.fallbacks.size <= 3
+        && host.fallbacks.all { it.kind in AddressHint.KINDS && it.port in 1..65535 && validLiteralHost(it.host) }
+        && host.hints.map { it.address }.toSet().size == host.hints.size
 
     private fun validLiteralHost(host: String): Boolean {
         if (host.isEmpty() || host.length > 128) return false

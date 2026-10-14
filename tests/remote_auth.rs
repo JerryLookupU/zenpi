@@ -829,3 +829,71 @@ fn concurrent_read_connections_do_not_invent_unauthorized_or_change_registry() {
     });
     assert_eq!(std::fs::read(path).unwrap(), bytes);
 }
+
+/// ZE-515: a registry bound to the v1 certificate pin is re-bound to the key's host id.
+#[test]
+fn legacy_certificate_bound_registry_migrates_to_host_id_and_keeps_grants() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("devices.json");
+    let legacy = "a".repeat(64);
+    let host_id = "b".repeat(64);
+    let old = DeviceRegistry::new(path.clone(), legacy.clone()).unwrap();
+    let signing = key();
+    let record = register(&old, &signing);
+    old.set_permissions(
+        &record.id,
+        record.revision,
+        vec![Capability::Read, Capability::Control],
+        vec!["project".into()],
+    )
+    .unwrap();
+    let current = DeviceRegistry::new(path.clone(), host_id.clone()).unwrap();
+    assert!(current.list().is_err());
+    // A foreign pin never re-binds the registry.
+    let before = std::fs::read(&path).unwrap();
+    current.migrate_legacy_host(&"c".repeat(64)).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert!(current.list().is_err());
+    current.migrate_legacy_host(&legacy).unwrap();
+    let migrated = current.lookup(&record.id).unwrap();
+    assert_eq!(migrated, old_record_after_grant(&record, &migrated));
+    assert!(old.list().is_err());
+    // Idempotent, and the device now authenticates against the host id.
+    let after = std::fs::read(&path).unwrap();
+    current.migrate_legacy_host(&legacy).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), after);
+    let mut challenge = DeviceChallenge::new(host_id).unwrap();
+    let device = challenge
+        .authenticate(
+            &current,
+            &record.id,
+            &sign(&signing, &challenge.proof_message(&record.id)),
+        )
+        .unwrap();
+    current
+        .authorize(&device, "project", Operation::Prompt)
+        .unwrap();
+    // Missing registry: nothing to migrate.
+    DeviceRegistry::new(temp.path().join("absent.json"), "d".repeat(64))
+        .unwrap()
+        .migrate_legacy_host(&legacy)
+        .unwrap();
+    assert!(!temp.path().join("absent.json").exists());
+}
+
+fn old_record_after_grant(
+    record: &zenpi::remote::auth::DeviceRecord,
+    migrated: &zenpi::remote::auth::DeviceRecord,
+) -> zenpi::remote::auth::DeviceRecord {
+    assert_eq!(
+        migrated.capabilities,
+        [Capability::Read, Capability::Control]
+    );
+    assert_eq!(migrated.projects, ["project"]);
+    zenpi::remote::auth::DeviceRecord {
+        revision: record.revision + 1,
+        capabilities: migrated.capabilities.clone(),
+        projects: migrated.projects.clone(),
+        ..record.clone()
+    }
+}

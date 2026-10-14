@@ -3,6 +3,7 @@ package zenpi.transport
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import kotlinx.coroutines.*
+import zenpi.pairing.AddressHint
 import zenpi.security.DeviceIdentity
 import zenpi.security.PairedHost
 import java.net.InetSocketAddress
@@ -602,6 +603,28 @@ internal object TranscriptRestorePolicy {
 
 /** Bounded authenticated snapshot or durable transcript replay, never mutation retry. */
 class HostClient(private val bindSocket: (Socket, String) -> Unit = { _, _ -> }) {
+    /** One pinned TLS handshake that only learns the host's key id; no frame is sent. */
+    suspend fun hostId(host: PairedHost): String = withContext(Dispatchers.IO) {
+        val (hint, connected) = HintDialer.dial(host.hints) { hint, timeout ->
+            val attempt = Socket()
+            try {
+                bindSocket(attempt, hint.host)
+                attempt.connect(InetSocketAddress(hint.host, hint.port), timeout)
+                attempt
+            } catch (error: Throwable) { attempt.close(); throw error }
+        }
+        connected.use { raw ->
+            val trust = PinnedTrustManager(host.fingerprint)
+            val context = SSLContext.getInstance("TLSv1.3")
+            context.init(null, arrayOf(trust), SecureRandom())
+            (context.socketFactory.createSocket(raw, "zenpi.local", hint.port, true) as SSLSocket).use { socket ->
+                socket.enabledProtocols = arrayOf("TLSv1.3"); socket.soTimeout = 5000
+                socket.sslParameters = socket.sslParameters.apply { applicationProtocols = arrayOf("zenpi/1") }
+                socket.startHandshake()
+                requireNotNull(trust.verified) { "Host certificate unverified" }.hostId
+            }
+        }
+    }
     suspend fun modelStatus(host: PairedHost, identity: DeviceIdentity, projection: HostProjection, previous: RemoteModelStatus? = null, offset: Int = 0): RemoteModelStatus {
         var result: RemoteModelStatus? = null
         inspect(host, projection.selectedId, identity, previous = projection, modelRequest = ModelStatusCodec.request(projection,previous,offset),
@@ -710,15 +733,22 @@ class HostClient(private val bindSocket: (Socket, String) -> Unit = { _, _ -> })
             try {
                 OperationDeadline.run { withContext(Dispatchers.IO) {
                     fun current() = AuthenticationProof.current(deviceId, { identity.deviceId }, { ensureActive() })
-                    val raw = Socket()
+                    val (hint, raw) = HintDialer.dial(host.hints) { hint, timeout ->
+                        val attempt = Socket()
+                        try {
+                            active.install(attempt)
+                            current(); bindSocket(attempt, hint.host); current()
+                            attempt.connect(InetSocketAddress(hint.host, hint.port), timeout)
+                            attempt
+                        } catch (error: Throwable) { active.retire(attempt); throw error }
+                    }
                     try {
-                        active.install(raw)
-                        current(); bindSocket(raw, host.host); current()
-                        raw.connect(InetSocketAddress(host.host, host.port), 5000)
                         current()
                         val context = SSLContext.getInstance("TLSv1.3")
-                        context.init(null, arrayOf(PinnedTrustManager(host.fingerprint)), SecureRandom())
-                        val socket = context.socketFactory.createSocket(raw, "zenpi.local", host.port, true) as SSLSocket
+                        val trust = PinnedTrustManager(host.fingerprint)
+                        context.init(null, arrayOf(trust), SecureRandom())
+                        // The pin is checked once, on the connected hint; a mismatch never tries another.
+                        val socket = context.socketFactory.createSocket(raw, "zenpi.local", hint.port, true) as SSLSocket
                         active.transfer(raw, socket)
                         socket.use {
                             socket.enabledProtocols = arrayOf("TLSv1.3"); socket.soTimeout = 5000
@@ -734,7 +764,9 @@ class HostClient(private val bindSocket: (Socket, String) -> Unit = { _, _ -> })
                             }))
                             HandshakePrelude.welcome(socket.inputStream)
                             current()
-                            val nonce = HandshakePrelude.challenge(socket.inputStream, host.fingerprint)
+                            // Proofs bind the name the host itself uses; it must name the verified key.
+                            val (hostName, nonce) = HandshakePrelude.challenge(socket.inputStream,
+                                requireNotNull(trust.verified) { "Host certificate unverified" }.names)
                             current()
                             var received: List<JsonObject> = emptyList()
                             var subscriptionPage: (suspend (List<JsonObject>, JsonObject) -> Unit)? = null
@@ -779,7 +811,7 @@ class HostClient(private val bindSocket: (Socket, String) -> Unit = { _, _ -> })
                                     addProperty("type", "revoke_status"); addProperty("device_id", deviceId)
                                     addProperty("request_id", revokeStatusId)
                                     addProperty("signature", AuthenticationProof.sign(deviceId, { identity.deviceId }, { ensureActive() }) {
-                                        identity.signRevokeStatus(host.fingerprint, nonce, revokeStatusId, queryId)
+                                        identity.signRevokeStatus(hostName, nonce, revokeStatusId, queryId)
                                     })
                                 }).apply { addProperty("id", queryId) })
                                 if (result.keySet() != setOf("device_id", "request_id", "committed") || FrameCodec.string(result, "device_id") != deviceId
@@ -791,7 +823,7 @@ class HostClient(private val bindSocket: (Socket, String) -> Unit = { _, _ -> })
                             val authenticated = exchange(envelope(JsonObject().apply {
                                 addProperty("type", "authenticate"); addProperty("device_id", deviceId)
                                 addProperty("signature", AuthenticationProof.sign(deviceId, { identity.deviceId }, { ensureActive() }) {
-                                    identity.signChallenge(host.fingerprint, nonce)
+                                    identity.signChallenge(hostName, nonce)
                                 })
                             }))
                             val deviceRevision = AuthenticationReceipt.validate(authenticated, deviceId)
@@ -931,5 +963,27 @@ class HostClient(private val bindSocket: (Socket, String) -> Unit = { _, _ -> })
                 } }
             } finally { deadline.cancelAndJoin(); closer.cancelAndJoin() }
         }
+    }
+}
+
+/**
+ * ZE-516 multi-hint dialing: LAN hints first, then the others in QR order. Only a
+ * failed bind/connect moves on to the next hint; a pin (host identity) failure is
+ * final and never falls back, because a path change must not change who we trust.
+ */
+internal object HintDialer {
+    fun ordered(hints: List<AddressHint>): List<AddressHint> = hints.filter { it.kind == "lan" } + hints.filter { it.kind != "lan" }
+    fun <T> dial(hints: List<AddressHint>, attempt: (AddressHint, Int) -> T): Pair<AddressHint, T> {
+        val timeout = if (hints.size > 1) 3_000 else 5_000
+        var failure: java.io.IOException? = null
+        for (hint in ordered(hints)) {
+            try { return hint to attempt(hint, timeout) }
+            catch (error: java.io.IOException) {
+                if (HostIdentityFailure.refused(error)) throw error
+                failure?.let(error::addSuppressed)
+                failure = error
+            }
+        }
+        throw failure ?: java.io.IOException("No address hint")
     }
 }

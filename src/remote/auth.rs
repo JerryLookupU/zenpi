@@ -366,15 +366,21 @@ impl DeviceRegistry {
         Ok(RegistryLock(file))
     }
     fn load(&self) -> Result<RegistryData, AuthError> {
+        let Some(data) = self.read()? else {
+            return Ok(RegistryData {
+                version: 1,
+                host_fingerprint: self.fingerprint.clone(),
+                devices: vec![],
+            });
+        };
+        self.validate(&data)?;
+        Ok(data)
+    }
+    /// Parsed, size-bounded registry bytes; `validate` decides whether they belong here.
+    fn read(&self) -> Result<Option<RegistryData>, AuthError> {
         let file = match private_open(&self.path, false) {
             Ok(file) => file,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                return Ok(RegistryData {
-                    version: 1,
-                    host_fingerprint: self.fingerprint.clone(),
-                    devices: vec![],
-                });
-            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error.into()),
         };
         if file.metadata()?.len() > MAX_REGISTRY_BYTES {
@@ -385,8 +391,11 @@ impl DeviceRegistry {
         if bytes.len() as u64 > MAX_REGISTRY_BYTES {
             return Err(AuthError::InvalidRegistry);
         }
-        let data: RegistryData =
-            serde_json::from_slice(&bytes).map_err(|_| AuthError::InvalidRegistry)?;
+        serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|_| AuthError::InvalidRegistry)
+    }
+    fn validate(&self, data: &RegistryData) -> Result<(), AuthError> {
         if data.version != 1
             || data.host_fingerprint != self.fingerprint
             || data.devices.len() > MAX_DEVICES
@@ -419,7 +428,22 @@ impl DeviceRegistry {
                 return Err(AuthError::InvalidRegistry);
             }
         }
-        Ok(data)
+        Ok(())
+    }
+    /// ZE-515: a registry bound to the v1 certificate pin is re-bound to the host id
+    /// (`sha256(SPKI)`) of the same key, keeping every device and grant. Any other
+    /// mismatch still fails closed.
+    pub fn migrate_legacy_host(&self, legacy: &str) -> Result<(), AuthError> {
+        let _lock = self.lock()?;
+        let Some(mut data) = self.read()? else {
+            return Ok(());
+        };
+        if data.host_fingerprint == self.fingerprint || data.host_fingerprint != legacy {
+            return Ok(());
+        }
+        data.host_fingerprint = self.fingerprint.clone();
+        self.validate(&data)?;
+        self.save(&data)
     }
     fn save(&self, data: &RegistryData) -> Result<(), AuthError> {
         let bytes = serde_json::to_vec(data).map_err(|_| AuthError::InvalidRegistry)?;
@@ -449,23 +473,60 @@ impl DeviceRegistry {
         result
     }
     /// Caller must first consume a valid QR invite and verify proof of possession.
-    /// Re-pair never silently restores a revoked key or expands an existing grant.
-    pub(crate) fn register(&self, name: &str, public_key: &str) -> Result<DeviceRecord, AuthError> {
-        if !valid_identifier(name) {
+    /// Scanning the QR shown only on the owner's screen is the desktop confirmation:
+    /// the device receives Read, Control and Approval on the mounted `projects`.
+    /// Re-pair never restores a revoked key; it adds the mounted projects to an
+    /// existing grant and otherwise leaves the record untouched.
+    pub(crate) fn register(
+        &self,
+        name: &str,
+        public_key: &str,
+        projects: &[String],
+    ) -> Result<DeviceRecord, AuthError> {
+        if !valid_identifier(name)
+            || projects.len() > MAX_PROJECTS
+            || projects.iter().any(|value| !valid_identifier(value))
+        {
             return Err(AuthError::InvalidProof);
         }
         let id = device_id(public_key)?;
         let _lock = self.lock()?;
         let mut data = self.load()?;
-        if let Some(record) = data.devices.iter().find(|record| record.id == id) {
-            return if record.revoked {
-                Err(AuthError::Unauthorized)
-            } else {
-                Ok(record.clone())
-            };
+        if let Some(record) = data.devices.iter_mut().find(|record| record.id == id) {
+            if record.revoked {
+                return Err(AuthError::Unauthorized);
+            }
+            let mut granted = record.projects.clone();
+            for project in projects {
+                if !granted.contains(project) {
+                    granted.push(project.clone());
+                }
+            }
+            let full = [Capability::Read, Capability::Control, Capability::Approval];
+            if projects.is_empty()
+                || granted == record.projects
+                    && full.iter().all(|c| record.capabilities.contains(c))
+            {
+                return Ok(record.clone());
+            }
+            if granted.len() > MAX_PROJECTS {
+                return Err(AuthError::Limit);
+            }
+            record.revision = record.revision.checked_add(1).ok_or(AuthError::Limit)?;
+            record.capabilities = full.to_vec();
+            record.projects = granted;
+            let record = record.clone();
+            self.save(&data)?;
+            return Ok(record);
         }
         if data.devices.len() >= MAX_DEVICES {
             return Err(AuthError::Limit);
+        }
+        let mut unique = Vec::new();
+        for project in projects {
+            if !unique.contains(project) {
+                unique.push(project.clone());
+            }
         }
         let record = DeviceRecord {
             id,
@@ -474,8 +535,12 @@ impl DeviceRegistry {
             created_at: unix_seconds().map_err(|_| AuthError::InvalidRegistry)?,
             revision: 1,
             revoked: false,
-            capabilities: vec![Capability::Read],
-            projects: vec![],
+            capabilities: if unique.is_empty() {
+                vec![Capability::Read]
+            } else {
+                vec![Capability::Read, Capability::Control, Capability::Approval]
+            },
+            projects: unique,
             revoke_request_id: None,
         };
         data.devices.push(record.clone());
@@ -652,6 +717,7 @@ impl DeviceRegistry {
         let record = self.lookup(&device.id)?;
         Ok(!record.revoked && record.revision == device.revision)
     }
+    /// Registers without a project grant (no project is mounted).
     pub fn verify_pair_and_register(
         &self,
         token: &str,
@@ -659,6 +725,21 @@ impl DeviceRegistry {
         name: &str,
         public_key: &str,
         signature: &str,
+        consume: impl FnOnce() -> bool,
+    ) -> Result<DeviceRecord, AuthError> {
+        self.verify_pair_and_grant(token, request_id, name, public_key, signature, &[], consume)
+    }
+    /// Verifies the QR-bound proof, consumes the invite once, then registers the
+    /// device with Read, Control and Approval on the mounted `projects`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn verify_pair_and_grant(
+        &self,
+        token: &str,
+        request_id: &str,
+        name: &str,
+        public_key: &str,
+        signature: &str,
+        projects: &[String],
         consume: impl FnOnce() -> bool,
     ) -> Result<DeviceRecord, AuthError> {
         verify_pairing_proof(
@@ -684,6 +765,15 @@ impl DeviceRegistry {
         if !consume() {
             return Err(AuthError::Unauthorized);
         }
-        self.register(name, public_key)
+        self.register(name, public_key, projects)
+    }
+    /// Truthful `control_available`: the current record may prompt in at least
+    /// one project this host has mounted.
+    pub fn controls_any(&self, id: &str, mounted: &[String]) -> bool {
+        self.lookup(id).is_ok_and(|record| {
+            mounted
+                .iter()
+                .any(|project| authorize_record(&record, project, Operation::Prompt).is_ok())
+        })
     }
 }

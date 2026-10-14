@@ -66,7 +66,15 @@ class PairingHandshakeTest {
     }
     private fun exchange(input: InputStream, output: ByteArrayOutputStream, now: () -> Long = { 1000 },
         sign: (String) -> String = { "proof" }, active: () -> Unit = {}): PairingResult =
-        PairingHandshake.exchange(input, output, invite, invite.safetyCode, "Phone", public, device, sign, active, now)
+        PairingHandshake.exchange(input, output, invite, "Phone", public, device, sign, active, now)
+    @Test fun hostReportedControlAfterPairingIsPropagated() {
+        val output = ByteArrayOutputStream()
+        val result = exchange(Fixture(wire(welcome(), challenge()), output) {
+            wire(response(it).apply { getAsJsonObject("payload").getAsJsonObject("result").addProperty("control_available", true) })
+        }, output)
+        assertTrue(result.paired); assertTrue(result.controlAvailable)
+        assertFalse(sent(output)[1]["payload"].asJsonObject.has("safety_code"))
+    }
     @Test fun fragmentedHandshakeSendsOneBoundPairAndConfirmsReadOnlyRegistration() {
         val output = ByteArrayOutputStream()
         var signed: String? = null
@@ -84,7 +92,7 @@ class PairingHandshakeTest {
             val output = ByteArrayOutputStream(); var checks = 0; var signs = 0
             val error = runCatching {
                 PairingHandshake.exchange(ByteArrayInputStream(wire(welcome(), challenge())), output, invite,
-                    invite.safetyCode, "Phone", public, device, sign = { signs++; "proof" }, now = { 1000 },
+                    "Phone", public, device, sign = { signs++; "proof" }, now = { 1000 },
                     checkIdentity = { if (++checks == failAt) throw HostAuthenticationException() })
             }.exceptionOrNull()
             assertTrue(error is HostAuthenticationException)
@@ -97,7 +105,7 @@ class PairingHandshakeTest {
         val output = ByteArrayOutputStream(); var changed = false; var published = false
         val input = Fixture(wire(welcome(), challenge()), output) { changed = true; wire(response(it)) }
         val error = runCatching {
-            PairingHandshake.exchange(input, output, invite, invite.safetyCode, "Phone", public, device,
+            PairingHandshake.exchange(input, output, invite, "Phone", public, device,
                 sign = { "proof" }, now = { 1000 }, checkIdentity = { if (changed) throw HostAuthenticationException() })
             published = true
         }.exceptionOrNull()
@@ -111,7 +119,7 @@ class PairingHandshakeTest {
             var active = true; var reads = 0; var signs = 0; var published = false
             val error = runCatching {
                 PairingHandshake.exchange(Fixture(wire(welcome(), challenge()), output) { wire(response(it)) },
-                    output, invite, invite.safetyCode, "Phone", public, device,
+                    output, invite, "Phone", public, device,
                     sign = { signs++; "proof" }, now = { 1000 },
                     checkActive = { if (!active) throw cancelled },
                     checkIdentity = { if (++reads == cancelAt) active = false })
@@ -129,7 +137,7 @@ class PairingHandshakeTest {
         val captured = PairingInvite.parse("zenpi://pair?v=1&address=192.168.1.20%3A7777&fingerprint=$fingerprint&token=$token&expires=1060", 1000) { elapsed }
         val output = ByteArrayOutputStream()
         assertTrue(runCatching {
-            PairingHandshake.exchange(ByteArrayInputStream(wire(welcome(), challenge())), output, captured, captured.safetyCode,
+            PairingHandshake.exchange(ByteArrayInputStream(wire(welcome(), challenge())), output, captured,
                 "Phone", public, device, sign = { elapsed = 60_000_000_000; "proof" }, now = { 990 })
         }.isFailure)
         assertEquals(1, sent(output).size)
@@ -227,7 +235,6 @@ class PairingHandshakeTest {
             { it.getAsJsonObject("payload").getAsJsonObject("result").addProperty("paired", false) },
             { it.getAsJsonObject("payload").getAsJsonObject("result").addProperty("device_registered", false) },
             { it.getAsJsonObject("payload").getAsJsonObject("result").addProperty("control_available", "false") },
-            { it.getAsJsonObject("payload").getAsJsonObject("result").addProperty("control_available", true) },
             { it.getAsJsonObject("payload").getAsJsonObject("result").addProperty("device_id", "foreign") },
             { it.getAsJsonObject("payload").getAsJsonObject("result").addProperty("device_revision", "1") },
             { it.getAsJsonObject("payload").getAsJsonObject("result").addProperty("device_revision", 0) },
@@ -268,7 +275,7 @@ class PairingHandshakeTest {
         for (name in listOf("", "bad\nname", "x".repeat(129))) {
             val refused = ByteArrayOutputStream()
             assertTrue(runCatching {
-                PairingHandshake.exchange(ByteArrayInputStream(byteArrayOf()), refused, invite, invite.safetyCode,
+                PairingHandshake.exchange(ByteArrayInputStream(byteArrayOf()), refused, invite,
                     name, public, device, { "proof" }, now = { 1000 })
             }.isFailure)
             assertEquals(0, refused.size())

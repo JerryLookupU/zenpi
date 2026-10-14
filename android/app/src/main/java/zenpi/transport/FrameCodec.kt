@@ -188,8 +188,7 @@ object FrameCodec {
             "pair" -> {
                 identifier(string(envelope, "id")); identifier(string(payload, "device_name"))
                 if (!string(payload, "token").matches(Regex("[A-Za-z0-9_-]{43}"))
-                    || !string(payload, "fingerprint").matches(Regex("[0-9a-f]{64}"))
-                    || !string(payload, "safety_code").matches(Regex("[0-9]{6}"))) throw WireException("Invalid pairing proof")
+                    || !string(payload, "fingerprint").matches(Regex("[0-9a-f]{64}"))) throw WireException("Invalid pairing proof")
                 val key = string(payload, "public_key")
                 val signature = string(payload, "signature")
                 if (!key.matches(Regex("[A-Za-z0-9_-]{87}")) || java.util.Base64.getUrlDecoder().decode(key).let {

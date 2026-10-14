@@ -66,7 +66,7 @@ class PairingQrReaderTest {
         val decoded = PairingQrReader().decode(image.bitmap()).text
         assertEquals(metadata["uri"].asString, decoded)
         val invite = PairingInvite.parse(decoded, metadata["now"].asLong) { 0 }
-        assertEquals(metadata["safety_code"].asString, invite.safetyCode)
+        assertEquals(metadata["uri"].asString.substringAfter("fingerprint=").take(64), invite.fingerprint)
         assertTrue(runCatching { invite.requireFresh(metadata["now"].asLong + 300) }.isFailure)
     }
     @Test fun rotatedOffCenterCameraScenesUseDetectionNotPureExtraction() {

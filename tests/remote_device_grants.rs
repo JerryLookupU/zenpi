@@ -35,6 +35,14 @@ fn sign(key: &EcdsaKeyPair, message: &[u8]) -> String {
     )
 }
 fn device(registry: &DeviceRegistry, fingerprint: &str) -> (EcdsaKeyPair, String) {
+    paired(registry, fingerprint, &[])
+}
+/// Pairs through the one-use QR proof; `mounted` is what the host had attached.
+fn paired(
+    registry: &DeviceRegistry,
+    fingerprint: &str,
+    mounted: &[String],
+) -> (EcdsaKeyPair, String) {
     let random = ring::rand::SystemRandom::new();
     let doc = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &random).unwrap();
     let key =
@@ -45,7 +53,9 @@ fn device(registry: &DeviceRegistry, fingerprint: &str) -> (EcdsaKeyPair, String
         &pairing_proof_message(fingerprint, "fixture", "pair", "phone", &public),
     );
     let record = registry
-        .verify_pair_and_register("fixture", "pair", "phone", &public, &proof, || true)
+        .verify_pair_and_grant("fixture", "pair", "phone", &public, &proof, mounted, || {
+            true
+        })
         .unwrap();
     (key, record.id)
 }
@@ -59,21 +69,11 @@ fn authenticate(
     let signature = sign(key, &challenge.proof_message(id));
     challenge.authenticate(registry, id, &signature).unwrap()
 }
-fn grant(
-    identity: &std::path::Path,
-    id: &str,
-    operation: &str,
-    projects: &[&str],
-) -> std::process::Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_zenpi"));
-    command
+fn host_pair(identity: &std::path::Path, args: &[&str]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_zenpi"))
         .args(["host", "pair", "--identity"])
         .arg(identity)
-        .args([operation, id]);
-    for project in projects {
-        command.args(["--project", project]);
-    }
-    command
+        .args(args)
         .env(
             "ZENPI_HOME",
             identity.parent().unwrap().join("absent-config"),
@@ -83,111 +83,117 @@ fn grant(
 }
 
 #[test]
-fn production_combined_grant_persists_scopes_fences_downgrades_and_cannot_restore_revoked_device() {
+fn pairing_grants_mounted_project_control_and_approval_and_repair_extends_without_reviving() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("identity.json");
     let host = HostIdentity::load_or_create(&path).unwrap();
     let fingerprint = host.fingerprint();
     let registry =
         DeviceRegistry::new(path.with_extension("devices.json"), fingerprint.clone()).unwrap();
-    let (key, id) = device(&registry, &fingerprint);
-    let (_, foreign) = device(&registry, &fingerprint);
-    let foreign_before = registry.lookup(&foreign).unwrap();
-    let old = authenticate(&registry, &fingerprint, &key, &id);
-    let identity_before = std::fs::read(&path).unwrap();
-    let output = grant(&path, &id, "--grant-device-control-approval", &["p1", "p2"]);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
-        String::from_utf8(output.stdout)
-            .unwrap()
-            .contains("Read/Control/Approval permission granted")
-    );
-    assert!(output.stderr.is_empty());
-    assert_eq!(std::fs::read(&path).unwrap(), identity_before);
-    assert!(!temp.path().join("absent-config").exists());
-    assert_eq!(registry.lookup(&foreign).unwrap(), foreign_before);
-    assert!(registry.authorize(&old, "p1", Operation::Inspect).is_err());
-    let restored =
-        DeviceRegistry::new(path.with_extension("devices.json"), fingerprint.clone()).unwrap();
-    let record = restored.lookup(&id).unwrap();
+    let (key, id) = paired(&registry, &fingerprint, &["p1".into()]);
+    let (_, unmounted) = device(&registry, &fingerprint);
+    let record = registry.lookup(&id).unwrap();
     assert_eq!(
         record.capabilities,
         vec![Capability::Read, Capability::Control, Capability::Approval]
     );
-    assert_eq!(record.projects, vec!["p1", "p2"]);
-    assert_eq!(record.revision, 2);
-    let current = authenticate(&restored, &fingerprint, &key, &id);
+    assert_eq!(record.projects, vec!["p1"]);
+    assert_eq!(record.revision, 1);
+    assert!(registry.controls_any(&id, &["p1".into()]));
+    assert!(!registry.controls_any(&id, &["p2".into()]));
+    // Without a mounted project nothing is granted and control is truthfully absent.
+    let bare = registry.lookup(&unmounted).unwrap();
+    assert_eq!(bare.capabilities, vec![Capability::Read]);
+    assert!(bare.projects.is_empty());
+    assert!(!registry.controls_any(&unmounted, &["p1".into()]));
+    let old = authenticate(&registry, &fingerprint, &key, &id);
     for operation in [Operation::Inspect, Operation::Prompt, Operation::Approve] {
-        assert!(restored.authorize(&current, "p1", operation).is_ok());
-        assert!(restored.authorize(&current, "p2", operation).is_ok());
-        assert!(
-            restored
-                .authorize(&current, "foreign-project", operation)
-                .is_err()
-        );
+        assert!(registry.authorize(&old, "p1", operation).is_ok());
+        assert!(registry.authorize(&old, "p2", operation).is_err());
     }
-    for (action, capabilities, prompt, approval) in [
-        (
-            "--grant-device-control",
-            vec![Capability::Read, Capability::Control],
-            true,
-            false,
-        ),
-        (
-            "--grant-device-approval",
-            vec![Capability::Read, Capability::Approval],
-            false,
-            true,
-        ),
-        ("--grant-device-read", vec![Capability::Read], false, false),
-    ] {
-        let previous = authenticate(&registry, &fingerprint, &key, &id);
-        assert!(grant(&path, &id, action, &["p1"]).status.success());
-        assert!(
-            registry
-                .authorize(&previous, "p1", Operation::Inspect)
-                .is_err()
-        );
-        assert_eq!(registry.lookup(&id).unwrap().capabilities, capabilities);
-        let current = authenticate(&registry, &fingerprint, &key, &id);
-        assert_eq!(
-            registry
-                .authorize(&current, "p1", Operation::Prompt)
-                .is_ok(),
-            prompt
-        );
-        assert_eq!(
-            registry
-                .authorize(&current, "p1", Operation::Approve)
-                .is_ok(),
-            approval
-        );
-        assert!(
-            registry
-                .authorize(&current, "p2", Operation::Inspect)
-                .is_err()
-        );
+    // A fresh QR scan from a host mounting another project extends the grant
+    // and fences the previous connection by revision.
+    let public = registry.lookup(&id).unwrap().public_key;
+    let proof = sign(
+        &key,
+        &pairing_proof_message(&fingerprint, "second", "pair-2", "phone", &public),
+    );
+    let extended = registry
+        .verify_pair_and_grant(
+            "second",
+            "pair-2",
+            "phone",
+            &public,
+            &proof,
+            &["p2".into(), "p1".into()],
+            || true,
+        )
+        .unwrap();
+    assert_eq!(extended.projects, vec!["p1", "p2"]);
+    assert_eq!(extended.revision, 2);
+    assert!(registry.authorize(&old, "p1", Operation::Inspect).is_err());
+    let current = authenticate(&registry, &fingerprint, &key, &id);
+    for operation in [Operation::Inspect, Operation::Prompt, Operation::Approve] {
+        assert!(registry.authorize(&current, "p2", operation).is_ok());
     }
-    registry.revoke(&id).unwrap();
+    // Re-pairing an unchanged grant is idempotent: same bytes, same revision.
     let before = std::fs::read(path.with_extension("devices.json")).unwrap();
+    let proof = sign(
+        &key,
+        &pairing_proof_message(&fingerprint, "third", "pair-3", "phone", &public),
+    );
+    registry
+        .verify_pair_and_grant(
+            "third",
+            "pair-3",
+            "phone",
+            &public,
+            &proof,
+            &["p1".into()],
+            || true,
+        )
+        .unwrap();
+    assert_eq!(
+        std::fs::read(path.with_extension("devices.json")).unwrap(),
+        before
+    );
+    // Revocation is effective on the next frame and a later scan never revives it.
+    assert!(registry.is_current(&current).unwrap());
+    let revoked = host_pair(&path, &["--revoke-device", &id]);
+    assert!(revoked.status.success());
+    assert!(!registry.is_current(&current).unwrap());
     assert!(
-        !grant(&path, &id, "--grant-device-control-approval", &["p1"])
-            .status
-            .success()
+        registry
+            .authorize(&current, "p1", Operation::Inspect)
+            .is_err()
+    );
+    let before = std::fs::read(path.with_extension("devices.json")).unwrap();
+    let proof = sign(
+        &key,
+        &pairing_proof_message(&fingerprint, "fourth", "pair-4", "phone", &public),
+    );
+    assert!(
+        registry
+            .verify_pair_and_grant(
+                "fourth",
+                "pair-4",
+                "phone",
+                &public,
+                &proof,
+                &["p1".into()],
+                || panic!("a revoked key must not consume an invite"),
+            )
+            .is_err()
     );
     assert_eq!(
         std::fs::read(path.with_extension("devices.json")).unwrap(),
         before
     );
-    assert_eq!(registry.lookup(&foreign).unwrap(), foreign_before);
+    assert!(!temp.path().join("absent-config").exists());
 }
 
 #[test]
-fn combined_grant_invalid_policy_never_changes_registry() {
+fn removed_grant_clis_are_refused_without_changing_the_registry() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("identity.json");
     let identity = HostIdentity::load_or_create(&path).unwrap();
@@ -195,38 +201,16 @@ fn combined_grant_invalid_policy_never_changes_registry() {
         DeviceRegistry::new(path.with_extension("devices.json"), identity.fingerprint()).unwrap();
     let (_, id) = device(&registry, &identity.fingerprint());
     let before = std::fs::read(path.with_extension("devices.json")).unwrap();
-    for projects in [&[][..], &["p", "p"][..], &["\n"][..]] {
-        assert!(
-            !grant(&path, &id, "--grant-device-control-approval", projects)
-                .status
-                .success()
-        );
-        assert_eq!(
-            std::fs::read(path.with_extension("devices.json")).unwrap(),
-            before
-        );
-    }
-    for extra in [
+    for flag in [
+        "--grant-device-read",
         "--grant-device-control",
         "--grant-device-approval",
-        "--grant-device-read",
-        "--revoke-device",
+        "--grant-device-control-approval",
     ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_zenpi"))
-            .args(["host", "pair", "--identity"])
-            .arg(&path)
-            .args([
-                "--grant-device-control-approval",
-                &id,
-                "--project",
-                "p",
-                extra,
-                &id,
-            ])
-            .output()
-            .unwrap();
+        let output = host_pair(&path, &[flag, &id, "--project", "p"]);
         assert!(!output.status.success());
         assert!(output.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&output.stderr).contains(flag));
         assert_eq!(
             std::fs::read(path.with_extension("devices.json")).unwrap(),
             before
@@ -241,18 +225,12 @@ fn production_json_device_listing_exposes_exact_permission_view_without_key_or_w
     let identity = HostIdentity::load_or_create(&path).unwrap();
     let registry =
         DeviceRegistry::new(path.with_extension("devices.json"), identity.fingerprint()).unwrap();
-    let (_, first) = device(&registry, &identity.fingerprint());
-    let (_, second) = device(&registry, &identity.fingerprint());
-    assert!(
-        grant(
-            &path,
-            &first,
-            "--grant-device-control-approval",
-            &["project-one", "project-two"]
-        )
-        .status
-        .success()
+    let (_, first) = paired(
+        &registry,
+        &identity.fingerprint(),
+        &["project-one".into(), "project-two".into()],
     );
+    let (_, second) = device(&registry, &identity.fingerprint());
     registry.revoke(&second).unwrap();
     let before = std::fs::read(path.with_extension("devices.json")).unwrap();
     let key = std::fs::read(&path).unwrap();
@@ -316,16 +294,7 @@ fn production_json_device_listing_exposes_exact_permission_view_without_key_or_w
     );
     assert!(zenpi::core::parse_args(["host", "pair", "--json"]).is_err());
     assert!(
-        zenpi::core::parse_args([
-            "host",
-            "pair",
-            "--json",
-            "--grant-device-read",
-            &first,
-            "--project",
-            "project-one"
-        ])
-        .is_err()
+        zenpi::core::parse_args(["host", "pair", "--json", "--revoke-device", &first]).is_err()
     );
     for args in [
         vec![
@@ -415,12 +384,12 @@ fn request(
 }
 
 #[test]
-fn one_cli_granted_phone_submits_approves_and_retries_without_duplicate_tool_effect() {
+fn one_paired_phone_submits_approves_and_retries_without_duplicate_tool_effect() {
     exercise_prompt_approval("allow");
 }
 
 #[test]
-fn one_cli_granted_phone_denies_tool_without_losing_prompt_control() {
+fn one_paired_phone_denies_tool_without_losing_prompt_control() {
     exercise_prompt_approval("deny");
 }
 
@@ -432,7 +401,6 @@ fn exercise_prompt_approval(decision: &str) {
     let registry = Arc::new(
         DeviceRegistry::new(path.with_extension("devices.json"), identity.fingerprint()).unwrap(),
     );
-    let (key, id) = device(&registry, &identity.fingerprint());
     let calls = Arc::new(AtomicUsize::new(0));
     let mut agent = Agent::new(
         SessionStore::open_in_workspace(root.join("session.jsonl"), &root).unwrap(),
@@ -454,10 +422,10 @@ fn exercise_prompt_approval(decision: &str) {
     let session = pool.active_context().session_id.clone();
     let epoch = pool.workspace_owner().to_owned();
     let revision = pool.workspace_revision();
-    assert!(
-        grant(&path, &id, "--grant-device-control-approval", &[&project])
-            .status
-            .success()
+    let (key, id) = paired(
+        &registry,
+        &identity.fingerprint(),
+        std::slice::from_ref(&project),
     );
     let phone = authenticate(&registry, &identity.fingerprint(), &key, &id);
     let (adapter, host) = HeadlessHost::start(pool);

@@ -10,7 +10,7 @@ import zenpi.pairing.PairingInvite
 /** Runs only after pinned TLS/ALPN verification; never retries a one-use invitation. */
 internal object PairingHandshake {
     fun exchange(input: InputStream, output: OutputStream, invite: PairingInvite,
-        safetyCode: String, deviceName: String, publicKey: String, deviceId: String,
+        deviceName: String, publicKey: String, deviceId: String,
         sign: (String) -> String, checkActive: () -> Unit = {},
         now: () -> Long = { System.currentTimeMillis() / 1000 }, checkIdentity: () -> Unit = {}): PairingResult {
         fun current() {
@@ -21,7 +21,6 @@ internal object PairingHandshake {
         }
         fun fresh() { current(); invite.requireFresh(now()) }
         fresh()
-        if (safetyCode != invite.safetyCode) throw WireException("Safety code mismatch")
         if (deviceName.isBlank() || deviceName.toByteArray(Charsets.UTF_8).size > 128
             || deviceName.any { Character.isISOControl(it) }) throw WireException("Invalid device name")
         FrameCodec.write(output, envelope(JsonObject().apply {
@@ -34,7 +33,7 @@ internal object PairingHandshake {
         val id = UUID.randomUUID().toString()
         val pair = envelope(JsonObject().apply {
             addProperty("type", "pair"); addProperty("token", invite.token)
-            addProperty("fingerprint", invite.fingerprint); addProperty("safety_code", safetyCode)
+            addProperty("fingerprint", invite.fingerprint)
             addProperty("device_name", deviceName); addProperty("public_key", publicKey)
             addProperty("signature", sign(id))
         }).apply { addProperty("id", id) }
@@ -66,7 +65,8 @@ internal object PairingHandshake {
         val paired = flag("paired")
         val registered = flag("device_registered")
         val control = flag("control_available")
-        if (!paired || !registered || control) throw WireException("Host pairing unconfirmed")
+        // control_available is the host's truthful report: true once a mounted project is granted.
+        if (!paired || !registered) throw WireException("Host pairing unconfirmed")
         return PairingResult(paired, control, registered, deviceId)
     }
     private fun envelope(payload: JsonObject) = JsonObject().apply {

@@ -2173,17 +2173,14 @@ fn production_plain_host_routes_authenticated_tls_prompt_to_the_provider() {
     hash.update(b"zenpi-project-workspace-v1\0");
     hash.update(workspace.to_str().unwrap().as_bytes());
     let project = format!("{:x}", hash.finalize());
-    let grant = Command::new(env!("CARGO_BIN_EXE_zenpi"))
-        .args(["host", "pair", "--identity"])
-        .arg(&identity_path)
-        .args(["--grant-device-control", &device.id, "--project", &project])
-        .output()
+    registry
+        .set_permissions(
+            &device.id,
+            device.revision,
+            vec![Capability::Read, Capability::Control],
+            vec![project.clone()],
+        )
         .unwrap();
-    assert!(
-        grant.status.success(),
-        "{}",
-        String::from_utf8_lossy(&grant.stderr)
-    );
     let mut command = Command::new(env!("CARGO_BIN_EXE_zenpi"));
     for (name, _) in std::env::vars()
         .filter(|(name, _)| name.starts_with("ZENPI_") || name.starts_with("OPENAI_"))

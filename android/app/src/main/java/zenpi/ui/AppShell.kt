@@ -16,8 +16,6 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ContentCopy
@@ -37,7 +35,6 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.PlainTooltip
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -69,8 +66,6 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import zenpi.ui.nav.LocalPageBanner
@@ -294,9 +289,6 @@ private fun PhaseLabel(state: PairingState, remaining: State<Long>) {
 @Composable
 private fun InviteSection(state: PairingState, clock: State<Long>, remaining: State<Long>, actions: ConnectionActions) {
     val invite = state.invite ?: return
-    val keyboard = LocalSoftwareKeyboardController.current
-    val focus = LocalFocusManager.current
-    var code by remember(state.invite) { mutableStateOf("") }
     HorizontalDivider()
     Text(invite.address, style = MaterialTheme.typography.titleMedium)
     Text("Host SHA-256", style = MaterialTheme.typography.labelMedium)
@@ -305,12 +297,9 @@ private fun InviteSection(state: PairingState, clock: State<Long>, remaining: St
         val now = clock.value
         val left = remaining.value
         Text("Expires in ${left}s", style = MaterialTheme.typography.bodySmall)
-        OutlinedTextField(value = code, onValueChange = { code = it.filter { digit -> digit in '0'..'9' }.take(6) },
-            label = { Text("Desktop safety code") }, singleLine = true,
-            enabled = state.canScan && left > 0,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
-            keyboardActions = KeyboardActions(onDone = { keyboard?.hide(); focus.clearFocus() }), modifier = Modifier.fillMaxWidth())
-        Button(onClick = { actions.confirm(code) }, enabled = PairingConfirmationPolicy.allows(state, code, now)) { Text("Confirm host") }
+        Text("Confirm only if this fingerprint matches the desktop. Pairing grants control of the desktop's mounted project.",
+            style = MaterialTheme.typography.bodySmall)
+        Button(onClick = { actions.confirm() }, enabled = left > 0 && PairingConfirmationPolicy.allows(state, now)) { Text("Confirm host") }
     }
 }
 

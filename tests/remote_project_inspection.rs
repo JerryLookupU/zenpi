@@ -176,16 +176,11 @@ fn guide_uses_current_cli_actions_and_resolves_local_document_links() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let guide =
         std::fs::read_to_string(root.join("Docs/stage2_android2unix_user_guide.md")).unwrap();
-    for action in [
-        "--list-projects",
-        "--list-devices",
-        "--grant-device-read",
-        "--grant-device-control",
-        "--grant-device-control-approval",
-        "--revoke-device",
-    ] {
+    for action in ["--list-projects", "--list-devices", "--revoke-device"] {
         assert!(guide.contains(action));
     }
+    assert!(!guide.contains("--grant-device"));
+    assert!(!guide.to_lowercase().contains("safety code"));
     for args in [
         vec![
             "host",
@@ -217,22 +212,6 @@ fn guide_uses_current_cli_actions_and_resolves_local_document_links() {
             "--session",
             "/session.jsonl",
         ],
-        vec![
-            "host",
-            "pair",
-            "--grant-device-read",
-            &"a".repeat(64),
-            "--project",
-            &"b".repeat(64),
-        ],
-        vec![
-            "host",
-            "pair",
-            "--grant-device-control",
-            &"a".repeat(64),
-            "--project",
-            &"b".repeat(64),
-        ],
         vec!["host", "pair", "--revoke-device", &"a".repeat(64)],
     ] {
         assert!(zenpi::core::parse_args(args).is_ok());
@@ -251,14 +230,10 @@ fn guide_uses_current_cli_actions_and_resolves_local_document_links() {
         .unwrap();
     assert!(help.status.success());
     let help = String::from_utf8(help.stdout).unwrap();
-    for flag in [
-        "--list-projects",
-        "--grant-device-control",
-        "--grant-device-approval",
-        "--grant-device-control-approval",
-    ] {
+    for flag in ["--list-projects", "--list-devices", "--revoke-device"] {
         assert!(help.contains(flag));
     }
+    assert!(!help.contains("--grant-device"));
 }
 
 #[test]
@@ -281,7 +256,6 @@ fn project_inspection_parser_refuses_combined_side_effect_actions() {
         vec!["--list-devices"],
         vec!["--list-worktree-intents"],
         vec!["--revoke-device", &device],
-        vec!["--grant-device-read", &device, "--project", "project"],
         vec!["--device", &device],
     ] {
         let mut args = vec![

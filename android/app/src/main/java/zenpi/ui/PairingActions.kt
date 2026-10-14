@@ -11,7 +11,7 @@ import zenpi.transport.RemoteApproval
 /** Pairing, device registration and link lifecycle. */
 interface ConnectionActions {
     fun scan() {}
-    fun confirm(code: String) {}
+    fun confirm() {}
     fun cancel() {}
     fun forget() {}
     fun refresh(projectId: String?) {}

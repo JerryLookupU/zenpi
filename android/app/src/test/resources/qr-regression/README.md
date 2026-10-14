@@ -3,8 +3,8 @@
 `false-center.pgm` is the unmodified production `host_pair::qr_lines` output
 retained from the failed source checker on 2026-10-04. SHA-256:
 `b877ab32979ca2e0e4ae10d9b0d396560551941c8f97bd0a2251af090166a69b`.
-`false-center.json` holds its exact expected payload, observation time and
-safety code. The token and fingerprint are deterministic test values, not
+`false-center.json` holds its exact expected payload and observation time.
+The token and fingerprint are deterministic test values, not
 credentials. The invitation is expired and no listener is associated with it.
 
 ZXing core 3.4.1's single QR detector stops after confirming a false interior

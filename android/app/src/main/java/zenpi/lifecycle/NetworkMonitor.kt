@@ -35,9 +35,12 @@ class NetworkMonitor(context: Context, private val changed: (Long?) -> Unit) {
                 val locals = connectivity.allNetworks.mapNotNull { network ->
                     val caps = connectivity.getNetworkCapabilities(network)
                     val links = connectivity.getLinkProperties(network)
-                    if (caps != null && links != null && !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+                    // A VPN network counts only as a possible T1 overlay route; the
+                    // socket binder still admits it for overlay targets alone.
+                    if (caps != null && links != null
                         && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
-                        && (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)))
+                        && (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+                            || caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)))
                         network.networkHandle to NetworkLinkStamp(links.interfaceName, links.mtu,
                             links.linkAddresses.map { LanAddressState(it.address.hostAddress, it.prefixLength, it.flags, it.scope) }.toSet(),
                             links.routes.map { NetworkRouteStamp(it.destination.address.hostAddress, it.destination.prefixLength,
@@ -71,7 +74,8 @@ class NetworkMonitor(context: Context, private val changed: (Long?) -> Unit) {
             connectivity.registerNetworkCallback(NetworkRequest.Builder().clearCapabilities()
                 .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
                 .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-                .addTransportType(NetworkCapabilities.TRANSPORT_ETHERNET).build(), local)
+                .addTransportType(NetworkCapabilities.TRANSPORT_ETHERNET)
+                .addTransportType(NetworkCapabilities.TRANSPORT_VPN).build(), local)
             localCallback = local
             refresh()
             // Callback registration/loss can race the inventory snapshot. While

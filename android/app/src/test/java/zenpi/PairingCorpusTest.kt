@@ -6,7 +6,7 @@ import org.junit.Test
 import zenpi.pairing.PairingInvite
 
 class PairingCorpusTest {
-    @Test fun productionRustTerminalPixelsDecodeWithAndroidScannerEngineAndMatchingSafetyCode() {
+    @Test fun productionRustTerminalPixelsDecodeWithAndroidScannerEngine() {
         val current = System.getProperty("zenpi.qr.fixture")?.let { java.io.File(it) }
         val names = if (current == null) listOf("ipv4", "ipv6") else {
             val manifest = JsonParser.parseString(java.io.File(current, "terminal-qr-manifest.json").readText()).asJsonObject
@@ -37,7 +37,6 @@ class PairingCorpusTest {
             assertEquals(fixture["uri"].asString,decoded)
             val invite=PairingInvite.parse(decoded,fixture["now"].asLong) { 0 }
             assertEquals(fixture["address"].asString,invite.address)
-            assertEquals(fixture["safety_code"].asString,invite.safetyCode)
             if (current != null) {
                 val now = fixture["now"].asLong
                 assertEquals(300L, invite.remainingSeconds(now))
@@ -50,7 +49,7 @@ class PairingCorpusTest {
             }
         }
     }
-    @Test fun sharedRustAndroidInvitesAgreeOnAcceptanceAddressAndSafetyCode() {
+    @Test fun sharedRustAndroidInvitesAgreeOnAcceptanceAndAddress() {
         val input=requireNotNull(javaClass.classLoader?.getResourceAsStream("pairing-corpus.jsonl"))
         val names=mutableSetOf<String>()
         input.bufferedReader().useLines { lines -> lines.forEach { row ->
@@ -60,7 +59,6 @@ class PairingCorpusTest {
             assertEquals(name,case["accept"].asBoolean,invite.isSuccess)
             invite.getOrNull()?.let {
                 assertEquals(name,case["address"].asString,it.address)
-                assertEquals(name,case["safety_code"].asString,it.safetyCode)
                 assertFalse(it.toString().contains(it.token))
             }
         } }

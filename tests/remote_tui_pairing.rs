@@ -36,7 +36,7 @@ fn host_pair_help_is_side_effect_free_and_does_not_require_home_or_provider() {
             "Usage: zenpi host pair",
             "--desktop",
             "--workspace PATH --session PATH",
-            "--grant-device-control",
+            "--list-devices",
             "--revoke-device",
             "--reconcile-worktree",
             "Internet/NAT",
@@ -44,6 +44,7 @@ fn host_pair_help_is_side_effect_free_and_does_not_require_home_or_provider() {
             assert!(help.contains(expected));
         }
         assert!(!help.contains("zenpi://pair?"));
+        assert!(!help.contains("--grant-device") && !help.to_lowercase().contains("safety code"));
         assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
     }
     for arguments in [
@@ -439,7 +440,6 @@ fn production_host_pair_negotiates_and_consumes_invite_over_tls() {
             Message::Pair {
                 token: invite.token.clone(),
                 fingerprint: invite.fingerprint.clone(),
-                safety_code: invite.safety_code(),
                 device_name: "test-phone".into(),
                 public_key: public_key.clone(),
                 signature: URL_SAFE_NO_PAD.encode(
@@ -697,85 +697,20 @@ fn host_cli_is_explicit_and_rejects_invalid_policy() {
     ] {
         assert!(zenpi::core::parse_args(arguments).is_err());
     }
+    // ZE-514: pairing itself grants the mounted project; the grant CLIs are gone.
     let id = "a".repeat(64);
-    let parsed = zenpi::core::parse_args([
-        "host",
-        "pair",
+    for flag in [
         "--grant-device-read",
-        &id,
-        "--project",
-        "one",
-        "--project",
-        "two",
-    ])
-    .unwrap()
-    .host_pair
-    .unwrap();
-    assert_eq!(parsed.grant_projects, ["one", "two"]);
-    assert!(!parsed.grant_control);
-    let control = zenpi::core::parse_args([
-        "host",
-        "pair",
         "--grant-device-control",
-        &id,
-        "--project",
-        "one",
-    ])
-    .unwrap()
-    .host_pair
-    .unwrap();
-    assert!(control.grant_control);
-    assert!(!control.grant_approval);
-    let approval = zenpi::core::parse_args([
-        "host",
-        "pair",
         "--grant-device-approval",
-        &id,
-        "--project",
-        "one",
-    ])
-    .unwrap()
-    .host_pair
-    .unwrap();
-    assert!(approval.grant_approval);
-    assert!(!approval.grant_control);
-    let combined = zenpi::core::parse_args([
-        "host",
-        "pair",
         "--grant-device-control-approval",
-        &id,
-        "--project",
-        "one",
-    ])
-    .unwrap()
-    .host_pair
-    .unwrap();
-    assert!(combined.grant_control && combined.grant_approval);
-    assert!(
-        zenpi::core::parse_args([
-            "host",
-            "pair",
-            "--grant-device-control",
-            &id,
-            "--grant-device-read",
-            &id,
-            "--project",
-            "one"
-        ])
-        .is_err()
-    );
-    assert!(
-        zenpi::core::parse_args([
-            "host",
-            "pair",
-            "--grant-device-read",
-            &id,
-            "--project",
-            "one",
-            "--list-devices",
-        ])
-        .is_err()
-    );
+    ] {
+        assert!(zenpi::core::parse_args(["host", "pair", flag, &id, "--project", "one"]).is_err());
+        assert!(zenpi::core::parse_args(["host", "pair", flag, &id]).is_err());
+    }
+    for flags in [vec!["--list-devices"], vec!["--revoke-device", &id]] {
+        assert!(zenpi::core::parse_args([vec!["host", "pair"], flags].concat()).is_ok());
+    }
 }
 
 #[test]

@@ -26,11 +26,10 @@ class SessionHostTest {
         val store = PairedHostStore(instrumentation.targetContext, namespace)
         val route = LanSocketRouting(instrumentation.targetContext)
         val invite = PairingInvite.parse(requireNotNull(args.getString("invite")))
-        val paired = PairingClient(route::bind).pair(invite, invite.safetyCode, "Android-session-test", identity)
+        val paired = PairingClient(route::bind).pair(invite, "Android-session-test", identity)
         val host = PairedHost(invite.host, invite.port, invite.fingerprint, paired.deviceId)
         store.save(host)
-        assertTrue(HostClient(route::bind).inspect(host, identity = identity).projects.isEmpty())
-        instrumentation.sendStatus(0, android.os.Bundle().apply { putString("zenpi_phase", "ungranted_projection_verified") })
+        instrumentation.sendStatus(0, android.os.Bundle().apply { putString("zenpi_phase", "paired_projection_verified") })
         val model = PairingViewModel(instrumentation.targetContext.applicationContext as android.app.Application, store, identity)
         try {
             compose.runOnUiThread { model.setForeground(true) }

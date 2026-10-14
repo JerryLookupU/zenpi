@@ -1,4 +1,5 @@
-//! Local interface selection for a LAN-first pairing QR; no discovery packets.
+//! Local interface selection for a LAN-first pairing QR plus T1 overlay hints
+//! (ZE-516); no discovery packets and no Tailscale API.
 
 use std::net::IpAddr;
 
@@ -24,10 +25,37 @@ fn usable(ip: IpAddr) -> bool {
 }
 
 fn private(ip: IpAddr) -> bool {
+    !overlay(ip)
+        && match ip {
+            IpAddr::V4(ip) => ip.is_private(),
+            IpAddr::V6(ip) => ip.is_unique_local(),
+        }
+}
+
+/// A T1 overlay address: Tailscale/Headscale CGNAT `100.64.0.0/10` or the Tailscale
+/// ULA `fd7a:115c:a1e0::/48`. Membership is decided from the address alone.
+pub fn overlay(ip: IpAddr) -> bool {
     match ip {
-        IpAddr::V4(ip) => ip.is_private(),
-        IpAddr::V6(ip) => ip.is_unique_local(),
+        IpAddr::V4(ip) => {
+            let [first, second, ..] = ip.octets();
+            first == 100 && second & 0xc0 == 0x40
+        }
+        IpAddr::V6(ip) => match ip.to_ipv4_mapped() {
+            Some(mapped) => overlay(IpAddr::V4(mapped)),
+            None => ip.segments()[..3] == [0xfd7a, 0x115c, 0xa1e0],
+        },
     }
+}
+
+/// This host's usable overlay addresses, IPv4 first. Overlay tunnels are usually
+/// point-to-point interfaces, which LAN selection deliberately skips.
+pub fn overlay_addresses() -> std::io::Result<Vec<IpAddr>> {
+    let mut addresses: Vec<_> = interface_addresses(true)?
+        .into_iter()
+        .filter(|ip| overlay(*ip))
+        .collect();
+    addresses.sort_by_key(|ip| (ip.is_ipv6(), *ip));
+    Ok(addresses)
 }
 
 /// Prefer a private interface over a public/VPN default route. When multiple
@@ -54,8 +82,13 @@ pub fn select(
     }
 }
 
-#[cfg(unix)]
+/// Up, non-loopback, non-point-to-point interface addresses (LAN candidates).
 pub fn local_addresses() -> std::io::Result<Vec<IpAddr>> {
+    interface_addresses(false)
+}
+
+#[cfg(unix)]
+fn interface_addresses(point_to_point: bool) -> std::io::Result<Vec<IpAddr>> {
     struct Interfaces(*mut libc::ifaddrs);
     impl Drop for Interfaces {
         fn drop(&mut self) {
@@ -78,7 +111,7 @@ pub fn local_addresses() -> std::io::Result<Vec<IpAddr>> {
         let entry = unsafe { &*cursor };
         if entry.ifa_flags & libc::IFF_UP as libc::c_uint != 0
             && entry.ifa_flags & libc::IFF_LOOPBACK as libc::c_uint == 0
-            && entry.ifa_flags & libc::IFF_POINTOPOINT as libc::c_uint == 0
+            && (point_to_point || entry.ifa_flags & libc::IFF_POINTOPOINT as libc::c_uint == 0)
             && !entry.ifa_addr.is_null()
         {
             // SAFETY: non-null address belongs to this list; family determines its layout.
@@ -111,6 +144,6 @@ pub fn local_addresses() -> std::io::Result<Vec<IpAddr>> {
 }
 
 #[cfg(not(unix))]
-pub fn local_addresses() -> std::io::Result<Vec<IpAddr>> {
+fn interface_addresses(_point_to_point: bool) -> std::io::Result<Vec<IpAddr>> {
     Ok(Vec::new())
 }

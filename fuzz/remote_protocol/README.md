@@ -55,10 +55,10 @@ This is regression/property-style bounded fuzz replay, not coverage-guided
 libFuzzer execution or proof of complete protocol safety. Frame truncation,
 limits, I/O faults, ACL and encrypted transport have separate test suites.
 
-pairing-corpus.jsonl supplies shared invitation acceptance/address/safety-code
+pairing-corpus.jsonl supplies shared invitation acceptance/address
 cases. terminal-qr-ipv4/ipv6.pgm are production qr_lines terminal cells rendered
 as luminance images by the remote_qr_fixture example; their matching JSON binds
-the URI, fixture clock, address and safety code. Android tests decode those
+the URI, fixture clock and address. Android tests decode those
 pixels with the same ZXing engine used by its scanner, then parse the exact URI.
 The deterministic token is public fixture-only data, never an admitted token.
 

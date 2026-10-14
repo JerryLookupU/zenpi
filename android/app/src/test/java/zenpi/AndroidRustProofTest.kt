@@ -58,7 +58,7 @@ class AndroidRustProofTest {
             }
         }
         val name = "Phone\u2028desk\\u2028"
-        val paired = PairingHandshake.exchange(input, output, invite, invite.safetyCode, name, publicKey, device,
+        val paired = PairingHandshake.exchange(input, output, invite, name, publicKey, device,
             sign = { id -> sign(DeviceProofCodec.pair(invite.fingerprint, invite.token, id, name, publicKey)) },
             checkIdentity = { identityProof.requireCurrent { publicKey } })
         assertTrue(paired.paired); assertFalse(paired.controlAvailable)

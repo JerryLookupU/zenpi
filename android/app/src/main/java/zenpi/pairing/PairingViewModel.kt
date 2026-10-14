@@ -1070,8 +1070,8 @@ class PairingViewModel @JvmOverloads constructor(application: Application, priva
         closeDiff(); connection?.cancel(); generation++
         mutable.value = PairingState(PairingPhase.CONFIRMING, invite, scanInProgress = mutable.value.scanInProgress)
     }
-    fun confirm(safetyCode: String) {
-        if (!foreground || !PairingConfirmationPolicy.allows(mutable.value, safetyCode)) return
+    fun confirm() {
+        if (!foreground || !PairingConfirmationPolicy.allows(mutable.value)) return
         val invite = mutable.value.invite ?: return
         if (!networkAvailable) { mutable.value = mutable.value.copy(error = "Network unavailable"); return }
         val current = ++generation
@@ -1081,13 +1081,13 @@ class PairingViewModel @JvmOverloads constructor(application: Application, priva
                 val identity = PairingCredentialAdmission.load(storage, { generation == current }, { invite.requireFresh() }) {
                     deviceIdentity ?: DeviceIdentity.loadOrCreate()
                 }
-                val result = PairingClient(socketRouting::bind).pair(invite, safetyCode, "Android", identity)
+                val result = PairingClient(socketRouting::bind).pair(invite, "Android", identity)
                 var saved: zenpi.security.SavedHostState? = null
                 if (result.paired && result.deviceRegistered && generation == current) {
                     storage.withLock { withContext(Dispatchers.IO) { if (generation == current) {
                         ensureActive()
                         zenpi.transport.AuthenticationProof.deviceId(result.deviceId) { identity.deviceId }
-                        saved = hostStore.save(PairedHost(invite.host, invite.port, invite.fingerprint, result.deviceId),
+                        saved = hostStore.save(PairedHost(invite.host, invite.port, invite.fingerprint, result.deviceId, legacyPin = invite.version == 1, fallbacks = invite.hints.drop(1)),
                             storageAdmission(current, coroutineContext, identity, result.deviceId))
                     } } }
                 }
@@ -1096,7 +1096,7 @@ class PairingViewModel @JvmOverloads constructor(application: Application, priva
                     if (result.paired && result.deviceRegistered) null else invite,
                     if (result.paired && result.deviceRegistered) null else "Device registration incomplete",
                     result.deviceRegistered,
-                    host = if (result.deviceRegistered) PairedHost(invite.host, invite.port, invite.fingerprint, result.deviceId) else null,
+                    host = if (result.deviceRegistered) PairedHost(invite.host, invite.port, invite.fingerprint, result.deviceId, legacyPin = invite.version == 1, fallbacks = invite.hints.drop(1)) else null,
                     projection = saved?.projection,
                 )
                 if (generation == current && saved != null) previousPairing = null
@@ -1346,12 +1346,23 @@ class PairingViewModel @JvmOverloads constructor(application: Application, priva
                 error = "Workspace request could not be saved; it was not sent.") }
         }
     }
+    /** ZE-515: learn a v1-saved host's key id over pinned TLS and persist it as the pin. */
+    private suspend fun migratePin(host: PairedHost, current: Int): PairedHost {
+        val hostId = HostClient(socketRouting::bind).hostId(host)
+        val migrated = storage.withLock { withContext(Dispatchers.IO) {
+            if (generation != current) throw CancellationException("Host read replaced")
+            hostStore.migratePin(host, hostId, storageAdmission(current, coroutineContext))
+        } }
+        if (generation != current) throw CancellationException("Host read replaced")
+        mutable.value = mutable.value.copy(host = migrated)
+        return migrated
+    }
     fun refresh(selectedId: String? = if (mutable.value.selectedProjectUnavailable) null else mutable.value.projection?.selectedId, command: WorkspaceCommand? = null) {
         if (!metadataLoaded || !foreground || mutable.value.scanInProgress || mutable.value.resetting || mutable.value.resetRequired) return
         if (command != null && mutable.value.pendingWorkspace?.envelope != command.envelope) return
         if (command != null || selectedId != mutable.value.projection?.selectedId) closeDiff()
         if (mutable.value.pendingRevoke != null) return
-        val host = mutable.value.host ?: return
+        val savedHost = mutable.value.host ?: return
         if (!networkAvailable) { mutable.value = mutable.value.copy(phase = PairingPhase.OFFLINE,
             error = "Network unavailable. Displayed data may be stale."); return }
         connection?.cancel(); val current = ++generation
@@ -1361,6 +1372,7 @@ class PairingViewModel @JvmOverloads constructor(application: Application, priva
         val readingConnected = command == null && previous.phase == PairingPhase.CONNECTED && previous.pendingWorkspace == null
         mutable.value = previous.copy(phase = if (readingConnected) PairingPhase.CONNECTED else PairingPhase.CONNECTING, error = null)
         connection = launchOwned {
+            var host = savedHost
             var projection = previous.projection
             var readSelectedId = selectedId
             val backoff = zenpi.lifecycle.ReconnectBackoff()
@@ -1372,6 +1384,7 @@ class PairingViewModel @JvmOverloads constructor(application: Application, priva
                     catch (error: zenpi.state.StaleProjectionException) { livePublicationStale = true; throw error }
                 }
                 try {
+                    if (host.legacyPin) host = migratePin(host, current)
                     val identity = existingIdentity(host)
                     val next = HostClient(socketRouting::bind).inspect(host, readSelectedId, identity, previous = projection, workspaceCommand = command,
                         acknowledgePrevious = command == null && previous.pendingWorkspace == null,

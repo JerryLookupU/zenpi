@@ -55,6 +55,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 |digest| URL_SAFE_NO_PAD.encode(digest.as_ref()),
             ),
             expires_at: now + 300,
+            hints: vec![zenpi::remote::pairing::AddressHint::lan(address.parse()?)],
         };
         let lines = zenpi::host_pair::qr_lines(&invite)?;
         let scale = 4;
@@ -77,7 +78,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         write!(image, "P5\n{width} {height}\n255\n")?;
         image.write_all(&pixels)?;
         let fixture = serde_json::json!({"schema_version":1,"fixture_only":true,"now":now,"address":address,
-            "uri":invite.to_uri()?,"safety_code":invite.safety_code(),"width":width,"height":height});
+            "uri":invite.to_uri()?,"width":width,"height":height});
         std::fs::write(
             output.join(format!("terminal-qr-{name}.json")),
             serde_json::to_vec_pretty(&fixture)?,

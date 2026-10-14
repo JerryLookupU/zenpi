@@ -16,6 +16,12 @@ internal class SocketLease : AutoCloseable {
         if (!accepted) reject(raw)
     }
 
+    /** Release a raw socket whose connect attempt failed so the next hint may be installed. */
+    fun retire(raw: Socket) {
+        synchronized(lock) { if (socket === raw) socket = null }
+        raw.close()
+    }
+
     fun transfer(raw: Socket, tls: Socket) {
         val accepted = synchronized(lock) {
             if (closed || socket !== raw) false else { socket = tls; true }

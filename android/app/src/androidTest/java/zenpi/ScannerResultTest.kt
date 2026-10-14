@@ -78,12 +78,8 @@ class ScannerResultTest {
         assertEquals(saved, store.loadState())
         model.setForeground(true)
         val before = model.state.value
-        val correct = requireNotNull(before.invite).safetyCode
-        val wrong = if (correct == "000000") "111111" else "000000"
-        for (code in listOf("", wrong, correct + "\n", " $correct")) {
-            model.confirm(code)
-            assertEquals(before, model.state.value); assertEquals(saved, store.loadState())
-        }
+        // A cold deep link never confirms by itself; the user must tap Confirm host.
+        assertEquals(before, model.state.value); assertEquals(saved, store.loadState())
         model.setForeground(false)
         phase("cold_deep_link_confirmation_verified")
     }

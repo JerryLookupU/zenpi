@@ -26,7 +26,7 @@ class LanSocketRoutingTest {
                     assertFalse(socket.isConnected); assertFalse(socket.isClosed)
                     captured = socket; binds++
                     identity.wipe()
-                }.pair(invite, invite.safetyCode, "routing key loss", identity)
+                }.pair(invite, "routing key loss", identity)
             }.exceptionOrNull()
             assertTrue(error is zenpi.transport.HostAuthenticationException)
             assertEquals(1, binds)
@@ -111,14 +111,13 @@ class LanSocketRoutingTest {
             throw java.io.IOException("fixture binding failed")
         }
         try {
-            val wrongCode = if (invite.safetyCode == "000000") "111111" else "000000"
-            assertTrue(runCatching { PairingClient(bind).pair(invite, wrongCode, "routing test", identity) }.exceptionOrNull() is zenpi.transport.WireException)
-            assertEquals("Invalid confirmation must not bind a socket", 0, calls)
+            assertTrue(runCatching { PairingClient(bind).pair(invite, "\u0000", identity) }.exceptionOrNull() is zenpi.transport.WireException)
+            assertEquals("Invalid device name must not bind a socket", 0, calls)
             val foreignHost = host.copy(deviceId = if (identity.deviceId == "b".repeat(64)) "c".repeat(64) else "b".repeat(64))
             assertTrue(runCatching { HostClient(bind).inspect(foreignHost, identity = identity) }.exceptionOrNull() is zenpi.transport.WireException)
             assertEquals("Saved identity mismatch must not bind a socket", 0, calls)
             assertEquals(host.deviceId, DeviceIdentity.loadExisting(alias)?.deviceId)
-            assertTrue(runCatching { PairingClient(bind).pair(invite, invite.safetyCode, "routing test", identity) }.exceptionOrNull() is java.io.IOException)
+            assertTrue(runCatching { PairingClient(bind).pair(invite, "routing test", identity) }.exceptionOrNull() is java.io.IOException)
             assertEquals(1, calls); assertTrue(requireNotNull(captured).isClosed)
             captured = null
             assertTrue(runCatching { HostClient(bind).inspect(host, identity = identity) }.exceptionOrNull() is java.io.IOException)

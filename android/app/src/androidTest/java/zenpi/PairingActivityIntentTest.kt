@@ -88,7 +88,7 @@ class PairingActivityIntentTest {
             deliver(first)
             compose.runOnUiThread {
                 assertEquals(PairingPhase.CONFIRMING, model.state.value.phase)
-                assertEquals(PairingInvite.parse(first).safetyCode, model.state.value.invite?.safetyCode)
+                assertEquals(PairingInvite.parse(first).token, model.state.value.invite?.token)
                 // Hold only the state admission boundary, not a fabricated network success.
                 state.value = state.value.copy(phase = PairingPhase.CONNECTING)
             }
@@ -108,7 +108,7 @@ class PairingActivityIntentTest {
             deliver(replacement)
             compose.runOnUiThread {
                 assertEquals(PairingPhase.CONFIRMING, model.state.value.phase)
-                assertEquals(PairingInvite.parse(replacement).safetyCode, model.state.value.invite?.safetyCode)
+                assertEquals(PairingInvite.parse(replacement).token, model.state.value.invite?.token)
                 assertTrue(generation.getInt(model) > beforeGeneration)
             }
             instrumentation.sendStatus(0, android.os.Bundle().apply {
