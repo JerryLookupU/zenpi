@@ -571,7 +571,7 @@ impl PrivateDirectory {
             return Err(std::io::Error::last_os_error().into());
         }
         // No payload is unlinked before the recovery record is durable.
-        self.file.sync_all()?;
+        crate::session::durable_sync(&self.file)?;
         Ok(())
     }
     #[cfg(not(unix))]
@@ -591,7 +591,7 @@ impl PrivateDirectory {
         let result = (|| {
             let mut file = self.open_file(&temporary, true)?;
             file.write_all(&encoded)?;
-            file.sync_all()?;
+            crate::session::durable_sync(&file)?;
             #[cfg(unix)]
             {
                 use std::os::fd::AsRawFd;
@@ -610,7 +610,7 @@ impl PrivateDirectory {
                     return Err(std::io::Error::last_os_error().into());
                 }
             }
-            self.file.sync_all()?;
+            crate::session::durable_sync(&self.file)?;
             Ok(())
         })();
         if result.is_err() {
@@ -1013,7 +1013,7 @@ impl OutputArtifactStore {
             state.files = state.files.saturating_sub(1);
             orphans += 1;
         }
-        self.dir.file.sync_all()?;
+        crate::session::durable_sync(&self.dir.file)?;
         Ok(removed + orphans)
     }
     pub(crate) fn retirement_ids(&self) -> Result<BTreeSet<String>, OutputError> {
@@ -1134,11 +1134,11 @@ impl OutputArtifactStore {
             if !retired {
                 self.dir.retire(id)?;
             }
-            self.dir.file.sync_all()?;
+            crate::session::durable_sync(&self.dir.file)?;
             self.dir.unlink(&format!("{id}.raw"))?;
             state.used = state.used.saturating_sub(size);
             // The retirement record remains charged until receipt GC.
-            self.dir.file.sync_all()?;
+            crate::session::durable_sync(&self.dir.file)?;
             removed.push(id.to_owned());
         }
         Ok(removed)
@@ -1179,7 +1179,7 @@ impl OutputArtifactStore {
             self.dir.unlink(&format!("{id}.cleanup"))?;
             state.files = state.files.saturating_sub(1);
         }
-        self.dir.file.sync_all()?;
+        crate::session::durable_sync(&self.dir.file)?;
         Ok(())
     }
     fn cleanup(&self, select: impl Fn(&ArtifactRef) -> bool) -> Result<usize, OutputError> {
@@ -1205,7 +1205,7 @@ impl OutputArtifactStore {
             state.files = state.files.saturating_sub(1);
             count += 1;
         }
-        self.dir.file.sync_all()?;
+        crate::session::durable_sync(&self.dir.file)?;
         Ok(count)
     }
 }
@@ -1390,7 +1390,7 @@ impl ArtifactWriter {
             dropped_updates: 0,
         });
         self.closed = true;
-        let sync = self.file.as_ref().unwrap().sync_all();
+        let sync = crate::session::durable_sync(self.file.as_ref().unwrap());
         if let Err(e) = sync {
             self.reference.failure = Some(e.to_string());
         }

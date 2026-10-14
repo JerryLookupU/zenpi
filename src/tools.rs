@@ -3605,7 +3605,7 @@ fn atomic_write_text(path: &Path, bytes: &[u8]) -> Result<(), ToolError> {
         if let Some(permissions) = permissions {
             file.set_permissions(permissions)?;
         }
-        file.sync_all()
+        crate::session::durable_sync(&file)
     })();
     if let Err(error) = write_result {
         let _ = fs::remove_file(&temporary);
@@ -3620,7 +3620,7 @@ fn atomic_write_text(path: &Path, bytes: &[u8]) -> Result<(), ToolError> {
     // closes the rename durability window after the temporary file was synced.
     #[cfg(unix)]
     {
-        File::open(parent)?.sync_all()?;
+        crate::session::durable_sync(&File::open(parent)?)?;
     }
     Ok(())
 }

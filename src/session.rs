@@ -1910,7 +1910,7 @@ impl SessionStore {
             |file| {
                 if durable {
                     JOURNAL_FSYNCS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    file.sync_data()
+                    durable_sync(file)
                 } else {
                     Ok(())
                 }
@@ -1923,6 +1923,27 @@ impl SessionStore {
         self.records.push(SessionRecord::new(sequence, &record)?);
         Ok(())
     }
+}
+
+/// Durability point for journal, WAL, tool output and tool writes: POSIX
+/// `fsync`. On Apple platforms `File::sync_data`/`sync_all` are `F_FULLFSYNC`,
+/// a whole-device cache flush that serializes every agent on the machine;
+/// `fsync` survives a process or kernel crash, which is the contract these
+/// writes need (as the DAG store already does).
+#[cfg(unix)]
+pub fn durable_sync(file: &File) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: `file` is a live descriptor borrowed for the call.
+    if unsafe { libc::fsync(file.as_raw_fd()) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(unix))]
+pub fn durable_sync(file: &File) -> io::Result<()> {
+    file.sync_data()
 }
 
 static JOURNAL_FSYNCS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -2302,7 +2323,7 @@ impl ReconnectJournal {
         }
         let written = self.file.write_all(&bytes).and_then(|()| {
             if durable {
-                self.file.sync_data()
+                durable_sync(&self.file)
             } else {
                 Ok(())
             }

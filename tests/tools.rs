@@ -5,6 +5,7 @@ mod search;
 #[allow(dead_code)]
 mod tool_output;
 use zenpi::backend;
+use zenpi::session;
 use zenpi::view_model;
 
 #[path = "../src/dag.rs"]
