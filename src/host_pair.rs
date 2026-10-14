@@ -870,6 +870,8 @@ impl PairingHost {
                     });
                     if authenticated.is_none() {
                         response.code = refusal;
+                    } else {
+                        stream.sock.authenticated()?;
                     }
                     write_frame(stream, &response).map_err(io::Error::other)?;
                     if let Some(device) = authenticated {

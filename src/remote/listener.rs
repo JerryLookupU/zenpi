@@ -3,7 +3,7 @@
 use std::{
     collections::BTreeMap,
     io::{self, Read, Write},
-    net::{Shutdown, SocketAddr, TcpListener, TcpStream},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -15,9 +15,14 @@ use std::{
 pub type TlsStream = rustls::StreamOwned<rustls::ServerConnection, DeadlineSocket>;
 
 /// Absolute deadlines prevent a slow peer from extending a frame one byte at a time.
+/// Until [`DeadlineSocket::authenticated`], every deadline is also capped by the
+/// connection's total unauthenticated budget.
 pub struct DeadlineSocket {
     socket: TcpStream,
     deadline: Instant,
+    unauthenticated_until: Option<Instant>,
+    state: Arc<State>,
+    id: u64,
 }
 
 impl DeadlineSocket {
@@ -28,7 +33,26 @@ impl DeadlineSocket {
                 "invalid remote deadline",
             ));
         }
-        self.deadline = Instant::now() + duration;
+        let deadline = Instant::now() + duration;
+        self.deadline = self
+            .unauthenticated_until
+            .map_or(deadline, |budget| budget.min(deadline));
+        Ok(())
+    }
+
+    /// The handler verified the peer's device key: lift the unauthenticated
+    /// budget and free the peer's unauthenticated slot. Fails once replaced.
+    pub fn authenticated(&mut self) -> io::Result<()> {
+        let mut slots = self
+            .state
+            .slots
+            .lock()
+            .map_err(|_| io::Error::other("listener state poisoned"))?;
+        slots
+            .get_mut(&self.id)
+            .ok_or_else(|| io::Error::other("remote connection replaced"))?
+            .peer = None;
+        self.unauthenticated_until = None;
         Ok(())
     }
 
@@ -58,10 +82,20 @@ impl Write for DeadlineSocket {
     }
 }
 
+impl Drop for DeadlineSocket {
+    fn drop(&mut self) {
+        if let Ok(mut slots) = self.state.slots.lock() {
+            slots.remove(&self.id);
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct ListenerOptions {
     pub bind: SocketAddr,
     pub max_connections: usize,
+    /// Total budget for the unauthenticated phase (TLS handshake through
+    /// device authentication), not a per-frame timeout.
     pub handshake_timeout: Duration,
 }
 
@@ -90,24 +124,42 @@ impl ListenerOptions {
     }
 }
 
+struct Slot {
+    socket: TcpStream,
+    /// The peer's address while it is unauthenticated, `None` afterwards.
+    peer: Option<IpAddr>,
+}
+
 #[derive(Default)]
 struct State {
     stopping: AtomicBool,
     next_id: AtomicU64,
-    sockets: Mutex<BTreeMap<u64, TcpStream>>,
+    slots: Mutex<BTreeMap<u64, Slot>>,
 }
 
-struct ConnectionGuard {
-    state: Arc<State>,
-    id: u64,
-}
-
-impl Drop for ConnectionGuard {
-    fn drop(&mut self) {
-        if let Ok(mut sockets) = self.state.sockets.lock() {
-            sockets.remove(&self.id);
+impl State {
+    fn close_all(&self) {
+        if let Ok(slots) = self.slots.lock() {
+            for slot in slots.values() {
+                let _ = slot.socket.shutdown(Shutdown::Both);
+            }
         }
     }
+}
+
+/// Each IP holds at most one unauthenticated slot: a newer connection replaces
+/// its older half-open one. Unauthenticated peers never occupy the half of the
+/// slots reserved for authenticated connections.
+fn admit(slots: &mut BTreeMap<u64, Slot>, peer: IpAddr, max: usize) -> bool {
+    let previous = slots
+        .iter()
+        .find(|(_, slot)| slot.peer == Some(peer))
+        .map(|(&id, _)| id);
+    if let Some(previous) = previous.and_then(|id| slots.remove(&id)) {
+        let _ = previous.socket.shutdown(Shutdown::Both);
+    }
+    let unauthenticated = slots.values().filter(|slot| slot.peer.is_some()).count();
+    slots.len() < max && unauthenticated < max - max / 2
 }
 
 pub struct RemoteListener {
@@ -119,6 +171,8 @@ pub struct RemoteListener {
 impl RemoteListener {
     /// Handler runs only after a real TLS 1.3 handshake. It must perform pairing
     /// or device authentication before dispatch; TLS alone is not authorization.
+    /// Until it calls [`DeadlineSocket::authenticated`] the connection keeps
+    /// its unauthenticated budget and slot.
     pub fn start<F>(
         options: ListenerOptions,
         config: Arc<rustls::ServerConfig>,
@@ -130,7 +184,6 @@ impl RemoteListener {
         options.validate()?;
         let listener = TcpListener::bind(options.bind)?;
         let address = listener.local_addr()?;
-        listener.set_nonblocking(true)?;
         let state = Arc::new(State::default());
         let shared = state.clone();
         let handler = Arc::new(handler);
@@ -139,61 +192,54 @@ impl RemoteListener {
             .spawn(move || {
                 let mut connections: Vec<JoinHandle<()>> = Vec::new();
                 let result = (|| -> io::Result<()> {
-                    while !shared.stopping.load(Ordering::Acquire) {
-                        let mut index = 0;
-                        while index < connections.len() {
-                            if connections[index].is_finished() {
-                                let _ = connections.swap_remove(index).join();
-                            } else {
-                                index += 1;
-                            }
+                    // Blocking accept: an idle listener never wakes. Shutdown connects to wake it.
+                    loop {
+                        let accepted = listener.accept();
+                        if shared.stopping.load(Ordering::Acquire) {
+                            return Ok(());
                         }
-                        let (socket, _) = match listener.accept() {
+                        connections.retain(|task| !task.is_finished());
+                        let (socket, peer) = match accepted {
                             Ok(value) => value,
-                            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                                thread::sleep(Duration::from_millis(10));
-                                continue;
-                            }
                             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                             Err(error) => return Err(error),
                         };
-                        let mut sockets = shared
-                            .sockets
+                        let peer = peer.ip().to_canonical();
+                        let mut slots = shared
+                            .slots
                             .lock()
                             .map_err(|_| io::Error::other("listener state poisoned"))?;
-                        if shared.stopping.load(Ordering::Acquire)
-                            || sockets.len() >= options.max_connections
-                        {
+                        if !admit(&mut slots, peer, options.max_connections) {
                             let _ = socket.shutdown(Shutdown::Both);
                             continue;
                         }
-                        // macOS accepted sockets inherit the nonblocking listener flag.
-                        socket.set_nonblocking(false)?;
                         socket.set_nodelay(true)?;
                         let id = shared.next_id.fetch_add(1, Ordering::Relaxed);
-                        sockets.insert(id, socket.try_clone()?);
-                        drop(sockets);
-                        let guard = ConnectionGuard {
+                        slots.insert(
+                            id,
+                            Slot {
+                                socket: socket.try_clone()?,
+                                peer: Some(peer),
+                            },
+                        );
+                        drop(slots);
+                        let budget = Instant::now() + options.handshake_timeout;
+                        let socket = DeadlineSocket {
+                            socket,
+                            deadline: budget,
+                            unauthenticated_until: Some(budget),
                             state: shared.clone(),
                             id,
                         };
                         let config = config.clone();
                         let handler = handler.clone();
-                        let timeout = options.handshake_timeout;
                         let task = thread::Builder::new()
                             .name("zenpi-remote-connection".into())
                             .spawn(move || {
-                                let _guard = guard;
                                 let Ok(connection) = rustls::ServerConnection::new(config) else {
                                     return;
                                 };
-                                let mut stream = rustls::StreamOwned::new(
-                                    connection,
-                                    DeadlineSocket {
-                                        socket,
-                                        deadline: Instant::now() + timeout,
-                                    },
-                                );
+                                let mut stream = rustls::StreamOwned::new(connection, socket);
                                 while stream.conn.is_handshaking() {
                                     if stream.conn.complete_io(&mut stream.sock).is_err() {
                                         return;
@@ -214,14 +260,9 @@ impl RemoteListener {
                             })?;
                         connections.push(task);
                     }
-                    Ok(())
                 })();
                 shared.stopping.store(true, Ordering::Release);
-                if let Ok(sockets) = shared.sockets.lock() {
-                    for socket in sockets.values() {
-                        let _ = socket.shutdown(Shutdown::Both);
-                    }
-                }
+                shared.close_all();
                 for task in connections {
                     let _ = task.join();
                 }
@@ -240,20 +281,34 @@ impl RemoteListener {
 
     pub fn active_connections(&self) -> usize {
         self.state
-            .sockets
+            .slots
             .lock()
-            .map(|sockets| sockets.len())
+            .map(|slots| slots.len())
             .unwrap_or(0)
     }
 
     pub fn shutdown(&mut self) -> io::Result<()> {
         self.state.stopping.store(true, Ordering::Release);
-        if let Ok(sockets) = self.state.sockets.lock() {
-            for socket in sockets.values() {
-                let _ = socket.shutdown(Shutdown::Both);
-            }
-        }
+        self.state.close_all();
         if let Some(task) = self.accept_thread.take() {
+            if task.is_finished() {
+                return task
+                    .join()
+                    .map_err(|_| io::Error::other("remote listener panicked"))?;
+            }
+            // Wake the blocking accept so it observes `stopping`. If the address is
+            // gone (interface down), leave the thread blocked rather than hang here;
+            // every connection was already closed above.
+            let mut wake = self.address;
+            if wake.ip().is_unspecified() {
+                wake.set_ip(match wake.ip() {
+                    IpAddr::V4(_) => Ipv4Addr::LOCALHOST.into(),
+                    IpAddr::V6(_) => Ipv6Addr::LOCALHOST.into(),
+                });
+            }
+            if TcpStream::connect_timeout(&wake, Duration::from_secs(1)).is_err() {
+                return Ok(());
+            }
             task.join()
                 .map_err(|_| io::Error::other("remote listener panicked"))??;
         }
@@ -264,5 +319,36 @@ impl RemoteListener {
 impl Drop for RemoteListener {
     fn drop(&mut self) {
         let _ = self.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unauthenticated_peers_never_take_reserved_slots() {
+        let local = TcpListener::bind("127.0.0.1:0").unwrap();
+        let socket = || TcpStream::connect(local.local_addr().unwrap()).unwrap();
+        let ip = |last: u8| IpAddr::from([10, 0, 0, last]);
+        let mut slots = BTreeMap::new();
+        for (id, last) in [1, 2].into_iter().enumerate() {
+            assert!(admit(&mut slots, ip(last), 4));
+            let peer = Some(ip(last));
+            slots.insert(
+                id as u64,
+                Slot {
+                    socket: socket(),
+                    peer,
+                },
+            );
+        }
+        // Two distinct half-open peers fill the unauthenticated half of four slots.
+        assert!(!admit(&mut slots, ip(3), 4));
+        // A same-IP retry replaces its own half-open slot instead.
+        assert!(admit(&mut slots, ip(2), 4));
+        assert_eq!(slots.len(), 1);
+        slots.get_mut(&0).unwrap().peer = None;
+        assert!(admit(&mut slots, ip(3), 4));
     }
 }
