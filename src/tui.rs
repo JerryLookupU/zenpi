@@ -21005,9 +21005,72 @@ impl ExternalEditorHost {
 struct TerminalGuard {
     active: bool,
     #[cfg(unix)]
-    original_terminal: Option<crate::external_editor::TerminalState>,
+    original_terminal: Option<Arc<crate::external_editor::TerminalState>>,
     #[cfg(unix)]
     signals: Option<terminal_signals::SignalGuard>,
+    // The hook that was installed before `enter`; reinstated by `leave`.
+    previous_panic_hook: Option<Arc<PanicHook>>,
+}
+
+type PanicHook = Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Send + Sync + 'static>;
+
+// Set while a TerminalGuard's panic hook may still restore the terminal.
+// Whoever swaps it to false first (the hook or `leave`) owns restoration, so
+// the screen/termios steps run exactly once.
+static PANIC_RESTORE_PENDING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+// The same steps as `TerminalGuard::leave`, usable from a panic hook.
+fn restore_terminal_screen(#[cfg(unix)] original: Option<&crate::external_editor::TerminalState>) {
+    let _ = execute!(
+        io::stdout(),
+        Show,
+        DisableMouseCapture,
+        DisableBracketedPaste,
+        LeaveAlternateScreen
+    );
+    let _ = disable_raw_mode();
+    #[cfg(unix)]
+    if let Some(original) = original {
+        let _ = original.reclaim();
+        let _ = original.restore(false);
+    }
+}
+
+// The release profile aborts on panic, so `Drop` never runs; this hook is the
+// only chance to leave raw mode and the alternate screen. With unwinding, a
+// panic on another thread may be caught, so only the owning thread restores.
+fn install_panic_restore_hook(
+    #[cfg(unix)] original: Option<Arc<crate::external_editor::TerminalState>>,
+) -> Arc<PanicHook> {
+    let previous: Arc<PanicHook> = Arc::new(std::panic::take_hook());
+    let chained = Arc::clone(&previous);
+    let owner = std::thread::current().id();
+    PANIC_RESTORE_PENDING.store(true, std::sync::atomic::Ordering::SeqCst);
+    std::panic::set_hook(Box::new(move |info| {
+        let restores = cfg!(panic = "abort") || std::thread::current().id() == owner;
+        if restores && PANIC_RESTORE_PENDING.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            restore_terminal_screen(
+                #[cfg(unix)]
+                original.as_deref(),
+            );
+        }
+        chained(info);
+    }));
+    previous
+}
+
+fn uninstall_panic_restore_hook(previous: Arc<PanicHook>) {
+    // take_hook/set_hook panic when called from a panicking thread.
+    if std::thread::panicking() {
+        return;
+    }
+    // Dropping our hook releases its clone, so the original box is unique again.
+    drop(std::panic::take_hook());
+    match Arc::try_unwrap(previous) {
+        Ok(previous) => std::panic::set_hook(previous),
+        Err(previous) => std::panic::set_hook(Box::new(move |info| previous(info))),
+    }
 }
 
 impl TerminalGuard {
@@ -21017,7 +21080,9 @@ impl TerminalGuard {
         #[cfg(unix)]
         // A redirected stdin can still use crossterm's /dev/tty fallback.
         // Only the explicit editor request requires actual foreground stdin.
-        let original_terminal = crate::external_editor::TerminalState::capture().ok();
+        let original_terminal = crate::external_editor::TerminalState::capture()
+            .ok()
+            .map(Arc::new);
         enable_raw_mode()?;
         let mut stdout = io::stdout();
         if let Err(error) = execute!(
@@ -21037,13 +21102,29 @@ impl TerminalGuard {
             let _ = disable_raw_mode();
             return Err(TuiError::Io(error));
         }
-        Ok(Self {
+        let previous_panic_hook = install_panic_restore_hook(
+            #[cfg(unix)]
+            original_terminal.clone(),
+        );
+        let guard = Self {
             active: true,
             #[cfg(unix)]
             original_terminal,
             #[cfg(unix)]
             signals: Some(signals),
-        })
+            previous_panic_hook: Some(previous_panic_hook),
+        };
+        #[cfg(debug_assertions)]
+        if std::env::var_os("ZENPI_DEBUG_PANIC_AFTER_START").is_some_and(|value| value == "1") {
+            // Mirror the release profile (`panic = "abort"`): the hook runs,
+            // then the process aborts without unwinding, so Drop never runs
+            // and only the panic hook can restore the terminal.
+            let _ = std::panic::catch_unwind(|| {
+                panic!("ZENPI_DEBUG_PANIC_AFTER_START requested a panic after terminal entry")
+            });
+            std::process::abort();
+        }
+        Ok(guard)
     }
 
     // The caller has exclusive event ownership. The reset callback must clear
@@ -21114,7 +21195,10 @@ impl TerminalGuard {
     }
 
     fn leave(&mut self) {
-        if self.active {
+        // If the panic hook already restored the terminal, do not repeat it.
+        let hook_restored = self.previous_panic_hook.is_some()
+            && !PANIC_RESTORE_PENDING.swap(false, std::sync::atomic::Ordering::SeqCst);
+        if self.active && !hook_restored {
             let mut stdout = io::stdout();
             let _ = execute!(
                 stdout,
@@ -21124,15 +21208,18 @@ impl TerminalGuard {
                 LeaveAlternateScreen
             );
             let _ = disable_raw_mode();
-            self.active = false;
         }
+        self.active = false;
         #[cfg(unix)]
         {
-            if let Some(original) = &self.original_terminal {
+            if !hook_restored && let Some(original) = &self.original_terminal {
                 let _ = original.reclaim();
                 let _ = original.restore(false);
             }
             drop(self.signals.take());
+        }
+        if let Some(previous) = self.previous_panic_hook.take() {
+            uninstall_panic_restore_hook(previous);
         }
     }
 }
