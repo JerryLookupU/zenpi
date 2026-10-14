@@ -1083,6 +1083,86 @@ struct RegisteredTool {
     execution_mode: ToolExecutionMode,
 }
 
+/// Every builtin tool name, in registration order.
+pub const BUILTIN_TOOL_NAMES: &[&str] = &[
+    "read_file",
+    "read_tool_output",
+    "list_directory",
+    "search_text",
+    "find",
+    "write_file",
+    "edit_file",
+    "run_command",
+    "websearch",
+    "dag_status",
+    "dag_send",
+    "dag_recv",
+    "dag_finish",
+    "dag_spawn",
+];
+
+/// Which builtins are advertised to the model (ZE-214).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BuiltinSelection {
+    /// Advertise `dag_*` (DAG-spawned worker or explicit opt-in).
+    pub dag: bool,
+    /// Advertise `websearch` (its API key resolves).
+    pub websearch: bool,
+    /// `--tools a,b`: exactly these builtins, overriding the flags above.
+    pub only: Option<Vec<String>>,
+}
+
+/// Process-wide `--tools` allow-list so every owner a host prepares (CLI
+/// agent and project owners alike) advertises the same builtin set.
+static BUILTIN_ALLOWLIST: std::sync::Mutex<Option<Vec<String>>> = std::sync::Mutex::new(None);
+
+/// Install (or clear) the process-wide `--tools` allow-list.
+pub fn set_builtin_allowlist(only: Option<Vec<String>>) {
+    if let Ok(mut guard) = BUILTIN_ALLOWLIST.lock() {
+        *guard = only;
+    }
+}
+
+/// Parse a `--tools a,b` value into known builtin names (unknown → error).
+pub fn parse_builtin_allowlist(value: &str) -> Result<Vec<String>, String> {
+    let mut names: Vec<String> = Vec::new();
+    for name in value
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        if !BUILTIN_TOOL_NAMES.contains(&name) {
+            return Err(format!(
+                "unknown tool `{name}`; known tools: {}",
+                BUILTIN_TOOL_NAMES.join(",")
+            ));
+        }
+        if !names.iter().any(|existing| existing == name) {
+            names.push(name.to_owned());
+        }
+    }
+    if names.is_empty() {
+        return Err("--tools requires at least one tool name".into());
+    }
+    Ok(names)
+}
+
+impl BuiltinSelection {
+    /// `dag_*` only for DAG-spawned workers (`ZENPI_DAG_NODE`) or when
+    /// `ZENPI_DAG_TOOLS=1`; `websearch` only when [`exa_api_key`] resolves;
+    /// plus the process-wide `--tools` allow-list, if any.
+    pub fn from_environment() -> Self {
+        Self {
+            dag: crate::dag::dag_tools_enabled(),
+            websearch: exa_api_key().is_some(),
+            only: BUILTIN_ALLOWLIST
+                .lock()
+                .ok()
+                .and_then(|guard| guard.clone()),
+        }
+    }
+}
+
 #[derive(Default, Clone)]
 pub struct ToolRegistry {
     tools: BTreeMap<String, RegisteredTool>,
@@ -1124,6 +1204,40 @@ impl ToolRegistry {
         registry.register_builtin(DagFinishTool)?;
         registry.register_builtin(DagSpawnTool)?;
         Ok(registry)
+    }
+
+    /// Builtins scoped by `selection` (ZE-214): an explicit `only` list keeps
+    /// exactly the named builtins; otherwise `dag_*` and `websearch` are kept
+    /// only when their selection flag is set.
+    pub fn with_builtin_selection(selection: &BuiltinSelection) -> Result<Self, ToolError> {
+        let mut registry = Self::with_all_builtins()?;
+        if let Some(only) = &selection.only {
+            for name in only {
+                if !registry.tools.contains_key(name) {
+                    return Err(ToolError::InvalidDefinition(format!(
+                        "unknown builtin tool `{name}`"
+                    )));
+                }
+            }
+            registry.tools.retain(|name, _| only.contains(name));
+            return Ok(registry);
+        }
+        registry.tools.retain(|name, _| {
+            if name.starts_with("dag_") {
+                selection.dag
+            } else if name == "websearch" {
+                selection.websearch
+            } else {
+                true
+            }
+        });
+        Ok(registry)
+    }
+
+    /// Builtins a host advertises by default: see
+    /// [`BuiltinSelection::from_environment`].
+    pub fn with_default_builtins() -> Result<Self, ToolError> {
+        Self::with_builtin_selection(&BuiltinSelection::from_environment())
     }
 
     fn register_builtin<T: Tool + 'static>(&mut self, tool: T) -> Result<(), ToolError> {
@@ -3463,7 +3577,7 @@ impl Tool for DagSpawnTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "dag_spawn".into(),
-            description: "Create a child DAG node and spawn a live headless worker for it. The child gets ZENPI_DAG_NODE/ZENPI_DAG_STORE, and this process keeps its stdin so dag_send can deliver follow-up work while it stays alive.".into(),
+            description: "Create a child DAG node and spawn a live headless worker for it. The child gets ZENPI_DAG_NODE/ZENPI_DAG_STORE, and this process keeps its stdin so dag_send can deliver follow-up work while it stays alive. Bounded: spawn depth <= 3 below the root and at most 8 children per node.".into(),
             input_schema: json!({"type":"object","properties":{
                 "node":{"type":"string"},"parent":{"type":"string"},"prompt":{"type":"string"},
                 "session_dir":{"type":"string"}},
@@ -3496,7 +3610,7 @@ impl Tool for DagSpawnTool {
         let store = crate::dag::DagStore::default_store();
         let parent_ref = parent.as_deref();
         store
-            .upsert(node, parent_ref)
+            .spawn_child(node, parent_ref)
             .map_err(ToolError::Unsupported)?;
         let session_dir = match optional_string(arguments, "session_dir", "", 1_024)? {
             "" => {

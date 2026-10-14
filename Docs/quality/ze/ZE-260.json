@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-260",
+  "claim_id": "ZE-260@blueprint-4.0.0",
+  "from": "worker",
+  "to": "master",
+  "summary": "DAG correctness: worker binary defaults to current_exe() (ZENPI_DAG_WORKER override kept); send errors when the store (16384) or a recipient mailbox (512 unacked) is full instead of silently truncating; store writes go to <store>.tmp + fsync + rename + dir fsync under a sidecar <store>.lock flock; body limit enforced in bytes (status summary truncated on a char boundary in bytes); exited children are reaped (try_wait) on every spawn/send/status and via reap_workers(); dag_spawn uses DagStore::spawn_child which atomically rejects parent-chain depth > 3 and fan-out > 8 children per node (no lease concept exists).",
+  "changed_files": [
+    "src/core.rs",
+    "src/dag.rs",
+    "src/tools.rs",
+    "tests/dag.rs",
+    "tests/tool_scope.rs"
+  ],
+  "diff_stat": "5 files changed, 706 insertions(+), 108 deletions(-)",
+  "commands_run": [
+    "cargo fmt --all",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo clippy --locked --all-targets --all-features -- -D warnings",
+    "cargo test --locked --test dag --test tools --test core_session --test tool_scope --test backend --test domains --test extensions --test headless_project_workspace --test project_workspace --test remote_android_model_interop --test remote_android_workspace_interop --test remote_worker_owner --test stage1_model_registry --test stage1_skill_md --test support_selftest",
+    "cargo test --locked --lib"
+  ],
+  "validation_result": {
+    "fmt": "clean",
+    "clippy_default": "clean",
+    "clippy_all_features": "clean",
+    "tests": {
+      "dag": "12 passed",
+      "tool_scope": "5 passed",
+      "tools": "42 passed, 1 ignored",
+      "core_session": "39 passed",
+      "other_tool_definition_suites": "all passed",
+      "lib": "452 passed, 1 failed (core::extension_resume_commit_tests::rejected_resume_commit_keeps_old_extension_live_until_successful_retry: CommandTimeout, reproduced identically on base 68c9bcb; host exec stall of freshly written scripts)"
+    },
+    "validators": {
+      "dag_send_full_mailbox_errors": "pass",
+      "dag_spawn_defaults_to_current_exe": "pass",
+      "dag_store_survives_a_truncated_temp_write": "pass",
+      "dag_spawn_depth_and_fanout_are_bounded (4th-level spawn rejected)": "pass",
+      "dag_body_limit_is_enforced_in_bytes": "pass",
+      "dag_spawned_workers_are_reaped_after_exit": "pass"
+    }
+  },
+  "notes": "fsync uses libc::fsync rather than File::sync_all (F_FULLFSYNC on macOS, which stalled I/O for tens of ms per write). Readers no longer lock: rename makes every read a complete snapshot. Spawn tests wait up to 30s because exec of freshly written stub scripts is held at _dyld_start by host security scanning on this machine. A node with a live worker in this process rejects a second spawn instead of orphaning the first child.",
+  "created_at": "2026-10-14T12:28:43Z",
+  "digest": "667c90ee1a289e363a73b146a61ec860bbe40bba76084fa00dfae279f367fce2"
+}

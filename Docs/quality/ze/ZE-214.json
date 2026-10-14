@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-214",
+  "claim_id": "ZE-214@blueprint-4.0.0",
+  "from": "worker",
+  "to": "master",
+  "summary": "Scoped builtin tool set: ToolRegistry::with_default_builtins()/with_builtin_selection(BuiltinSelection{dag,websearch,only}) advertise dag_* only for DAG-spawned workers (ZENPI_DAG_NODE, set by spawn_worker) or ZENPI_DAG_TOOLS=1, websearch only when exa_api_key() resolves, and --tools a,b (parse_args; unknown name -> argument error) restricts to exactly the named builtins via a process-wide allow-list honored by the CLI agent and project owners (prepare_project_with_approval). with_all_builtins() is unchanged for embedders/tests.",
+  "changed_files": [
+    "src/core.rs",
+    "src/dag.rs",
+    "src/tools.rs",
+    "tests/dag.rs",
+    "tests/tool_scope.rs"
+  ],
+  "diff_stat": "5 files changed, 706 insertions(+), 108 deletions(-)",
+  "commands_run": [
+    "cargo fmt --all",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo clippy --locked --all-targets --all-features -- -D warnings",
+    "cargo test --locked --test dag --test tools --test core_session --test tool_scope --test backend --test domains --test extensions --test headless_project_workspace --test project_workspace --test remote_android_model_interop --test remote_android_workspace_interop --test remote_worker_owner --test stage1_model_registry --test stage1_skill_md --test support_selftest",
+    "cargo test --locked --lib"
+  ],
+  "validation_result": {
+    "fmt": "clean",
+    "clippy_default": "clean",
+    "clippy_all_features": "clean",
+    "tests": {
+      "dag": "12 passed",
+      "tool_scope": "5 passed",
+      "tools": "42 passed, 1 ignored",
+      "core_session": "39 passed",
+      "other_tool_definition_suites": "all passed",
+      "lib": "452 passed, 1 failed (core::extension_resume_commit_tests::rejected_resume_commit_keeps_old_extension_live_until_successful_retry: CommandTimeout, reproduced identically on base 68c9bcb; host exec stall of freshly written scripts)"
+    },
+    "validators": {
+      "default_request_advertises_no_dag_tools_or_unkeyed_websearch": "pass",
+      "tools_flag_advertises_exactly_the_named_builtins (read_file,run_command -> 2, request-level via ScriptedBackend)": "pass",
+      "environment_without_dag_node_does_not_enable_dag_tools": "pass",
+      "dag_and_websearch_flags_add_their_tools": "pass",
+      "builtin_name_list_matches_the_registry": "pass"
+    }
+  },
+  "notes": "--tools limits builtins only; extension and skill tools registered later are unaffected. An explicit --tools list may name dag_* or websearch and then advertises them regardless of env/key.",
+  "created_at": "2026-10-14T12:28:43Z",
+  "digest": "35b465db93ca5a9c68d430cd8eeb0100d3890c324fa68fb37431a56ea16b0bf9"
+}
