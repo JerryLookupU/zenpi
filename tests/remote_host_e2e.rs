@@ -525,12 +525,11 @@ impl ProviderFixture {
 impl Drop for ProviderFixture {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
-        if let Some(join) = self.join.take() {
-            if let Err(error) = join.join() {
-                if !thread::panicking() {
-                    std::panic::resume_unwind(error);
-                }
-            }
+        if let Some(join) = self.join.take()
+            && let Err(error) = join.join()
+            && !thread::panicking()
+        {
+            std::panic::resume_unwind(error);
         }
     }
 }

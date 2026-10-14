@@ -1,5 +1,9 @@
 # Rust Deslop Gate
 
+> Current gate: **G-RUST** in `Docs/Zenpi_Execution_Blueprint_v2.md` §4 (fmt,
+> default and all-features `clippy --locked -D warnings`, `check_modes.py`, and no
+> new `allow(dead_code|unused)`). The 2026-09-04 result below is historical.
+
 The gate applies the pinned `codex-rust-deslop` practices without adding a
 second framework. Each concept has one owner: core state, session persistence,
 headless framing, TUI lifecycle, backend adaptation, and b3 records. The

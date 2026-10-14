@@ -174,6 +174,7 @@ pub(crate) fn api_key_destinations(
 /// the destination already checked against the credential's grant.
 #[derive(Debug, Clone)]
 pub(crate) struct ValidatedRoute {
+    #[cfg(test)]
     profile: String,
     provider: String,
     protocol: Protocol,
@@ -187,12 +188,14 @@ pub(crate) struct ValidatedRoute {
     streaming: bool,
     route_digest: String,
     identity_scope: String,
+    #[cfg(test)]
     config_revision: u64,
     credential_revision: Option<u64>,
     definition_version: u32,
 }
 
 impl ValidatedRoute {
+    #[cfg(test)]
     pub(crate) fn profile(&self) -> &str {
         &self.profile
     }
@@ -232,9 +235,11 @@ impl ValidatedRoute {
     pub(crate) fn identity_scope(&self) -> &str {
         &self.identity_scope
     }
+    #[cfg(test)]
     pub(crate) fn config_revision(&self) -> u64 {
         self.config_revision
     }
+    #[cfg(test)]
     pub(crate) fn credential_revision(&self) -> Option<u64> {
         self.credential_revision
     }
@@ -463,6 +468,7 @@ pub(crate) fn resolve_model_route(
         ),
     ))?;
     Ok(ValidatedRoute {
+        #[cfg(test)]
         profile: connection.profile.clone(),
         provider: connection.provider.clone(),
         protocol: connection.protocol,
@@ -476,6 +482,7 @@ pub(crate) fn resolve_model_route(
         streaming,
         route_digest,
         identity_scope,
+        #[cfg(test)]
         config_revision: connection.config_revision,
         credential_revision: identity.map(|identity| identity.credential_revision),
         definition_version: definition.definition_version,

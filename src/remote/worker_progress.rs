@@ -602,10 +602,10 @@ pub(crate) fn durable_listing(
         };
         let mut value = json!({"request_id":id,"project_id":project,"session_id":agent.session().session_id(),
             "subtab_id":event["subtab_id"],"state":state});
-        if state == ExecutionState::Failed {
-            if let Ok(code) = serde_json::from_value::<ErrorCode>(event["failure_code"].clone()) {
-                value["failure_code"] = json!(code);
-            }
+        if state == ExecutionState::Failed
+            && let Ok(code) = serde_json::from_value::<ErrorCode>(event["failure_code"].clone())
+        {
+            value["failure_code"] = json!(code);
         }
         if state == ExecutionState::Succeeded {
             if event["output_withheld"] == true {

@@ -169,6 +169,7 @@ pub(crate) struct CommittedCredential {
 }
 
 impl CommittedCredential {
+    #[cfg(test)]
     pub(crate) fn identity(&self) -> Result<AuthIdentitySnapshot, StoreError> {
         if self.credential.state != CredentialState::Active {
             return Err(StoreError::Inactive);
@@ -196,12 +197,17 @@ impl CommittedCredential {
     }
 }
 
+// Built once per mutation and consumed immediately; boxing buys nothing.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum Replacement {
     Login(PendingCredential),
+    #[cfg(test)]
     AllowedDestinations(Vec<AllowedDestination>),
 }
 
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum Mutation {
+    #[cfg(test)]
     Keep,
     Replace(Replacement),
     Revoke,
@@ -306,6 +312,7 @@ impl CredentialStore {
             .collect())
     }
 
+    #[cfg(test)]
     pub fn identity(&self, id: &str) -> Result<AuthIdentitySnapshot, StoreError> {
         let value = self.read(id)?;
         if value.state != CredentialState::Active {
@@ -342,6 +349,7 @@ impl CredentialStore {
         })
     }
 
+    #[cfg(test)]
     fn read(&self, id: &str) -> Result<PrivateCredential, StoreError> {
         self.read_with_wait(id, &LockWait::default())
     }
@@ -432,6 +440,7 @@ impl CredentialStore {
             if current.map(|v| v.revision) != expected_revision {
                 return Err(StoreError::Conflict);
             }
+            #[cfg(test)]
             if matches!(mutation, Mutation::Keep) {
                 return current
                     .cloned()
@@ -440,6 +449,7 @@ impl CredentialStore {
             }
             let revision = next_revision(current.map_or(0, |v| v.revision))?;
             let value = match mutation {
+                #[cfg(test)]
                 Mutation::Keep => unreachable!(),
                 Mutation::Replace(Replacement::Login(pending)) => PrivateCredential {
                     kind: pending.kind,
@@ -459,6 +469,7 @@ impl CredentialStore {
                     expires_at_ms: pending.expires_at_ms,
                     refresh: None,
                 },
+                #[cfg(test)]
                 Mutation::Replace(Replacement::AllowedDestinations(destinations)) => {
                     let mut value = current.cloned().ok_or(StoreError::NotFound)?;
                     if value.state != CredentialState::Active {

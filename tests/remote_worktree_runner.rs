@@ -275,7 +275,7 @@ fn live_limit_drains_then_raises_using_only_exclusively_leased_worker_writers() 
         releases.1.notify_all();
     };
     let mut completed = std::collections::BTreeSet::new();
-    for index in 0..2 {
+    for (index, expected) in ids.iter().enumerate().take(2) {
         release(index);
         loop {
             if let RuntimeEvent::Completed { id, outcome } =
@@ -283,7 +283,7 @@ fn live_limit_drains_then_raises_using_only_exclusively_leased_worker_writers() 
             {
                 assert!(matches!(outcome, JobOutcome::Succeeded(_)));
                 completed.insert(id.get());
-                if id == ids[index] {
+                if id == *expected {
                     break;
                 }
             }

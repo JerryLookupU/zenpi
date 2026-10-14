@@ -3311,11 +3311,11 @@ impl Tool for DagSendTool {
         };
         let store = crate::dag::DagStore::default_store();
         let delivered = store
-            .send(&from, &to, &body)
+            .send(&from, to, body)
             .map_err(ToolError::Unsupported)?;
         let mut piped = Vec::new();
         for target in &delivered {
-            if crate::dag::send_to_worker(target, &body).unwrap_or(false) {
+            if crate::dag::send_to_worker(target, body).unwrap_or(false) {
                 piped.push(target.clone());
             }
         }
@@ -3436,7 +3436,7 @@ impl Tool for DagFinishTool {
         let node_view = store
             .set_status(
                 &node,
-                &status,
+                status,
                 (!summary.is_empty()).then_some(summary.as_str()),
             )
             .map_err(ToolError::Unsupported)?;
@@ -3496,10 +3496,10 @@ impl Tool for DagSpawnTool {
         let store = crate::dag::DagStore::default_store();
         let parent_ref = parent.as_deref();
         store
-            .upsert(&node, parent_ref)
+            .upsert(node, parent_ref)
             .map_err(ToolError::Unsupported)?;
         let session_dir = match optional_string(arguments, "session_dir", "", 1_024)? {
-            value if value.is_empty() => {
+            "" => {
                 let base = store
                     .path()
                     .parent()
@@ -3516,10 +3516,10 @@ impl Tool for DagSpawnTool {
                 }
             }
         };
-        let pid = crate::dag::spawn_worker(&store, &node, &prompt, &session_dir)
+        let pid = crate::dag::spawn_worker(&store, node, prompt, &session_dir)
             .map_err(ToolError::Unsupported)?;
         store
-            .assign_worker(&node, &format!("pid:{pid}"))
+            .assign_worker(node, &format!("pid:{pid}"))
             .map_err(ToolError::Unsupported)?;
         Ok(json!({
             "node": node,
@@ -3643,7 +3643,7 @@ impl Tool for WebSearchTool {
         reject_unknown(arguments, &["query", "num_results"])?;
         let query = required_string(arguments, "query", 4_096)?;
         let num_results = bounded_usize(arguments, "num_results", 5, 1, 10)?;
-        self.invoke_search(&query, num_results, cancelled)
+        self.invoke_search(query, num_results, cancelled)
     }
 }
 

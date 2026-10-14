@@ -28,7 +28,7 @@ fn negotiation_is_explicit_and_bounded() {
         Err(ProtocolError::NoCommonVersion)
     ));
     assert!(negotiate_version(&[]).is_err());
-    assert!(negotiate_version(&vec![1; MAX_VERSIONS + 1]).is_err());
+    assert!(negotiate_version(&[1; MAX_VERSIONS + 1]).is_err());
     let mut hello = Envelope::new(
         Channel::Control,
         Message::Hello {

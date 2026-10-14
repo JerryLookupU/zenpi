@@ -3950,7 +3950,10 @@ fn remote_prompt_never_consumes_local_staged_attachments_or_reserves_a_blocked_r
     {
         let agent = owner.lock().unwrap();
         assert!(prompt_input(&agent, "queued remote".into()).is_err());
-        assert_eq!(agent.pending_attachments(), &[attachment.clone()]);
+        assert_eq!(
+            agent.pending_attachments(),
+            std::slice::from_ref(&attachment)
+        );
     }
     assert_eq!(
         std::fs::read(owner.lock().unwrap().session().path()).unwrap(),
@@ -4110,10 +4113,10 @@ fn remote_prompt_admission_is_durable_acl_fenced_and_never_resubmitted() {
         if change == 2 {
             other.expected_revision = Some(host.workspace_revision() + 1);
         }
-        if change == 3 {
-            if let Message::Request { arguments, .. } = &mut other.payload {
-                arguments["text"] = json!("!rm");
-            }
+        if change == 3
+            && let Message::Request { arguments, .. } = &mut other.payload
+        {
+            arguments["text"] = json!("!rm");
         }
         assert_eq!(
             dispatch_prompt(
@@ -4483,7 +4486,7 @@ fn remote_prompt_identity_fences_other_operations_restart_and_missing_journal() 
             Operation::SubtabSelect => {
                 zenpi::remote::subtab::mutate(&mut host, &registry, &phone, &cross).unwrap_err()
             }
-            Operation::Cancel => CancelAdmissions::default()
+            Operation::Cancel => CancelAdmissions
                 .dispatch(&mut host, &registry, &phone, &cross, None, || panic!())
                 .code
                 .unwrap(),
@@ -5007,7 +5010,7 @@ fn remote_cancel_targets_only_its_own_active_prompt_and_exact_retry_never_recanc
         "cancel-request",
         json!({"request_id":"prompt-target"}),
     );
-    let mut receipts = CancelAdmissions::default();
+    let mut receipts = CancelAdmissions;
     let owner = host.owner(&project).unwrap();
     let held = owner.lock().unwrap();
     assert_eq!(
@@ -5035,14 +5038,9 @@ fn remote_cancel_targets_only_its_own_active_prompt_and_exact_retry_never_recanc
     let mut restored = pool(&root);
     assert_ne!(restored.workspace_owner(), host.workspace_owner());
     assert_eq!(
-        CancelAdmissions::default().dispatch(
-            &mut restored,
-            &registry,
-            &phone,
-            &cancel,
-            None,
-            || panic!("restart repeated cancellation")
-        ),
+        CancelAdmissions.dispatch(&mut restored, &registry, &phone, &cancel, None, || panic!(
+            "restart repeated cancellation"
+        )),
         accepted
     );
     assert_eq!(
@@ -5120,7 +5118,7 @@ fn remote_cancel_reservations_and_failed_admission_survive_restart_without_reexe
             _ => ExecutionState::UnknownOutcome,
         };
         let checkpoint = root.join("project-workspace.json");
-        let result = CancelAdmissions::default().dispatch(
+        let result = CancelAdmissions.dispatch(
             &mut host,
             &registry,
             &phone,
@@ -5144,20 +5142,15 @@ fn remote_cancel_reservations_and_failed_admission_survive_restart_without_reexe
         assert_eq!(result.execution_state, Some(expected));
         let mut restored = pool(&root);
         assert_eq!(
-            CancelAdmissions::default().dispatch(
-                &mut restored,
-                &registry,
-                &phone,
-                &command,
-                None,
-                || panic!("replayed unresolved cancel")
-            ),
+            CancelAdmissions.dispatch(&mut restored, &registry, &phone, &command, None, || panic!(
+                "replayed unresolved cancel"
+            )),
             result
         );
         let mut changed = command.clone();
         changed.expected_revision = Some(999);
         assert_eq!(
-            CancelAdmissions::default()
+            CancelAdmissions
                 .dispatch(
                     &mut restored,
                     &registry,
@@ -5226,7 +5219,7 @@ fn remote_cancel_checkpoint_conflict_refuses_side_effect_and_legacy_receipts_are
     );
     let mut competitor = pool(&root);
     competitor.select(&project).unwrap();
-    let result = CancelAdmissions::default().dispatch(
+    let result = CancelAdmissions.dispatch(
         &mut host,
         &registry,
         &phone,
@@ -5252,7 +5245,7 @@ fn remote_cancel_checkpoint_conflict_refuses_side_effect_and_legacy_receipts_are
         json!({"request_id":"original"}),
     );
     assert_eq!(
-        CancelAdmissions::default()
+        CancelAdmissions
             .dispatch(
                 &mut legacy,
                 &registry,

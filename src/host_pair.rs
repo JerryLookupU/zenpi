@@ -301,13 +301,12 @@ impl HostPairOptions {
         {
             return Err(ZenpiError::arguments("invalid pairing listener address"));
         }
-        if let Some(ip) = self.advertise {
-            if !crate::remote::pairing::valid_address(SocketAddr::new(ip, 1))
+        if let Some(ip) = self.advertise
+            && (!crate::remote::pairing::valid_address(SocketAddr::new(ip, 1))
                 || ip.is_ipv4() != bound.is_ipv4()
-                || !bound.ip().is_unspecified() && ip != bound.ip()
-            {
-                return Err(ZenpiError::arguments("invalid pairing advertised address"));
-            }
+                || !bound.ip().is_unspecified() && ip != bound.ip())
+        {
+            return Err(ZenpiError::arguments("invalid pairing advertised address"));
         }
         Ok(())
     }
@@ -351,312 +350,6 @@ fn advertise_address(
         ));
     }
     Ok(SocketAddr::new(ip, bound.port()))
-}
-
-#[cfg(test)]
-mod lan_selection_tests {
-    use super::*;
-
-    #[test]
-    fn expired_or_unavailable_clock_renders_recovery_without_qr_or_desktop_failure() {
-        let identity = HostIdentity::generate().unwrap();
-        let issuer = InviteIssuer::new(&identity);
-        let invite = issuer
-            .issue(
-                "192.168.50.55:7777".parse().unwrap(),
-                Duration::from_secs(60),
-            )
-            .unwrap();
-        for desktop in [false, true] {
-            for now in [None, Some(invite.expires_at), Some(invite.expires_at + 1)] {
-                let mut terminal =
-                    Terminal::new(ratatui::backend::TestBackend::new(80, 12)).unwrap();
-                terminal
-                    .draw(|frame| render_pairing_at(frame, &invite, 2, desktop, now).unwrap())
-                    .unwrap();
-                let buffer = terminal.backend().buffer();
-                let text = buffer
-                    .content
-                    .iter()
-                    .map(|cell| cell.symbol())
-                    .collect::<String>();
-                assert!(text.contains(if now.is_none() {
-                    "Host clock unavailable"
-                } else {
-                    "Invitation expired"
-                }));
-                assert!(text.contains("R: refresh invite"));
-                assert!(text.contains(if desktop {
-                    "Esc: desktop"
-                } else {
-                    "Esc: cancel"
-                }));
-                assert!(!text.contains(&invite.token));
-                assert!(!buffer.content.iter().any(|cell| cell.symbol() == "▀"));
-            }
-        }
-        let refreshed = issuer
-            .issue(invite.address, Duration::from_secs(60))
-            .unwrap();
-        let mut clock_changed = Terminal::new(ratatui::backend::TestBackend::new(80, 12)).unwrap();
-        clock_changed
-            .draw(|frame| {
-                render_pairing_at(
-                    frame,
-                    &invite,
-                    0,
-                    true,
-                    Some(invite.expires_at - crate::remote::pairing::MAX_INVITE_TTL.as_secs() - 1),
-                )
-                .unwrap()
-            })
-            .unwrap();
-        assert!(
-            clock_changed
-                .backend()
-                .buffer()
-                .content
-                .iter()
-                .map(|cell| cell.symbol())
-                .collect::<String>()
-                .contains("Host clock changed")
-        );
-        assert!(
-            !clock_changed
-                .backend()
-                .buffer()
-                .content
-                .iter()
-                .any(|cell| cell.symbol() == "▀")
-        );
-        assert_ne!(refreshed.token, invite.token);
-        assert!(
-            issuer
-                .consume(&invite.token, &invite.fingerprint, &invite.safety_code())
-                .is_err()
-        );
-        assert!(
-            issuer
-                .consume(
-                    &refreshed.token,
-                    &refreshed.fingerprint,
-                    &refreshed.safety_code()
-                )
-                .is_ok()
-        );
-    }
-
-    #[test]
-    fn complete_pairing_frame_decodes_at_minimum_and_wide_sizes_without_clipped_actions() {
-        let identity = HostIdentity::generate().unwrap();
-        let issuer = InviteIssuer::new(&identity);
-        for address in [
-            "192.168.50.55:7777",
-            "[fd00:1234:5678:9abc:def0:1234:5678:9abc]:65535",
-        ] {
-            let invite = issuer
-                .issue(address.parse().unwrap(), Duration::from_secs(60))
-                .unwrap();
-            let now = invite.expires_at - 1;
-            let qr = qr_lines_at(&invite, now).unwrap();
-            let minimum_width = (qr[0].width() as u16).max(64) + 2;
-            for desktop in [false, true] {
-                for columns in [minimum_width, 100, 140] {
-                    let mut terminal =
-                        Terminal::new(ratatui::backend::TestBackend::new(columns, 80)).unwrap();
-                    terminal
-                        .draw(|frame| {
-                            render_pairing_at(frame, &invite, 0, desktop, Some(now)).unwrap()
-                        })
-                        .unwrap();
-                    let buffer = terminal.backend().buffer();
-                    let text = buffer
-                        .content
-                        .iter()
-                        .map(|cell| cell.symbol())
-                        .collect::<String>();
-                    assert!(text.contains(&invite.fingerprint));
-                    let flattened = text.split_whitespace().collect::<String>();
-                    assert!(flattened.contains(if desktop {
-                        "F3:reopenpairingfromdesktop"
-                    } else {
-                        "Hostwritesunavailable."
-                    }));
-                    assert!(flattened.contains("R:refreshinvite"));
-                    assert!(text.contains("Expires in 1s"));
-                    assert!(!text.contains(&invite.token));
-                    let scale = 4usize;
-                    let width = usize::from(columns) * scale;
-                    let height = 160 * scale;
-                    let mut pixels = vec![255u8; width * height];
-                    for y in 0..80usize {
-                        for x in 0..usize::from(columns) {
-                            let cell = &buffer[(x as u16, y as u16)];
-                            if cell.symbol() != "▀" {
-                                continue;
-                            }
-                            for (half, color) in [cell.fg, cell.bg].into_iter().enumerate() {
-                                for dy in 0..scale {
-                                    for dx in 0..scale {
-                                        pixels[((y * 2 + half) * scale + dy) * width
-                                            + x * scale
-                                            + dx] = if color == Color::Black { 0 } else { 255 };
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    let mut decoder = quircs::Quirc::default();
-                    let codes = decoder.identify(width, height, &pixels).collect::<Vec<_>>();
-                    assert_eq!(codes.len(), 1);
-                    let decoded = codes[0].as_ref().unwrap().decode().unwrap();
-                    assert_eq!(
-                        String::from_utf8(decoded.payload).unwrap(),
-                        invite.to_uri_at(now).unwrap()
-                    );
-                    let used_rows = buffer
-                        .content
-                        .chunks(usize::from(columns))
-                        .rposition(|row| row.iter().any(|cell| cell.symbol() != " "))
-                        .unwrap()
-                        + 1;
-                    let mut exact = Terminal::new(ratatui::backend::TestBackend::new(
-                        columns,
-                        used_rows as u16,
-                    ))
-                    .unwrap();
-                    exact
-                        .draw(|frame| {
-                            render_pairing_at(frame, &invite, 0, desktop, Some(now)).unwrap()
-                        })
-                        .unwrap();
-                    assert!(
-                        exact
-                            .backend()
-                            .buffer()
-                            .content
-                            .iter()
-                            .any(|cell| cell.symbol() == "▀")
-                    );
-                    let mut short = Terminal::new(ratatui::backend::TestBackend::new(
-                        columns,
-                        used_rows as u16 - 1,
-                    ))
-                    .unwrap();
-                    short
-                        .draw(|frame| {
-                            render_pairing_at(frame, &invite, 0, desktop, Some(now)).unwrap()
-                        })
-                        .unwrap();
-                    assert!(
-                        !short
-                            .backend()
-                            .buffer()
-                            .content
-                            .iter()
-                            .any(|cell| cell.symbol() == "▀")
-                    );
-                    assert!(
-                        short
-                            .backend()
-                            .buffer()
-                            .content
-                            .iter()
-                            .map(|cell| cell.symbol())
-                            .collect::<String>()
-                            .contains("Resize terminal")
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn desktop_pairing_render_has_grant_and_reopen_state_without_false_write_denial() {
-        let identity = HostIdentity::generate().unwrap();
-        let issuer = InviteIssuer::new(&identity);
-        let invite = issuer
-            .issue(
-                "192.168.50.55:7777".parse().unwrap(),
-                Duration::from_secs(60),
-            )
-            .unwrap();
-        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 70)).unwrap();
-        for desktop in [true, false] {
-            terminal
-                .draw(|frame| render_pairing(frame, &invite, 1, desktop).unwrap())
-                .unwrap();
-            let buffer = terminal.backend().buffer();
-            let text = buffer
-                .content
-                .iter()
-                .map(|cell| cell.symbol())
-                .collect::<String>();
-            assert!(text.contains("192.168.50.55:7777"));
-            assert!(text.contains(&invite.safety_code()));
-            assert!(text.contains(&invite.fingerprint));
-            assert!(!text.contains(&invite.token));
-            assert_eq!(text.contains("Host writes unavailable."), !desktop);
-            assert_eq!(text.contains("F3: reopen pairing from desktop"), desktop);
-            assert!(
-                buffer
-                    .content
-                    .iter()
-                    .any(|cell| cell.symbol() == "▀" && cell.fg == Color::Black)
-            );
-        }
-        let mut narrow = Terminal::new(ratatui::backend::TestBackend::new(40, 10)).unwrap();
-        narrow
-            .draw(|frame| render_pairing(frame, &invite, 0, true).unwrap())
-            .unwrap();
-        let text = narrow
-            .backend()
-            .buffer()
-            .content
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
-        assert!(text.contains("Resize terminal"));
-        assert!(!text.contains(&invite.token));
-    }
-
-    #[test]
-    fn explicit_binding_and_advertisement_do_not_depend_on_interface_discovery() {
-        for bound in ["127.0.0.1:7777", "192.168.50.55:7777", "[fd00::1234]:7777"] {
-            let bound = bound.parse().unwrap();
-            let options = HostPairOptions {
-                bind: bound,
-                ..HostPairOptions::parse(std::iter::empty()).unwrap()
-            };
-            assert_eq!(advertise_address(&options, bound).unwrap(), bound);
-        }
-        let bound = "0.0.0.0:7777".parse().unwrap();
-        let options = HostPairOptions {
-            advertise: Some("192.168.50.55".parse().unwrap()),
-            ..HostPairOptions::parse(std::iter::empty()).unwrap()
-        };
-        assert_eq!(
-            advertise_address(&options, bound).unwrap(),
-            "192.168.50.55:7777".parse().unwrap()
-        );
-    }
-
-    #[test]
-    fn explicit_advertisement_cannot_cross_bind_family_or_exact_interface() {
-        for (bound, advertise) in [
-            ("127.0.0.1:7777", "192.168.50.55"),
-            ("0.0.0.0:7777", "fd00::1"),
-            ("[::]:7777", "192.168.50.55"),
-            ("0.0.0.0:7777", "0.0.0.0"),
-            ("0.0.0.0:7777", "224.0.0.1"),
-        ] {
-            let options = HostPairOptions {
-                advertise: Some(advertise.parse().unwrap()),
-                ..HostPairOptions::parse(std::iter::empty()).unwrap()
-            };
-            assert!(advertise_address(&options, bound.parse().unwrap()).is_err());
-        }
-    }
 }
 
 pub fn run(options: HostPairOptions) -> Result<(), ZenpiError> {
@@ -1227,7 +920,7 @@ impl PairingHost {
                 write_frame(stream, &response).map_err(io::Error::other)
             },
         )?;
-        let address = advertise_address(&options, listener.local_addr())?;
+        let address = advertise_address(options, listener.local_addr())?;
         let ttl = Duration::from_secs(options.duration_seconds);
         let invite = issuer
             .issue(address, ttl)
@@ -1364,21 +1057,21 @@ fn pairing_tui(
             render_result = render_pairing(frame, &invite, accepted.load(Ordering::SeqCst), false);
         })?;
         render_result?;
-        if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind != KeyEventKind::Press {
-                    continue;
+        if event::poll(Duration::from_millis(100))?
+            && let Event::Key(key) = event::read()?
+        {
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => break,
+                KeyCode::Char('r') => {
+                    invite = issuer
+                        .issue(invite.address, ttl)
+                        .map_err(|error| ZenpiError::Message(error.to_string()))?;
+                    deadline = Instant::now() + ttl;
                 }
-                match key.code {
-                    KeyCode::Esc | KeyCode::Char('q') => break,
-                    KeyCode::Char('r') => {
-                        invite = issuer
-                            .issue(invite.address, ttl)
-                            .map_err(|error| ZenpiError::Message(error.to_string()))?;
-                        deadline = Instant::now() + ttl;
-                    }
-                    _ => {}
-                }
+                _ => {}
             }
         }
         if Instant::now() >= deadline {
@@ -1497,4 +1190,310 @@ fn render_pairing_at(
     lines.extend(bottom);
     frame.render_widget(Paragraph::new(lines), area);
     Ok(())
+}
+
+#[cfg(test)]
+mod lan_selection_tests {
+    use super::*;
+
+    #[test]
+    fn expired_or_unavailable_clock_renders_recovery_without_qr_or_desktop_failure() {
+        let identity = HostIdentity::generate().unwrap();
+        let issuer = InviteIssuer::new(&identity);
+        let invite = issuer
+            .issue(
+                "192.168.50.55:7777".parse().unwrap(),
+                Duration::from_secs(60),
+            )
+            .unwrap();
+        for desktop in [false, true] {
+            for now in [None, Some(invite.expires_at), Some(invite.expires_at + 1)] {
+                let mut terminal =
+                    Terminal::new(ratatui::backend::TestBackend::new(80, 12)).unwrap();
+                terminal
+                    .draw(|frame| render_pairing_at(frame, &invite, 2, desktop, now).unwrap())
+                    .unwrap();
+                let buffer = terminal.backend().buffer();
+                let text = buffer
+                    .content
+                    .iter()
+                    .map(|cell| cell.symbol())
+                    .collect::<String>();
+                assert!(text.contains(if now.is_none() {
+                    "Host clock unavailable"
+                } else {
+                    "Invitation expired"
+                }));
+                assert!(text.contains("R: refresh invite"));
+                assert!(text.contains(if desktop {
+                    "Esc: desktop"
+                } else {
+                    "Esc: cancel"
+                }));
+                assert!(!text.contains(&invite.token));
+                assert!(!buffer.content.iter().any(|cell| cell.symbol() == "▀"));
+            }
+        }
+        let refreshed = issuer
+            .issue(invite.address, Duration::from_secs(60))
+            .unwrap();
+        let mut clock_changed = Terminal::new(ratatui::backend::TestBackend::new(80, 12)).unwrap();
+        clock_changed
+            .draw(|frame| {
+                render_pairing_at(
+                    frame,
+                    &invite,
+                    0,
+                    true,
+                    Some(invite.expires_at - crate::remote::pairing::MAX_INVITE_TTL.as_secs() - 1),
+                )
+                .unwrap()
+            })
+            .unwrap();
+        assert!(
+            clock_changed
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+                .contains("Host clock changed")
+        );
+        assert!(
+            !clock_changed
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .any(|cell| cell.symbol() == "▀")
+        );
+        assert_ne!(refreshed.token, invite.token);
+        assert!(
+            issuer
+                .consume(&invite.token, &invite.fingerprint, &invite.safety_code())
+                .is_err()
+        );
+        assert!(
+            issuer
+                .consume(
+                    &refreshed.token,
+                    &refreshed.fingerprint,
+                    &refreshed.safety_code()
+                )
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn complete_pairing_frame_decodes_at_minimum_and_wide_sizes_without_clipped_actions() {
+        let identity = HostIdentity::generate().unwrap();
+        let issuer = InviteIssuer::new(&identity);
+        for address in [
+            "192.168.50.55:7777",
+            "[fd00:1234:5678:9abc:def0:1234:5678:9abc]:65535",
+        ] {
+            let invite = issuer
+                .issue(address.parse().unwrap(), Duration::from_secs(60))
+                .unwrap();
+            let now = invite.expires_at - 1;
+            let qr = qr_lines_at(&invite, now).unwrap();
+            let minimum_width = (qr[0].width() as u16).max(64) + 2;
+            for desktop in [false, true] {
+                for columns in [minimum_width, 100, 140] {
+                    let mut terminal =
+                        Terminal::new(ratatui::backend::TestBackend::new(columns, 80)).unwrap();
+                    terminal
+                        .draw(|frame| {
+                            render_pairing_at(frame, &invite, 0, desktop, Some(now)).unwrap()
+                        })
+                        .unwrap();
+                    let buffer = terminal.backend().buffer();
+                    let text = buffer
+                        .content
+                        .iter()
+                        .map(|cell| cell.symbol())
+                        .collect::<String>();
+                    assert!(text.contains(&invite.fingerprint));
+                    let flattened = text.split_whitespace().collect::<String>();
+                    assert!(flattened.contains(if desktop {
+                        "F3:reopenpairingfromdesktop"
+                    } else {
+                        "Hostwritesunavailable."
+                    }));
+                    assert!(flattened.contains("R:refreshinvite"));
+                    assert!(text.contains("Expires in 1s"));
+                    assert!(!text.contains(&invite.token));
+                    let scale = 4usize;
+                    let width = usize::from(columns) * scale;
+                    let height = 160 * scale;
+                    let mut pixels = vec![255u8; width * height];
+                    for y in 0..80usize {
+                        for x in 0..usize::from(columns) {
+                            let cell = &buffer[(x as u16, y as u16)];
+                            if cell.symbol() != "▀" {
+                                continue;
+                            }
+                            for (half, color) in [cell.fg, cell.bg].into_iter().enumerate() {
+                                for dy in 0..scale {
+                                    for dx in 0..scale {
+                                        pixels[((y * 2 + half) * scale + dy) * width
+                                            + x * scale
+                                            + dx] = if color == Color::Black { 0 } else { 255 };
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    let mut decoder = quircs::Quirc::default();
+                    let codes = decoder.identify(width, height, &pixels).collect::<Vec<_>>();
+                    assert_eq!(codes.len(), 1);
+                    let decoded = codes[0].as_ref().unwrap().decode().unwrap();
+                    assert_eq!(
+                        String::from_utf8(decoded.payload).unwrap(),
+                        invite.to_uri_at(now).unwrap()
+                    );
+                    let used_rows = buffer
+                        .content
+                        .chunks(usize::from(columns))
+                        .rposition(|row| row.iter().any(|cell| cell.symbol() != " "))
+                        .unwrap()
+                        + 1;
+                    let mut exact = Terminal::new(ratatui::backend::TestBackend::new(
+                        columns,
+                        used_rows as u16,
+                    ))
+                    .unwrap();
+                    exact
+                        .draw(|frame| {
+                            render_pairing_at(frame, &invite, 0, desktop, Some(now)).unwrap()
+                        })
+                        .unwrap();
+                    assert!(
+                        exact
+                            .backend()
+                            .buffer()
+                            .content
+                            .iter()
+                            .any(|cell| cell.symbol() == "▀")
+                    );
+                    let mut short = Terminal::new(ratatui::backend::TestBackend::new(
+                        columns,
+                        used_rows as u16 - 1,
+                    ))
+                    .unwrap();
+                    short
+                        .draw(|frame| {
+                            render_pairing_at(frame, &invite, 0, desktop, Some(now)).unwrap()
+                        })
+                        .unwrap();
+                    assert!(
+                        !short
+                            .backend()
+                            .buffer()
+                            .content
+                            .iter()
+                            .any(|cell| cell.symbol() == "▀")
+                    );
+                    assert!(
+                        short
+                            .backend()
+                            .buffer()
+                            .content
+                            .iter()
+                            .map(|cell| cell.symbol())
+                            .collect::<String>()
+                            .contains("Resize terminal")
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn desktop_pairing_render_has_grant_and_reopen_state_without_false_write_denial() {
+        let identity = HostIdentity::generate().unwrap();
+        let issuer = InviteIssuer::new(&identity);
+        let invite = issuer
+            .issue(
+                "192.168.50.55:7777".parse().unwrap(),
+                Duration::from_secs(60),
+            )
+            .unwrap();
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 70)).unwrap();
+        for desktop in [true, false] {
+            terminal
+                .draw(|frame| render_pairing(frame, &invite, 1, desktop).unwrap())
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let text = buffer
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            assert!(text.contains("192.168.50.55:7777"));
+            assert!(text.contains(&invite.safety_code()));
+            assert!(text.contains(&invite.fingerprint));
+            assert!(!text.contains(&invite.token));
+            assert_eq!(text.contains("Host writes unavailable."), !desktop);
+            assert_eq!(text.contains("F3: reopen pairing from desktop"), desktop);
+            assert!(
+                buffer
+                    .content
+                    .iter()
+                    .any(|cell| cell.symbol() == "▀" && cell.fg == Color::Black)
+            );
+        }
+        let mut narrow = Terminal::new(ratatui::backend::TestBackend::new(40, 10)).unwrap();
+        narrow
+            .draw(|frame| render_pairing(frame, &invite, 0, true).unwrap())
+            .unwrap();
+        let text = narrow
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("Resize terminal"));
+        assert!(!text.contains(&invite.token));
+    }
+
+    #[test]
+    fn explicit_binding_and_advertisement_do_not_depend_on_interface_discovery() {
+        for bound in ["127.0.0.1:7777", "192.168.50.55:7777", "[fd00::1234]:7777"] {
+            let bound = bound.parse().unwrap();
+            let options = HostPairOptions {
+                bind: bound,
+                ..HostPairOptions::parse(std::iter::empty()).unwrap()
+            };
+            assert_eq!(advertise_address(&options, bound).unwrap(), bound);
+        }
+        let bound = "0.0.0.0:7777".parse().unwrap();
+        let options = HostPairOptions {
+            advertise: Some("192.168.50.55".parse().unwrap()),
+            ..HostPairOptions::parse(std::iter::empty()).unwrap()
+        };
+        assert_eq!(
+            advertise_address(&options, bound).unwrap(),
+            "192.168.50.55:7777".parse().unwrap()
+        );
+    }
+
+    #[test]
+    fn explicit_advertisement_cannot_cross_bind_family_or_exact_interface() {
+        for (bound, advertise) in [
+            ("127.0.0.1:7777", "192.168.50.55"),
+            ("0.0.0.0:7777", "fd00::1"),
+            ("[::]:7777", "192.168.50.55"),
+            ("0.0.0.0:7777", "0.0.0.0"),
+            ("0.0.0.0:7777", "224.0.0.1"),
+        ] {
+            let options = HostPairOptions {
+                advertise: Some(advertise.parse().unwrap()),
+                ..HostPairOptions::parse(std::iter::empty()).unwrap()
+            };
+            assert!(advertise_address(&options, bound.parse().unwrap()).is_err());
+        }
+    }
 }

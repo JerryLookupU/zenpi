@@ -424,7 +424,7 @@ fn only_a_host_answer_source_creates_a_standing_grant() {
     // missing source still restores.
     assert_eq!(
         policy
-            .with_remembered_events(&[base.clone()])
+            .with_remembered_events(std::slice::from_ref(&base))
             .per_tool
             .get("write_file"),
         Some(&ApprovalDecision::Allow)

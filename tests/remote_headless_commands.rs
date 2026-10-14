@@ -380,7 +380,8 @@ impl Backend for AttachmentBackend {
 
 #[test]
 fn headless_catalog_selection_expands_skill_and_template_on_host_and_retry_does_not_repeat() {
-    struct ResourceBackend(Arc<Mutex<Vec<(Vec<zenpi::core::Turn>, String)>>>);
+    type Seen = Arc<Mutex<Vec<(Vec<zenpi::core::Turn>, String)>>>;
+    struct ResourceBackend(Seen);
     impl Backend for ResourceBackend {
         crate::support::controlled_local_backend!();
         fn name(&self) -> &str {

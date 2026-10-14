@@ -53,11 +53,11 @@ impl<W: Write> Write for GatedOutput<'_, W> {
     fn flush(&mut self) -> io::Result<()> {
         self.output.flush()?;
         self.flushes_before_gate = self.flushes_before_gate.saturating_sub(1);
-        if self.flushes_before_gate == 0 {
-            if let Some(gate) = self.gate.take() {
-                gate.recv_timeout(Duration::from_secs(3))
-                    .map_err(io::Error::other)?;
-            }
+        if self.flushes_before_gate == 0
+            && let Some(gate) = self.gate.take()
+        {
+            gate.recv_timeout(Duration::from_secs(3))
+                .map_err(io::Error::other)?;
         }
         Ok(())
     }

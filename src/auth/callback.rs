@@ -55,6 +55,7 @@ impl ManualSubmission {
     }
 
     // Closing manual input is not cancellation of the entire browser login.
+    #[cfg(test)]
     pub(crate) fn cancel_prompt(
         &self,
         flow_id: &LoginFlowId,

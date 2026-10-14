@@ -100,6 +100,7 @@ impl WorkerOwner {
             && !agent.input_port().is_preparing()
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn prepare(
         project: &str,
         master_session_id: &str,

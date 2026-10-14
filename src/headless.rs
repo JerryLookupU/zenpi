@@ -3914,6 +3914,8 @@ fn write_cached_versioned_response<W: Write>(
     write_cached_response(output, response.for_version(version), replay)
 }
 
+// One value per admitted request, moved straight into the runner.
+#[allow(clippy::large_enum_variant)]
 enum AsyncTurn {
     NewSession(crate::project_workspace::NewSessionPlan),
     ToolOutput(crate::protocol::OutputRequest),

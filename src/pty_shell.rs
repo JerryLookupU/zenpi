@@ -418,107 +418,6 @@ mod imp {
         pending.drain(..index);
     }
 
-    #[cfg(test)]
-    mod output_bounds_tests {
-        use super::*;
-
-        #[test]
-        fn queue_backpressure_preserves_bytes_and_stop_cancels_full_queue() {
-            let (tx, rx) = mpsc::sync_channel(OUTPUT_QUEUE_CHUNKS);
-            let stop = Arc::new(AtomicBool::new(false));
-            for index in 0..OUTPUT_QUEUE_CHUNKS {
-                assert!(queue_output(
-                    &tx,
-                    vec![index as u8; OUTPUT_CHUNK_BYTES],
-                    &stop
-                ));
-            }
-            assert!(matches!(tx.try_send(vec![255]), Err(TrySendError::Full(_))));
-            let (ready_tx, ready_rx) = mpsc::channel();
-            let worker_stop = Arc::clone(&stop);
-            let worker = std::thread::spawn(move || {
-                ready_tx.send(()).unwrap();
-                queue_output(&tx, vec![255; OUTPUT_CHUNK_BYTES], &worker_stop)
-            });
-            ready_rx.recv().unwrap();
-            assert_eq!(rx.recv().unwrap(), vec![0; OUTPUT_CHUNK_BYTES]);
-            assert!(worker.join().unwrap());
-            for index in 1..OUTPUT_QUEUE_CHUNKS {
-                assert_eq!(rx.recv().unwrap(), vec![index as u8; OUTPUT_CHUNK_BYTES]);
-            }
-            assert_eq!(rx.recv().unwrap(), vec![255; OUTPUT_CHUNK_BYTES]);
-
-            let (tx, _rx) = mpsc::sync_channel(1);
-            tx.send(vec![1]).unwrap();
-            let worker_stop = Arc::clone(&stop);
-            let (done_tx, done_rx) = mpsc::channel();
-            let worker = std::thread::spawn(move || {
-                done_tx
-                    .send(queue_output(&tx, vec![2], &worker_stop))
-                    .unwrap();
-            });
-            stop.store(true, Ordering::Release);
-            assert!(
-                !done_rx
-                    .recv_timeout(std::time::Duration::from_secs(1))
-                    .unwrap()
-            );
-            worker.join().unwrap();
-        }
-
-        #[test]
-        fn oversized_incomplete_escape_is_bounded_and_not_reinterpreted_as_text() {
-            for prefix in [b"\x1b]".as_slice(), b"\x1b[".as_slice()] {
-                let mut screen = Screen::new();
-                let mut pending = prefix.to_vec();
-                pending.extend(vec![b'1'; MAX_ESCAPE_BYTES + 1]);
-                feed(&mut screen, &mut pending);
-                assert!(pending.is_empty());
-                assert_eq!(screen.content(64), "");
-                for _ in 0..20 {
-                    pending.extend(vec![b'2'; OUTPUT_CHUNK_BYTES]);
-                    feed(&mut screen, &mut pending);
-                    assert!(pending.is_empty());
-                }
-                pending.extend(if prefix[1] == b']' {
-                    b"\x1b".as_slice()
-                } else {
-                    b"m".as_slice()
-                });
-                feed(&mut screen, &mut pending);
-                pending.extend(if prefix[1] == b']' {
-                    b"\\visible".as_slice()
-                } else {
-                    b"visible".as_slice()
-                });
-                feed(&mut screen, &mut pending);
-                assert_eq!(screen.content(64), "visible");
-                assert!(pending.is_empty());
-            }
-        }
-
-        #[test]
-        fn one_pump_consumes_only_its_budget_and_keeps_the_remaining_fifo() {
-            let root = tempfile::tempdir().unwrap();
-            let mut shell = PtyShell::spawn(root.path().to_path_buf()).unwrap();
-            let (tx, rx) = mpsc::sync_channel(OUTPUT_QUEUE_CHUNKS);
-            shell.inner.lock().unwrap().rx = rx;
-            for index in 0..OUTPUT_QUEUE_CHUNKS {
-                tx.send(format!("{index}\n").into_bytes()).unwrap();
-            }
-            assert!(shell.pump());
-            let inner = shell.inner.lock().unwrap();
-            assert_eq!(inner.screen.lines.len(), PUMP_CHUNKS + 1);
-            for index in PUMP_CHUNKS..OUTPUT_QUEUE_CHUNKS {
-                assert_eq!(
-                    inner.rx.try_recv().unwrap(),
-                    format!("{index}\n").into_bytes()
-                );
-            }
-            assert!(inner.rx.try_recv().is_err());
-        }
-    }
-
     pub struct PtyShell {
         inner: Arc<Mutex<Inner>>,
     }
@@ -1012,6 +911,107 @@ mod imp {
             | KeyCode::Modifier(_) => return None,
         };
         Some(bytes)
+    }
+
+    #[cfg(test)]
+    mod output_bounds_tests {
+        use super::*;
+
+        #[test]
+        fn queue_backpressure_preserves_bytes_and_stop_cancels_full_queue() {
+            let (tx, rx) = mpsc::sync_channel(OUTPUT_QUEUE_CHUNKS);
+            let stop = Arc::new(AtomicBool::new(false));
+            for index in 0..OUTPUT_QUEUE_CHUNKS {
+                assert!(queue_output(
+                    &tx,
+                    vec![index as u8; OUTPUT_CHUNK_BYTES],
+                    &stop
+                ));
+            }
+            assert!(matches!(tx.try_send(vec![255]), Err(TrySendError::Full(_))));
+            let (ready_tx, ready_rx) = mpsc::channel();
+            let worker_stop = Arc::clone(&stop);
+            let worker = std::thread::spawn(move || {
+                ready_tx.send(()).unwrap();
+                queue_output(&tx, vec![255; OUTPUT_CHUNK_BYTES], &worker_stop)
+            });
+            ready_rx.recv().unwrap();
+            assert_eq!(rx.recv().unwrap(), vec![0; OUTPUT_CHUNK_BYTES]);
+            assert!(worker.join().unwrap());
+            for index in 1..OUTPUT_QUEUE_CHUNKS {
+                assert_eq!(rx.recv().unwrap(), vec![index as u8; OUTPUT_CHUNK_BYTES]);
+            }
+            assert_eq!(rx.recv().unwrap(), vec![255; OUTPUT_CHUNK_BYTES]);
+
+            let (tx, _rx) = mpsc::sync_channel(1);
+            tx.send(vec![1]).unwrap();
+            let worker_stop = Arc::clone(&stop);
+            let (done_tx, done_rx) = mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                done_tx
+                    .send(queue_output(&tx, vec![2], &worker_stop))
+                    .unwrap();
+            });
+            stop.store(true, Ordering::Release);
+            assert!(
+                !done_rx
+                    .recv_timeout(std::time::Duration::from_secs(1))
+                    .unwrap()
+            );
+            worker.join().unwrap();
+        }
+
+        #[test]
+        fn oversized_incomplete_escape_is_bounded_and_not_reinterpreted_as_text() {
+            for prefix in [b"\x1b]".as_slice(), b"\x1b[".as_slice()] {
+                let mut screen = Screen::new();
+                let mut pending = prefix.to_vec();
+                pending.extend(vec![b'1'; MAX_ESCAPE_BYTES + 1]);
+                feed(&mut screen, &mut pending);
+                assert!(pending.is_empty());
+                assert_eq!(screen.content(64), "");
+                for _ in 0..20 {
+                    pending.extend(vec![b'2'; OUTPUT_CHUNK_BYTES]);
+                    feed(&mut screen, &mut pending);
+                    assert!(pending.is_empty());
+                }
+                pending.extend(if prefix[1] == b']' {
+                    b"\x1b".as_slice()
+                } else {
+                    b"m".as_slice()
+                });
+                feed(&mut screen, &mut pending);
+                pending.extend(if prefix[1] == b']' {
+                    b"\\visible".as_slice()
+                } else {
+                    b"visible".as_slice()
+                });
+                feed(&mut screen, &mut pending);
+                assert_eq!(screen.content(64), "visible");
+                assert!(pending.is_empty());
+            }
+        }
+
+        #[test]
+        fn one_pump_consumes_only_its_budget_and_keeps_the_remaining_fifo() {
+            let root = tempfile::tempdir().unwrap();
+            let mut shell = PtyShell::spawn(root.path().to_path_buf()).unwrap();
+            let (tx, rx) = mpsc::sync_channel(OUTPUT_QUEUE_CHUNKS);
+            shell.inner.lock().unwrap().rx = rx;
+            for index in 0..OUTPUT_QUEUE_CHUNKS {
+                tx.send(format!("{index}\n").into_bytes()).unwrap();
+            }
+            assert!(shell.pump());
+            let inner = shell.inner.lock().unwrap();
+            assert_eq!(inner.screen.lines.len(), PUMP_CHUNKS + 1);
+            for index in PUMP_CHUNKS..OUTPUT_QUEUE_CHUNKS {
+                assert_eq!(
+                    inner.rx.try_recv().unwrap(),
+                    format!("{index}\n").into_bytes()
+                );
+            }
+            assert!(inner.rx.try_recv().is_err());
+        }
     }
 }
 

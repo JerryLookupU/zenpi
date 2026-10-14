@@ -23,7 +23,6 @@ impl<T> Worker<T> {
             .take()
             .unwrap()
             .join()
-            .ok()
             .expect("approval fixture panicked")
     }
 }

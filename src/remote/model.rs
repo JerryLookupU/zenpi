@@ -20,28 +20,6 @@ fn label(value: Option<&str>) -> Option<String> {
         .map(str::to_owned)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::label;
-    #[test]
-    fn model_labels_never_project_credentials_urls_roots_or_unbounded_text() {
-        for value in [
-            "",
-            "/host/path",
-            "https://private.invalid/model",
-            "model\0name",
-            "Bearer SECRET_CREDENTIAL",
-        ] {
-            assert!(label(Some(value)).is_none(), "{value:?}");
-        }
-        assert!(label(Some(&"x".repeat(129))).is_none());
-        assert_eq!(
-            label(Some("provider/model-v1:latest")).as_deref(),
-            Some("provider/model-v1:latest")
-        );
-    }
-}
-
 pub fn status(
     pool: &ProjectOwnerPool,
     registry: &DeviceRegistry,
@@ -255,4 +233,26 @@ pub fn select(
         Err(code) => response.code = Some(code),
     }
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::label;
+    #[test]
+    fn model_labels_never_project_credentials_urls_roots_or_unbounded_text() {
+        for value in [
+            "",
+            "/host/path",
+            "https://private.invalid/model",
+            "model\0name",
+            "Bearer SECRET_CREDENTIAL",
+        ] {
+            assert!(label(Some(value)).is_none(), "{value:?}");
+        }
+        assert!(label(Some(&"x".repeat(129))).is_none());
+        assert_eq!(
+            label(Some("provider/model-v1:latest")).as_deref(),
+            Some("provider/model-v1:latest")
+        );
+    }
 }

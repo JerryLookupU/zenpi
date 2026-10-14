@@ -7047,8 +7047,6 @@ enum CliLoginEvent {
         manual: crate::auth::callback::ManualSubmission,
     },
     Device {
-        flow_id: crate::auth::LoginFlowId,
-        prompt_id: u64,
         uri: &'static str,
         code: String,
     },
@@ -7143,13 +7141,11 @@ pub(crate) fn run_cli_codex_login(
                         verification_uri,
                         user_code,
                     } => CliLoginEvent::Device {
-                        flow_id,
-                        prompt_id,
                         uri: verification_uri,
                         code: user_code,
                     },
                 },
-                crate::auth::AuthInteraction::CancelPrompt { .. } => CliLoginEvent::Dismissed,
+                crate::auth::AuthInteraction::CancelPrompt => CliLoginEvent::Dismissed,
             };
             // A closed receiver means the host gave up: fail the interaction
             // rather than blocking the flow forever.

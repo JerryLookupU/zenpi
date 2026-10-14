@@ -3558,9 +3558,7 @@ impl WorktreeHost {
         else {
             return None;
         };
-        if arguments.get("view").is_none() {
-            return None;
-        }
+        arguments.get("view")?;
         let result = (|| {
             if request.validate().is_err()
                 || request.id.is_none()

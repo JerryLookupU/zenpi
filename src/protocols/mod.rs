@@ -5,6 +5,668 @@ pub(crate) mod content;
 pub(crate) mod google;
 mod responses;
 
+use crate::backend::{
+    AttachmentKind, BackendError, Completion, CompletionRequest, MAX_RESPONSE_BYTES, OpenAiWireApi,
+    ProviderCapabilities, ProviderEvent, Usage,
+};
+use crate::core::TurnRole;
+use crate::providers::registry::ModelDescriptor;
+use crate::providers::{Dialect, Protocol, connection::ValidatedRoute};
+use crate::tools::ToolCall;
+use serde_json::{Value, json};
+
+pub(crate) struct RequestOptions<'a> {
+    pub wire_api: OpenAiWireApi,
+    pub model: &'a str,
+    pub provider: Option<&'a str>,
+    pub reasoning_effort: Option<&'a str>,
+    pub verbosity: Option<&'a str>,
+    pub capabilities: ProviderCapabilities,
+    pub descriptor: Option<&'a ModelDescriptor>,
+}
+
+impl RequestOptions<'_> {
+    fn provider(&self) -> &str {
+        self.provider.unwrap_or(match self.wire_api {
+            OpenAiWireApi::AnthropicMessages => "anthropic",
+            OpenAiWireApi::GoogleGenerativeAi => "google",
+            _ => "openai",
+        })
+    }
+}
+
+pub(crate) fn encode_request(
+    request: &CompletionRequest<'_>,
+    options: &RequestOptions<'_>,
+) -> Result<Value, BackendError> {
+    encode_request_inner(request, options, None)
+}
+
+pub(crate) fn encode_request_for_route(
+    request: &CompletionRequest<'_>,
+    options: &RequestOptions<'_>,
+    route: &ValidatedRoute,
+) -> Result<Value, BackendError> {
+    validate_route_options(options, route)?;
+    if request.model.is_some_and(|model| model != route.model().id) {
+        return Err(configuration(
+            "request model does not match validated route",
+        ));
+    }
+    if request.max_output_tokens.is_some() && !route.options().output_token_limit {
+        return Err(configuration(
+            "route does not support a remote output token limit",
+        ));
+    }
+    if options.reasoning_effort.is_some() && !route.options().reasoning_effort {
+        return Err(configuration("route does not support reasoning effort"));
+    }
+    route
+        .model()
+        .validate_reasoning(route.capabilities(), options.reasoning_effort)
+        .map_err(|_| configuration("model does not support this reasoning effort"))?;
+    if !request.tools.is_empty() && !route.options().tool_choice {
+        return Err(configuration("route does not support function tools"));
+    }
+    if request.response_format.is_some() && !route.options().response_format {
+        return Err(configuration("route does not support this response format"));
+    }
+    if route.dialect() == Dialect::Codex
+        && (!route.streaming() || route.protocol() != Protocol::OpenAiCodexResponses)
+    {
+        return Err(configuration("Codex requires streamed Responses"));
+    }
+    if options.wire_api == OpenAiWireApi::Responses {
+        for turn in request.turns {
+            if turn.metadata.as_ref().is_some_and(|metadata| {
+                metadata.get("encrypted_content").is_some()
+                    || metadata
+                        .get("annotations")
+                        .and_then(Value::as_array)
+                        .is_some_and(|items| {
+                            items.iter().any(|item| {
+                                item["type"] == "native_history"
+                                    || item.get("encrypted_content").is_some()
+                            })
+                        })
+            }) {
+                return Err(configuration(
+                    "Responses opaque history requires a verified identity scope",
+                ));
+            }
+        }
+    }
+    if route.dialect() == Dialect::Default
+        && request.turns.iter().any(|turn| {
+            turn.metadata
+                .as_ref()
+                .and_then(|metadata| metadata["annotations"].as_array())
+                .is_some_and(|annotations| {
+                    annotations.iter().any(|annotation| {
+                        if annotation["type"] != "native_history" {
+                            return false;
+                        }
+                        match options.wire_api {
+                            OpenAiWireApi::AnthropicMessages => {
+                                annotation["blocks"].as_array().is_some_and(|blocks| {
+                                    blocks.iter().any(|block| {
+                                        matches!(
+                                            block["type"].as_str(),
+                                            Some("thinking" | "redacted_thinking")
+                                        )
+                                    })
+                                })
+                            }
+                            OpenAiWireApi::GoogleGenerativeAi => {
+                                annotation["parts"].as_array().is_some_and(|parts| {
+                                    parts.iter().any(|part| {
+                                        part.get("thoughtSignature").is_some()
+                                            || part["thought"] == true
+                                    })
+                                })
+                            }
+                            OpenAiWireApi::ChatCompletions => {
+                                annotation["chat_reasoning"]["details"]
+                                    .as_array()
+                                    .is_some_and(|details| {
+                                        details
+                                            .iter()
+                                            .any(|detail| detail["type"] == "reasoning.encrypted")
+                                    })
+                            }
+                            OpenAiWireApi::Responses => false,
+                        }
+                    })
+                })
+        })
+    {
+        return Err(configuration(
+            "opaque history requires a verified identity scope",
+        ));
+    }
+    if route.dialect() == Dialect::DeepSeek {
+        if options.verbosity.is_some() {
+            return Err(configuration("DeepSeek does not enforce verbosity"));
+        }
+        if let Some(effort) = options.reasoning_effort {
+            deepseek_effort(effort)?;
+        }
+        if route.protocol() == Protocol::ChatCompletions
+            && request.turns.iter().any(|turn| {
+                turn.metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata["annotations"].as_array())
+                    .is_some_and(|annotations| unsupported_deepseek_chat_details(annotations))
+            })
+        {
+            return Err(configuration(
+                "DeepSeek Chat does not support opaque reasoning details",
+            ));
+        }
+        if route.protocol() != Protocol::AnthropicMessages
+            && request.metadata.is_some_and(|metadata| {
+                metadata.as_object().is_none_or(|object| {
+                    object
+                        .iter()
+                        .any(|(key, value)| key != "purpose" || value != "semantic_compaction")
+                })
+            })
+        {
+            return Err(configuration(
+                "DeepSeek route does not support provider metadata",
+            ));
+        }
+        if route.protocol() == Protocol::ChatCompletions
+            && request
+                .response_format
+                .is_some_and(|format| format["type"] == "json_schema")
+        {
+            return Err(configuration(
+                "DeepSeek Chat supports JSON mode, not JSON Schema",
+            ));
+        }
+    }
+    encode_request_inner(request, options, Some(route))
+}
+
+fn configuration(message: &'static str) -> BackendError {
+    BackendError::Configuration(message.into())
+}
+
+fn unsupported_deepseek_chat_details(annotations: &[Value]) -> bool {
+    annotations.iter().any(|annotation| {
+        annotation["chat_reasoning"]
+            .get("details")
+            .is_some_and(|details| details.as_array().is_none_or(|details| !details.is_empty()))
+    })
+}
+
+fn validate_route_options(
+    options: &RequestOptions<'_>,
+    route: &ValidatedRoute,
+) -> Result<(), BackendError> {
+    if options.wire_api != route.protocol().wire_api()
+        || options.model != route.model().id
+        || options.provider != Some(route.provider())
+        || options.capabilities != route.capabilities()
+        || options.descriptor != Some(route.model())
+    {
+        return Err(configuration(
+            "protocol options do not match validated route",
+        ));
+    }
+    Ok(())
+}
+
+fn deepseek_effort(effort: &str) -> Result<&str, BackendError> {
+    match effort {
+        "none" | "low" | "high" | "max" => Ok(effort),
+        "minimal" => Ok("low"),
+        "medium" | "xhigh" => Ok("high"),
+        _ => Err(configuration("unsupported DeepSeek reasoning effort")),
+    }
+}
+
+fn encode_request_inner(
+    request: &CompletionRequest<'_>,
+    options: &RequestOptions<'_>,
+    route: Option<&ValidatedRoute>,
+) -> Result<Value, BackendError> {
+    let wire_api = options.wire_api;
+    let model = options.model;
+    let provider = options.provider();
+    let capabilities = options.capabilities;
+    let descriptor = options.descriptor;
+    let reasoning_effort = options.reasoning_effort;
+    let verbosity = options.verbosity;
+    if !capabilities.text {
+        return Err(BackendError::Configuration(
+            "selected model does not support text".into(),
+        ));
+    }
+    if !capabilities.tools
+        && (!request.tools.is_empty()
+            || request.turns.iter().any(|turn| {
+                turn.role == TurnRole::Tool
+                    || turn
+                        .metadata
+                        .as_ref()
+                        .is_some_and(|metadata| metadata.get("tool_calls").is_some())
+            }))
+    {
+        return Err(BackendError::Configuration(
+            "selected model does not support tools".into(),
+        ));
+    }
+    for attachment in request.attachments {
+        if (attachment.input.kind == AttachmentKind::Image && !capabilities.images)
+            || (attachment.input.kind == AttachmentKind::File && !capabilities.files)
+        {
+            return Err(BackendError::Configuration(
+                "selected model or wire does not support attachment kind".into(),
+            ));
+        }
+    }
+    if let Some(format) = request.response_format {
+        let json_mode = route.is_some_and(|route| {
+            route.dialect() == Dialect::DeepSeek
+                && matches!(
+                    route.protocol(),
+                    Protocol::ChatCompletions | Protocol::Responses
+                )
+                && matches!(format["type"].as_str(), Some("text" | "json_object"))
+        });
+        if !capabilities.structured_output && !json_mode {
+            return Err(BackendError::Configuration(
+                "selected model does not support structured output".into(),
+            ));
+        }
+        if !(json_mode && format == &json!({"type":"text"})) {
+            validate_response_format(format)?;
+        }
+    }
+    anthropic::validate_history_wire(request.turns, wire_api.as_str())?;
+    if matches!(
+        wire_api,
+        OpenAiWireApi::AnthropicMessages | OpenAiWireApi::GoogleGenerativeAi
+    ) && verbosity.is_some()
+    {
+        return Err(BackendError::Configuration(
+            "Native provider verbosity is unsupported".into(),
+        ));
+    }
+    let mut body = match wire_api {
+        OpenAiWireApi::GoogleGenerativeAi => {
+            google::request_body(request, model, reasoning_effort, provider)?
+        }
+        OpenAiWireApi::AnthropicMessages => {
+            if route.is_some_and(|route| route.dialect() == Dialect::DeepSeek) {
+                anthropic::request_body_deepseek(request, model, reasoning_effort, provider)?
+            } else {
+                anthropic::request_body(request, model, reasoning_effort, provider)?
+            }
+        }
+        OpenAiWireApi::ChatCompletions => chat::encode_request(request, model, provider)?,
+        OpenAiWireApi::Responses => {
+            if let Some(route) = route {
+                responses::encode_request_for_route(
+                    request,
+                    model,
+                    reasoning_effort,
+                    verbosity,
+                    route.dialect() == Dialect::Codex,
+                )?
+            } else {
+                responses::encode_request(request, model, reasoning_effort, verbosity)?
+            }
+        }
+    };
+    if wire_api != OpenAiWireApi::GoogleGenerativeAi {
+        body["stream"] = json!(capabilities.streaming);
+    }
+    if !capabilities.streaming {
+        body.as_object_mut()
+            .expect("request object")
+            .remove("stream_options");
+    }
+    // Anthropic/Google builders default the field themselves; OpenAI wires
+    // send a limit only when the caller explicitly requested one, because
+    // some Responses upstreams reject the field outright.
+    let openai_wire = matches!(
+        wire_api,
+        OpenAiWireApi::Responses | OpenAiWireApi::ChatCompletions
+    );
+    let limit = if openai_wire {
+        request.max_output_tokens
+    } else if descriptor.is_some() || request.max_output_tokens.is_some() {
+        Some(
+            request
+                .max_output_tokens
+                .unwrap_or(crate::context::DEFAULT_RESERVED_OUTPUT_TOKENS),
+        )
+    } else {
+        None
+    };
+    if let Some(limit) = limit {
+        let limit = limit.min(
+            descriptor
+                .as_ref()
+                .map_or(u64::MAX, |model| model.max_output_tokens),
+        );
+        if limit == 0 {
+            return Err(BackendError::Configuration(
+                "output token limit must be positive".into(),
+            ));
+        }
+        if wire_api == OpenAiWireApi::GoogleGenerativeAi {
+            body["generationConfig"]["maxOutputTokens"] = json!(limit);
+        } else {
+            body[if wire_api == OpenAiWireApi::Responses {
+                "max_output_tokens"
+            } else if wire_api == OpenAiWireApi::AnthropicMessages {
+                "max_tokens"
+            } else {
+                "max_completion_tokens"
+            }] = json!(limit);
+        }
+    }
+    if let Some(format) = request.response_format {
+        if wire_api == OpenAiWireApi::Responses {
+            let format = if format["type"] == "json_schema" {
+                let mut schema = format["json_schema"].clone();
+                schema["type"] = json!("json_schema");
+                schema
+            } else {
+                format.clone()
+            };
+            if body.get("text").is_none() {
+                body["text"] = json!({});
+            }
+            body["text"]["format"] = format;
+        } else {
+            body["response_format"] = format.clone();
+        }
+    }
+    if let Some(route) = route {
+        if wire_api != OpenAiWireApi::GoogleGenerativeAi {
+            body["stream"] = json!(route.streaming());
+            if !route.streaming() {
+                body.as_object_mut()
+                    .expect("request object")
+                    .remove("stream_options");
+            }
+        }
+        match route.dialect() {
+            Dialect::Codex => {
+                body["stream"] = json!(true);
+                body["store"] = json!(false);
+                if body.get("instructions").is_none() {
+                    body["instructions"] = json!("");
+                }
+            }
+            Dialect::DeepSeek => {
+                if wire_api == OpenAiWireApi::ChatCompletions {
+                    body.as_object_mut()
+                        .expect("request object")
+                        .remove("metadata");
+                    if let Some(limit) = body
+                        .as_object_mut()
+                        .expect("request object")
+                        .remove("max_completion_tokens")
+                    {
+                        body["max_tokens"] = limit;
+                    }
+                    if let Some(effort) = reasoning_effort {
+                        let effort = deepseek_effort(effort)?;
+                        body["thinking"] =
+                            json!({"type":if effort == "none" { "disabled" } else { "enabled" }});
+                        body["reasoning_effort"] = json!(effort);
+                    }
+                } else if wire_api == OpenAiWireApi::Responses {
+                    if let Some(effort) = reasoning_effort {
+                        body["reasoning"]["effort"] = json!(deepseek_effort(effort)?);
+                    }
+                    let object = body.as_object_mut().expect("request object");
+                    object.remove("store");
+                    object.remove("metadata");
+                }
+            }
+            Dialect::Default => (),
+        }
+    }
+    Ok(body)
+}
+
+pub(crate) fn read_response_for_route(
+    body: &mut ureq::Body,
+    sse: bool,
+    options: &RequestOptions<'_>,
+    route: &ValidatedRoute,
+    cancelled: &dyn Fn() -> bool,
+    sink: &mut dyn FnMut(ProviderEvent) -> Result<(), BackendError>,
+) -> Result<Completion, BackendError> {
+    validate_route_options(options, route)?;
+    if route.streaming() != sse {
+        return Err(BackendError::InvalidResponse(
+            "response streaming mode differs from validated route".into(),
+        ));
+    }
+    if options.wire_api == OpenAiWireApi::Responses {
+        return responses::read_response_for_route(body, sse, cancelled, sink);
+    }
+    if options.wire_api == OpenAiWireApi::AnthropicMessages && route.dialect() == Dialect::DeepSeek
+    {
+        return anthropic::read_response_deepseek(
+            body,
+            sse,
+            route.provider(),
+            options.model,
+            options.capabilities,
+            cancelled,
+            sink,
+        );
+    }
+    let deepseek_chat =
+        route.dialect() == Dialect::DeepSeek && route.protocol() == Protocol::ChatCompletions;
+    let mut terminal = None;
+    let completion = read_response(body, sse, options, cancelled, &mut |event| {
+        if deepseek_chat && matches!(event, ProviderEvent::Completed { .. }) {
+            terminal = Some(event);
+            Ok(())
+        } else {
+            sink(event)
+        }
+    })?;
+    if deepseek_chat && unsupported_deepseek_chat_details(&completion.annotations) {
+        return Err(BackendError::InvalidResponse(
+            "DeepSeek Chat returned unsupported opaque reasoning details".into(),
+        ));
+    }
+    if let Some(event) = terminal {
+        if cancelled() {
+            return Err(BackendError::Cancelled);
+        }
+        sink(event)?;
+    }
+    Ok(completion)
+}
+
+pub(crate) fn read_response(
+    body: &mut ureq::Body,
+    sse: bool,
+    options: &RequestOptions<'_>,
+    cancelled: &dyn Fn() -> bool,
+    sink: &mut dyn FnMut(ProviderEvent) -> Result<(), BackendError>,
+) -> Result<Completion, BackendError> {
+    let provider = options.provider();
+    match options.wire_api {
+        OpenAiWireApi::GoogleGenerativeAi => google::read_response(
+            body,
+            sse,
+            provider,
+            options.model,
+            options.capabilities,
+            cancelled,
+            sink,
+        ),
+        OpenAiWireApi::AnthropicMessages => anthropic::read_response(
+            body,
+            sse,
+            provider,
+            options.model,
+            options.capabilities,
+            cancelled,
+            sink,
+        ),
+        OpenAiWireApi::ChatCompletions => {
+            chat::read_response(body, sse, provider, options.model, cancelled, sink)
+        }
+        OpenAiWireApi::Responses => responses::read_response(
+            body,
+            options.capabilities.streaming,
+            options.provider.is_some(),
+            cancelled,
+            sink,
+        ),
+    }
+}
+
+fn extract_annotations(payload: &Value) -> Vec<Value> {
+    let mut annotations = Vec::new();
+    if let Some(values) = payload.get("annotations").and_then(Value::as_array) {
+        annotations.extend(values.iter().cloned());
+    }
+    if let Some(output) = payload.get("output").and_then(Value::as_array) {
+        for item in output {
+            if let Some(content) = item.get("content").and_then(Value::as_array) {
+                for part in content {
+                    if let Some(values) = part.get("annotations").and_then(Value::as_array) {
+                        annotations.extend(values.iter().cloned());
+                    }
+                }
+            }
+        }
+    }
+    annotations
+}
+
+fn read_bounded_json_body(
+    body: &mut ureq::Body,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Value, BackendError> {
+    use std::io::Read;
+    let mut reader = body.with_config().limit(MAX_RESPONSE_BYTES as u64).reader();
+    let mut bytes = Vec::new();
+    let mut chunk = [0_u8; 16 * 1024];
+    loop {
+        if cancelled() {
+            return Err(BackendError::Cancelled);
+        }
+        match reader.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read) => bytes.extend_from_slice(&chunk[..read]),
+            Err(error) if is_recv_body_poll_timeout(&error) => continue,
+            Err(error) => return Err(BackendError::Transport(error.to_string())),
+        }
+    }
+    if cancelled() {
+        return Err(BackendError::Cancelled);
+    }
+    serde_json::from_slice(&bytes)
+        .map_err(|error| BackendError::InvalidResponse(format!("invalid JSON response: {error}")))
+}
+
+fn is_recv_body_poll_timeout(error: &std::io::Error) -> bool {
+    error
+        .get_ref()
+        .and_then(|source| source.downcast_ref::<ureq::Error>())
+        .is_some_and(|error| matches!(error, ureq::Error::Timeout(ureq::Timeout::RecvBody)))
+}
+
+fn emit_completion_events(
+    completion: &Completion,
+    sink: &mut dyn FnMut(ProviderEvent) -> Result<(), BackendError>,
+) -> Result<(), BackendError> {
+    if let Some(response_id) = completion.response_id.clone() {
+        sink(ProviderEvent::ResponseCreated {
+            response_id: Some(response_id),
+            model: completion.model.clone(),
+        })?;
+    }
+    if !completion.content.is_empty() {
+        sink(ProviderEvent::TextDelta {
+            delta: completion.content.clone(),
+        })?;
+        sink(ProviderEvent::TextDone {
+            text: completion.content.clone(),
+        })?;
+    }
+    if let Some(refusal) = completion.refusal.clone() {
+        sink(ProviderEvent::Refusal { text: refusal })?;
+    }
+    for call in &completion.tool_calls {
+        sink(ProviderEvent::ToolCallDone { call: call.clone() })?;
+    }
+    if let Some(usage) = completion.usage {
+        sink(ProviderEvent::Usage { usage })?;
+    }
+    sink(ProviderEvent::Completed {
+        response_id: completion.response_id.clone(),
+        model: completion.model.clone(),
+    })
+}
+
+fn parse_tool_call(id: &str, name: &str, arguments: &str) -> Result<ToolCall, BackendError> {
+    let arguments = serde_json::from_str(arguments).map_err(|error| {
+        BackendError::InvalidResponse(format!("invalid tool call arguments: {error}"))
+    })?;
+    Ok(ToolCall {
+        id: id.to_owned(),
+        name: name.to_owned(),
+        arguments,
+    })
+}
+
+fn parse_usage(value: &Value) -> Option<Usage> {
+    let input = value
+        .get("prompt_tokens")
+        .or_else(|| value.get("input_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let output = value
+        .get("completion_tokens")
+        .or_else(|| value.get("output_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let total = value
+        .get("total_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(input.saturating_add(output));
+    Some(Usage {
+        input_tokens: input,
+        output_tokens: output,
+        total_tokens: total,
+    })
+}
+
+fn validate_response_format(format: &Value) -> Result<(), BackendError> {
+    if serde_json::to_vec(format).map_or(true, |bytes| bytes.len() > 64 * 1024)
+        || !format.is_object()
+        || !matches!(format["type"].as_str(), Some("json_object" | "json_schema"))
+        || (format["type"] == "json_schema"
+            && (!format["json_schema"].is_object()
+                || !format["json_schema"]["schema"].is_object()
+                || !format["json_schema"]["name"]
+                    .as_str()
+                    .is_some_and(|name| !name.is_empty() && name.len() <= 64)))
+    {
+        return Err(BackendError::Configuration(
+            "structured output format is invalid or too large".into(),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod route_tests {
     use super::*;
@@ -707,666 +1369,4 @@ mod route_tests {
             .is_err()
         );
     }
-}
-
-use crate::backend::{
-    AttachmentKind, BackendError, Completion, CompletionRequest, MAX_RESPONSE_BYTES, OpenAiWireApi,
-    ProviderCapabilities, ProviderEvent, Usage,
-};
-use crate::core::TurnRole;
-use crate::providers::registry::ModelDescriptor;
-use crate::providers::{Dialect, Protocol, connection::ValidatedRoute};
-use crate::tools::ToolCall;
-use serde_json::{Value, json};
-
-pub(crate) struct RequestOptions<'a> {
-    pub wire_api: OpenAiWireApi,
-    pub model: &'a str,
-    pub provider: Option<&'a str>,
-    pub reasoning_effort: Option<&'a str>,
-    pub verbosity: Option<&'a str>,
-    pub capabilities: ProviderCapabilities,
-    pub descriptor: Option<&'a ModelDescriptor>,
-}
-
-impl RequestOptions<'_> {
-    fn provider(&self) -> &str {
-        self.provider.unwrap_or(match self.wire_api {
-            OpenAiWireApi::AnthropicMessages => "anthropic",
-            OpenAiWireApi::GoogleGenerativeAi => "google",
-            _ => "openai",
-        })
-    }
-}
-
-pub(crate) fn encode_request(
-    request: &CompletionRequest<'_>,
-    options: &RequestOptions<'_>,
-) -> Result<Value, BackendError> {
-    encode_request_inner(request, options, None)
-}
-
-pub(crate) fn encode_request_for_route(
-    request: &CompletionRequest<'_>,
-    options: &RequestOptions<'_>,
-    route: &ValidatedRoute,
-) -> Result<Value, BackendError> {
-    validate_route_options(options, route)?;
-    if request.model.is_some_and(|model| model != route.model().id) {
-        return Err(configuration(
-            "request model does not match validated route",
-        ));
-    }
-    if request.max_output_tokens.is_some() && !route.options().output_token_limit {
-        return Err(configuration(
-            "route does not support a remote output token limit",
-        ));
-    }
-    if options.reasoning_effort.is_some() && !route.options().reasoning_effort {
-        return Err(configuration("route does not support reasoning effort"));
-    }
-    route
-        .model()
-        .validate_reasoning(route.capabilities(), options.reasoning_effort)
-        .map_err(|_| configuration("model does not support this reasoning effort"))?;
-    if !request.tools.is_empty() && !route.options().tool_choice {
-        return Err(configuration("route does not support function tools"));
-    }
-    if request.response_format.is_some() && !route.options().response_format {
-        return Err(configuration("route does not support this response format"));
-    }
-    if route.dialect() == Dialect::Codex
-        && (!route.streaming() || route.protocol() != Protocol::OpenAiCodexResponses)
-    {
-        return Err(configuration("Codex requires streamed Responses"));
-    }
-    if options.wire_api == OpenAiWireApi::Responses {
-        for turn in request.turns {
-            if turn.metadata.as_ref().is_some_and(|metadata| {
-                metadata.get("encrypted_content").is_some()
-                    || metadata
-                        .get("annotations")
-                        .and_then(Value::as_array)
-                        .is_some_and(|items| {
-                            items.iter().any(|item| {
-                                item["type"] == "native_history"
-                                    || item.get("encrypted_content").is_some()
-                            })
-                        })
-            }) {
-                return Err(configuration(
-                    "Responses opaque history requires a verified identity scope",
-                ));
-            }
-        }
-    }
-    if route.dialect() == Dialect::Default
-        && request.turns.iter().any(|turn| {
-            turn.metadata
-                .as_ref()
-                .and_then(|metadata| metadata["annotations"].as_array())
-                .is_some_and(|annotations| {
-                    annotations.iter().any(|annotation| {
-                        if annotation["type"] != "native_history" {
-                            return false;
-                        }
-                        match options.wire_api {
-                            OpenAiWireApi::AnthropicMessages => {
-                                annotation["blocks"].as_array().is_some_and(|blocks| {
-                                    blocks.iter().any(|block| {
-                                        matches!(
-                                            block["type"].as_str(),
-                                            Some("thinking" | "redacted_thinking")
-                                        )
-                                    })
-                                })
-                            }
-                            OpenAiWireApi::GoogleGenerativeAi => {
-                                annotation["parts"].as_array().is_some_and(|parts| {
-                                    parts.iter().any(|part| {
-                                        part.get("thoughtSignature").is_some()
-                                            || part["thought"] == true
-                                    })
-                                })
-                            }
-                            OpenAiWireApi::ChatCompletions => {
-                                annotation["chat_reasoning"]["details"]
-                                    .as_array()
-                                    .is_some_and(|details| {
-                                        details
-                                            .iter()
-                                            .any(|detail| detail["type"] == "reasoning.encrypted")
-                                    })
-                            }
-                            OpenAiWireApi::Responses => false,
-                        }
-                    })
-                })
-        })
-    {
-        return Err(configuration(
-            "opaque history requires a verified identity scope",
-        ));
-    }
-    if route.dialect() == Dialect::DeepSeek {
-        if options.verbosity.is_some() {
-            return Err(configuration("DeepSeek does not enforce verbosity"));
-        }
-        if let Some(effort) = options.reasoning_effort {
-            deepseek_effort(effort)?;
-        }
-        if route.protocol() == Protocol::ChatCompletions
-            && request.turns.iter().any(|turn| {
-                turn.metadata
-                    .as_ref()
-                    .and_then(|metadata| metadata["annotations"].as_array())
-                    .is_some_and(|annotations| unsupported_deepseek_chat_details(annotations))
-            })
-        {
-            return Err(configuration(
-                "DeepSeek Chat does not support opaque reasoning details",
-            ));
-        }
-        if route.protocol() != Protocol::AnthropicMessages
-            && request.metadata.is_some_and(|metadata| {
-                metadata.as_object().is_none_or(|object| {
-                    object
-                        .iter()
-                        .any(|(key, value)| key != "purpose" || value != "semantic_compaction")
-                })
-            })
-        {
-            return Err(configuration(
-                "DeepSeek route does not support provider metadata",
-            ));
-        }
-        if route.protocol() == Protocol::ChatCompletions
-            && request
-                .response_format
-                .is_some_and(|format| format["type"] == "json_schema")
-        {
-            return Err(configuration(
-                "DeepSeek Chat supports JSON mode, not JSON Schema",
-            ));
-        }
-    }
-    encode_request_inner(request, options, Some(route))
-}
-
-fn configuration(message: &'static str) -> BackendError {
-    BackendError::Configuration(message.into())
-}
-
-fn unsupported_deepseek_chat_details(annotations: &[Value]) -> bool {
-    annotations.iter().any(|annotation| {
-        annotation["chat_reasoning"]
-            .get("details")
-            .is_some_and(|details| details.as_array().is_none_or(|details| !details.is_empty()))
-    })
-}
-
-fn validate_route_options(
-    options: &RequestOptions<'_>,
-    route: &ValidatedRoute,
-) -> Result<(), BackendError> {
-    if options.wire_api != route.protocol().wire_api()
-        || options.model != route.model().id
-        || options.provider != Some(route.provider())
-        || options.capabilities != route.capabilities()
-        || options.descriptor != Some(route.model())
-    {
-        return Err(configuration(
-            "protocol options do not match validated route",
-        ));
-    }
-    Ok(())
-}
-
-fn deepseek_effort(effort: &str) -> Result<&str, BackendError> {
-    match effort {
-        "none" | "low" | "high" | "max" => Ok(effort),
-        "minimal" => Ok("low"),
-        "medium" | "xhigh" => Ok("high"),
-        _ => Err(configuration("unsupported DeepSeek reasoning effort")),
-    }
-}
-
-fn encode_request_inner(
-    request: &CompletionRequest<'_>,
-    options: &RequestOptions<'_>,
-    route: Option<&ValidatedRoute>,
-) -> Result<Value, BackendError> {
-    let wire_api = options.wire_api;
-    let model = options.model;
-    let provider = options.provider();
-    let capabilities = options.capabilities;
-    let descriptor = options.descriptor;
-    let reasoning_effort = options.reasoning_effort;
-    let verbosity = options.verbosity;
-    if !capabilities.text {
-        return Err(BackendError::Configuration(
-            "selected model does not support text".into(),
-        ));
-    }
-    if !capabilities.tools
-        && (!request.tools.is_empty()
-            || request.turns.iter().any(|turn| {
-                turn.role == TurnRole::Tool
-                    || turn
-                        .metadata
-                        .as_ref()
-                        .is_some_and(|metadata| metadata.get("tool_calls").is_some())
-            }))
-    {
-        return Err(BackendError::Configuration(
-            "selected model does not support tools".into(),
-        ));
-    }
-    for attachment in request.attachments {
-        if (attachment.input.kind == AttachmentKind::Image && !capabilities.images)
-            || (attachment.input.kind == AttachmentKind::File && !capabilities.files)
-        {
-            return Err(BackendError::Configuration(
-                "selected model or wire does not support attachment kind".into(),
-            ));
-        }
-    }
-    if let Some(format) = request.response_format {
-        let json_mode = route.is_some_and(|route| {
-            route.dialect() == Dialect::DeepSeek
-                && matches!(
-                    route.protocol(),
-                    Protocol::ChatCompletions | Protocol::Responses
-                )
-                && matches!(format["type"].as_str(), Some("text" | "json_object"))
-        });
-        if !capabilities.structured_output && !json_mode {
-            return Err(BackendError::Configuration(
-                "selected model does not support structured output".into(),
-            ));
-        }
-        if !(json_mode && format == &json!({"type":"text"})) {
-            validate_response_format(format)?;
-        }
-    }
-    anthropic::validate_history_wire(request.turns, wire_api.as_str())?;
-    if matches!(
-        wire_api,
-        OpenAiWireApi::AnthropicMessages | OpenAiWireApi::GoogleGenerativeAi
-    ) && verbosity.is_some()
-    {
-        return Err(BackendError::Configuration(
-            "Native provider verbosity is unsupported".into(),
-        ));
-    }
-    let mut body = match wire_api {
-        OpenAiWireApi::GoogleGenerativeAi => {
-            google::request_body(request, model, reasoning_effort, provider)?
-        }
-        OpenAiWireApi::AnthropicMessages => {
-            if route.is_some_and(|route| route.dialect() == Dialect::DeepSeek) {
-                anthropic::request_body_deepseek(request, model, reasoning_effort, provider)?
-            } else {
-                anthropic::request_body(request, model, reasoning_effort, provider)?
-            }
-        }
-        OpenAiWireApi::ChatCompletions => chat::encode_request(request, model, provider)?,
-        OpenAiWireApi::Responses => {
-            if let Some(route) = route {
-                responses::encode_request_for_route(
-                    request,
-                    model,
-                    reasoning_effort,
-                    verbosity,
-                    route.dialect() == Dialect::Codex,
-                )?
-            } else {
-                responses::encode_request(request, model, reasoning_effort, verbosity)?
-            }
-        }
-    };
-    if wire_api != OpenAiWireApi::GoogleGenerativeAi {
-        body["stream"] = json!(capabilities.streaming);
-    }
-    if !capabilities.streaming {
-        body.as_object_mut()
-            .expect("request object")
-            .remove("stream_options");
-    }
-    // Anthropic/Google builders default the field themselves; OpenAI wires
-    // send a limit only when the caller explicitly requested one, because
-    // some Responses upstreams reject the field outright.
-    let openai_wire = matches!(
-        wire_api,
-        OpenAiWireApi::Responses | OpenAiWireApi::ChatCompletions
-    );
-    let limit = if openai_wire {
-        request.max_output_tokens
-    } else if descriptor.is_some() || request.max_output_tokens.is_some() {
-        Some(
-            request
-                .max_output_tokens
-                .unwrap_or(crate::context::DEFAULT_RESERVED_OUTPUT_TOKENS),
-        )
-    } else {
-        None
-    };
-    if let Some(limit) = limit {
-        let limit = limit.min(
-            descriptor
-                .as_ref()
-                .map_or(u64::MAX, |model| model.max_output_tokens),
-        );
-        if limit == 0 {
-            return Err(BackendError::Configuration(
-                "output token limit must be positive".into(),
-            ));
-        }
-        if wire_api == OpenAiWireApi::GoogleGenerativeAi {
-            body["generationConfig"]["maxOutputTokens"] = json!(limit);
-        } else {
-            body[if wire_api == OpenAiWireApi::Responses {
-                "max_output_tokens"
-            } else if wire_api == OpenAiWireApi::AnthropicMessages {
-                "max_tokens"
-            } else {
-                "max_completion_tokens"
-            }] = json!(limit);
-        }
-    }
-    if let Some(format) = request.response_format {
-        if wire_api == OpenAiWireApi::Responses {
-            let format = if format["type"] == "json_schema" {
-                let mut schema = format["json_schema"].clone();
-                schema["type"] = json!("json_schema");
-                schema
-            } else {
-                format.clone()
-            };
-            if body.get("text").is_none() {
-                body["text"] = json!({});
-            }
-            body["text"]["format"] = format;
-        } else {
-            body["response_format"] = format.clone();
-        }
-    }
-    if let Some(route) = route {
-        if wire_api != OpenAiWireApi::GoogleGenerativeAi {
-            body["stream"] = json!(route.streaming());
-            if !route.streaming() {
-                body.as_object_mut()
-                    .expect("request object")
-                    .remove("stream_options");
-            }
-        }
-        match route.dialect() {
-            Dialect::Codex => {
-                body["stream"] = json!(true);
-                body["store"] = json!(false);
-                if body.get("instructions").is_none() {
-                    body["instructions"] = json!("");
-                }
-            }
-            Dialect::DeepSeek => {
-                if wire_api == OpenAiWireApi::ChatCompletions {
-                    body.as_object_mut()
-                        .expect("request object")
-                        .remove("metadata");
-                    if let Some(limit) = body
-                        .as_object_mut()
-                        .expect("request object")
-                        .remove("max_completion_tokens")
-                    {
-                        body["max_tokens"] = limit;
-                    }
-                    if let Some(effort) = reasoning_effort {
-                        let effort = deepseek_effort(effort)?;
-                        body["thinking"] =
-                            json!({"type":if effort == "none" { "disabled" } else { "enabled" }});
-                        body["reasoning_effort"] = json!(effort);
-                    }
-                } else if wire_api == OpenAiWireApi::Responses {
-                    if let Some(effort) = reasoning_effort {
-                        body["reasoning"]["effort"] = json!(deepseek_effort(effort)?);
-                    }
-                    let object = body.as_object_mut().expect("request object");
-                    object.remove("store");
-                    object.remove("metadata");
-                }
-            }
-            Dialect::Default => (),
-        }
-    }
-    Ok(body)
-}
-
-pub(crate) fn read_response_for_route(
-    body: &mut ureq::Body,
-    sse: bool,
-    options: &RequestOptions<'_>,
-    route: &ValidatedRoute,
-    cancelled: &dyn Fn() -> bool,
-    sink: &mut dyn FnMut(ProviderEvent) -> Result<(), BackendError>,
-) -> Result<Completion, BackendError> {
-    validate_route_options(options, route)?;
-    if route.streaming() != sse {
-        return Err(BackendError::InvalidResponse(
-            "response streaming mode differs from validated route".into(),
-        ));
-    }
-    if options.wire_api == OpenAiWireApi::Responses {
-        return responses::read_response_for_route(body, sse, cancelled, sink);
-    }
-    if options.wire_api == OpenAiWireApi::AnthropicMessages && route.dialect() == Dialect::DeepSeek
-    {
-        return anthropic::read_response_deepseek(
-            body,
-            sse,
-            route.provider(),
-            options.model,
-            options.capabilities,
-            cancelled,
-            sink,
-        );
-    }
-    let deepseek_chat =
-        route.dialect() == Dialect::DeepSeek && route.protocol() == Protocol::ChatCompletions;
-    let mut terminal = None;
-    let completion = read_response(body, sse, options, cancelled, &mut |event| {
-        if deepseek_chat && matches!(event, ProviderEvent::Completed { .. }) {
-            terminal = Some(event);
-            Ok(())
-        } else {
-            sink(event)
-        }
-    })?;
-    if deepseek_chat && unsupported_deepseek_chat_details(&completion.annotations) {
-        return Err(BackendError::InvalidResponse(
-            "DeepSeek Chat returned unsupported opaque reasoning details".into(),
-        ));
-    }
-    if let Some(event) = terminal {
-        if cancelled() {
-            return Err(BackendError::Cancelled);
-        }
-        sink(event)?;
-    }
-    Ok(completion)
-}
-
-pub(crate) fn read_response(
-    body: &mut ureq::Body,
-    sse: bool,
-    options: &RequestOptions<'_>,
-    cancelled: &dyn Fn() -> bool,
-    sink: &mut dyn FnMut(ProviderEvent) -> Result<(), BackendError>,
-) -> Result<Completion, BackendError> {
-    let provider = options.provider();
-    match options.wire_api {
-        OpenAiWireApi::GoogleGenerativeAi => google::read_response(
-            body,
-            sse,
-            provider,
-            options.model,
-            options.capabilities,
-            cancelled,
-            sink,
-        ),
-        OpenAiWireApi::AnthropicMessages => anthropic::read_response(
-            body,
-            sse,
-            provider,
-            options.model,
-            options.capabilities,
-            cancelled,
-            sink,
-        ),
-        OpenAiWireApi::ChatCompletions => {
-            chat::read_response(body, sse, provider, options.model, cancelled, sink)
-        }
-        OpenAiWireApi::Responses => responses::read_response(
-            body,
-            options.capabilities.streaming,
-            options.provider.is_some(),
-            cancelled,
-            sink,
-        ),
-    }
-}
-
-fn extract_annotations(payload: &Value) -> Vec<Value> {
-    let mut annotations = Vec::new();
-    if let Some(values) = payload.get("annotations").and_then(Value::as_array) {
-        annotations.extend(values.iter().cloned());
-    }
-    if let Some(output) = payload.get("output").and_then(Value::as_array) {
-        for item in output {
-            if let Some(content) = item.get("content").and_then(Value::as_array) {
-                for part in content {
-                    if let Some(values) = part.get("annotations").and_then(Value::as_array) {
-                        annotations.extend(values.iter().cloned());
-                    }
-                }
-            }
-        }
-    }
-    annotations
-}
-
-fn read_bounded_json_body(
-    body: &mut ureq::Body,
-    cancelled: &dyn Fn() -> bool,
-) -> Result<Value, BackendError> {
-    use std::io::Read;
-    let mut reader = body.with_config().limit(MAX_RESPONSE_BYTES as u64).reader();
-    let mut bytes = Vec::new();
-    let mut chunk = [0_u8; 16 * 1024];
-    loop {
-        if cancelled() {
-            return Err(BackendError::Cancelled);
-        }
-        match reader.read(&mut chunk) {
-            Ok(0) => break,
-            Ok(read) => bytes.extend_from_slice(&chunk[..read]),
-            Err(error) if is_recv_body_poll_timeout(&error) => continue,
-            Err(error) => return Err(BackendError::Transport(error.to_string())),
-        }
-    }
-    if cancelled() {
-        return Err(BackendError::Cancelled);
-    }
-    serde_json::from_slice(&bytes)
-        .map_err(|error| BackendError::InvalidResponse(format!("invalid JSON response: {error}")))
-}
-
-fn is_recv_body_poll_timeout(error: &std::io::Error) -> bool {
-    error
-        .get_ref()
-        .and_then(|source| source.downcast_ref::<ureq::Error>())
-        .is_some_and(|error| matches!(error, ureq::Error::Timeout(ureq::Timeout::RecvBody)))
-}
-
-fn emit_completion_events(
-    completion: &Completion,
-    sink: &mut dyn FnMut(ProviderEvent) -> Result<(), BackendError>,
-) -> Result<(), BackendError> {
-    if let Some(response_id) = completion.response_id.clone() {
-        sink(ProviderEvent::ResponseCreated {
-            response_id: Some(response_id),
-            model: completion.model.clone(),
-        })?;
-    }
-    if !completion.content.is_empty() {
-        sink(ProviderEvent::TextDelta {
-            delta: completion.content.clone(),
-        })?;
-        sink(ProviderEvent::TextDone {
-            text: completion.content.clone(),
-        })?;
-    }
-    if let Some(refusal) = completion.refusal.clone() {
-        sink(ProviderEvent::Refusal { text: refusal })?;
-    }
-    for call in &completion.tool_calls {
-        sink(ProviderEvent::ToolCallDone { call: call.clone() })?;
-    }
-    if let Some(usage) = completion.usage {
-        sink(ProviderEvent::Usage { usage })?;
-    }
-    sink(ProviderEvent::Completed {
-        response_id: completion.response_id.clone(),
-        model: completion.model.clone(),
-    })
-}
-
-fn parse_tool_call(id: &str, name: &str, arguments: &str) -> Result<ToolCall, BackendError> {
-    let arguments = serde_json::from_str(arguments).map_err(|error| {
-        BackendError::InvalidResponse(format!("invalid tool call arguments: {error}"))
-    })?;
-    Ok(ToolCall {
-        id: id.to_owned(),
-        name: name.to_owned(),
-        arguments,
-    })
-}
-
-fn parse_usage(value: &Value) -> Option<Usage> {
-    let input = value
-        .get("prompt_tokens")
-        .or_else(|| value.get("input_tokens"))
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    let output = value
-        .get("completion_tokens")
-        .or_else(|| value.get("output_tokens"))
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    let total = value
-        .get("total_tokens")
-        .and_then(Value::as_u64)
-        .unwrap_or(input.saturating_add(output));
-    Some(Usage {
-        input_tokens: input,
-        output_tokens: output,
-        total_tokens: total,
-    })
-}
-
-fn validate_response_format(format: &Value) -> Result<(), BackendError> {
-    if serde_json::to_vec(format).map_or(true, |bytes| bytes.len() > 64 * 1024)
-        || !format.is_object()
-        || !matches!(format["type"].as_str(), Some("json_object" | "json_schema"))
-        || (format["type"] == "json_schema"
-            && (!format["json_schema"].is_object()
-                || !format["json_schema"]["schema"].is_object()
-                || !format["json_schema"]["name"]
-                    .as_str()
-                    .is_some_and(|name| !name.is_empty() && name.len() <= 64)))
-    {
-        return Err(BackendError::Configuration(
-            "structured output format is invalid or too large".into(),
-        ));
-    }
-    Ok(())
 }

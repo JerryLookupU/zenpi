@@ -2034,18 +2034,16 @@ impl ProjectOwnerPool {
         }
         if let Some(intent) =
             reserved.and_then(|index| remote.receipts[index].quota_intent.as_ref())
-        {
-            if intent.before != before
+            && (intent.before != before
                 || intent.candidate != candidate
                 || intent.request.project_id.as_deref() != Some(project)
                 || intent.request.expected_revision != Some(self.workspace_revision())
                 || intent.request.session_id.as_deref()
                     != self
                         .context(project)
-                        .map(|context| context.session_id.as_str())
-            {
-                return Err("quota reservation no longer matches committed state".into());
-            }
+                        .map(|context| context.session_id.as_str()))
+        {
+            return Err("quota reservation no longer matches committed state".into());
         }
         if reserved.is_none() && remote.receipts.len() >= 128 {
             return Err("workspace receipt capacity exhausted".into());
@@ -2296,12 +2294,11 @@ impl ProjectOwnerPool {
         let mut leases = Vec::new();
         for slot in 0..crate::runtime::MAX_CONCURRENCY {
             let key = crate::remote::worker::key(project, session, subtab, slot)?;
-            if !self.worker_owners.contains_key(&key) {
-                if let Some(lease) =
+            if !self.worker_owners.contains_key(&key)
+                && let Some(lease) =
                     crate::remote::worker::existing_lease(&directory.join(format!("{key}.lease")))?
-                {
-                    leases.push(lease);
-                }
+            {
+                leases.push(lease);
             }
         }
         self.commit_remote_subtabs(
@@ -2906,6 +2903,7 @@ impl ProjectOwnerPool {
         self.remote_workspace = remote;
         Ok(())
     }
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn commit_approval_receipt(
         &mut self,
         device: &str,

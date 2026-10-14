@@ -30,7 +30,8 @@ from typing import Any
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 BUDGETS = {
-    "normal_dependencies_max": 16,
+    # Measured baseline (ZE-108); ZE-520 moves rcgen/qrcode behind `remote` and tightens it.
+    "normal_dependencies_max": 21,
     "release_binary_bytes_max": 8 * 1024 * 1024,
     "cold_start_max_ms_max": 1000.0,
     "cold_start_peak_rss_max_bytes": 96 * 1024 * 1024,

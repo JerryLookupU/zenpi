@@ -437,24 +437,24 @@ impl PromptProgress {
             .filter(|(_, value)| active(value))
             .chain(live.iter().rev().filter(|(_, value)| !active(value)))
         {
-            if owner == device && value["project_id"] == project && value["session_id"] == *session
+            if owner == device
+                && value["project_id"] == project
+                && value["session_id"] == *session
+                && let Some(id) = value["request_id"].as_str()
+                && seen.insert(id.to_owned())
             {
-                if let Some(id) = value["request_id"].as_str()
-                    && seen.insert(id.to_owned())
+                let mut projected = value.clone();
+                if active(value)
+                    && let Some(preview) = self.1.snapshot(device, project, session, id)
                 {
-                    let mut projected = value.clone();
-                    if active(value)
-                        && let Some(preview) = self.1.snapshot(device, project, session, id)
-                    {
-                        projected["stream_text"] = Value::String(preview.text);
-                        if preview.truncated {
-                            projected["stream_truncated"] = Value::Bool(true);
-                        }
+                    projected["stream_text"] = Value::String(preview.text);
+                    if preview.truncated {
+                        projected["stream_truncated"] = Value::Bool(true);
                     }
-                    values.push(projected);
-                    if values.len() == 16 {
-                        return Value::Array(values);
-                    }
+                }
+                values.push(projected);
+                if values.len() == 16 {
+                    return Value::Array(values);
                 }
             }
         }
@@ -506,6 +506,198 @@ impl PromptProgress {
 
 fn progress_value(request: &Envelope, state: ExecutionState) -> Value {
     json!({"request_id":request.id,"project_id":request.project_id,"session_id":request.session_id,"state":state})
+}
+
+pub fn persist_progress(
+    agent: &mut Agent,
+    request: &Envelope,
+    device: &str,
+    state: ExecutionState,
+) -> Result<(), crate::session::SessionError> {
+    persist_progress_with_code(agent, request, device, state, None)
+}
+pub fn persist_progress_with_code(
+    agent: &mut Agent,
+    request: &Envelope,
+    device: &str,
+    state: ExecutionState,
+    code: Option<ErrorCode>,
+) -> Result<(), crate::session::SessionError> {
+    let mut value = progress_value(request, state);
+    if state == ExecutionState::Failed
+        && let Some(code) = code
+    {
+        value["failure_code"] = json!(code);
+    }
+    value["type"] = json!(PROGRESS_TYPE);
+    value["device_id"] = json!(device);
+    agent.session_mut().append_event(value)
+}
+
+pub fn dispatch_prompt(
+    pool: &mut ProjectOwnerPool,
+    registry: &DeviceRegistry,
+    device: &AuthenticatedDevice,
+    request: &Envelope,
+    busy: bool,
+    submit: impl FnOnce(
+        Arc<Mutex<Agent>>,
+        String,
+        super::subtab::SubtabExecution,
+    ) -> Result<String, ErrorCode>,
+) -> Envelope {
+    let mut response =
+        super::host_adapter::HostAdapter::failure(request, ErrorCode::InvalidRequest);
+    let result = (|| {
+        if request.validate().is_err() || request.turn_id.is_some() || request.sequence.is_some() {
+            return Err(ErrorCode::InvalidRequest);
+        }
+        let Message::Request {
+            operation: Operation::Prompt,
+            arguments,
+        } = &request.payload
+        else {
+            return Err(ErrorCode::InvalidRequest);
+        };
+        let values = arguments.as_object().ok_or(ErrorCode::InvalidRequest)?;
+        let text = values
+            .get("text")
+            .and_then(Value::as_str)
+            .ok_or(ErrorCode::InvalidRequest)?;
+        if values.len() != 1
+            || text.trim().is_empty()
+            || text.len() > MAX_PROMPT_BYTES
+            || text.trim_start().starts_with('!')
+        {
+            return Err(ErrorCode::InvalidRequest);
+        }
+        let project = request
+            .project_id
+            .as_deref()
+            .ok_or(ErrorCode::InvalidRequest)?;
+        let request_id = request.id.as_deref().ok_or(ErrorCode::InvalidRequest)?;
+        let fingerprint = format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(request).map_err(|_| ErrorCode::InternalError)?)
+        );
+        registry
+            .with_authorized_projects(device, &[project], Operation::Prompt, |_| {
+                let bound = pool.prompt_binding(device.id(), request_id, &fingerprint)?;
+                let owner = pool.owner(project).ok_or(ErrorCode::InvalidRequest)?;
+                let mut agent = match owner.try_lock() {
+                    Ok(agent) => agent,
+                    Err(_) => return Ok((ExecutionState::UnknownOutcome, Value::Null, None)),
+                };
+                if request.session_id.as_deref() != Some(agent.session().session_id()) {
+                    return Err(ErrorCode::OwnerMismatch);
+                }
+                let receipts: Vec<_> = agent
+                    .session()
+                    .events()
+                    .iter()
+                    .filter(|event| event["type"] == RECEIPT_TYPE)
+                    .collect();
+                if let Some(event) = receipts.iter().rev().find(|event| {
+                    event["device_id"] == device.id() && event["request_id"] == request_id
+                }) {
+                    if event["fingerprint"] != fingerprint {
+                        return Err(ErrorCode::RequestIdConflict);
+                    }
+                    let state = match event["state"].as_str() {
+                        Some("accepted") => ExecutionState::Accepted,
+                        Some("failed") => ExecutionState::Failed,
+                        _ => ExecutionState::UnknownOutcome,
+                    };
+                    return Ok((
+                        state,
+                        event["result"].clone(),
+                        (state == ExecutionState::Failed).then_some(ErrorCode::Busy),
+                    ));
+                }
+                if receipts.len() >= MAX_RECEIPTS * 2 {
+                    return Err(ErrorCode::ResourceLimit);
+                }
+                // A checkpoint reservation without a journal admission is unresolved, never resubmitted.
+                if bound {
+                    return Ok((ExecutionState::UnknownOutcome, Value::Null, None));
+                }
+                validate_remote_file_references(text).map_err(|_|ErrorCode::InvalidRequest)?;
+                if request.required_owner.as_deref() != Some(pool.workspace_owner()) {
+                    return Err(ErrorCode::OwnerMismatch);
+                }
+                if request.expected_revision != Some(pool.workspace_revision()) {
+                    return Err(ErrorCode::RevisionConflict);
+                }
+                if busy
+                    || agent.phase() != crate::core::AgentPhase::Idle
+                    || !agent.pending_attachments().is_empty()
+                    || agent.input_port().has_pending()
+                    || agent.input_port().is_preparing()
+                {
+                    return Err(ErrorCode::Busy);
+                }
+                let execution = pool
+                    .subtab_execution(project)
+                    .map_err(|_| ErrorCode::InvalidRequest)?;
+                execution
+                    .validate()
+                    .map_err(|_| ErrorCode::InvalidRequest)?;
+                let event = |state: &str, result: Value| {
+                    json!({"type":RECEIPT_TYPE,"device_id":device.id(),
+                "request_id":request_id,"fingerprint":fingerprint,"state":state,"result":result,
+                "execution_subtab":{"id":execution.tab.id,"kind":execution.tab.kind,"root":execution.tab.root}})
+                };
+                // Bind across operations/projects before journal reservation or runner side effects.
+                if pool
+                    .bind_remote_prompt(device.id(), request, &fingerprint)
+                    .is_err()
+                {
+                    return Ok((ExecutionState::UnknownOutcome, Value::Null, None));
+                }
+                // Reserve before handing work to the runner. A crash here is unresolved, never auto-resubmitted.
+                if agent
+                    .session_mut()
+                    .append_event(event("reserved", Value::Null))
+                    .is_err()
+                {
+                    return Ok((ExecutionState::UnknownOutcome, Value::Null, None));
+                }
+                let submission = submit(Arc::clone(&owner), text.to_owned(), execution.clone());
+                let (state, result, code) = match submission {
+                    Ok(job_id) => (
+                        ExecutionState::Accepted,
+                        json!({"request_id":request_id,"job_id":job_id,
+                    "session_id":agent.session().session_id(),"project_id":project}),
+                        None,
+                    ),
+                    Err(code) => (ExecutionState::Failed, Value::Null, Some(code)),
+                };
+                let saved = agent.session_mut().append_event(event(
+                    if state == ExecutionState::Accepted {
+                        "accepted"
+                    } else {
+                        "failed"
+                    },
+                    result.clone(),
+                ));
+                if saved.is_err() {
+                    return Ok((ExecutionState::UnknownOutcome, Value::Null, None));
+                }
+                Ok((state, result, code))
+            })
+            .map_err(|error| error.remote_code())?
+    })();
+    match result {
+        Ok((state, result, code)) => {
+            response.execution_state = Some(state);
+            response.code = code;
+            response.session_id = request.session_id.clone();
+            response.channel = Channel::Control;
+            response.payload = Message::Response { result };
+        }
+        Err(code) => response.code = Some(code),
+    }
+    response
 }
 
 #[cfg(test)]
@@ -1096,196 +1288,4 @@ mod steer_tests {
             json!({"result":"page","inputs":[],"next_sequence":null})
         );
     }
-}
-
-pub fn persist_progress(
-    agent: &mut Agent,
-    request: &Envelope,
-    device: &str,
-    state: ExecutionState,
-) -> Result<(), crate::session::SessionError> {
-    persist_progress_with_code(agent, request, device, state, None)
-}
-pub fn persist_progress_with_code(
-    agent: &mut Agent,
-    request: &Envelope,
-    device: &str,
-    state: ExecutionState,
-    code: Option<ErrorCode>,
-) -> Result<(), crate::session::SessionError> {
-    let mut value = progress_value(request, state);
-    if state == ExecutionState::Failed
-        && let Some(code) = code
-    {
-        value["failure_code"] = json!(code);
-    }
-    value["type"] = json!(PROGRESS_TYPE);
-    value["device_id"] = json!(device);
-    agent.session_mut().append_event(value)
-}
-
-pub fn dispatch_prompt(
-    pool: &mut ProjectOwnerPool,
-    registry: &DeviceRegistry,
-    device: &AuthenticatedDevice,
-    request: &Envelope,
-    busy: bool,
-    submit: impl FnOnce(
-        Arc<Mutex<Agent>>,
-        String,
-        super::subtab::SubtabExecution,
-    ) -> Result<String, ErrorCode>,
-) -> Envelope {
-    let mut response =
-        super::host_adapter::HostAdapter::failure(request, ErrorCode::InvalidRequest);
-    let result = (|| {
-        if request.validate().is_err() || request.turn_id.is_some() || request.sequence.is_some() {
-            return Err(ErrorCode::InvalidRequest);
-        }
-        let Message::Request {
-            operation: Operation::Prompt,
-            arguments,
-        } = &request.payload
-        else {
-            return Err(ErrorCode::InvalidRequest);
-        };
-        let values = arguments.as_object().ok_or(ErrorCode::InvalidRequest)?;
-        let text = values
-            .get("text")
-            .and_then(Value::as_str)
-            .ok_or(ErrorCode::InvalidRequest)?;
-        if values.len() != 1
-            || text.trim().is_empty()
-            || text.len() > MAX_PROMPT_BYTES
-            || text.trim_start().starts_with('!')
-        {
-            return Err(ErrorCode::InvalidRequest);
-        }
-        let project = request
-            .project_id
-            .as_deref()
-            .ok_or(ErrorCode::InvalidRequest)?;
-        let request_id = request.id.as_deref().ok_or(ErrorCode::InvalidRequest)?;
-        let fingerprint = format!(
-            "{:x}",
-            Sha256::digest(serde_json::to_vec(request).map_err(|_| ErrorCode::InternalError)?)
-        );
-        registry
-            .with_authorized_projects(device, &[project], Operation::Prompt, |_| {
-                let bound = pool.prompt_binding(device.id(), request_id, &fingerprint)?;
-                let owner = pool.owner(project).ok_or(ErrorCode::InvalidRequest)?;
-                let mut agent = match owner.try_lock() {
-                    Ok(agent) => agent,
-                    Err(_) => return Ok((ExecutionState::UnknownOutcome, Value::Null, None)),
-                };
-                if request.session_id.as_deref() != Some(agent.session().session_id()) {
-                    return Err(ErrorCode::OwnerMismatch);
-                }
-                let receipts: Vec<_> = agent
-                    .session()
-                    .events()
-                    .iter()
-                    .filter(|event| event["type"] == RECEIPT_TYPE)
-                    .collect();
-                if let Some(event) = receipts.iter().rev().find(|event| {
-                    event["device_id"] == device.id() && event["request_id"] == request_id
-                }) {
-                    if event["fingerprint"] != fingerprint {
-                        return Err(ErrorCode::RequestIdConflict);
-                    }
-                    let state = match event["state"].as_str() {
-                        Some("accepted") => ExecutionState::Accepted,
-                        Some("failed") => ExecutionState::Failed,
-                        _ => ExecutionState::UnknownOutcome,
-                    };
-                    return Ok((
-                        state,
-                        event["result"].clone(),
-                        (state == ExecutionState::Failed).then_some(ErrorCode::Busy),
-                    ));
-                }
-                if receipts.len() >= MAX_RECEIPTS * 2 {
-                    return Err(ErrorCode::ResourceLimit);
-                }
-                // A checkpoint reservation without a journal admission is unresolved, never resubmitted.
-                if bound {
-                    return Ok((ExecutionState::UnknownOutcome, Value::Null, None));
-                }
-                validate_remote_file_references(text).map_err(|_|ErrorCode::InvalidRequest)?;
-                if request.required_owner.as_deref() != Some(pool.workspace_owner()) {
-                    return Err(ErrorCode::OwnerMismatch);
-                }
-                if request.expected_revision != Some(pool.workspace_revision()) {
-                    return Err(ErrorCode::RevisionConflict);
-                }
-                if busy
-                    || agent.phase() != crate::core::AgentPhase::Idle
-                    || !agent.pending_attachments().is_empty()
-                    || agent.input_port().has_pending()
-                    || agent.input_port().is_preparing()
-                {
-                    return Err(ErrorCode::Busy);
-                }
-                let execution = pool
-                    .subtab_execution(project)
-                    .map_err(|_| ErrorCode::InvalidRequest)?;
-                execution
-                    .validate()
-                    .map_err(|_| ErrorCode::InvalidRequest)?;
-                let event = |state: &str, result: Value| {
-                    json!({"type":RECEIPT_TYPE,"device_id":device.id(),
-                "request_id":request_id,"fingerprint":fingerprint,"state":state,"result":result,
-                "execution_subtab":{"id":execution.tab.id,"kind":execution.tab.kind,"root":execution.tab.root}})
-                };
-                // Bind across operations/projects before journal reservation or runner side effects.
-                if pool
-                    .bind_remote_prompt(device.id(), request, &fingerprint)
-                    .is_err()
-                {
-                    return Ok((ExecutionState::UnknownOutcome, Value::Null, None));
-                }
-                // Reserve before handing work to the runner. A crash here is unresolved, never auto-resubmitted.
-                if agent
-                    .session_mut()
-                    .append_event(event("reserved", Value::Null))
-                    .is_err()
-                {
-                    return Ok((ExecutionState::UnknownOutcome, Value::Null, None));
-                }
-                let submission = submit(Arc::clone(&owner), text.to_owned(), execution.clone());
-                let (state, result, code) = match submission {
-                    Ok(job_id) => (
-                        ExecutionState::Accepted,
-                        json!({"request_id":request_id,"job_id":job_id,
-                    "session_id":agent.session().session_id(),"project_id":project}),
-                        None,
-                    ),
-                    Err(code) => (ExecutionState::Failed, Value::Null, Some(code)),
-                };
-                let saved = agent.session_mut().append_event(event(
-                    if state == ExecutionState::Accepted {
-                        "accepted"
-                    } else {
-                        "failed"
-                    },
-                    result.clone(),
-                ));
-                if saved.is_err() {
-                    return Ok((ExecutionState::UnknownOutcome, Value::Null, None));
-                }
-                Ok((state, result, code))
-            })
-            .map_err(|error| error.remote_code())?
-    })();
-    match result {
-        Ok((state, result, code)) => {
-            response.execution_state = Some(state);
-            response.code = code;
-            response.session_id = request.session_id.clone();
-            response.channel = Channel::Control;
-            response.payload = Message::Response { result };
-        }
-        Err(code) => response.code = Some(code),
-    }
-    response
 }

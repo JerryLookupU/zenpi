@@ -357,10 +357,10 @@ impl DagStore {
                 }
             }
             "grandparent" => {
-                if let Some(parent) = node.parent.as_ref().and_then(|id| state.nodes.get(id)) {
-                    if let Some(grand) = &parent.parent {
-                        out.push(grand.clone());
-                    }
+                if let Some(parent) = node.parent.as_ref().and_then(|id| state.nodes.get(id))
+                    && let Some(grand) = &parent.parent
+                {
+                    out.push(grand.clone());
                 }
             }
             "sibling" | "siblings" => {
@@ -562,7 +562,6 @@ static SPAWNED: Mutex<Option<BTreeMap<String, SpawnedWorker>>> = Mutex::new(None
 struct SpawnedWorker {
     child: Child,
     sequence: u64,
-    log: PathBuf,
 }
 
 /// Spawn a headless worker for one new DAG node and keep its stdin open, so
@@ -607,14 +606,7 @@ pub fn spawn_worker(
     write_prompt(&mut child, node, 1, prompt)?;
     let mut guard = SPAWNED.lock().map_err(|_| "dag spawn registry poisoned")?;
     let registry = guard.get_or_insert_with(BTreeMap::new);
-    registry.insert(
-        node.to_owned(),
-        SpawnedWorker {
-            child,
-            sequence: 1,
-            log: log_path,
-        },
-    );
+    registry.insert(node.to_owned(), SpawnedWorker { child, sequence: 1 });
     Ok(u64::from(pid))
 }
 

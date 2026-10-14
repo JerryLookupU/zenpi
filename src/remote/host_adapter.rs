@@ -731,12 +731,11 @@ impl HostAdapter {
     /// Converts the private mailbox reply to bounded event/bulk frames followed by a correlated terminal response.
     pub fn wire_frames(mut response: Envelope) -> Result<Vec<Envelope>, serde_json::Error> {
         let mut frames = Vec::new();
-        if let Message::Response { result } = &mut response.payload {
-            if let Some(object) = result.as_object_mut() {
-                if let Some(value) = object.remove("wire_frames") {
-                    frames = serde_json::from_value(value)?;
-                }
-            }
+        if let Message::Response { result } = &mut response.payload
+            && let Some(object) = result.as_object_mut()
+            && let Some(value) = object.remove("wire_frames")
+        {
+            frames = serde_json::from_value(value)?;
         }
         frames.push(response);
         Ok(frames)

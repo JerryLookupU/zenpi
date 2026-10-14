@@ -2067,8 +2067,6 @@ const WORKER_STDIO_EXCERPT_BYTES: usize = 4 * 1024;
 struct WorkerStdioRow {
     pid: u32,
     phase: crate::resources::FootprintPhase,
-    cpu_percent: f64,
-    resident_bytes: u64,
     session: String,
     input: Option<String>,
     output: Option<String>,
@@ -3606,13 +3604,12 @@ impl TuiState {
             return false;
         }
         let removed = tabs[index].clone();
-        if removed.kind == SubTabKind::Worktree {
-            if let Err(error) =
+        if removed.kind == SubTabKind::Worktree
+            && let Err(error) =
                 crate::project_workspace::remove_worktree(&cwd, std::path::Path::new(&removed.root))
-            {
-                self.set_status(format!("worktree close refused: {error}"));
-                return false;
-            }
+        {
+            self.set_status(format!("worktree close refused: {error}"));
+            return false;
         }
         let tabs = self
             .project_subtabs
@@ -11381,8 +11378,6 @@ impl TuiState {
             rows.push(WorkerStdioRow {
                 pid: row.pid,
                 phase: row.phase,
-                cpu_percent: row.cpu_percent,
-                resident_bytes: row.resident_bytes,
                 session: session.to_owned(),
                 input,
                 output,
@@ -11393,7 +11388,7 @@ impl TuiState {
 
     /// True on the bright half of the busy-worker blink cycle.
     pub fn resources_zoom_blink_on(&self) -> bool {
-        self.spinner_tick % 2 == 0
+        self.spinner_tick.is_multiple_of(2)
     }
 
     /// True while the matrix shows at least one busy worker, so the render
@@ -11502,7 +11497,7 @@ impl TuiState {
         }
         let summary = self.resource_zoom_summary();
         let project = self.active_project().to_owned();
-        let blink_on = self.spinner_tick % 2 == 0;
+        let blink_on = self.spinner_tick.is_multiple_of(2);
         let Some(zoom) = self.resources_zoom.as_mut() else {
             return;
         };
@@ -15078,14 +15073,14 @@ impl ProjectRuntimeHost {
                 }
             }
         }
-        if let Some(project) = subtab_project.as_deref() {
-            if self.pool.subtab_state(project).ok() != before_subtabs {
-                if let Err(error) = self.restore_subtab_view(state, project) {
-                    state.set_status(error);
-                }
-                state.project_checkpoint_dirty = true;
-                state.dirty = true;
+        if let Some(project) = subtab_project.as_deref()
+            && self.pool.subtab_state(project).ok() != before_subtabs
+        {
+            if let Err(error) = self.restore_subtab_view(state, project) {
+                state.set_status(error);
             }
+            state.project_checkpoint_dirty = true;
+            state.dirty = true;
         }
         if self.pool.workspace() != &before {
             let workspace = self.pool.workspace().clone();
@@ -16062,11 +16057,10 @@ impl TuiInputControls {
         let original = state.bind_submitted_input(original);
         if let crate::protocol::InputQueueAction::Enqueue { text, .. }
         | crate::protocol::InputQueueAction::Edit { text, .. } = &action
+            && let Err(error) = crate::slash_actions::plain_queue_input(text)
         {
-            if let Err(error) = crate::slash_actions::plain_queue_input(text) {
-                Self::show_result(state, Err(error), original);
-                return;
-            }
+            Self::show_result(state, Err(error), original);
+            return;
         }
         let project = state.active_project().to_owned();
         let id = self.next_id();
@@ -18296,7 +18290,7 @@ pub fn run_async_with_remote(
     let mut active_job_owner: Option<Arc<Mutex<crate::core::Agent>>> = None;
     let mut active_job_is_arch = false;
     let mut active_remote_prompt: Option<(crate::remote::protocol::Envelope, String)> = None;
-    let mut cancel_admissions = crate::remote::command::CancelAdmissions::default();
+    let mut cancel_admissions = crate::remote::command::CancelAdmissions;
     let mut steer_admissions = crate::remote::command::SteerAdmissions::default();
     let mut pending_inputs = TuiPendingInputs::default();
     let mut input_controls = TuiInputControls::default();
@@ -18326,10 +18320,10 @@ pub fn run_async_with_remote(
                 break;
             }
             project_host.poll_remote_workers();
-            if state.project_checkpoint_dirty() {
-                if let Err(error) = project_host.sync_subtab_view(&mut state) {
-                    state.set_status(format!("subtab checkpoint rejected: {error}"));
-                }
+            if state.project_checkpoint_dirty()
+                && let Err(error) = project_host.sync_subtab_view(&mut state)
+            {
+                state.set_status(format!("subtab checkpoint rejected: {error}"));
             }
             if let Some(mailbox) = remote_mailbox.as_ref() {
                 steer_admissions.poll(&mut project_host.pool);
@@ -18369,15 +18363,13 @@ pub fn run_async_with_remote(
                             operation: crate::remote::protocol::Operation::WorkspaceList,
                             ..
                         }
+                    ) && let Some(response) = project_host.worktrees.status_page(
+                        &project_host.pool,
+                        registry,
+                        device,
+                        &request,
                     ) {
-                        if let Some(response) = project_host.worktrees.status_page(
-                            &project_host.pool,
-                            registry,
-                            device,
-                            &request,
-                        ) {
-                            return response;
-                        }
+                        return response;
                     }
                     if matches!(
                         &request.payload,
@@ -18691,21 +18683,20 @@ pub fn run_async_with_remote(
                     render_result = host.render(frame);
                 })?;
                 render_result?;
-                if event::poll(Duration::from_millis(20))? {
-                    if let Event::Key(key) = event::read()? {
-                        if key.kind == KeyEventKind::Press {
-                            match key.code {
-                                KeyCode::Esc => {
-                                    host.cancel_invite()?;
-                                    pairing_visible = false;
-                                    scheduler.request();
-                                }
-                                KeyCode::Char('r') => host.refresh(Duration::from_secs(
-                                    remote.as_ref().unwrap().duration_seconds,
-                                ))?,
-                                _ => {}
-                            }
+                if event::poll(Duration::from_millis(20))?
+                    && let Event::Key(key) = event::read()?
+                    && key.kind == KeyEventKind::Press
+                {
+                    match key.code {
+                        KeyCode::Esc => {
+                            host.cancel_invite()?;
+                            pairing_visible = false;
+                            scheduler.request();
                         }
+                        KeyCode::Char('r') => host.refresh(Duration::from_secs(
+                            remote.as_ref().unwrap().duration_seconds,
+                        ))?,
+                        _ => {}
                     }
                 }
                 continue;
@@ -20530,10 +20521,10 @@ pub fn run_async_with_remote(
     drop(remote_mailbox);
     editor.shutdown(&mut state);
     state.finish_ordinary_paste();
-    if state.project_checkpoint_dirty() {
-        if let Err(error) = project_host.sync_subtab_view(&mut state) {
-            state.set_status(format!("subtab checkpoint rejected: {error}"));
-        }
+    if state.project_checkpoint_dirty()
+        && let Err(error) = project_host.sync_subtab_view(&mut state)
+    {
+        state.set_status(format!("subtab checkpoint rejected: {error}"));
     }
     // Save any final layout mutation when the user quits before the next
     // event-loop checkpoint. The operation is bounded and atomic; a failure

@@ -490,19 +490,17 @@ impl Envelope {
                 }
                 if let Message::Resume { limit, .. } | Message::Subscribe { limit, .. } =
                     &self.payload
+                    && (*limit == 0 || *limit > MAX_REPLAY_EVENTS)
                 {
-                    if *limit == 0 || *limit > MAX_REPLAY_EVENTS {
-                        return Err(ProtocolError::Limit("replay page"));
-                    }
+                    return Err(ProtocolError::Limit("replay page"));
                 }
-                if let Message::Subscribe { duration_ms, .. } = &self.payload {
-                    if !(1000..=5000).contains(duration_ms)
+                if let Message::Subscribe { duration_ms, .. } = &self.payload
+                    && (!(1000..=5000).contains(duration_ms)
                         || self.id.is_none()
                         || self.project_id.is_none()
-                        || self.turn_id.is_some()
-                    {
-                        return Err(ProtocolError::Invalid("invalid bounded subscription"));
-                    }
+                        || self.turn_id.is_some())
+                {
+                    return Err(ProtocolError::Invalid("invalid bounded subscription"));
                 }
                 if let Message::Snapshot { state, .. } = &self.payload {
                     bounded_value(state, 0, &mut 0)?;

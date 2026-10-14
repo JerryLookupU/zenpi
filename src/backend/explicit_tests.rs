@@ -129,6 +129,8 @@ fn respond(writer: &mut impl Write, reply: &Reply) -> std::io::Result<()> {
     writer.flush()
 }
 
+type BeforeReply = Arc<Mutex<Box<dyn Fn(usize) + Send>>>;
+
 struct Peer {
     address: String,
     tls: bool,
@@ -136,7 +138,7 @@ struct Peer {
     accepted: Arc<AtomicUsize>,
     captured: Arc<Mutex<Vec<Captured>>>,
     errors: Arc<Mutex<Vec<String>>>,
-    before_reply: Arc<Mutex<Box<dyn Fn(usize) + Send>>>,
+    before_reply: BeforeReply,
     stop: Arc<AtomicBool>,
     join: Option<thread::JoinHandle<()>>,
 }
@@ -149,8 +151,7 @@ impl Peer {
         let accepted = Arc::new(AtomicUsize::new(0));
         let captured = Arc::new(Mutex::new(Vec::new()));
         let errors = Arc::new(Mutex::new(Vec::new()));
-        let before_reply: Arc<Mutex<Box<dyn Fn(usize) + Send>>> =
-            Arc::new(Mutex::new(Box::new(|_| {})));
+        let before_reply: BeforeReply = Arc::new(Mutex::new(Box::new(|_| {})));
         let stop = Arc::new(AtomicBool::new(false));
         let (count, requests, failures, stopped) = (
             accepted.clone(),

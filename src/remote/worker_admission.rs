@@ -15,6 +15,9 @@ use sha2::{Digest, Sha256};
 
 const RECEIPT: &str = "remote_worker_admission_v1";
 
+/// (project, subtab, owner, revision) key plus the requested runner slot.
+type RunnerSlot<'a> = ((&'a str, &'a str, &'a str, u64), u16);
+
 pub fn dispatch(
     pool: &mut ProjectOwnerPool,
     registry: &DeviceRegistry,
@@ -96,7 +99,7 @@ fn dispatch_observed(
     registry: &DeviceRegistry,
     device: &AuthenticatedDevice,
     request: &Envelope,
-    runner: Option<((&str, &str, &str, u64), u16)>,
+    runner: Option<RunnerSlot<'_>>,
     may_submit: bool,
     submit: impl FnOnce(&mut ProjectOwnerPool, String) -> Result<crate::runtime::JobId, ErrorCode>,
 ) -> Envelope {
