@@ -385,12 +385,11 @@ fn send_http_with_control(
     let deadline = deadline.min(Instant::now() + Duration::from_secs(15));
     let config = ureq::Agent::config_builder()
         .timeout_global(Some(deadline.saturating_duration_since(Instant::now())))
-        .timeout_recv_body(Some(Duration::from_millis(100)))
         .max_redirects(0)
         .max_redirects_will_error(false)
         .http_status_as_error(false)
         .build();
-    let (client, cancel) = transport::client(config);
+    let client = transport::client(config);
     let user_agent = format!(
         "zenpi/{} ({}; {})",
         env!("CARGO_PKG_VERSION"),
@@ -422,8 +421,7 @@ fn send_http_with_control(
             AuthError::Transport
         }
     };
-    let mut response =
-        transport::send_bytes(builder, body, &cancelled, cancel).map_err(&map_error)?;
+    let mut response = transport::send_bytes(builder, body, &cancelled).map_err(&map_error)?;
     let status = response.status().as_u16();
     let body =
         transport::read_bytes(response.body_mut(), MAX_RESPONSE, &cancelled).map_err(map_error)?;

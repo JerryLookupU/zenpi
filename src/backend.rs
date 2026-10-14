@@ -1185,7 +1185,7 @@ impl OpenAiCompatibleBackend {
             .http_status_as_error(false)
             .build();
         Ok(Self {
-            client: ureq::Agent::new_with_config(config),
+            client: transport::client(config),
             endpoint,
             api_key,
             secret_handle: None,
@@ -1649,8 +1649,8 @@ impl OpenAiCompatibleBackend {
         if request_timeout.is_zero() {
             return Err(BackendError::DeadlineExceeded);
         }
-        let (request_client, cancellation) = transport::client(self.client.config().clone());
-        let mut request_builder = request_client
+        let mut request_builder = self
+            .client
             .post(&endpoint)
             .header("content-type", "application/json")
             .header(
@@ -1751,14 +1751,11 @@ impl OpenAiCompatibleBackend {
                 .config()
                 .max_redirects(0)
                 .timeout_global(Some(request_timeout))
-                // Bound each receive slice to the cancellation poll interval:
-                // the body readers treat a RecvBody timeout as a poll and resume
-                // the same response, so host cancellation is observed within this
-                // deadline instead of waiting for the provider to finish.
-                .timeout_recv_body(Some(Duration::from_millis(100).min(request_timeout)))
+                // Body waits observe cancellation in the transport's own poll
+                // (`transport::with_cancellation`), not a receive timeout.
                 .build();
         }
-        let response = transport::send_json(request_builder, &body, &cancelled, cancellation);
+        let response = transport::send_json(request_builder, &body, &cancelled);
         control.check_cancelled()?;
         let mut response = response?;
         let status = response.status().as_u16();
@@ -1768,7 +1765,9 @@ impl OpenAiCompatibleBackend {
                 .get("retry-after")
                 .and_then(|value| value.to_str().ok())
                 .and_then(parse_retry_after);
-            let body = protocols::read_error_body(response.body_mut(), &cancelled);
+            let body = transport::with_cancellation(&cancelled, || {
+                protocols::read_error_body(response.body_mut(), &cancelled)
+            });
             control.check_cancelled()?;
             return Err(BackendError::http_status(status, retry_after_ms, body));
         }
@@ -1787,7 +1786,7 @@ impl OpenAiCompatibleBackend {
             control.check_cancelled()?;
             sink(event)
         };
-        let completion = match &route {
+        let completion = transport::with_cancellation(&cancelled, || match &route {
             Some(route) => protocols::read_response_for_route(
                 response.body_mut(),
                 sse,
@@ -1803,7 +1802,7 @@ impl OpenAiCompatibleBackend {
                 &cancelled,
                 &mut checked_sink,
             ),
-        };
+        });
         control.check_cancelled()?;
         completion
     }

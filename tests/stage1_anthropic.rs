@@ -486,7 +486,12 @@ fn cancellation_during_slow_body_drops_one_connection_without_retry() {
         stream
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
-        assert_eq!(stream.read(&mut b).unwrap(), 0);
+        // Closed either way: FIN (0) or RST, never left open.
+        match stream.read(&mut b) {
+            Ok(0) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+            other => panic!("connection survived cancellation: {other:?}"),
+        }
     });
     let cancelled = Arc::new(AtomicBool::new(false));
     let flag = cancelled.clone();

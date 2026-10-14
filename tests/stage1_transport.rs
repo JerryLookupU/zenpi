@@ -311,3 +311,38 @@ fn cancelled_send_owner_does_not_poison_next_request_on_same_backend() {
     );
     peer.join().unwrap();
 }
+
+#[test]
+fn consecutive_requests_to_one_host_reuse_the_connection() {
+    // ZE-301: one agent per backend keeps the connection alive.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let b = backend(
+        format!("http://{}", listener.local_addr().unwrap()),
+        OpenAiWireApi::ChatCompletions,
+    );
+    let peer = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        for _ in 0..2 {
+            read_request(&mut stream);
+            let body = json!({"choices":[{"message":{"content":"pooled"},"finish_reason":"stop"}]})
+                .to_string();
+            write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",body.len()).unwrap();
+        }
+        listener.set_nonblocking(true).unwrap();
+        assert!(
+            matches!(listener.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
+            "second request opened a new connection"
+        );
+    });
+    for _ in 0..2 {
+        let completion = b
+            .complete_with_control(
+                CompletionRequest::new("u", &[Turn::new("u", TurnRole::User, "go")], None, &[]),
+                &|| false,
+                &mut |_| Ok(()),
+            )
+            .unwrap();
+        assert_eq!(completion.content, "pooled");
+    }
+    peer.join().unwrap();
+}
