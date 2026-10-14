@@ -1,5 +1,6 @@
 package zenpi
 
+import zenpi.ui.PairingScreen
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import kotlinx.coroutines.runBlocking

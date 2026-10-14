@@ -1,5 +1,6 @@
 package zenpi
 
+import zenpi.ui.PairingScreen
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.*
@@ -38,8 +39,9 @@ class SessionScopeScreenTest {
         compose.runOnIdle { state.value = state.value.copy(projection = scoped.copy(eventSequence = "2")) }
         compose.onNode(hasSetTextAction()).assertTextContains("old-root.txt", substring = true)
         compose.runOnIdle { state.value = state.value.copy(projection = scoped.copy(subtabs = scoped.subtabs?.copy(revision = "2"))) }
-        compose.onNodeWithContentDescription("Send message").assertIsNotEnabled()
-        compose.onNodeWithText("Message").performTextInput("new message draft")
+        // ZE-518: drafts are keyed by host, session and tab ids only; a remote revision keeps them.
+        compose.onNode(hasSetTextAction()).assertTextContains("old-root.txt", substring = true)
+        compose.onNodeWithText("Message").performTextReplacement("new message draft")
         val running = scoped.copy(projects = listOf(project.copy(promptStatuses = listOf(
             RemotePromptStatus("first", "project", "old", "running")))))
         compose.runOnIdle { state.value = state.value.copy(projection = running) }
@@ -52,7 +54,9 @@ class SessionScopeScreenTest {
         compose.onNodeWithContentDescription("Send steering input").assertIsNotEnabled()
         compose.onNodeWithText("Steer").performTextInput("second task steering")
         compose.runOnIdle { state.value = state.value.copy(projection = scoped) }
-        compose.onNodeWithContentDescription("Send message").assertIsNotEnabled()
+        // The run finished: its steering text is dropped and the unsent message draft is back.
+        compose.onNode(hasSetTextAction()).assertTextContains("new message draft")
+        compose.onNode(hasSetTextAction() and hasText("second task steering", substring = true)).assertDoesNotExist()
         compose.runOnIdle { assertEquals(emptyList<String>(), sent) }
     }
 

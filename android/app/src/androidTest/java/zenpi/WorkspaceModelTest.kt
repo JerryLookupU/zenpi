@@ -1,5 +1,6 @@
 package zenpi
 
+import zenpi.ui.PairingScreen
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
