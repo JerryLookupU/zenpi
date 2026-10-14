@@ -1305,39 +1305,31 @@ impl TuiState {
         ))
     }
     pub fn retire_approval(&mut self, id: &str) {
-        let project = self.active_project().to_owned();
-        if let Some(view) = self.approval_views.get_mut(&project) {
-            let previous = view.requests.len();
-            view.requests.retain(|r| r.request_id != id);
-            if view.requests.len() == previous {
-                return;
-            }
-            view.index = view.index.min(view.requests.len().saturating_sub(1));
-            view.allow = false;
-            view.remember = false;
-            view.scroll = 0;
-            view.stage = ApprovalStage::Select;
-            view.message.clear();
-            if view.requests.is_empty() {
-                view.focused = false;
-            }
-            self.dirty = true;
-            // A real coordinator retirement also retires its canonical mirror.
-            self.transcript_ux
-                .canonical_approvals
-                .retain(|pending| pending != id);
-            self.sync_activity_timer();
-        }
+        self.retire_approvals_where(|pending| pending.request_id == id);
     }
 
     fn retire_approval_request(&mut self, request: &crate::approval::ApprovalRequest) {
-        let project = self.active_project().to_owned();
-        if let Some(view) = self.approval_views.get_mut(&project) {
+        self.retire_approvals_where(|pending| Self::same_approval_request(pending, request));
+    }
+
+    /// ZE-251: retire matching requests in EVERY project's view, not only the
+    /// active tab, so a background tab never keeps a dead modal.
+    fn retire_approvals_where(
+        &mut self,
+        matches: impl Fn(&crate::approval::ApprovalRequest) -> bool,
+    ) {
+        let mut retired = Vec::new();
+        for view in self.approval_views.values_mut() {
             let previous = view.requests.len();
-            view.requests
-                .retain(|pending| !Self::same_approval_request(pending, request));
+            view.requests.retain(|pending| {
+                let hit = matches(pending);
+                if hit {
+                    retired.push(pending.request_id.clone());
+                }
+                !hit
+            });
             if view.requests.len() == previous {
-                return;
+                continue;
             }
             view.index = view.index.min(view.requests.len().saturating_sub(1));
             view.allow = false;
@@ -1348,12 +1340,23 @@ impl TuiState {
             if view.requests.is_empty() {
                 view.focused = false;
             }
-            self.dirty = true;
-            self.transcript_ux
-                .canonical_approvals
-                .retain(|pending| pending != &request.request_id);
-            self.sync_activity_timer();
         }
+        if retired.is_empty() {
+            return;
+        }
+        self.dirty = true;
+        // A real coordinator retirement also retires its canonical mirror, in
+        // the active tab and in every saved background tab.
+        self.transcript_ux
+            .canonical_approvals
+            .retain(|pending| !retired.contains(pending));
+        for draft in self.project_drafts.values_mut() {
+            draft
+                .ux
+                .canonical_approvals
+                .retain(|pending| !retired.contains(pending));
+        }
+        self.sync_activity_timer();
     }
 
     fn sync_activity_timer(&mut self) {
@@ -3393,6 +3396,8 @@ impl TuiState {
         self.project_metadata
             .entry(self.project_name.clone())
             .or_default();
+        // A wait may have been retired while this tab was in the background.
+        self.sync_activity_timer();
         self.dirty = true;
         self.project_checkpoint_dirty = true;
         true
@@ -19055,7 +19060,7 @@ fn run_tui_loop(
                 }
             }
             approvals = owner_controls(&project_host.pool);
-            if !approvals.is_empty() {
+            if !approvals.is_empty() || !pending_approvals.is_empty() {
                 // A request is stale only when no live owner still holds it:
                 // the owner that raised it need not be the one most recently
                 // submitted to, or even the active tab.
@@ -20473,19 +20478,27 @@ fn run_tui_loop(
                         pending_inputs.cancel(&mut state);
                         if let Some(id) = active_job {
                             let cancel_result = runner.try_cancel(id);
-                            if !matches!(cancel_result, Err(crate::runtime::SubmitError::QueueFull))
+                            if matches!(cancel_result, Err(crate::runtime::SubmitError::QueueFull))
                             {
-                                // The cancel command is admitted (or the
-                                // worker is already closed), so no approval
-                                // from this turn can be answered safely.
-                                for control in approvals.values() {
-                                    if let Some(approval) = control.approval.as_ref() {
-                                        approval.emergency_cancel();
-                                    }
-                                }
-                                pending_approvals.clear();
-                                state.clear_activity_approvals();
+                                state.set_status(
+                                    "Interrupt not delivered (runtime busy); press again",
+                                );
+                                continue 'outer;
                             }
+                            // The cancel command is admitted (or the worker is
+                            // already closed), so no approval from this turn
+                            // can be answered safely. ZE-251: only the running
+                            // job's owner is cancelled; other projects keep
+                            // their pending approvals.
+                            for control in approvals.values() {
+                                if Some(control.project.as_str()) != active_job_project.as_deref() {
+                                    continue;
+                                }
+                                if let Some(approval) = control.approval.as_ref() {
+                                    approval.emergency_cancel();
+                                }
+                            }
+                            state.clear_activity_approvals();
                             state.set_status("Interrupt requested");
                         } else {
                             state.set_status("Ready");
@@ -22576,13 +22589,15 @@ mod tests {
         s.begin_stream_for_job(2);
         s.set_busy(true);
         let second_started = s.transcript_ux.started;
+        // ZE-251: retiring from another tab clears the owning project's wait.
         s.retire_approval("one");
         assert_eq!(s.transcript_ux.started, second_started);
         s.select_project_tab(0);
         assert_eq!(s.transcript_ux.elapsed, first_elapsed);
-        assert!(s.transcript_ux.started.is_none());
-        s.retire_approval("one");
-        assert!(s.transcript_ux.started.is_some());
+        assert!(
+            s.transcript_ux.started.is_some(),
+            "no wait is left, so the running interval resumes"
+        );
         let first_started = s.transcript_ux.started;
         s.select_project_tab(1);
         assert_eq!(

@@ -562,3 +562,19 @@ fn approval_view_shows_the_current_stage_and_its_keys() {
     );
     assert!(reject.contains("Enter deny · Esc back"), "{reject}");
 }
+
+#[test]
+fn retiring_from_another_tab_clears_the_owning_projects_modal() {
+    // ZE-251: the request lives in tab 0; it is retired while tab 1 is active.
+    let mut s = TuiState::default();
+    s.present_approval(request("bg"));
+    s.open_project_tab("other");
+    assert_eq!(s.approval_count(), 0);
+    s.retire_approval("bg");
+    s.select_project_tab(0);
+    assert_eq!(s.approval_count(), 0, "background modal must not survive");
+    assert!(!matches!(
+        plain(&mut s, KeyCode::Enter),
+        TuiAction::RespondApproval { .. }
+    ));
+}
