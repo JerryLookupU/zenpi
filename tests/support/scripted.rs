@@ -16,7 +16,10 @@ use std::{
     time::{Duration, Instant},
 };
 use zenpi::{
-    backend::{Backend, BackendError, Completion, CompletionRequest, OpenAiWireApi, ProviderEvent},
+    backend::{
+        Backend, BackendError, Completion, CompletionRequest, OpenAiWireApi, ProviderEvent,
+        StopReason,
+    },
     core::TurnRole,
     tools::ToolCall,
 };
@@ -26,6 +29,9 @@ use zenpi::{
 pub enum Reply {
     Text(String),
     Call(ToolCall),
+    /// A tool call in a turn the output token limit cut short
+    /// (`StopReason::Length`; finish_reason=length, max_tokens, incomplete).
+    TruncatedCall(ToolCall),
     /// Transport failure in-process; HTTP 400 on the wire.
     Fail(String),
     /// Block until the caller cancels (in-process only).
@@ -38,6 +44,14 @@ pub fn text(value: &str) -> Reply {
 
 pub fn call(id: &str, name: &str, arguments: Value) -> Reply {
     Reply::Call(ToolCall {
+        id: id.into(),
+        name: name.into(),
+        arguments,
+    })
+}
+
+pub fn truncated_call(id: &str, name: &str, arguments: Value) -> Reply {
+    Reply::TruncatedCall(ToolCall {
         id: id.into(),
         name: name.into(),
         arguments,
@@ -134,6 +148,15 @@ impl Backend for ScriptedBackend {
                 sink(ProviderEvent::ToolCallDone { call: call.clone() })?;
                 Completion {
                     tool_calls: vec![call],
+                    stop_reason: StopReason::ToolUse,
+                    ..Completion::default()
+                }
+            }
+            Reply::TruncatedCall(call) => {
+                sink(ProviderEvent::ToolCallDone { call: call.clone() })?;
+                Completion {
+                    tool_calls: vec![call],
+                    stop_reason: StopReason::Length,
                     ..Completion::default()
                 }
             }
@@ -312,9 +335,10 @@ fn frames(events: &[Value], named: bool) -> String {
 pub fn sse(wire: OpenAiWireApi, model: &str, reply: &Reply) -> String {
     let (text, call) = match reply {
         Reply::Text(text) => (Some(text.as_str()), None),
-        Reply::Call(call) => (None, Some(call)),
+        Reply::Call(call) | Reply::TruncatedCall(call) => (None, Some(call)),
         _ => unreachable!("only text and calls are streamed"),
     };
+    let truncated = matches!(reply, Reply::TruncatedCall(_));
     let args = call.map(|c| c.arguments.to_string());
     match wire {
         OpenAiWireApi::ChatCompletions => {
@@ -325,7 +349,11 @@ pub fn sse(wire: OpenAiWireApi, model: &str, reply: &Reply) -> String {
                 }
                 None => json!({"content":text}),
             };
-            let finish = if call.is_some() { "tool_calls" } else { "stop" };
+            let finish = match (call, truncated) {
+                (_, true) => "length",
+                (Some(_), false) => "tool_calls",
+                (None, false) => "stop",
+            };
             let usage = json!({"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}});
             frames(
                 &[
@@ -343,7 +371,11 @@ pub fn sse(wire: OpenAiWireApi, model: &str, reply: &Reply) -> String {
                 Some(c) => events.push(json!({"type":"response.output_item.done","item":{"type":"function_call","status":"completed","call_id":c.id,"name":c.name,"arguments":args}})),
                 None => events.push(json!({"type":"response.output_text.delta","delta":text})),
             }
-            events.push(json!({"type":"response.completed","response":{"id":"resp-1","model":model,"status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}));
+            events.push(if truncated {
+                json!({"type":"response.incomplete","response":{"id":"resp-1","model":model,"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}})
+            } else {
+                json!({"type":"response.completed","response":{"id":"resp-1","model":model,"status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}})
+            });
             frames(&events, true) + "data: [DONE]\n\n"
         }
         OpenAiWireApi::AnthropicMessages => {
@@ -351,10 +383,10 @@ pub fn sse(wire: OpenAiWireApi, model: &str, reply: &Reply) -> String {
                 Some(c) => json!({"type":"tool_use","id":c.id,"name":c.name,"input":c.arguments}),
                 None => json!({"type":"text","text":text}),
             };
-            let stop = if call.is_some() {
-                "tool_use"
-            } else {
-                "end_turn"
+            let stop = match (call, truncated) {
+                (_, true) => "max_tokens",
+                (Some(_), false) => "tool_use",
+                (None, false) => "end_turn",
             };
             frames(
                 &[

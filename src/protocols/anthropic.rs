@@ -3,7 +3,7 @@
 use crate::{
     backend::{
         BackendError, Completion, CompletionRequest, MAX_RESPONSE_BYTES, ProviderCapabilities,
-        ProviderEvent, Usage,
+        ProviderEvent, StopReason, Usage,
     },
     core::{Turn, TurnRole},
     tools::ToolCall,
@@ -511,6 +511,8 @@ struct Block {
     value: Value,
     partial: String,
     closed: bool,
+    /// Tool input JSON cut short; only valid under a length stop reason.
+    truncated: bool,
 }
 #[derive(Default)]
 struct Fold {
@@ -665,8 +667,14 @@ impl Fold {
                     .ok_or_else(|| invalid("event for missing/closed Anthropic block"))?;
                 if kind == "content_block_stop" {
                     if !b.partial.is_empty() {
-                        b.value["input"] = serde_json::from_str(&b.partial)
-                            .map_err(|_| invalid("malformed Anthropic tool input JSON"))?;
+                        match serde_json::from_str::<Value>(&b.partial) {
+                            Ok(input) => b.value["input"] = input,
+                            Err(_) => {
+                                // Rejected at finish unless max_tokens cut it.
+                                b.value["input"] = json!({});
+                                b.truncated = true;
+                            }
+                        }
                     }
                     validate_blocks(std::slice::from_ref(&b.value), self.deepseek)?;
                     b.closed = true;
@@ -722,7 +730,12 @@ impl Fold {
                         .ok_or_else(|| invalid("invalid Anthropic stop reason"))?;
                     if !matches!(
                         reason,
-                        "end_turn" | "tool_use" | "stop_sequence" | "refusal"
+                        "end_turn"
+                            | "tool_use"
+                            | "stop_sequence"
+                            | "refusal"
+                            | "max_tokens"
+                            | "model_context_window_exceeded"
                     ) {
                         return Err(invalid(format!(
                             "incomplete/unsupported Anthropic stop reason {reason}"
@@ -753,6 +766,7 @@ impl Fold {
         if !self.done {
             return Err(invalid("Anthropic stream missing message_stop"));
         }
+        let cut = self.blocks.values().any(|b| b.truncated);
         let mut blocks = self
             .blocks
             .into_values()
@@ -763,7 +777,11 @@ impl Fold {
             .stop
             .as_deref()
             .ok_or_else(|| invalid("missing Anthropic stop reason"))?;
-        if (stop == "tool_use") == tool_calls.is_empty() {
+        let truncated = matches!(stop, "max_tokens" | "model_context_window_exceeded");
+        if cut && !truncated {
+            return Err(invalid("malformed Anthropic tool input JSON"));
+        }
+        if !truncated && (stop == "tool_use") == tool_calls.is_empty() {
             return Err(invalid("Anthropic stop reason does not match tool calls"));
         }
         if (!caps.tools && !tool_calls.is_empty())
@@ -807,7 +825,7 @@ impl Fold {
         if self.deepseek {
             native_history["requested_model"] = json!(self.requested_model);
         }
-        let completion = Completion {
+        let mut completion = Completion {
             content,
             tool_calls,
             usage,
@@ -818,7 +836,9 @@ impl Fold {
                 native_history,
                 json!({"type":"anthropic_stop_reason","stop_reason":stop}),
             ],
+            stop_reason: StopReason::Stop,
         };
+        completion.stop_reason = super::stop_reason(truncated, &completion);
         if !completion.content.is_empty() {
             sink(ProviderEvent::TextDone {
                 text: completion.content.clone(),

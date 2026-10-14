@@ -334,7 +334,9 @@ fn streamed_parts_signatures_empty_text_and_parallel_calls_stay_ordered() {
 fn malformed_finish_signature_usage_and_candidate_never_publish_calls() {
     let base = answer(signed(), "STOP");
     let mut cases = vec![];
-    for stop in ["MAX_TOKENS", "SAFETY", "MALFORMED_FUNCTION_CALL", "OTHER"] {
+    // MAX_TOKENS is a length stop that keeps its content (ZE-221,
+    // tests/provider_replay.rs); the core never dispatches its calls.
+    for stop in ["SAFETY", "MALFORMED_FUNCTION_CALL", "OTHER"] {
         let mut v = base.clone();
         v["candidates"][0]["finishReason"] = json!(stop);
         cases.push(v);

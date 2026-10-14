@@ -45,6 +45,7 @@ impl Backend for ApprovalBackend {
                 response_id: None,
                 refusal: None,
                 annotations: Vec::new(),
+                ..Completion::default()
             }),
             _ => Ok(Completion::text("done")),
         }

@@ -473,6 +473,19 @@ pub struct Usage {
     pub total_tokens: u64,
 }
 
+/// Why the provider ended a completion.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StopReason {
+    #[default]
+    Stop,
+    /// The output token limit cut the answer. Content is kept; tool calls in
+    /// such a completion may be partial and are never dispatched.
+    Length,
+    ToolUse,
+    Refusal,
+}
+
 /// Provider-independent completion result.
 #[derive(Debug, Default, PartialEq)]
 pub struct Completion {
@@ -483,6 +496,7 @@ pub struct Completion {
     pub response_id: Option<String>,
     pub refusal: Option<String>,
     pub annotations: Vec<Value>,
+    pub stop_reason: StopReason,
 }
 
 impl Completion {
@@ -495,6 +509,7 @@ impl Completion {
             response_id: None,
             refusal: None,
             annotations: Vec::new(),
+            stop_reason: StopReason::Stop,
         }
     }
 }

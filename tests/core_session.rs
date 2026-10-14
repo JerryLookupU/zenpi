@@ -1513,6 +1513,7 @@ impl Backend for DoomLoopBackend {
                 response_id: None,
                 refusal: None,
                 annotations: Vec::new(),
+                ..Completion::default()
             });
         }
         Ok(Completion::text("stopped"))

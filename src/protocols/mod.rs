@@ -7,7 +7,7 @@ mod responses;
 
 use crate::backend::{
     AttachmentKind, BackendError, Completion, CompletionRequest, MAX_ERROR_BODY_BYTES,
-    MAX_RESPONSE_BYTES, OpenAiWireApi, ProviderCapabilities, ProviderEvent, Usage,
+    MAX_RESPONSE_BYTES, OpenAiWireApi, ProviderCapabilities, ProviderEvent, StopReason, Usage,
     bounded_error_text,
 };
 use crate::core::TurnRole;
@@ -666,6 +666,19 @@ fn emit_completion_events(
         response_id: completion.response_id.clone(),
         model: completion.model.clone(),
     })
+}
+
+/// Normalized stop reason once a completion's text, calls and refusal are known.
+fn stop_reason(truncated: bool, completion: &Completion) -> StopReason {
+    if truncated {
+        StopReason::Length
+    } else if completion.refusal.is_some() {
+        StopReason::Refusal
+    } else if !completion.tool_calls.is_empty() {
+        StopReason::ToolUse
+    } else {
+        StopReason::Stop
+    }
 }
 
 fn parse_tool_call(id: &str, name: &str, arguments: &str) -> Result<ToolCall, BackendError> {

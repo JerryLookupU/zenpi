@@ -24,7 +24,7 @@ use std::{
 };
 use zenpi::backend::{
     Backend, BackendError, Completion, CompletionRequest, OpenAiCompatibleBackend, OpenAiWireApi,
-    ProviderEvent,
+    ProviderEvent, StopReason,
 };
 use zenpi::{
     core::{Turn, TurnRole},
@@ -376,21 +376,21 @@ fn chat_minimal_chunks_without_id_or_model() {
 }
 
 #[test]
-fn chat_length_finish_is_currently_an_error() {
-    // Known bug, ZE-221 flips this: finish_reason=length must return the
-    // partial text with StopReason::Length instead of failing the turn.
+fn chat_length_finish_keeps_partial_text() {
+    // ZE-221: finish_reason=length returns the partial text as a length stop.
     let r = replay(Wire::Chat, "variant-length-stop.sse");
     assert_trace(
         &r,
         &[
             r#"created Some("chat319") Some("gpt-4.1")"#,
             "text FRESH_FINAL_319",
+            "text_done FRESH_FINAL_319",
+            r#"completed Some("chat319") Some("gpt-4.1")"#,
         ],
     );
-    assert!(
-        r.error()
-            .contains("Chat output truncated (finish_reason=length)")
-    );
+    let c = r.completion();
+    assert_eq!(c.content, "FRESH_FINAL_319");
+    assert_eq!(c.stop_reason, StopReason::Length);
 }
 
 #[test]
@@ -459,21 +459,22 @@ fn responses_text_with_usage() {
 }
 
 #[test]
-fn responses_incomplete_max_output_is_currently_an_error() {
-    // Known bug, ZE-221 flips this: response.incomplete with
-    // reason=max_output_tokens must keep the partial text as StopReason::Length.
+fn responses_incomplete_max_output_keeps_partial_text() {
+    // ZE-221: response.incomplete with reason=max_output_tokens keeps the
+    // partial text as a length stop.
     let r = replay(Wire::Responses, "variant-incomplete-max-output.sse");
     assert_trace(
         &r,
         &[
             r#"created Some("compact-3") Some("gpt-4.1")"#,
             "text CONTINUED_AFTER",
+            "usage 250/150/400",
+            r#"completed Some("compact-3") Some("gpt-4.1")"#,
         ],
     );
-    assert!(
-        r.error()
-            .contains("Responses stream ended without response.completed")
-    );
+    let c = r.completion();
+    assert_eq!(c.content, "CONTINUED_AFTER");
+    assert_eq!(c.stop_reason, StopReason::Length);
 }
 
 // ----------------------------------------------------------- anthropic
@@ -561,21 +562,22 @@ fn anthropic_streams_cut_before_message_stop_fail() {
 }
 
 #[test]
-fn anthropic_max_tokens_is_currently_an_error() {
-    // Known bug, ZE-221 flips this: stop_reason=max_tokens must return the
-    // partial text with StopReason::Length.
+fn anthropic_max_tokens_keeps_partial_text() {
+    // ZE-221: stop_reason=max_tokens returns the partial text as a length stop.
     let r = replay(Wire::Anthropic, "variant-max-tokens.sse");
     assert_trace(
         &r,
         &[
             r#"created Some("msg319") Some("claude-sonnet-4-6")"#,
             "text FRESH_FINAL_319",
+            "text_done FRESH_FINAL_319",
+            "usage 7/4/11",
+            r#"completed Some("msg319") Some("claude-sonnet-4-6")"#,
         ],
     );
-    assert!(
-        r.error()
-            .contains("incomplete/unsupported Anthropic stop reason max_tokens")
-    );
+    let c = r.completion();
+    assert_eq!(c.content, "FRESH_FINAL_319");
+    assert_eq!(c.stop_reason, StopReason::Length);
 }
 
 #[test]
@@ -685,21 +687,21 @@ fn gemini_streams_without_finish_reason_fail() {
 }
 
 #[test]
-fn gemini_max_tokens_is_currently_an_error() {
-    // Known bug, ZE-221 flips this: finishReason=MAX_TOKENS must return the
-    // partial text with StopReason::Length.
+fn gemini_max_tokens_keeps_partial_text() {
+    // ZE-221: finishReason=MAX_TOKENS returns the partial text as a length stop.
     let r = replay(Wire::Gemini, "variant-max-tokens.sse");
     assert_trace(
         &r,
         &[
             r#"created Some("google319") Some("gemini-2.5-flash")"#,
             "text FRESH_FINAL_319",
+            "text_done FRESH_FINAL_319",
+            r#"completed Some("google319") Some("gemini-2.5-flash")"#,
         ],
     );
-    assert!(
-        r.error()
-            .contains("Gemini incomplete/unsupported finish reason: MAX_TOKENS")
-    );
+    let c = r.completion();
+    assert_eq!(c.content, "FRESH_FINAL_319");
+    assert_eq!(c.stop_reason, StopReason::Length);
 }
 
 #[test]
@@ -857,4 +859,47 @@ fn stream_error_events_keep_text_and_classify_overflow() {
             "failed backend returned an invalid response: Responses provider error: server_error: boom false"
         ]
     );
+}
+
+// ------------------------------------------- ZE-221 length-cut tool calls
+
+#[test]
+fn length_cut_tool_arguments_are_reported_not_rejected() {
+    let chat = concat!(
+        "data: {\"id\":\"c1\",\"model\":\"gpt-4.1\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"cut-1\",\"type\":\"function\",\"function\":{\"name\":\"write_file\",\"arguments\":\"{\\\"path\\\":\\\"NEV\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"id\":\"c1\",\"model\":\"gpt-4.1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"length\"}]}\n\n",
+        "data: [DONE]\n\n",
+    );
+    let anthropic = concat!(
+        "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"type\":\"message\",\"id\":\"m1\",\"role\":\"assistant\",\"model\":\"claude-sonnet-4-6\",\"content\":[],\"stop_reason\":null,\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n",
+        "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"cut-1\",\"name\":\"write_file\",\"input\":{}}}\n\n",
+        "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"path\\\":\\\"NEV\"}}\n\n",
+        "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+        "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"},\"usage\":{\"output_tokens\":9}}\n\n",
+        "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+    );
+    for (wire, body) in [(Wire::Chat, chat), (Wire::Anthropic, anthropic)] {
+        let r = serve(
+            wire,
+            "200 OK",
+            "text/event-stream",
+            body.as_bytes().to_vec(),
+        );
+        let c = r.completion();
+        assert_eq!(c.stop_reason, StopReason::Length, "{}", wire.dir());
+        assert_eq!(
+            tool_call(c),
+            ("cut-1", "write_file", "{}".into()),
+            "{}",
+            wire.dir()
+        );
+    }
+    // Without a length stop the same cut input is still malformed.
+    let r = serve(
+        Wire::Anthropic,
+        "200 OK",
+        "text/event-stream",
+        anthropic.replace("max_tokens", "tool_use").into_bytes(),
+    );
+    assert!(r.error().contains("malformed Anthropic tool input JSON"));
 }

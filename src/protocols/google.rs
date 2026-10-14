@@ -3,7 +3,7 @@
 use crate::{
     backend::{
         BackendError, Completion, CompletionRequest, MAX_RESPONSE_BYTES, ProviderCapabilities,
-        ProviderEvent, Usage,
+        ProviderEvent, StopReason, Usage,
     },
     core::{Turn, TurnRole},
     tools::ToolCall,
@@ -436,6 +436,8 @@ struct Fold {
     response_id: Option<String>,
     model_version: Option<String>,
     stop: bool,
+    /// finishReason=MAX_TOKENS: the content is kept as a length stop.
+    truncated: bool,
     usage: Option<Usage>,
     cached: u64,
     thoughts: u64,
@@ -530,11 +532,15 @@ impl Fold {
                     validate_parts(&self.parts)?;
                 }
                 if let Some(stop) = c.get("finishReason") {
-                    if stop != "STOP" {
-                        return Err(invalid(format!(
-                            "Gemini incomplete/unsupported finish reason: {}",
-                            stop.as_str().unwrap_or("invalid")
-                        )));
+                    match stop.as_str() {
+                        Some("STOP") => {}
+                        Some("MAX_TOKENS") => self.truncated = true,
+                        other => {
+                            return Err(invalid(format!(
+                                "Gemini incomplete/unsupported finish reason: {}",
+                                other.unwrap_or("invalid")
+                            )));
+                        }
                     }
                     self.stop = true;
                 }
@@ -586,7 +592,7 @@ impl Fold {
         caps: ProviderCapabilities,
         sink: &mut dyn FnMut(ProviderEvent) -> Result<(), BackendError>,
     ) -> Result<Completion, BackendError> {
-        if !self.stop || self.parts.is_empty() {
+        if !self.stop || (self.parts.is_empty() && !self.truncated) {
             return Err(invalid("Gemini response missing complete terminal content"));
         }
         if self.model_version.as_deref().is_none_or(|version| {
@@ -630,7 +636,8 @@ impl Fold {
         {
             return Err(invalid("Gemini first function call signature missing"));
         }
-        let completion = Completion {
+        let finish_reason = if self.truncated { "MAX_TOKENS" } else { "STOP" };
+        let mut completion = Completion {
             content,
             tool_calls: calls,
             usage: self.usage,
@@ -639,9 +646,11 @@ impl Fold {
             refusal: None,
             annotations: vec![
                 json!({"type":"native_history","wire":WIRE,"provider":provider,"model":model,"response_id":response_id,"parts_sha256":parts_digest(&self.parts)?,"parts":self.parts}),
-                json!({"type":"gemini_finish","finish_reason":"STOP","model_version":self.model_version,"cached_input_tokens":self.cached,"thought_tokens":self.thoughts}),
+                json!({"type":"gemini_finish","finish_reason":finish_reason,"model_version":self.model_version,"cached_input_tokens":self.cached,"thought_tokens":self.thoughts}),
             ],
+            stop_reason: StopReason::Stop,
         };
+        completion.stop_reason = super::stop_reason(self.truncated, &completion);
         if !completion.content.is_empty() {
             sink(ProviderEvent::TextDone {
                 text: completion.content.clone(),
