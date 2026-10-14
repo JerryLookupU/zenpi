@@ -14,7 +14,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::skills::{SkillError, SkillScope, read_skill_text};
+use crate::skills::{LoadDiagnostic, SkillError, SkillScope, read_skill_text};
 
 pub const MAX_TEMPLATE_INPUT_BYTES: usize = 64 * 1024;
 pub const MAX_TEMPLATE_OUTPUT_BYTES: usize = 1024 * 1024;
@@ -64,6 +64,7 @@ pub struct TemplateExpansion {
 pub struct PromptTemplates {
     templates: BTreeMap<String, PromptTemplate>,
     collisions: Vec<TemplateCollision>,
+    diagnostics: Vec<LoadDiagnostic>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -137,10 +138,11 @@ impl PromptTemplates {
                     let entry = entry?;
                     if entry.path().extension().is_some_and(|ext| ext == "md") {
                         if entry.file_type()?.is_symlink() {
-                            return Err(TemplateError::Invalid(format!(
-                                "symlink template path: {}",
-                                entry.path().display()
-                            )));
+                            result.diagnostics.push(LoadDiagnostic {
+                                path: entry.path(),
+                                message: "symlink template path is not followed".into(),
+                            });
+                            continue;
                         }
                         if entry.file_type()?.is_file() {
                             entries.push(entry.path());
@@ -158,7 +160,17 @@ impl PromptTemplates {
             };
             for path in paths {
                 check_cancel(&cancelled)?;
-                let template = read_template(&path, scope, &cancelled)?;
+                let template = match read_template(&path, scope, &cancelled) {
+                    Ok(template) => template,
+                    Err(TemplateError::Cancelled) => return Err(TemplateError::Cancelled),
+                    Err(error) => {
+                        result.diagnostics.push(LoadDiagnostic {
+                            path: path.clone(),
+                            message: error.to_string(),
+                        });
+                        continue;
+                    }
+                };
                 if let Some(previous) = result.templates.get(&template.name) {
                     if previous.source == template.source {
                         continue;
@@ -209,6 +221,10 @@ impl PromptTemplates {
 
     pub fn collisions(&self) -> &[TemplateCollision] {
         &self.collisions
+    }
+
+    pub fn diagnostics(&self) -> &[LoadDiagnostic] {
+        &self.diagnostics
     }
 
     /// Expand an exact template command. Hosts must give built-in controls and

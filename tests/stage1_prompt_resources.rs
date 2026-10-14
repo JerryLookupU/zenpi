@@ -11,7 +11,8 @@ use zenpi::{
         substitute_args,
     },
     resource_loader::{
-        ResourceError, ResourceKind, ResourceLoader, ResourcePaths, TextResourcePath,
+        ResourceError, ResourceKind, ResourceLoader, ResourcePaths, ResourceSnapshot,
+        TextResourcePath,
     },
     skills::{SkillInvocation, SkillScope},
 };
@@ -390,7 +391,7 @@ fn cancellation_at_every_candidate_checkpoint_keeps_old_arc() {
 }
 
 #[test]
-fn bad_yaml_duplicate_templates_and_duplicate_text_resources_do_not_publish() {
+fn bad_templates_are_skipped_and_duplicates_do_not_publish() {
     let temp = tempdir().unwrap();
     fixtures(temp.path(), "v1");
     let mut loader = ResourceLoader::new(config(temp.path())).unwrap();
@@ -403,9 +404,11 @@ fn bad_yaml_duplicate_templates_and_duplicate_text_resources_do_not_publish() {
         " ",
     ] {
         put(temp.path(), "user-prompts/review.md", invalid);
-        assert!(loader.reload(|| false).is_err(), "{invalid}");
-        assert!(Arc::ptr_eq(&first, &loader.snapshot()));
+        let snapshot = loader.reload(|| false).unwrap();
+        assert_skipped_template(&snapshot, "user-prompts/review.md", invalid);
     }
+    assert!(!Arc::ptr_eq(&first, &loader.snapshot()));
+    let published = loader.snapshot();
     fixtures(temp.path(), "v2");
     let a = put(temp.path(), "a/review.md", "a");
     let b = put(temp.path(), "b/review.md", "b");
@@ -415,13 +418,13 @@ fn bad_yaml_duplicate_templates_and_duplicate_text_resources_do_not_publish() {
         loader.reload_with_paths(bad, || false),
         Err(ResourceError::Template(TemplateError::Duplicate { .. }))
     ));
-    assert!(Arc::ptr_eq(&first, &loader.snapshot()));
+    assert!(Arc::ptr_eq(&published, &loader.snapshot()));
     let mut duplicate = loader.paths().clone();
     duplicate
         .text_resources
         .push(duplicate.text_resources[0].clone());
     assert!(loader.reload_with_paths(duplicate, || false).is_err());
-    assert!(Arc::ptr_eq(&first, &loader.snapshot()));
+    assert!(Arc::ptr_eq(&published, &loader.snapshot()));
 }
 
 #[test]
@@ -497,20 +500,21 @@ fn expansion_limits_and_cancellation_never_return_partial_prompt() {
 }
 
 #[test]
-fn bad_utf8_oversize_and_symlinks_preserve_previous_snapshot() {
+fn bad_utf8_oversize_and_symlink_templates_are_skipped() {
     let temp = tempdir().unwrap();
     fixtures(temp.path(), "v1");
     let mut loader = ResourceLoader::new(config(temp.path())).unwrap();
-    let first = loader.reload(|| false).unwrap();
+    loader.reload(|| false).unwrap();
     fs::write(temp.path().join("user-prompts/review.md"), [255u8]).unwrap();
-    assert!(loader.reload(|| false).is_err());
+    let snapshot = loader.reload(|| false).unwrap();
+    assert_skipped_template(&snapshot, "user-prompts/review.md", "utf-8");
     fs::write(
         temp.path().join("user-prompts/review.md"),
         vec![b'x'; 128 * 1024 + 1],
     )
     .unwrap();
-    assert!(loader.reload(|| false).is_err());
-    assert!(Arc::ptr_eq(&first, &loader.snapshot()));
+    let snapshot = loader.reload(|| false).unwrap();
+    assert_skipped_template(&snapshot, "user-prompts/review.md", "oversize");
     #[cfg(unix)]
     {
         fs::remove_file(temp.path().join("user-prompts/review.md")).unwrap();
@@ -519,7 +523,23 @@ fn bad_utf8_oversize_and_symlinks_preserve_previous_snapshot() {
             temp.path().join("user-prompts/review.md"),
         )
         .unwrap();
-        assert!(loader.reload(|| false).is_err());
-        assert!(Arc::ptr_eq(&first, &loader.snapshot()));
+        let snapshot = loader.reload(|| false).unwrap();
+        assert_skipped_template(&snapshot, "user-prompts/review.md", "symlink");
     }
+}
+
+fn assert_skipped_template(snapshot: &ResourceSnapshot, path: &str, label: &str) {
+    let diagnostics = snapshot.diagnostics();
+    assert_eq!(diagnostics.len(), 1, "{label}: {diagnostics:?}");
+    assert!(
+        diagnostics[0].path.ends_with(path),
+        "{label}: {diagnostics:?}"
+    );
+    assert!(
+        snapshot
+            .templates
+            .templates()
+            .all(|t| !t.source.ends_with(path)),
+        "{label}"
+    );
 }

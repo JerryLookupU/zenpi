@@ -5,9 +5,9 @@
 
 ```yaml
 source: Docs/Zenpi_Execution_Blueprint_v2.md
-source_sha256: 83ffea572a8137807ac5a630310681a7c49bb22e0761a5d4c872d7b0154aef57
+source_sha256: 6b7ad583e849a6a93d9ec308823e451388d08ca05a78f7d0e350550d1e695ff9
 blueprint_version: 4.0.0
-generated_at: 2026-10-14T02:59:38Z
+generated_at: 2026-10-14T11:13:16Z
 ```
 
 ## Dependency-order view
@@ -75,7 +75,7 @@ gantt
     ZE-231 撕裂的末尾可以恢复：<br>• 可写打开时，把没有换行的末行复制为  .torn :ZE_231, after ZE_104, 1d
     ZE-232 compaction 对齐 pi（对应 learn： compaction.ts :ZE_232, after ZE_220 ZE_225 ZE_104, 1d
     ZE-233 模板和技能展开后的文本写进用户 turn 技能正文移出 system promp :ZE_233, after ZE_230, 1d
-    ZE-234 **（最先修：目前会导致无法启动）** 单个无效的 SKILL.md、模板或 :ZE_234, 0, 1d
+    ZE-234 **（最先修：目前会导致无法启动）** 单个无效的 SKILL.md、模板或 :active, ZE_234, 0, 1d
     ZE-235 删除没有生产调用方的旧 compaction（ prepare_context :ZE_235, after ZE_232, 1d
     ZE-236 session 默认行为对齐 pi（对应 learn： session-mana :ZE_236, after ZE_231, 1d
     ZE-240 异步生产 host 在 prompt 入队时就判定  mode  和  expe :ZE_240, after ZE_104, 1d
@@ -144,7 +144,7 @@ gantt
 
 ## Monitoring index
 
-Counts: open 90 · self-tested 0 · accepted 23 · total 113
+Counts: open 89 · self-tested 1 · accepted 23 · total 113
 
 | ID | Layer | State | Ready | Depends | Claim | Est. LOC | Title |
 |---|---|---|---|---|---|---:|---|
@@ -202,7 +202,7 @@ Counts: open 90 · self-tested 0 · accepted 23 · total 113
 | ZE-231 | A2 | open | no | ZE-104 | — | 120 | 撕裂的末尾可以恢复：<br>• 可写打开时，把没有换行的末行复制为 `.torn` 后截掉；<br>• 列举 session 时跳过损坏文件，而不是整体失败；<br>• `write_all` 失败后截回 `observed_bytes`；<br>• 新建 session 文件后对所在目录 fsync；<br>layer `A2` \| Depends: ZE-104 \| Owned paths: `src/session.rs` \| Validators: 写入半行后，`open_in_workspace` 加 `append_turn` 成功；有一个损坏的兄弟文件时，`/session resume-last` 仍然可用 \| Estimated LOC: 120 |
 | ZE-232 | A2 | open | no | ZE-220, ZE-225, ZE-104 | — | 480 | compaction 对齐 pi（对应 learn：`compaction.ts_learn`）。内容如下：<br>• 切点：可以在 assistant/tool-result 边界切入单个长 turn，turn 前缀单独做摘要；工具结果不能作为切点；<br>• 被摘要的区段里丢弃不透明的 reasoning 状态，不再整体拒绝；<br>• 摘要输入改为带角色标签的文本，每条工具结果截到 2000 字符，去掉元数据和签名；<br>• 历史输出上限为 floor(0.8×reserve)，前缀上限为 floor(0.5×reserve)，两者串行；摘要请求本身也要通过上下文窗口校验；<br>• 接受自由文本摘要，不再要求模型逐字回显文件列表；<br>• 新增配置 `{enabled, reserve_tokens=16384, keep_recent_tokens=20000}`；<br>• 触发条件为 `最近一次真实 usage + 估算 > window − reserve`；<br>• 收到 `ContextOverflow` 时压缩一次并重试一次；<br>layer `A2` \| Depends: ZE-220, ZE-225, ZE-104 \| Owned paths: `src/context.rs`, `src/config.rs`, `src/core.rs` \| Validators: 1 个 prompt 加 200 次工具调用的会话可以压缩；带 Anthropic 签名的夹具可以压缩；原始工具输出超过窗口时，摘要请求仍小于窗口；首次溢出 → 恰好 1 次摘要加 1 次重试并成功；第二次溢出返回 `context_overflow` \| Estimated LOC: 480 |
 | ZE-233 | A2 | open | no | ZE-230 | — | 80 | 模板和技能展开后的文本写进用户 turn；技能正文移出 system prompt，让 system prompt 在各轮之间保持稳定以命中缓存；`selected_skills` 只看当前分支 |
-| ZE-234 | A2 | open | yes | — | — | 40 | **（最先修：目前会导致无法启动）** 单个无效的 SKILL.md、模板或 `.gitignore` 只产生诊断信息并被跳过，不再中止加载，也不再导致启动失败 |
+| ZE-234 | A2 | self-tested | yes | — | — | 40 | **（最先修：目前会导致无法启动）** 单个无效的 SKILL.md、模板或 `.gitignore` 只产生诊断信息并被跳过，不再中止加载，也不再导致启动失败 |
 | ZE-235 | A2 | open | no | ZE-232 | — | 280 | 删除没有生产调用方的旧 compaction（`prepare_context`、`context::restore_checkpoint`）及 `tests/context.rs`；`CompactionCheckpoint` 是 `CompactionReport` 的公开字段，要连同序列化后的报告一起迁移 |
 | ZE-236 | A2 | open | no | ZE-231 | — | 220 | session 默认行为对齐 pi（对应 learn：`session-manager.ts_learn`，并与 pi 核心能力清单交叉确认）：<br>• 没有 `--session`/`-s` 时，新建 `~/.zenpi/sessions/<cwd-key>/<ts>-<id>.jsonl`；<br>• `-c/--continue` 打开文件头中 cwd 与当前一致的最新 session，只读文件头；<br>• `--no-session` 不落盘；<br>• 默认打开路径统一走 `open_in_workspace`；<br>• `ZENPI_SESSION` 保持可用；<br>layer `A2` \| Depends: ZE-231 \| Owned paths: `src/core.rs`, `src/session.rs`, `src/project_workspace.rs`, `tests/cli_session.rs` \| Validators: 在不同 cwd 下各跑一次 headless，得到不同的日志文件；`-c` 不会打开其他 cwd 的 session；200 个并行的默认启动中 `session_locked` 为 0；`--no-session` 不写任何文件 \| Estimated LOC: 220 |
 | ZE-240 | A2 | open | no | ZE-104 | — | 60 | 异步生产 host 在 prompt 入队时就判定 `mode` 和 `expected_turn_id`（目前要等排队执行时才判定）：`start_if_idle` 在忙时立即返回 `not_idle` |

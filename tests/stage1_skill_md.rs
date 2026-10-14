@@ -175,9 +175,21 @@ fn yaml_multiline_quotes_unknown_metadata_bom_and_crlf_are_supported() {
 }
 
 #[test]
-fn malformed_frontmatter_types_duplicate_fields_and_utf8_fail_closed() {
+fn malformed_skill_files_are_skipped_with_one_diagnostic_each() {
     let temp = tempdir().unwrap();
-    let path = temp.path().join("SKILL.md");
+    markdown(temp.path(), "good", "good", "valid sibling", "body");
+    fs::create_dir_all(temp.path().join("bad")).unwrap();
+    let path = temp.path().join("bad/SKILL.md");
+    let assert_skipped = |label: &str| {
+        let set = SkillSet::load(temp.path(), &temp.path().join("none")).unwrap();
+        let names: Vec<_> = set.metadata().map(|m| m.name.clone()).collect();
+        assert_eq!(names, ["good"], "{label}");
+        assert_eq!(set.diagnostics().len(), 1, "{label}");
+        assert!(
+            set.diagnostics()[0].path.ends_with("bad/SKILL.md"),
+            "{label}"
+        );
+    };
     for content in [
         "no frontmatter",
         "---\nname: x\ndescription: ok\n",
@@ -191,15 +203,23 @@ fn malformed_frontmatter_types_duplicate_fields_and_utf8_fail_closed() {
         "---\nname: x\ndescription: [broken\n---\nbody",
     ] {
         fs::write(&path, content).unwrap();
-        assert!(
-            SkillSet::load(temp.path(), &temp.path().join("none")).is_err(),
-            "{content}"
-        );
+        assert_skipped(content);
     }
     fs::write(&path, [255u8, 254, 0]).unwrap();
-    assert!(SkillSet::load(temp.path(), &temp.path().join("none")).is_err());
+    assert_skipped("invalid utf-8");
     fs::write(&path, vec![b'x'; MAX_SKILL_FILE_BYTES + 1]).unwrap();
-    assert!(SkillSet::load(temp.path(), &temp.path().join("none")).is_err());
+    assert_skipped("oversize");
+}
+
+#[test]
+fn unreadable_ignore_rules_are_skipped_with_a_diagnostic() {
+    let temp = tempdir().unwrap();
+    markdown(temp.path(), "good", "good", "valid sibling", "body");
+    fs::write(temp.path().join(".gitignore"), [255u8, 254, 0]).unwrap();
+    let set = SkillSet::load(temp.path(), &temp.path().join("none")).unwrap();
+    assert_eq!(set.metadata().count(), 1);
+    assert_eq!(set.diagnostics().len(), 1);
+    assert!(set.diagnostics()[0].path.ends_with(".gitignore"));
 }
 
 #[test]
@@ -304,7 +324,9 @@ fn relative_resources_remain_under_skill_and_symlinks_are_refused() {
             set.load_body("reader", SkillInvocation::Explicit, "", || false)
                 .is_err()
         );
-        assert!(SkillSet::load(temp.path(), &temp.path().join("none")).is_err());
+        let reloaded = SkillSet::load(temp.path(), &temp.path().join("none")).unwrap();
+        assert_eq!(reloaded.metadata().count(), 0);
+        assert_eq!(reloaded.diagnostics().len(), 1);
     }
 }
 

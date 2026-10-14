@@ -3495,6 +3495,7 @@ impl Agent {
                 "source_hash": value.source_hash, "scope": value.scope,
             })).collect::<Vec<_>>(),
             "collisions": snapshot.collisions().into_iter().take(16).collect::<Vec<_>>(),
+            "diagnostics": snapshot.diagnostics().into_iter().take(16).collect::<Vec<_>>(),
             "skills_total": snapshot.skills.metadata().count(),
             "templates_total": snapshot.templates.templates().count(),
             "reload_required_skills": self.stale_resource_skills,
