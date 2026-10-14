@@ -5,9 +5,9 @@
 
 ```yaml
 source: Docs/Zenpi_Execution_Blueprint_v2.md
-source_sha256: 3b609bc2cd0ef6d46a818711576cdc0637eeeb8b6943b895509959b9ec961060
+source_sha256: 964ce89653e94e929d433f81e42c683cfb9c64962d6cbf36f6b7862d1fa6326a
 blueprint_version: 4.0.0
-generated_at: 2026-10-14T17:01:09Z
+generated_at: 2026-10-14T17:50:40Z
 ```
 
 ## Dependency-order view
@@ -93,7 +93,7 @@ gantt
     ZE-300 headless 去轮询（对应 redis ae：睡到下一个真实截止时间）：<b :active, ZE_300, after ZE_243, 1d
     ZE-301 传输层：进程内共享一个  ureq  Agent （keep-alive 连接池 :ZE_301, after ZE_105, 1d
     ZE-302 工具、搜索、扩展的读取改用  poll(2)  阻塞等待：单个线程同时监听两个 :ZE_302, after ZE_201 ZE_207, 1d
-    ZE-303 reconnect WAL 收敛（对应 redis aof：只对确认点做持久化， :ZE_303, after ZE_243, 1d
+    ZE-303 reconnect WAL 收敛（对应 redis aof：只对确认点做持久化， :active, ZE_303, after ZE_243, 1d
     ZE-304 session 日志的 fsync 策略：只对 turn、 operation_ :ZE_304, after ZE_231, 1d
     ZE-305 session 内存瘦身：去掉  records  Vec<Value>  和 :ZE_305, after ZE_232, 1d
     ZE-306 session 列表和"最新 session"查找只读文件头加 mtime，并按 :ZE_306, after ZE_236, 1d
@@ -144,7 +144,7 @@ gantt
 
 ## Monitoring index
 
-Counts: open 51 · self-tested 1 · accepted 61 · total 113
+Counts: open 50 · self-tested 2 · accepted 61 · total 113
 
 | ID | Layer | State | Ready | Depends | Claim | Integration | Est. LOC | Title |
 |---|---|---|---|---|---|---|---:|---|
@@ -219,7 +219,7 @@ Counts: open 51 · self-tested 1 · accepted 61 · total 113
 | ZE-300 | A3 | self-tested | yes | ZE-243 | ZE-300@blueprint-4.0.0 | handoff | 300 | headless 去轮询（对应 redis ae：睡到下一个真实截止时间）：<br>• stdin、runtime、审批三类唤醒合并为一个阻塞 channel；<br>• `worker_loop` 改用 condvar，job 完成时主动唤醒；<br>• job 线程创建失败时发出类型化的 `SpawnFailed`，并继续消化排队中的任务；<br>• shutdown 之后再 submit 时显式返回 `Rejected`；<br>layer `A3` \| Depends: ZE-243 \| Owned paths: `src/headless.rs`, `src/runtime.rs` \| Validators: 空闲进程 10 s 内 `ru_nvcsw` 增量 ≤ 50；200 个进程都卡在 10 s 的脚本化 provider 上时，总 CPU < 单核的 1%；stdout 读端暂停 5 s 期间，stdin 发出的 cancel 在 250 ms 内送达 job；注入 spawn 失败后，下一个排队任务仍能完成 \| Estimated LOC: 300 |
 | ZE-301 | A3 | open | yes | ZE-105 | — | — | 180 | 传输层：进程内共享一个 `ureq::Agent`（keep-alive 连接池、共享 TLS 配置）；在连接器内通过 `RequestControl` 的 Arc 标志实现取消，删除每个请求的发送线程和 5 ms park 轮询 |
 | ZE-302 | A3 | open | yes | ZE-201, ZE-207 | — | — | 220 | 工具、搜索、扩展的读取改用 `poll(2)` 阻塞等待：单个线程同时监听两个 fd 和子进程，poll 超时取"工具截止时间"与"100 ms 取消检查"中较小的一个；删除 2–5 ms 的 sleep 循环和固定 50 ms 等待；进程组信号只发给尚未被回收的 leader；改动涉及的 `unsafe` 一律加 `// SAFETY:` 注释 |
-| ZE-303 | A3 | open | yes | ZE-243 | — | — | 260 | reconnect WAL 收敛（对应 redis aof：只对确认点做持久化，写失败视为"提交不确定"）：<br>• `Event` 记录不再写入 WAL，改放内存环形缓冲；<br>• 只对 Reserved、Terminal、Ack 三类记录 fsync，且 Terminal 先 fsync 再写 stdout；<br>• 任何一次追加失败后，日志被毒化，之后的追加都返回 `CommitUncertain`；<br>• 打开时用 write、`sync_all`、rename、目录 fsync 的方式压缩；<br>• 截断撕裂的末尾前，先复制为 `.torn`；<br>• 请求 ID 账本与 terminals 一起按 FIFO 修剪；<br>• 干净关闭且没有未知结果时，删除 WAL；<br>layer `A3` \| Depends: ZE-243 \| Owned paths: `src/session.rs`, `src/headless.rs` \| Validators: 每个请求写入 WAL 的字节数 ≤ 终态大小 + 1 KiB；每个请求的 fsync ≤ 3 次；注入短写和 fsync 错误后仍能重新打开；干净 shutdown 后 export/delete 成功；2 万次带 ID 的 `status` 全部成功，被淘汰的 ID 返回 `replay_expired` \| Estimated LOC: 260 |
+| ZE-303 | A3 | self-tested | yes | ZE-243 | ZE-303@blueprint-4.0.0 | handoff | 260 | reconnect WAL 收敛（对应 redis aof：只对确认点做持久化，写失败视为"提交不确定"，日志超阈值在线重写）：<br>• `Event` 记录只追加不 fsync（崩溃丢失的事件按 replay_floor 处理），只对 Reserved、Terminal、Ack 三类记录 fsync，且 Terminal 先 fsync 再写 stdout；<br>• 任何一次追加失败后回滚截断并毒化日志，之后的追加与重写都返回"commit uncertain"；<br>• 超过 `ZENPI_WAL_COMPACT_BYTES`（默认 32 MiB）且为上次压缩后大小的 2 倍时，用 write、`sync_all`、rename、目录 fsync 在线重写为活状态；<br>• 重新打开时丢弃撕裂的末尾追加；<br>• 请求 ID 账本只计未决 ID，已完成 ID 按 FIFO 修剪（16384）；<br>• 干净关闭后保留 WAL 以维持跨进程幂等，export/delete/GC 只拒绝存活 owner，delete/GC 连同 WAL 一起删除；<br>layer `A3` \| Depends: ZE-243 \| Owned paths: `src/session.rs`, `src/headless.rs`, `tests/headless_wal.rs`, `tests/headless_wal_compaction.rs`, `tests/session_maintenance_owner.rs` \| Validators: `cargo test --locked --all-features --test headless_wal --test headless_wal_compaction --test session_maintenance_owner`；lib 单测 `identified_request_ledger_never_fills_permanently`（2 万次带 ID 请求从不 `ledger_full`）、`reconnect_wal_drops_a_torn_append_and_poisons_after_a_failed_one` \| Estimated LOC: 260 |
 | ZE-304 | A3 | open | yes | ZE-231 | — | — | 60 | session 日志的 fsync 策略：只对 turn、`operation_*` 和终态记录 fsync，其他记录在下一个边界时一起刷盘。崩溃时最多丢失最后一个边界之后的记录，不会丢失任何已接受的 turn。flock 改为阻塞等待，不再用 `LOCK_NB`。注意 macOS 上 `sync_data` 走的是 `F_FULLFSYNC`，单次代价较高 |
 | ZE-305 | A3 | open | no | ZE-232 | — | — | 260 | session 内存瘦身：去掉 `records: Vec<Value>` 和 `event_values` 这两份重复副本（只保留序号、类型、偏移，需要时重新解析）；缓存已校验过的 checkpoint；`tree_ancestry_turns` 不再克隆整棵树 |
 | ZE-306 | A3 | open | yes | ZE-236 | — | — | 70 | session 列表和"最新 session"查找只读文件头加 mtime，并按 cwd 过滤 |
@@ -243,7 +243,7 @@ Counts: open 51 · self-tested 1 · accepted 61 · total 113
 | ZE-515 | B2 | open | no | ZE-514 | — | — | 700 | 基于密钥的身份与二维码 v2：<br>• `host_id = sha256(SPKI)`，证书轮换后 pin 仍然有效；<br>• 二维码 v2 带上与 token 绑定的有序地址提示（`lan`、`tailnet`），v1 仍可解析；<br>• Android 端已保存的主机自动迁移；<br>layer `B2` \| Depends: ZE-514 \| Owned paths: `src/remote/pairing.rs`, `src/remote/auth.rs`, `android/.../pairing/`, `android/.../transport/PairingClient.kt`, `android/.../security/PairedHostStore.kt` \| Validators: v1 和 v2 邀请都按严格模式解析；证书轮换后仍能连接；已存主机的迁移测试 \| Estimated LOC: 700 |
 | ZE-516 | B2 | open | no | ZE-515 | — | — | 600 | 网络 T1 叠加网：<br>• 主机端 `--tailnet` 按网卡地址识别 `100.64.0.0/10` 和 `fd7a:115c:a1e0::/48`，加入地址提示，不调用 Tailscale API；<br>• Android 只对这两个网段放行 `TRANSPORT_VPN`；<br>• 多提示拨号：局域网优先，失败后依次尝试下一个；任何一个 pin 不符都直接失败，不回退；<br>• 用户指南补上 Tailscale/Headscale 的配置，以及 `ssh -R` 兜底方案；<br>layer `B2` \| Depends: ZE-515 \| Owned paths: `src/remote/lan.rs`, `src/host_pair.rs`, `android/.../lifecycle/LanSocketRouting.kt`, `android/.../lifecycle/NetworkMonitor.kt`, `android/.../transport/HostClient.kt`, `Docs/stage2_android2unix_user_guide.md` \| Validators: CGNAT 和 fd7a 地址被识别为叠加网；局域网不可达时回退到 tailnet 提示；任一提示 pin 错误时直接失败；非叠加网段的 VPN 仍被拒绝 \| Estimated LOC: 600 |
 | ZE-517 | B2 | open | yes | ZE-502 | — | — | 600 | 流式对齐：把 `live_text` 目前 4 KiB 的整行预览改为逐 token 的增量，回放时顺序正确 |
-| ZE-518 | B2 | open | yes | ZE-502 | — | — | 1800 | 拆分 Android UI：<br>• 把 `PairingScreen`（约 60 个参数）拆到 `ui/` 包，`PairingState`（约 90 个字段）拆成子状态；<br>• 修掉每秒一次的空转重组；<br>• 草稿只以 host、session、tab 的 id 为键，不含 revision，避免远端改名时清空草稿；<br>行为保持不变 |
+| ZE-518 | B2 | open | yes | ZE-502 | ZE-518@blueprint-4.0.0 | — | 1800 | 拆分 Android UI：<br>• 把 `PairingScreen`（约 60 个参数）拆到 `ui/` 包，`PairingState`（约 90 个字段）拆成子状态；<br>• 修掉每秒一次的空转重组；<br>• 草稿只以 host、session、tab 的 id 为键，不含 revision，避免远端改名时清空草稿；<br>行为保持不变 |
 | ZE-519 | B2 | open | no | ZE-518 | — | — | 400 | 竖屏截图测试底座：Roborazzi，分辨率 360×800 和 412×915，字号 1.0 和 1.3，覆盖明暗主题 |
 | ZE-530 | B2 | open | no | ZE-519, ZE-517 | — | — | 1300 | 对话主屏：<br>• 用 reverse 的 `LazyColumn`，自动贴底，带流式行；<br>• 工具行默认折叠；<br>• 轻量 markdown：代码块、行内代码、列表，不引入第三方库；<br>• 底部固定输入框：发送 / steer / 停止三态，配 `ImeAction.Send` 和 `imePadding`；<br>• 顶栏放 Agent/Arch 模式切换、worktree chip 和模型 chip；<br>layer `B2` \| Depends: ZE-519, ZE-517 \| Owned paths: `android/.../ui/ConversationScreen.kt`, `android/.../ui/Markdown.kt`, `android/.../ui/Composer.kt` \| Validators: 截图黄金图；500 轮对话的 fixture 卡顿帧 < 5%；草稿在旋转后仍保留 \| Estimated LOC: 1300 |
 | ZE-531 | B2 | open | no | ZE-530 | — | — | 450 | 审批：常驻审批条加底部面板。面板显示 i/N 和彩色补丁，点一次即决定，有待决审批时无法关闭；可以开启生物识别确认 |

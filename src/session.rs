@@ -1684,7 +1684,7 @@ impl SessionStore {
                 "export destination already exists".into(),
             ));
         }
-        if reconnect_path(&self.path).try_exists()? {
+        if transport_owner_live(&self.path)? {
             return Err(SessionError::InvalidRecord(
                 "cannot export a session with an active reconnect WAL; close the owner first"
                     .into(),
@@ -1945,6 +1945,33 @@ pub(crate) struct ReconnectJournal {
     session_id: String,
     sequence: u64,
     bytes: u64,
+    /// ZE-303: after a failed append the commit point is uncertain; every
+    /// later append fails instead of writing past a possibly torn record.
+    poisoned: bool,
+}
+
+/// True when `session`'s transport WAL is owned by a live host (this
+/// process or another one holding its lock). A closed WAL is plain durable
+/// state that export may skip and delete/GC remove alongside the session.
+pub(crate) fn transport_owner_live(session: &Path) -> Result<bool, SessionError> {
+    let wal = reconnect_path(session);
+    if !wal.try_exists()? {
+        return Ok(false);
+    }
+    if let Ok(canonical) = fs::canonicalize(session)
+        && local_transport_owners()
+            .lock()
+            .map_err(|_| io::Error::other("transport ownership lock poisoned"))?
+            .contains(&canonical)
+    {
+        return Ok(true);
+    }
+    let file = File::open(&wal)?;
+    match lock_exclusive(&file) {
+        Ok(()) => Ok(false),
+        Err(SessionError::Locked) => Ok(true),
+        Err(error) => Err(error),
+    }
 }
 
 fn local_transport_owners() -> &'static Mutex<BTreeSet<PathBuf>> {
@@ -2077,18 +2104,75 @@ impl ReconnectJournal {
                 session_id: session.session_id().into(),
                 sequence,
                 bytes: valid_len as u64,
+                poisoned: false,
             },
             records,
         ))
     }
 
-    pub fn append(&mut self, event: Value) -> Result<(), SessionError> {
+    /// Current WAL size; the host compacts past a threshold.
+    pub fn bytes(&self) -> u64 {
+        self.bytes
+    }
+
+    /// Append without fsync (redis AOF style): the next durable append or
+    /// rewrite flushes it. Used for replayable events, never for commits.
+    pub fn append_buffered(&mut self, event: Value) -> Result<(), SessionError> {
+        self.append_with(event, false)
+    }
+
+    /// Atomically replace the WAL with `entries` (write temp, fsync, rename,
+    /// fsync dir). The new file is locked before it becomes visible.
+    pub fn rewrite(&mut self, entries: Vec<Value>) -> Result<(), SessionError> {
+        if self.poisoned {
+            return Err(commit_uncertain());
+        }
+        let path = reconnect_path(&self.session_path);
+        let temp = path.with_extension("reconnect.compact");
+        let _ = fs::remove_file(&temp);
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+        let mut file = options.open(&temp)?;
+        lock_exclusive(&file)?;
+        let mut bytes = 0u64;
+        for (sequence, event) in entries.into_iter().enumerate() {
+            let line = self.encode(sequence as u64, event)?;
+            file.write_all(&line)?;
+            bytes += line.len() as u64;
+        }
+        file.sync_all()?;
+        fs::rename(&temp, &path)?;
+        if let Some(parent) = path.parent() {
+            File::open(parent)?.sync_all()?;
+        }
+        file.seek(SeekFrom::End(0))?;
+        self.sequence = bytes_to_sequence(&file)?;
+        self.file = file;
+        self.bytes = bytes;
+        Ok(())
+    }
+
+    fn encode(&self, sequence: u64, event: Value) -> Result<Vec<u8>, SessionError> {
         let digest = reconnect_digest(&serde_json::to_vec(&event)?);
         let mut bytes = serde_json::to_vec(&json!({
             "schema_version": 1, "session_id": self.session_id,
-            "sequence": self.sequence, "event": event, "sha256": digest,
+            "sequence": sequence, "event": event, "sha256": digest,
         }))?;
         bytes.push(b'\n');
+        Ok(bytes)
+    }
+
+    pub fn append(&mut self, event: Value) -> Result<(), SessionError> {
+        self.append_with(event, true)
+    }
+
+    fn append_with(&mut self, event: Value, durable: bool) -> Result<(), SessionError> {
+        if self.poisoned {
+            return Err(commit_uncertain());
+        }
+        let bytes = self.encode(self.sequence, event)?;
         if bytes.len() > MAX_SESSION_RECORD_BYTES
             || self.bytes + bytes.len() as u64 > Self::MAX_BYTES
         {
@@ -2096,12 +2180,43 @@ impl ReconnectJournal {
                 "reconnect WAL capacity exhausted; refusing untracked execution".into(),
             ));
         }
-        self.file.write_all(&bytes)?;
-        self.file.sync_data()?;
+        let written = self.file.write_all(&bytes).and_then(|()| {
+            if durable {
+                self.file.sync_data()
+            } else {
+                Ok(())
+            }
+        });
+        if let Err(error) = written {
+            // Roll back a possibly torn record; either way stop writing.
+            let _ = self.file.set_len(self.bytes);
+            let _ = self.file.seek(SeekFrom::Start(self.bytes));
+            self.poisoned = true;
+            return Err(error.into());
+        }
         self.bytes += bytes.len() as u64;
         self.sequence += 1;
         Ok(())
     }
+}
+
+fn commit_uncertain() -> SessionError {
+    SessionError::InvalidRecord(
+        "reconnect WAL commit uncertain after a failed append; reopen the session".into(),
+    )
+}
+
+/// Number of complete records in a freshly written WAL file.
+fn bytes_to_sequence(file: &File) -> Result<u64, SessionError> {
+    let mut reader = io::BufReader::new(file.try_clone()?);
+    reader.seek(SeekFrom::Start(0))?;
+    let mut count = 0u64;
+    let mut line = Vec::new();
+    while io::BufRead::read_until(&mut reader, b'\n', &mut line)? != 0 {
+        count += 1;
+        line.clear();
+    }
+    Ok(count)
 }
 
 fn reconnect_digest(bytes: &[u8]) -> String {
@@ -2675,14 +2790,15 @@ pub fn garbage_collect_sessions_with_active(
         // Match explicit delete/export: the WAL is durable reconnect state,
         // even when its owner is closed or its contents need recovery. Refuse
         // the entire selection before any unlink instead of orphaning it.
-        if reconnect_path(path).try_exists()? {
+        if transport_owner_live(path)? {
             return Err(SessionError::InvalidRecord(
-                "garbage collection cannot remove a session with a reconnect WAL".into(),
+                "garbage collection cannot remove a session with a live reconnect owner".into(),
             ));
         }
     }
     for path in selected.iter() {
         fs::remove_file(path)?;
+        let _ = fs::remove_file(reconnect_path(path));
     }
     Ok(GarbageCollectionReport {
         removed: selected,
@@ -3282,12 +3398,14 @@ pub fn execute_session_lifecycle(
                     "delete requires retaining or removing the session mailbox first".into(),
                 ));
             }
-            if reconnect_path(&path).try_exists()? {
+            if transport_owner_live(&path)? {
                 return Err(SessionError::InvalidRecord(
                     "delete requires closing the reconnect owner first".into(),
                 ));
             }
             fs::remove_file(&path)?;
+            // A closed WAL is removed with its session, never orphaned.
+            let _ = fs::remove_file(reconnect_path(&path));
             return Ok(Receipt::Deleted { path });
         }
         Request::RetireMailbox { path, confirmed } => {
@@ -5038,6 +5156,34 @@ mod session_reliability_tests {
         assert_eq!(bytes(store.path()), journal_before);
         assert_eq!(bytes(other.path()), other_before);
         assert_eq!(bytes(&wal_path), saved);
+    }
+
+    #[test]
+    fn reconnect_wal_drops_a_torn_append_and_poisons_after_a_failed_one() {
+        // ZE-303: a crash mid-append leaves a torn tail that reopen discards;
+        // a failed append makes every later write report an uncertain commit.
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::open(dir.path().join("wal.jsonl")).unwrap();
+        let (mut wal, _) = ReconnectJournal::open(&store).unwrap();
+        wal.append(json!({"type":"reserved","id":"a"})).unwrap();
+        wal.append_buffered(json!({"type":"event"})).unwrap();
+        drop(wal);
+        let path = reconnect_path(store.path());
+        let whole = fs::read(&path).unwrap();
+        let mut torn = whole.clone();
+        torn.extend_from_slice(b"{\"schema_version\":1,\"sequ");
+        fs::write(&path, &torn).unwrap();
+        let (mut wal, events) = ReconnectJournal::open(&store).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(fs::read(&path).unwrap(), whole);
+        wal.poisoned = true;
+        for error in [
+            wal.append(json!({"type":"terminal"})).unwrap_err(),
+            wal.rewrite(vec![json!({"type":"owner"})]).unwrap_err(),
+        ] {
+            assert!(error.to_string().contains("commit uncertain"), "{error}");
+        }
+        assert_eq!(fs::read(&path).unwrap(), whole);
     }
 
     #[test]

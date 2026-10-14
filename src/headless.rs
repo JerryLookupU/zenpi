@@ -146,10 +146,28 @@ struct ReplayState {
     replay_floor: Option<u64>,
     journal: Option<ReconnectJournal>,
     completed: HashMap<String, String>,
+    /// FIFO of `completed` ids so the ledger stays bounded (ZE-303).
+    completed_order: VecDeque<String>,
+    /// WAL size right after the last compaction; the next one waits until the
+    /// file doubles so live state near the threshold cannot rewrite per append.
+    compacted_bytes: u64,
     unknown: HashMap<String, String>,
     owner_epoch: u64,
     next_sequence: u64,
     acknowledged: u64,
+}
+
+/// WAL size that triggers an online rewrite (ZE-303). `ZENPI_WAL_COMPACT_BYTES`
+/// overrides it (read once), mainly so tests can exercise compaction.
+fn wal_compact_threshold() -> u64 {
+    static THRESHOLD: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *THRESHOLD.get_or_init(|| {
+        std::env::var("ZENPI_WAL_COMPACT_BYTES")
+            .ok()
+            .and_then(|value| value.trim().parse().ok())
+            .filter(|bytes| *bytes >= 4096)
+            .unwrap_or(32 * 1024 * 1024)
+    })
 }
 
 /// Default bound on how long a host keeps draining admitted work after stdin
@@ -334,12 +352,65 @@ impl ReplayState {
         state.persist(ReconnectEntry::Owner {
             epoch: state.owner_epoch,
         })?;
+        state.compact_if_large()?;
         Ok(state)
     }
 
     fn persist(&mut self, entry: ReconnectEntry) -> Result<(), HeadlessError> {
         if let Some(journal) = &mut self.journal {
             journal.append(serde_json::to_value(entry)?)?;
+        }
+        self.compact_if_large()
+    }
+
+    /// Replayable stream events are written without fsync (redis AOF style):
+    /// the next durable commit flushes them, so a crash can only lose events
+    /// after the last reservation/terminal/ack, never an accepted outcome.
+    fn persist_buffered(&mut self, entry: ReconnectEntry) -> Result<(), HeadlessError> {
+        if let Some(journal) = &mut self.journal {
+            journal.append_buffered(serde_json::to_value(entry)?)?;
+        }
+        self.compact_if_large()
+    }
+
+    /// ZE-303: rewrite the WAL from the retained in-memory state once it
+    /// grows past the threshold, so a long-lived host never hits the cap.
+    fn compact_if_large(&mut self) -> Result<(), HeadlessError> {
+        if self.journal.as_ref().is_none_or(|journal| {
+            journal.bytes() <= wal_compact_threshold().max(self.compacted_bytes.saturating_mul(2))
+        }) {
+            return Ok(());
+        }
+        let mut entries = vec![serde_json::to_value(ReconnectEntry::Owner {
+            epoch: self.owner_epoch,
+        })?];
+        for id in &self.terminal_order {
+            if let Some(record) = self.terminals.get(id) {
+                entries.push(serde_json::to_value(ReconnectEntry::Terminal {
+                    id: id.clone(),
+                    fingerprint: record.fingerprint.clone(),
+                    line: record.line.clone(),
+                })?);
+            }
+        }
+        for (id, fingerprint) in self.in_flight.iter().chain(self.unknown.iter()) {
+            entries.push(serde_json::to_value(ReconnectEntry::Reserved {
+                id: id.clone(),
+                fingerprint: fingerprint.clone(),
+            })?);
+        }
+        for (sequence, line) in &self.events {
+            entries.push(serde_json::to_value(ReconnectEntry::Event {
+                sequence: *sequence,
+                line: line.clone(),
+            })?);
+        }
+        entries.push(serde_json::to_value(ReconnectEntry::Acknowledged {
+            next_sequence: self.acknowledged,
+        })?);
+        if let Some(journal) = &mut self.journal {
+            journal.rewrite(entries)?;
+            self.compacted_bytes = journal.bytes();
         }
         Ok(())
     }
@@ -355,7 +426,7 @@ impl ReplayState {
     }
 
     fn remember_event(&mut self, sequence: u64, line: String) -> Result<(), HeadlessError> {
-        self.persist(ReconnectEntry::Event {
+        self.persist_buffered(ReconnectEntry::Event {
             sequence,
             line: line.clone(),
         })?;
@@ -449,7 +520,8 @@ impl ReplayState {
             let _payload_matches = existing == fingerprint;
             return Ok(RequestIdAdmission::InFlightSame);
         }
-        if self.completed.len() + self.unknown.len() + self.in_flight.len() >= 16_384 {
+        // Only unresolved requests bound admission; `completed` is pruned FIFO.
+        if self.unknown.len() + self.in_flight.len() >= 16_384 {
             return Ok(RequestIdAdmission::LedgerFull);
         }
         self.persist(ReconnectEntry::Reserved {
@@ -555,8 +627,21 @@ impl ReplayState {
             self.terminal_order.retain(|id| id != &request_id);
         }
         self.terminal_bytes = self.terminal_bytes.saturating_add(line.len());
-        self.completed
-            .insert(request_id.clone(), fingerprint.clone());
+        if self
+            .completed
+            .insert(request_id.clone(), fingerprint.clone())
+            .is_none()
+        {
+            self.completed_order.push_back(request_id.clone());
+            const MAX_COMPLETED_IDS: usize = 16_384;
+            while self.completed_order.len() > MAX_COMPLETED_IDS {
+                if let Some(oldest) = self.completed_order.pop_front()
+                    && !self.terminals.contains_key(&oldest)
+                {
+                    self.completed.remove(&oldest);
+                }
+            }
+        }
         self.terminals
             .insert(request_id.clone(), TerminalRecord { fingerprint, line });
         self.terminal_order.push_back(request_id);
@@ -9180,6 +9265,30 @@ mod replay_session_tests {
 
 #[cfg(test)]
 mod async_event_buffer_tests {
+    #[test]
+    fn identified_request_ledger_never_fills_permanently() {
+        // ZE-303: completed ids are pruned FIFO; only unresolved ones bound admission.
+        let mut state = ReplayState::default();
+        for index in 0..20_000 {
+            let id = format!("s{index}");
+            assert!(matches!(
+                state.admit(Some(&id), "fp").unwrap(),
+                RequestIdAdmission::New
+            ));
+            state.remember_terminal(id, "{}\n".into()).unwrap();
+        }
+        assert!(state.completed.len() <= 16_384 + MAX_REPLAY_TERMINALS);
+        // The newest id still replays; a fresh id is still admitted.
+        assert!(matches!(
+            state.admit(Some("s19999"), "fp").unwrap(),
+            RequestIdAdmission::Replay
+        ));
+        assert!(matches!(
+            state.admit(Some("fresh"), "fp").unwrap(),
+            RequestIdAdmission::New
+        ));
+    }
+
     use super::*;
 
     #[test]

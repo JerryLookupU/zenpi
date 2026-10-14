@@ -220,6 +220,18 @@ fn session_maintenance_refuses_export_with_reconnect_sidecar() {
         b"transport-owner-marker\n",
     )
     .unwrap();
+    // ZE-303: only a LIVE transport owner (the WAL lock is held) blocks export.
+    let wal_path = format!("{}.reconnect", source_path.display());
+    let held = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&wal_path)
+        .unwrap();
+    // SAFETY: `held` is a live descriptor for the whole call.
+    assert_eq!(
+        unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&held), libc::LOCK_EX) },
+        0
+    );
     let error = session_maintenance_view(&SessionAction::Export {
         source: source_path.display().to_string(),
         destination: directory.path().join("export.jsonl").display().to_string(),
@@ -227,6 +239,15 @@ fn session_maintenance_refuses_export_with_reconnect_sidecar() {
     .unwrap_err();
     assert!(error.contains("active reconnect WAL"));
     assert!(!directory.path().join("export.jsonl").exists());
+    // A closed WAL is plain transport state: export succeeds and never copies it.
+    drop(held);
+    session_maintenance_view(&SessionAction::Export {
+        source: source_path.display().to_string(),
+        destination: directory.path().join("export.jsonl").display().to_string(),
+    })
+    .unwrap();
+    assert!(directory.path().join("export.jsonl").exists());
+    assert!(!directory.path().join("export.jsonl.reconnect").exists());
 }
 
 #[test]
