@@ -2517,7 +2517,14 @@ pub struct GarbageCollectionReport {
 }
 
 pub fn list_sessions(directory: impl AsRef<Path>) -> Result<Vec<SessionSummary>, SessionError> {
-    let directory = directory.as_ref();
+    session_paths(directory.as_ref())?
+        .into_iter()
+        .map(|path| inspect_session(path).map(|inspection| inspection.summary))
+        .collect()
+}
+
+/// Sorted session journal paths in `directory`, without reading any of them.
+fn session_paths(directory: &Path) -> Result<Vec<PathBuf>, SessionError> {
     let metadata = match fs::symlink_metadata(directory) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
             return Err(SessionError::Symlink(directory.to_owned()));
@@ -2548,10 +2555,7 @@ pub fn list_sessions(directory: impl AsRef<Path>) -> Result<Vec<SessionSummary>,
         }
     }
     paths.sort();
-    paths
-        .into_iter()
-        .map(|path| inspect_session(path).map(|inspection| inspection.summary))
-        .collect()
+    Ok(paths)
 }
 
 /// Search bounded user/assistant turn text without exposing arbitrary event
@@ -2568,8 +2572,9 @@ pub fn search_sessions(
     }
     let needle = query.to_lowercase();
     let mut hits = Vec::new();
-    for summary in list_sessions(directory)? {
-        let store = SessionStore::open_existing(&summary.path)?;
+    for path in session_paths(directory.as_ref())? {
+        let store = SessionStore::open_existing(&path)?;
+        let summary = store.summary();
         let mut matches = 0;
         let mut snippets = Vec::new();
         for turn in store.turns() {
@@ -3170,13 +3175,13 @@ pub fn session_catalog_with_skipped(
 ) -> Result<(Vec<SessionCatalogEntry>, Vec<SkippedSession>), SessionError> {
     let mut entries = Vec::new();
     let mut skipped = Vec::new();
-    for summary in list_sessions(directory)? {
+    // Each journal is parsed once (ZE-306); `-c` reads only headers.
+    for path in session_paths(directory.as_ref())? {
         if entries.len() >= MAX_GC_CANDIDATES {
             return Err(SessionError::InvalidRecord(
                 "session catalog limit exceeded".into(),
             ));
         }
-        let path = PathBuf::from(&summary.path);
         let store = match SessionStore::open_existing(&path) {
             Ok(store) => store,
             Err(error @ SessionError::Symlink(_)) => return Err(error),
