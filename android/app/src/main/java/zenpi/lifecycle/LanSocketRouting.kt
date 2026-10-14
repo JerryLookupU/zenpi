@@ -50,6 +50,21 @@ internal object LanRoutePolicy {
         return !address.isAnyLocalAddress && !address.isMulticastAddress
             && !address.isLinkLocalAddress && address.hostAddress != "255.255.255.255"
     }
+    /**
+     * T1 overlay (Tailscale/Headscale): CGNAT `100.64.0.0/10` or the Tailscale ULA
+     * `fd7a:115c:a1e0::/48`. Only these targets may route through a VPN network.
+     */
+    fun overlay(address: InetAddress): Boolean {
+        val bytes = effective(address).address
+        return if (bytes.size == 4) bytes[0] == 100.toByte() && (bytes[1].toInt() and 0xc0) == 0x40
+        else bytes[0] == 0xfd.toByte() && bytes[1] == 0x7a.toByte() && bytes[2] == 0x11.toByte()
+            && bytes[3] == 0x5c.toByte() && bytes[4] == 0xa1.toByte() && bytes[5] == 0xe0.toByte()
+    }
+
+    /** VPN networks carry only overlay targets; everything else needs Wi-Fi/Ethernet. */
+    fun eligible(target: InetAddress, vpn: Boolean, localLink: Boolean, notRestricted: Boolean): Boolean =
+        notRestricted && if (vpn) overlay(target) else localLink
+
     fun select(routes: List<LanRoute>): Long? {
         if (routes.any { it.prefixLength !in 1..128 }) throw IOException("Invalid LAN route prefix")
         val longest = routes.maxOfOrNull { it.prefixLength } ?: return null
@@ -76,12 +91,11 @@ internal object LanRoutePolicy {
 class LanSocketRouting(context: Context) {
     private val connectivity = context.getSystemService(ConnectivityManager::class.java)
 
-    private fun isLanNetwork(network: android.net.Network): Boolean {
+    private fun eligible(network: android.net.Network, target: InetAddress): Boolean {
         val capabilities = connectivity.getNetworkCapabilities(network) ?: return false
-        return !capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
-            && capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
-            && (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
-                || capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET))
+        return LanRoutePolicy.eligible(target, capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN),
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET),
+            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED))
     }
 
     fun bind(socket: Socket, host: String) {
@@ -94,10 +108,11 @@ class LanSocketRouting(context: Context) {
         // A missing matching route is not proof that the target is reachable:
         // falling back to the active network would silently turn a LAN-only
         // pairing into a default-route/cellular/VPN attempt.  Require the
-        // network whose non-default route matched the literal target.
+        // network whose non-default route matched the literal target; a VPN
+        // network qualifies only for a T1 overlay target (ZE-516).
         LanRoutePolicy.bindStable(observe = {
             connectivity.allNetworks.flatMap { network ->
-                if (!isLanNetwork(network)) emptyList()
+                if (!eligible(network, address)) emptyList()
                 else {
                     val properties = connectivity.getLinkProperties(network)
                     val link = properties?.let { LanLinkState(it.interfaceName, it.mtu,
@@ -110,7 +125,7 @@ class LanSocketRouting(context: Context) {
                 }
             }
         }, bind = { handle ->
-            val network = connectivity.allNetworks.singleOrNull { it.networkHandle == handle }?.takeIf(::isLanNetwork)
+            val network = connectivity.allNetworks.singleOrNull { it.networkHandle == handle }?.takeIf { eligible(it, address) }
             (network ?: throw IOException("Network unavailable")).bindSocket(socket)
         })
     }

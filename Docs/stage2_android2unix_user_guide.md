@@ -129,6 +129,50 @@ python3 tools/stage2_android_pair_smoke.py --serial DEVICE_SERIAL \
 实体手机相机扫描或跨 AP/防火墙的物理网络验收。未提供 `--lan-ip` 时 harness
 才使用 adb reverse，仅证明 emulator 与 host 的 TLS/协议互操作。
 
+### 离开局域网：Tailscale / Headscale（T1）与 `ssh -R` 兜底
+
+手机不在同一局域网时，使用你自己的 Tailscale 或 Headscale 叠加网络。zenpi
+不调用任何 Tailscale API，也不内置中继：主机只读取本机网卡地址，手机只把
+叠加网段交给系统 VPN 路由，身份始终由二维码里的主机密钥指纹（pin）决定。
+
+1. 工作机和手机都登录同一个 tailnet（Tailscale 官方协调服务器，或自建
+   Headscale：`headscale users create me`，`headscale preauthkeys create --user me`，
+   两端 `tailscale up --login-server https://你的-headscale --authkey ...`）。
+   Headscale 必须保留默认地址段 `100.64.0.0/10` 与 `fd7a:115c:a1e0::/48`；
+   其他网段不会被识别为叠加网。
+2. 手机上打开 Tailscale App 并保持 VPN 连接。
+3. 启动主机时加 `--tailnet`：
+
+```sh
+./target/debug/zenpi host serve --workspace "$WORKSPACE" --session "$SESSION" --tailnet
+```
+
+二维码（v2）先给出局域网地址，再按顺序给出本机所有叠加网地址（同一端口；
+主机为每个未被监听覆盖的叠加地址各开一个监听）。桌面二维码上方以 `then`
+列出这些后备地址。没有叠加网地址时 `--tailnet` 直接报错，不会悄悄退回仅
+局域网。
+
+手机拨号顺序：局域网地址优先，连不上（无路由、拒绝、超时）才依次尝试下一
+个地址。任何一个地址上主机证书的密钥指纹不符都立即失败，不再尝试其他地址：
+路径可以变化，但信任的主机不能变。Android 只对 `100.64.0.0/10` 和
+`fd7a:115c:a1e0::/48` 的目标放行 VPN（`TRANSPORT_VPN`）网络；其他目标仍只走
+Wi-Fi/以太网，不走蜂窝默认路由，也不经其他 VPN。
+
+兜底：工作机无法安装 Tailscale 时，可以用一台已加入同一 tailnet 的自有 VPS
+做 `ssh -R` 转发。VPS 只转发 TLS 密文，看不到令牌以外的任何内容，主机密钥
+pin 保持端到端：
+
+```sh
+# 工作机：在所有接口监听固定端口，二维码发布 VPS 的 tailnet 地址
+./target/debug/zenpi host serve --workspace "$WORKSPACE" --session "$SESSION" \
+  --bind 0.0.0.0:7777 --advertise 100.101.102.103
+# 工作机：把 VPS 的 7777 端口反向转发到本机（VPS 的 sshd 需 GatewayPorts clientspecified）
+ssh -N -R 100.101.102.103:7777:127.0.0.1:7777 me@vps
+```
+
+把 `100.101.102.103` 换成 VPS 的 tailnet 地址。VPS 必须经叠加网段可达：手机
+不会把公网 IP 交给 VPN 或蜂窝路由。不要把转发端口暴露到公网。
+
 在桌面二维码视图按 `r` 使旧邀请失效并生成新邀请；按 `Esc` 取消尚未使用
 的邀请并回到普通桌面 TUI。桌面模式下，已注册设备仍可连接，直到桌面
 进程退出。邀请过期不等于已经授予的设备权限被撤销。
@@ -381,14 +425,15 @@ Shell 退出后显示 `Terminal exited`，最后输出仍可读，旧输入和�
 | 现象 | 检查与处理 |
 |---|---|
 | 扫码后没有项目 | 主机未挂载项目：用 `--workspace`/`--session` 启动后重新扫码，再 Refresh host |
-| 无法连接 | 确认桌面仍运行、IP/端口、AP 隔离、防火墙、Wi-Fi/Ethernet 路由；网络或端口变化后需新邀请 |
+| 无法连接 | 确认桌面仍运行、IP/端口、AP 隔离、防火墙、Wi-Fi/Ethernet 路由；离开局域网时确认两端 Tailscale/Headscale 在线且主机用了 `--tailnet`；网络或端口变化后需新邀请 |
 | 邀请无效/过期 | 检查工作机和手机时钟，桌面按 r 刷新；不要重复使用已消费令牌 |
 | 指纹不一致 | 停止配对，核对是否连到正确工作机；不禁用证书校验 |
 | busy/修订冲突 | 等待本机操作完成，刷新状态，再作新的明确选择 |
 | 文件/资源页面失效 | 刷新或重新打开；当前子标签或目录内容可能已经变化 |
 | 本地凭据不可读 | 检查桌面撤销状态；确认后 Reset local device 并重新扫码，不改写损坏密文 |
 
-MVP 为 LAN-first，不提供任意 NAT 穿透、公网 relay 或永久后台连接。 
+MVP 为 LAN-first，局域网外只经用户自己的 Tailscale/Headscale 叠加网（T1）或经叠加网可达的
+`ssh -R` VPS；不提供内置 NAT 穿透、公网 relay（T2）、iroh（T3）或永久后台连接。 
 手机可调整工作树的 1..64 并发配额。已有任务运行时，主机应用新调度配额
 并提交配置后才确认；降额不取消正在运行的任务。结果未知时保留原请求，
 使用明确的同请求重试确认，不根据显示值推断成功。完整设置及交互式 PTY 尚未完成。

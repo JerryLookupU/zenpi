@@ -1128,3 +1128,59 @@ fn production_serve_outlives_the_invite_and_keeps_its_port_across_restart() {
     let listing = authenticated_workspace_list(&after_rotation, &rotated, &key, &device_id);
     assert_eq!(listing["projects"][0]["prompt_control"], true);
 }
+
+/// ZE-516: `--tailnet` adds this host's overlay addresses as QR hints and listens on
+/// them; a phone off the LAN pairs through the overlay hint with the same pin.
+#[test]
+#[ignore = "requires a real production TLS listener; skips without a Tailscale/Headscale address"]
+fn production_tailnet_hint_is_advertised_and_reachable() {
+    let overlay = zenpi::remote::lan::overlay_addresses().unwrap();
+    if overlay.is_empty() {
+        eprintln!("no 100.64.0.0/10 or fd7a:115c:a1e0::/48 interface address; skipped");
+        return;
+    }
+    let temporary = tempfile::tempdir().unwrap();
+    let identity_path = temporary.path().join("identity.json");
+    let child = Command::new(env!("CARGO_BIN_EXE_zenpi"))
+        .args([
+            "host",
+            "pair",
+            "--plain",
+            "--tailnet",
+            "--bind",
+            "127.0.0.1:0",
+            "--duration-seconds",
+            "8",
+            "--identity",
+        ])
+        .arg(&identity_path)
+        .env_clear()
+        .env("HOME", temporary.path().join("home"))
+        .env("ZENPI_HOME", temporary.path().join("home"))
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let (_child, line) = read_invite_with_timeout(child);
+    let invite = PairingInvite::from_uri(line.trim(), unix_seconds().unwrap()).unwrap();
+    assert_eq!(invite.schema_version, 2);
+    assert_eq!(invite.hints[0].kind, zenpi::remote::pairing::HintKind::Lan);
+    let tailnet: Vec<_> = invite.hints[1..].iter().map(|hint| hint.address).collect();
+    assert!(!tailnet.is_empty());
+    assert!(invite.hints[1..].iter().all(|hint| hint.kind
+        == zenpi::remote::pairing::HintKind::Tailnet
+        && overlay.contains(&hint.address.ip())
+        && hint.address.port() == invite.address.port()));
+    // Dial the first overlay hint, as a phone does when the LAN hint is unreachable.
+    let identity = HostIdentity::load_or_create(&identity_path).unwrap();
+    let mut via_overlay = invite.clone();
+    via_overlay.address = tailnet[0];
+    let random = ring::rand::SystemRandom::new();
+    let document = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &random).unwrap();
+    let key = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, document.as_ref(), &random)
+        .unwrap();
+    let paired = tls_pair(&via_overlay, &identity, &key, "tailnet-phone");
+    assert_eq!(paired.execution_state, Some(ExecutionState::Succeeded));
+}

@@ -131,7 +131,9 @@ class PairingInvite private constructor(
             val effective = mappedV4 ?: ip
             if (port !in 1..65535 || effective.isAnyLocalAddress || effective.isMulticastAddress || effective.isLinkLocalAddress
                 || effective.hostAddress == "255.255.255.255") throw PairingException("Invalid address")
-            return AddressHint(kind, host, port)
+        // A tailnet hint must be a T1 overlay address; the VPN route admits nothing else.
+        if (kind == "tailnet" && !zenpi.lifecycle.LanRoutePolicy.overlay(effective)) throw PairingException("Invalid address hint")
+        return AddressHint(kind, host, port)
         }
     }
 }

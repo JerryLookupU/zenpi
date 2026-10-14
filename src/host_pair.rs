@@ -7,7 +7,7 @@ use crate::{
         frame::{read_frame, write_frame},
         host_adapter::HostAdapter,
         listener::{ListenerOptions, RemoteListener},
-        pairing::{HostIdentity, InviteIssuer, PairingInvite},
+        pairing::{AddressHint, HintKind, HostIdentity, InviteIssuer, PairingInvite},
         protocol::{Channel, Envelope, ErrorCode, ExecutionState, Message},
     },
 };
@@ -47,6 +47,8 @@ pub struct HostPairOptions {
     /// `zenpi host serve`: the listener outlives every invite (ZE-513).
     pub serve: bool,
     pub list_devices: bool,
+    /// Add Tailscale/Headscale interface addresses as `tailnet` QR hints (ZE-516).
+    pub tailnet: bool,
     pub json: bool,
     pub list_projects: bool,
     pub revoke_device: Option<String>,
@@ -80,6 +82,7 @@ impl HostPairOptions {
             desktop: false,
             serve: false,
             list_devices: false,
+            tailnet: false,
             json: false,
             list_projects: false,
             revoke_device: None,
@@ -107,6 +110,10 @@ impl HostPairOptions {
             }
             if argument == "--list-devices" {
                 options.list_devices = true;
+                continue;
+            }
+            if argument == "--tailnet" {
+                options.tailnet = true;
                 continue;
             }
             if argument == "--json" {
@@ -167,6 +174,19 @@ impl HostPairOptions {
         if options.list_devices && options.revoke_device.is_some() {
             return Err(ZenpiError::arguments(
                 "list and revoke are mutually exclusive",
+            ));
+        }
+        if options.tailnet
+            && (options.list_devices
+                || options.list_projects
+                || options.revoke_device.is_some()
+                || options.list_worktree_intents
+                || options.reconcile_worktree.is_some()
+                || options.list_quota_intents
+                || options.reconcile_quota.is_some())
+        {
+            return Err(ZenpiError::arguments(
+                "--tailnet only applies to a pairing listener",
             ));
         }
         if options.json && !options.list_devices {
@@ -423,7 +443,9 @@ pub fn run(options: HostPairOptions) -> Result<(), ZenpiError> {
         {
             options.bind.set_port(port);
         }
-        if options.bind.ip().is_unspecified() {
+        // An explicit --advertise with a wildcard bind is a forwarded address (for
+        // example an `ssh -R` VPS on the user's overlay): keep listening widely.
+        if options.bind.ip().is_unspecified() && options.advertise.is_none() {
             let selected = advertise_address(&options, options.bind)?;
             options.bind.set_ip(selected.ip());
         }
@@ -526,6 +548,8 @@ Connection:
   --duration-seconds N              Invitation/listener duration, 1..300 (default 300)
   --identity PATH                   Private identity file (default ~/.zenpi/remote/identity.json)
   --plain                           Print the invitation URI instead of the QR view
+  --tailnet                         Also advertise this host's Tailscale/Headscale addresses
+                                    (100.64.0.0/10, fd7a:115c:a1e0::/48) after the LAN one
   --list-projects                   List attached project IDs without a listener
 
 Devices (exclusive local actions; use the same --identity PATH as the host):
@@ -543,7 +567,8 @@ Examples:
   zenpi host pair --bind 192.168.50.14:7777 --workspace /path/project --session /path/session.jsonl
   zenpi host pair --revoke-device DEVICE_ID
 
-QR does not provide Internet/NAT traversal. Both devices must reach the same LAN.
+QR does not provide Internet/NAT traversal: the phone dials the LAN address first,
+then any --tailnet overlay address; the pinned host key is checked on every path.
 Keep invitation tokens and identity keys private. Plain output contains a one-use token.
 Normal TUI/headless runs do not start a listener. Help creates no files or sockets.
 Use --help or -h alone after host pair to display this help."
@@ -563,6 +588,42 @@ fn open_registry(
         .migrate_legacy_host(&identity.legacy_fingerprint())
         .map_err(|error| ZenpiError::Message(error.to_string()))?;
     Ok(Arc::new(registry))
+}
+
+/// QR hints: the LAN address first, then each overlay address on the same port, and
+/// the overlay addresses the bound listener does not already cover (ZE-516).
+fn overlay_hints(
+    lan: SocketAddr,
+    bound: SocketAddr,
+    overlay: &[IpAddr],
+    tailnet: bool,
+) -> Result<(Vec<AddressHint>, Vec<SocketAddr>), ZenpiError> {
+    if tailnet && overlay.is_empty() {
+        return Err(ZenpiError::arguments(
+            "--tailnet found no overlay address (100.64.0.0/10 or fd7a:115c:a1e0::/48); is Tailscale/Headscale up?",
+        ));
+    }
+    let mut hints = vec![AddressHint::lan(lan)];
+    let mut binds = vec![];
+    for ip in overlay
+        .iter()
+        .copied()
+        .filter(|ip| crate::remote::lan::overlay(*ip))
+        .take(crate::remote::pairing::MAX_ADDRESS_HINTS - 1)
+    {
+        let address = SocketAddr::new(ip, bound.port());
+        if address == lan {
+            continue;
+        }
+        if !(bound.ip().is_unspecified() && bound.is_ipv4() == ip.is_ipv4()) {
+            binds.push(address);
+        }
+        hints.push(AddressHint {
+            kind: HintKind::Tailnet,
+            address,
+        });
+    }
+    Ok((hints, binds))
 }
 
 const PAIR_GRANTS_CONTROL: &str = "Pairing grants control of the mounted project.";
@@ -667,6 +728,8 @@ fn local_projects(options: &HostPairOptions) -> Result<serde_json::Value, ZenpiE
 /// An opt-in listener that may retain a mailbox to an already-running desktop owner.
 pub struct PairingHost {
     listener: RemoteListener,
+    /// One per overlay address the main listener does not already cover.
+    overlay_listeners: Vec<RemoteListener>,
     issuer: Arc<InviteIssuer>,
     invite: PairingInvite,
     accepted: Arc<AtomicUsize>,
@@ -710,12 +773,11 @@ impl PairingHost {
         };
         let mut policy = ListenerOptions::loopback();
         policy.bind = options.bind;
-        let listener = RemoteListener::start(
-            policy,
-            identity
-                .server_config()
-                .map_err(|error| ZenpiError::Message(error.to_string()))?,
-            move |stream| {
+        let config = identity
+            .server_config()
+            .map_err(|error| ZenpiError::Message(error.to_string()))?;
+        let handler = Arc::new(
+            move |stream: &mut crate::remote::listener::TlsStream| -> io::Result<()> {
                 let hello = read_frame(stream)
                     .map_err(io::Error::other)?
                     .ok_or_else(|| io::Error::other("EOF"))?;
@@ -914,14 +976,34 @@ impl PairingHost {
                 }
                 write_frame(stream, &response).map_err(io::Error::other)
             },
-        )?;
-        let address = advertise_address(options, listener.local_addr())?;
+        );
+        let listen = |policy: ListenerOptions| {
+            let handler = handler.clone();
+            RemoteListener::start(policy, config.clone(), move |stream| handler(stream))
+        };
+        let listener = listen(policy.clone())?;
+        let bound = listener.local_addr();
+        let address = advertise_address(options, bound)?;
+        let overlay = if options.tailnet {
+            // Interface addresses only: no Tailscale API, the user's overlay routes them.
+            crate::remote::lan::overlay_addresses()?
+        } else {
+            vec![]
+        };
+        let (hints, extra_binds) = overlay_hints(address, bound, &overlay, options.tailnet)?;
+        let mut overlay_listeners = Vec::new();
+        for bind in extra_binds {
+            let mut extra = policy.clone();
+            extra.bind = bind;
+            overlay_listeners.push(listen(extra)?);
+        }
         let ttl = Duration::from_secs(options.duration_seconds);
         let invite = issuer
-            .issue(address, ttl)
+            .issue_hints(hints, ttl)
             .map_err(|error| ZenpiError::Message(error.to_string()))?;
         Ok(Self {
             listener,
+            overlay_listeners,
             issuer,
             invite,
             accepted,
@@ -961,6 +1043,9 @@ impl PairingHost {
             .cancel()
             .map_err(|error| ZenpiError::Message(error.to_string()))?;
         self.listener.shutdown()?;
+        for listener in &mut self.overlay_listeners {
+            listener.shutdown()?;
+        }
         Ok(())
     }
 }
@@ -1148,9 +1233,14 @@ fn render_pairing_at(
     } else {
         "No project mounted. Host writes unavailable."
     };
-    let metadata = vec!["Zenpi Pair".to_owned(), invite.address.to_string()];
+    let mut metadata = vec!["Zenpi Pair".to_owned(), invite.address.to_string()];
+    metadata.extend(
+        invite.hints[1..]
+            .iter()
+            .map(|hint| format!("then {}", hint.address)),
+    );
     let footer = vec![
-        "Host certificate SHA-256:".to_owned(),
+        "Host key SHA-256:".to_owned(),
         invite.fingerprint.clone(),
         format!(
             "Expires in {}s    Accepted: {}",
@@ -1477,6 +1567,74 @@ mod lan_selection_tests {
             advertise_address(&options, bound).unwrap(),
             "192.168.50.55:7777".parse().unwrap()
         );
+    }
+
+    #[test]
+    fn tailnet_hints_follow_the_lan_hint_and_bind_only_what_the_listener_misses() {
+        let lan: SocketAddr = "192.168.50.55:7777".parse().unwrap();
+        let overlay: Vec<IpAddr> = vec![
+            "100.83.245.109".parse().unwrap(),
+            "fd7a:115c:a1e0::e736:f56d".parse().unwrap(),
+        ];
+        // Selected interface (host serve): every overlay address needs its own listener.
+        let (hints, binds) = overlay_hints(lan, lan, &overlay, true).unwrap();
+        let addresses: Vec<_> = hints.iter().map(|hint| hint.address).collect();
+        assert_eq!(
+            addresses,
+            [
+                lan,
+                "100.83.245.109:7777".parse().unwrap(),
+                "[fd7a:115c:a1e0::e736:f56d]:7777".parse().unwrap()
+            ]
+        );
+        assert_eq!(hints[0].kind, crate::remote::pairing::HintKind::Lan);
+        assert!(hints[1..].iter().all(|hint| hint.kind == HintKind::Tailnet));
+        assert_eq!(binds, addresses[1..]);
+        // 0.0.0.0 already accepts the IPv4 overlay address; only IPv6 needs a listener.
+        let any: SocketAddr = "0.0.0.0:7777".parse().unwrap();
+        let (hints, binds) = overlay_hints(lan, any, &overlay, true).unwrap();
+        assert_eq!(hints.len(), 3);
+        assert_eq!(binds, ["[fd7a:115c:a1e0::e736:f56d]:7777".parse().unwrap()]);
+        // Without --tailnet nothing is added; with it, no overlay address is an error.
+        assert_eq!(overlay_hints(lan, lan, &[], false).unwrap().0.len(), 1);
+        assert!(overlay_hints(lan, lan, &[], true).is_err());
+        // Non-overlay addresses are never advertised as tailnet, and at most 4 hints exist.
+        let many: Vec<IpAddr> = [
+            "10.0.0.1",
+            "100.64.0.1",
+            "100.64.0.2",
+            "100.64.0.3",
+            "100.64.0.4",
+        ]
+        .iter()
+        .map(|ip| ip.parse().unwrap())
+        .collect();
+        let (hints, _) = overlay_hints(lan, lan, &many, true).unwrap();
+        assert_eq!(hints.len(), crate::remote::pairing::MAX_ADDRESS_HINTS);
+        assert!(
+            hints[1..]
+                .iter()
+                .all(|hint| crate::remote::lan::overlay(hint.address.ip()))
+        );
+        let identity = HostIdentity::generate().unwrap();
+        let (hints, _) = overlay_hints(lan, lan, &overlay, true).unwrap();
+        let invite = InviteIssuer::new(&identity)
+            .issue_hints(hints.clone(), Duration::from_secs(60))
+            .unwrap();
+        assert_eq!(invite.hints, hints);
+    }
+
+    #[test]
+    fn tailnet_flag_parses_only_for_a_pairing_listener() {
+        let parse = |args: &[&str]| HostPairOptions::parse(args.iter().map(|arg| arg.to_string()));
+        assert!(parse(&["--tailnet"]).unwrap().tailnet);
+        assert!(parse(&["--tailnet", "--plain"]).unwrap().tailnet);
+        for refused in [
+            vec!["--tailnet", "--list-devices"],
+            vec!["--tailnet", "--revoke-device", &"a".repeat(64)],
+        ] {
+            assert!(parse(&refused).is_err());
+        }
     }
 
     #[test]

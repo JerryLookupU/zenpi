@@ -1087,7 +1087,7 @@ class PairingViewModel @JvmOverloads constructor(application: Application, priva
                     storage.withLock { withContext(Dispatchers.IO) { if (generation == current) {
                         ensureActive()
                         zenpi.transport.AuthenticationProof.deviceId(result.deviceId) { identity.deviceId }
-                        saved = hostStore.save(PairedHost(invite.host, invite.port, invite.fingerprint, result.deviceId, legacyPin = invite.version == 1),
+                        saved = hostStore.save(PairedHost(invite.host, invite.port, invite.fingerprint, result.deviceId, legacyPin = invite.version == 1, fallbacks = invite.hints.drop(1)),
                             storageAdmission(current, coroutineContext, identity, result.deviceId))
                     } } }
                 }
@@ -1096,7 +1096,7 @@ class PairingViewModel @JvmOverloads constructor(application: Application, priva
                     if (result.paired && result.deviceRegistered) null else invite,
                     if (result.paired && result.deviceRegistered) null else "Device registration incomplete",
                     result.deviceRegistered,
-                    host = if (result.deviceRegistered) PairedHost(invite.host, invite.port, invite.fingerprint, result.deviceId, legacyPin = invite.version == 1) else null,
+                    host = if (result.deviceRegistered) PairedHost(invite.host, invite.port, invite.fingerprint, result.deviceId, legacyPin = invite.version == 1, fallbacks = invite.hints.drop(1)) else null,
                     projection = saved?.projection,
                 )
                 if (generation == current && saved != null) previousPairing = null

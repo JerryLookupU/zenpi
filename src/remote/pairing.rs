@@ -310,7 +310,10 @@ impl PairingInvite {
         let hints_valid = !self.hints.is_empty()
             && self.hints.len() <= MAX_ADDRESS_HINTS
             && self.hints[0].address == self.address
-            && self.hints.iter().all(|hint| valid_address(hint.address))
+            && self.hints.iter().all(|hint| {
+                valid_address(hint.address)
+                    && (hint.kind != HintKind::Tailnet || super::lan::overlay(hint.address.ip()))
+            })
             && self.hints.iter().enumerate().all(|(index, hint)| {
                 !self.hints[..index]
                     .iter()

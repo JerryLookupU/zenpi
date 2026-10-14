@@ -72,17 +72,22 @@ class PairingClient(private val bindSocket: (Socket, String) -> Unit = { _, _ ->
                 OperationDeadline.run {
                     withContext(Dispatchers.IO) {
                         fun current() = proof.requireFresh(invite, { identity.publicKey }, { ensureActive() })
-                        val raw = Socket()
+                        val (hint, raw) = HintDialer.dial(invite.hints) { hint, timeout ->
+                            val attempt = Socket()
+                            try {
+                                active.install(attempt)
+                                current()
+                                bindSocket(attempt, hint.host)
+                                current()
+                                attempt.connect(InetSocketAddress(hint.host, hint.port), timeout)
+                                attempt
+                            } catch (error: Throwable) { active.retire(attempt); throw error }
+                        }
                         try {
-                            active.install(raw)
-                            current()
-                            bindSocket(raw, invite.host)
-                            current()
-                            raw.connect(InetSocketAddress(invite.host, invite.port), 5000)
                             current()
                             val context = SSLContext.getInstance("TLSv1.3")
                             context.init(null, arrayOf(PinnedTrustManager(invite.fingerprint)), SecureRandom())
-                            val socket = context.socketFactory.createSocket(raw, "zenpi.local", invite.port, true) as SSLSocket
+                            val socket = context.socketFactory.createSocket(raw, "zenpi.local", hint.port, true) as SSLSocket
                             active.transfer(raw, socket)
                             socket.use {
                                 socket.enabledProtocols = arrayOf("TLSv1.3")

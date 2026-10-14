@@ -1587,6 +1587,16 @@ retired together with the one-use token (a refresh replaces both) and are routin
 advice only: identity is always the pinned key.
 QR URI v1 (still parsed strictly): `zenpi://pair?v=1&address=<literal IP:port>&fingerprint=<sha256 certificate DER>&token=<base64url>&expires=<unix seconds>`.
 Each version accepts exactly its own field set; mixing v1 and v2 fields is refused.
+A `tailnet` hint must be a T1 overlay address: `100.64.0.0/10` or
+`fd7a:115c:a1e0::/48` (ZE-516). `zenpi host pair|serve --tailnet` reads the host's
+interface addresses (including point-to-point tunnels) and appends every overlay
+address on the listener port, starting an extra listener for each one the bound
+listener does not cover; it never calls a Tailscale API and fails if none exists.
+Android dials LAN hints first, then the rest in QR order; only a failed
+bind/connect moves to the next hint, the pin is verified once on the connected
+socket and a mismatch is final (no fallback). The socket binder admits a VPN
+(`TRANSPORT_VPN`) network only for overlay targets; every other target still
+requires a matching non-default Wi-Fi/Ethernet route.
 
 Shared invitation fixtures bind raw URI, validation clock, normalized address
 across Rust and Android. Scheme/authority must use

@@ -38,6 +38,14 @@ class PairedHostMigrationTest {
             store.finishWorkspace(migrated, command)
             store.save(migrated.copy(port = 8888))
             assertFalse(requireNotNull(store.load()).legacyPin)
+            // ZE-516: the QR's later hints persist in order after the primary address.
+            val overlay = migrated.copy(fallbacks = listOf(zenpi.pairing.AddressHint("tailnet", "100.101.102.103", 7777),
+                zenpi.pairing.AddressHint("tailnet", "fd7a:115c:a1e0::1", 7777)))
+            store.save(overlay)
+            assertEquals(overlay, store.load())
+            assertEquals(listOf("192.168.50.55:7777", "100.101.102.103:7777", "[fd7a:115c:a1e0::1]:7777"),
+                requireNotNull(store.load()).hints.map { it.address })
+            assertTrue(runCatching { store.save(overlay.copy(fallbacks = listOf(zenpi.pairing.AddressHint("tailnet", "192.168.50.55", 7777)))) }.isFailure)
         } finally { store.wipe() }
     }
 }

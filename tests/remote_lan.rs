@@ -162,3 +162,78 @@ fn actual_interface_inventory_is_unique_and_excludes_unusable_addresses() {
         }
     }
 }
+
+/// ZE-516: CGNAT and the Tailscale ULA are the T1 overlay; nothing else is.
+#[test]
+fn cgnat_and_tailscale_ula_are_overlay_and_never_a_lan_candidate() {
+    use zenpi::remote::lan::{overlay, overlay_addresses};
+    for value in [
+        "100.64.0.0",
+        "100.64.0.1",
+        "100.101.102.103",
+        "100.127.255.255",
+        "fd7a:115c:a1e0::",
+        "fd7a:115c:a1e0::1",
+        "fd7a:115c:a1e0:ffff:ffff:ffff:ffff:ffff",
+        "::ffff:100.100.1.1",
+    ] {
+        assert!(overlay(ip(value)), "{value}");
+    }
+    for value in [
+        "100.63.255.255",
+        "100.128.0.0",
+        "10.0.0.1",
+        "192.168.1.5",
+        "172.16.0.1",
+        "8.8.8.8",
+        "fd7a:115c:a1e1::1",
+        "fd7a:115d:a1e0::1",
+        "fd00::1",
+        "fe80::1",
+        "2001:db8::1",
+    ] {
+        assert!(!overlay(ip(value)), "{value}");
+    }
+    // An overlay address is not a LAN: a lone tailnet ULA does not become the QR address.
+    assert!(select(false, &[ip("fd7a:115c:a1e0::1")], None).is_err());
+    assert_eq!(
+        select(false, &[ip("fd7a:115c:a1e0::1"), ip("fd00::5")], None).unwrap(),
+        ip("fd00::5")
+    );
+    // Interface discovery only returns overlay members, IPv4 first.
+    let found = overlay_addresses().unwrap();
+    assert!(found.iter().all(|value| overlay(*value)));
+    assert!(
+        found
+            .windows(2)
+            .all(|pair| pair[0].is_ipv4() >= pair[1].is_ipv4())
+    );
+}
+
+#[test]
+fn tailnet_hints_must_be_overlay_addresses() {
+    use std::time::Duration;
+    use zenpi::remote::pairing::{AddressHint, HintKind, HostIdentity, InviteIssuer};
+    let issuer = InviteIssuer::new(&HostIdentity::generate().unwrap());
+    let lan = AddressHint::lan("192.168.50.55:7777".parse().unwrap());
+    for (address, accepted) in [
+        ("100.101.102.103:7777", true),
+        ("[fd7a:115c:a1e0::9]:7777", true),
+        ("10.0.0.7:7777", false),
+        ("100.128.0.1:7777", false),
+        ("[fd00::1]:7777", false),
+    ] {
+        let hints = vec![
+            lan,
+            AddressHint {
+                kind: HintKind::Tailnet,
+                address: address.parse().unwrap(),
+            },
+        ];
+        assert_eq!(
+            issuer.issue_hints(hints, Duration::from_secs(60)).is_ok(),
+            accepted,
+            "{address}"
+        );
+    }
+}
