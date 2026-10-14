@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-204",
+  "claim_id": "ZE-204@blueprint-4.0.0",
+  "from": "worker",
+  "to": "master",
+  "summary": "Per-call cap aligned with writes: tools::MAX_TOOL_CALL_BYTES = MAX_WRITE_BYTES + 64 KiB (576 KiB); schema/Blueprint-policy checks keep 64 KiB via new MAX_TOOL_DEFINITION_BYTES. validate_call reports LimitExceeded with size, limit and a 'split into smaller writes' hint. core::validate_provider_calls no longer fails the turn on size: new over_budget_calls() marks calls over the per-call cap, or over a 768 KiB per-response budget (keeps the assistant journal record under MAX_SESSION_RECORD_BYTES), and those calls get an error tool result (LimitExceeded) while the turn continues; their arguments are journaled as {} with arguments_omitted=true and the batch runs sequentially. Batch cap reviewed: executor MAX_BATCH_BYTES raised 256 KiB -> 1 MiB with const asserts (single max call fits; provider budget + separators fits).",
+  "changed_files": [
+    "src/tools.rs",
+    "src/core.rs",
+    "src/tool_runtime.rs",
+    "tests/tools_edit_paths.rs",
+    "Docs/quality/ze/ZE-204.json"
+  ],
+  "diff_stat": "5 files changed, 200 insertions(+), 26 deletions(-) (plus this handoff)",
+  "commands_run": [
+    "git fetch && git merge --ff-only origin/main",
+    "cargo fmt --all",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo clippy --locked --all-targets --all-features -- -D warnings",
+    "cargo test --locked --test tools_edit_paths",
+    "cargo test --locked --no-fail-fast --test tools --test stage1_tool_batch --test core_session --test tool_result_text --test stage1_tool_output",
+    "cargo test --locked -q --test core_session user_shell_preserves -- --test-threads=1"
+  ],
+  "validation_result": {
+    "fmt": "pass",
+    "clippy": "pass (default and --all-features, -D warnings)",
+    "write_80kb": "pass: tests/tools_edit_paths.rs eighty_kilobyte_write_file_succeeds (agent loop, file written, next request carries the result)",
+    "over_limit_call": "pass: over_limit_tool_call_returns_an_error_result_and_the_turn_continues (error result with limit text, next call executes, final text returned, arguments omitted from journal)",
+    "related_suites": "tools, stage1_tool_batch, tool_result_text, stage1_tool_output pass; core_session 40/41 with load-flaky user_shell_preserves_nonzero_signal_and_cancellation_evidence passing on rerun with --test-threads=1"
+  },
+  "notes": "src/tool_runtime.rs is outside the item's owned paths: one-line MAX_BATCH_BYTES change (256 KiB -> 1 MiB) plus a const assert. It is required because the sequential core path executes each call as a single-call batch through execute_tool_batch, so any per-call cap above 256 KiB would still fail the turn. Provider frame limits (chat/anthropic 256 KiB per SSE frame) are per delta and unaffected. No new unwrap/expect/panic in non-test code.",
+  "created_at": "2026-10-14T14:21:05Z",
+  "digest": "5b69bfce18c124cf964d86000f467581871c32ff7a3b8c9998abdd90444564dd"
+}

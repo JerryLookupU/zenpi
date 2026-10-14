@@ -7,6 +7,7 @@
 //! explicit policy grants and are guarded by the host approval boundary.
 
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet, VecDeque},
     fs::{self, File, OpenOptions},
     io::{self, Read, Write},
@@ -24,7 +25,12 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-pub const MAX_TOOL_CALL_BYTES: usize = 64 * 1024;
+/// Maximum serialized size of one tool call (id, name and JSON arguments).
+/// A full `MAX_WRITE_BYTES` write plus its path and JSON escaping overhead
+/// must fit, otherwise large `write_file` calls could never succeed.
+pub const MAX_TOOL_CALL_BYTES: usize = MAX_WRITE_BYTES + 64 * 1024;
+/// Maximum serialized size of a tool input schema or Blueprint policy.
+pub const MAX_TOOL_DEFINITION_BYTES: usize = 64 * 1024;
 pub const MAX_TOOL_RESULT_BYTES: usize = 1024 * 1024;
 pub const MAX_INLINE_TOOL_RESULT_BYTES: usize = 64 * 1024;
 pub const TOOL_ARTIFACT_DIRECTORY: &str = ".zenpi/artifacts";
@@ -238,7 +244,7 @@ impl BlueprintGate {
         }
         let encoded = serde_json::to_vec(&(&policy, &lease, context.workspace_root()))
             .map_err(ToolError::Json)?;
-        if encoded.len() > MAX_TOOL_CALL_BYTES {
+        if encoded.len() > MAX_TOOL_DEFINITION_BYTES {
             return Err(invalid("Blueprint policy exceeds 64 KiB"));
         }
         let mut digest = Sha256::new();
@@ -528,7 +534,7 @@ impl ToolDefinition {
         if serde_json::to_vec(&self.input_schema)
             .map_err(ToolError::Json)?
             .len()
-            > MAX_TOOL_CALL_BYTES
+            > MAX_TOOL_DEFINITION_BYTES
         {
             return Err(ToolError::InvalidDefinition(
                 "tool input schema is too large".into(),
@@ -929,10 +935,67 @@ impl ToolContext {
     }
 
     fn check_path_gate(&self, requested: &str, write: bool) -> Result<(), ToolError> {
+        let requested = self.workspace_path(requested)?;
+        self.check_relative_path_gate(&requested, write)
+    }
+
+    fn check_relative_path_gate(&self, relative: &str, write: bool) -> Result<(), ToolError> {
         if let Some(gate) = self.checked_gate()? {
-            gate.check_path(requested, write)?;
+            gate.check_path(relative, write)?;
         }
         Ok(())
+    }
+
+    /// Map a model-supplied path to a workspace-relative one (pi path rules).
+    /// A leading `@` is dropped, `~` and `~/x` expand to the home directory,
+    /// and an absolute path is accepted only when it names something inside
+    /// the workspace, comparing canonical prefixes so symlinked spellings of
+    /// the root (for example `/var` vs `/private/var`) still match. The
+    /// result goes through the usual relative checks, so `..`, symlink
+    /// escapes and private output paths stay rejected.
+    fn workspace_path<'a>(&self, requested: &'a str) -> Result<Cow<'a, str>, ToolError> {
+        let denied = || ToolError::PathDenied(requested.to_owned());
+        let path = requested.strip_prefix('@').unwrap_or(requested);
+        let absolute = if path == "~" || path.starts_with("~/") {
+            let home = std::env::var_os("HOME")
+                .filter(|home| Path::new(home).is_absolute())
+                .ok_or_else(denied)?;
+            Path::new(&home).join(path[1..].trim_start_matches('/'))
+        } else if Path::new(path).is_absolute() {
+            PathBuf::from(path)
+        } else {
+            return Ok(Cow::Borrowed(path));
+        };
+        if path.contains(['\0', '\r', '\n'])
+            || absolute
+                .components()
+                .any(|component| component == Component::ParentDir)
+        {
+            return Err(denied());
+        }
+        let relative = match absolute.strip_prefix(&self.workspace_root) {
+            Ok(relative) => relative.to_path_buf(),
+            Err(_) => {
+                // Canonicalize the deepest existing ancestor; components
+                // below it do not exist yet and cannot be symlinks.
+                let existing = absolute
+                    .ancestors()
+                    .find(|ancestor| ancestor.exists())
+                    .ok_or_else(denied)?;
+                let canonical = existing.canonicalize().map_err(|_| denied())?;
+                let base = canonical
+                    .strip_prefix(&self.workspace_root)
+                    .map_err(|_| denied())?;
+                let rest = absolute.strip_prefix(existing).map_err(|_| denied())?;
+                base.join(rest)
+            }
+        };
+        let relative = relative.to_str().ok_or_else(denied)?;
+        Ok(Cow::Owned(if relative.is_empty() {
+            ".".to_owned()
+        } else {
+            relative.to_owned()
+        }))
     }
 
     /// Resolve a model-independent user attachment inside the fixed workspace.
@@ -968,14 +1031,15 @@ impl ToolContext {
     }
 
     fn resolve_for_write(&self, requested: &str) -> Result<PathBuf, ToolError> {
-        self.check_path_gate(requested, true)?;
+        let requested = &*self.workspace_path(requested)?;
+        self.check_relative_path_gate(requested, true)?;
         validate_relative_path(requested)?;
         if private_output_path(Path::new(requested)) {
             return Err(ToolError::PathDenied(requested.into()));
         }
         let candidate = self.workspace_root.join(requested);
         if candidate.exists() {
-            self.check_path_gate(requested, false)?;
+            self.check_relative_path_gate(requested, false)?;
             let canonical = candidate
                 .canonicalize()
                 .map_err(|error| map_path_io(&candidate, error))?;
@@ -1007,7 +1071,8 @@ impl ToolContext {
     }
 
     fn resolve_existing(&self, requested: &str) -> Result<ResolvedPath, ToolError> {
-        self.check_path_gate(requested, false)?;
+        let requested = &*self.workspace_path(requested)?;
+        self.check_relative_path_gate(requested, false)?;
         validate_relative_path(requested)?;
         if private_output_path(Path::new(requested)) {
             return Err(ToolError::PathDenied(requested.into()));
@@ -2536,13 +2601,7 @@ impl EditFileTool {
         }
         let path = context.resolve_existing(requested)?.canonical;
         let original = read_bounded_text(&path, MAX_WRITE_BYTES)?;
-        let occurrences = original.matches(old).count();
-        if occurrences != 1 {
-            return Err(ToolError::InvalidArguments(format!(
-                "old text must occur exactly once (found {occurrences})"
-            )));
-        }
-        let edited = original.replacen(old, new, 1);
+        let edited = apply_text_edit(&original, old, new)?;
         if edited.len() > MAX_WRITE_BYTES {
             return Err(ToolError::LimitExceeded(format!(
                 "edited content exceeds {MAX_WRITE_BYTES} bytes"
@@ -2568,7 +2627,9 @@ impl Tool for EditFileTool {
         ToolDefinition {
             name: "edit_file".into(),
             description:
-                "Replace one exact UTF-8 text occurrence atomically and return a bounded unified diff."
+                "Replace one unique UTF-8 text occurrence atomically and return a bounded unified diff. \
+                 Matching ignores CRLF vs LF, a UTF-8 BOM, trailing whitespace and Unicode quote, \
+                 dash and space variants; the file keeps its line endings."
                     .into(),
             input_schema: json!({
                 "type": "object",
@@ -2603,13 +2664,7 @@ impl Tool for EditFileTool {
         // Read at most one byte past the write budget so oversized sources are
         // rejected before they can consume unbounded memory.
         let original = read_bounded_text(&path, MAX_WRITE_BYTES)?;
-        let occurrences = original.matches(old).count();
-        if occurrences != 1 {
-            return Err(ToolError::InvalidArguments(format!(
-                "old text must occur exactly once (found {occurrences})"
-            )));
-        }
-        let edited = original.replacen(old, new, 1);
+        let edited = apply_text_edit(&original, old, new)?;
         if edited.len() > MAX_WRITE_BYTES {
             return Err(ToolError::LimitExceeded(format!(
                 "edited content exceeds {MAX_WRITE_BYTES} bytes"
@@ -3014,6 +3069,144 @@ fn source_digest(path: &Path) -> Result<String, ToolError> {
 /// Read a UTF-8 file while enforcing a hard byte bound.  Unlike
 /// [`read_diff_source`], this helper rejects a clipped source because an exact
 /// edit cannot safely determine occurrence count from a prefix.
+/// Replace the single occurrence of `old` in `original` (pi edit semantics).
+///
+/// Matching runs on LF-normalized text without a leading BOM. An exact match
+/// is preferred; otherwise a fuzzy match ignores trailing whitespace per line
+/// and folds Unicode quotes, dashes, spaces and full-width forms to ASCII.
+/// Uniqueness is always judged on the fuzzy form, so ambiguous text is
+/// rejected. Only the matched source span is rewritten: the BOM, the rest of
+/// the file and its line endings are preserved, and `new` is written with the
+/// file's line ending.
+fn apply_text_edit(original: &str, old: &str, new: &str) -> Result<String, ToolError> {
+    let (bom, body) = match original.strip_prefix('\u{feff}') {
+        Some(body) => ("\u{feff}", body),
+        None => ("", original),
+    };
+    let old = old.strip_prefix('\u{feff}').unwrap_or(old);
+    let exact = NormalizedText::new(body, false);
+    let fuzzy = NormalizedText::new(body, true);
+    let exact_old = NormalizedText::new(old, false).text;
+    let fuzzy_old = NormalizedText::new(old, true).text;
+    if fuzzy_old.trim().is_empty() {
+        return Err(ToolError::InvalidArguments(
+            "old text must contain non-whitespace characters".into(),
+        ));
+    }
+    let occurrences = fuzzy.text.matches(fuzzy_old.as_str()).count();
+    if occurrences != 1 {
+        let hint = if occurrences == 0 {
+            "; re-read the file and copy the text exactly"
+        } else {
+            "; include more surrounding lines to make it unique"
+        };
+        return Err(ToolError::InvalidArguments(format!(
+            "old text must occur exactly once (found {occurrences}){hint}"
+        )));
+    }
+    let (start, end) = match exact.text.find(exact_old.as_str()) {
+        Some(index) => exact.source_span(index, exact_old.len()),
+        None => {
+            let index = fuzzy.text.find(fuzzy_old.as_str()).unwrap_or_default();
+            fuzzy.source_span(index, fuzzy_old.len())
+        }
+    };
+    let crlf = body
+        .find('\n')
+        .is_some_and(|index| body[..index].ends_with('\r'));
+    let new = NormalizedText::new(new, false).text;
+    let new = if crlf { new.replace('\n', "\r\n") } else { new };
+    let mut edited = String::with_capacity(original.len() + new.len());
+    edited.push_str(bom);
+    edited.push_str(&body[..start]);
+    edited.push_str(&new);
+    edited.push_str(&body[end..]);
+    Ok(edited)
+}
+
+/// Text with normalized line endings (and, when fuzzy, folded characters and
+/// no trailing whitespace) plus a map from each output character back to the
+/// source bytes that produced it.
+struct NormalizedText {
+    text: String,
+    /// (output byte offset, source start, source end) for every output char.
+    spans: Vec<(usize, usize, usize)>,
+}
+
+impl NormalizedText {
+    fn new(source: &str, fuzzy: bool) -> Self {
+        let mut normalized = Self {
+            text: String::with_capacity(source.len()),
+            spans: Vec::new(),
+        };
+        let mut line_start = 0;
+        loop {
+            let rest = &source[line_start..];
+            let (line_len, break_len) = match rest.find(['\r', '\n']) {
+                Some(index) if rest[index..].starts_with("\r\n") => (index, 2),
+                Some(index) => (index, 1),
+                None => (rest.len(), 0),
+            };
+            let line = &rest[..line_len];
+            let kept = if fuzzy { line.trim_end() } else { line };
+            for (offset, character) in kept.char_indices() {
+                let start = line_start + offset;
+                let end = start + character.len_utf8();
+                if fuzzy {
+                    normalized.push_folded(character, start, end);
+                } else {
+                    normalized.push(character, start, end);
+                }
+            }
+            if break_len == 0 {
+                return normalized;
+            }
+            let start = line_start + line_len;
+            normalized.push('\n', start, start + break_len);
+            line_start = start + break_len;
+        }
+    }
+
+    fn push(&mut self, character: char, start: usize, end: usize) {
+        self.spans.push((self.text.len(), start, end));
+        self.text.push(character);
+    }
+
+    /// NFKC-like folding for the characters models most often rewrite.
+    fn push_folded(&mut self, character: char, start: usize, end: usize) {
+        let folded = match character {
+            '\u{2018}' | '\u{2019}' | '\u{201a}' | '\u{201b}' => '\'',
+            '\u{201c}' | '\u{201d}' | '\u{201e}' | '\u{201f}' => '"',
+            '\u{2010}'..='\u{2015}' | '\u{2212}' => '-',
+            '\u{00a0}' | '\u{2002}'..='\u{200a}' | '\u{202f}' | '\u{205f}' | '\u{3000}' => ' ',
+            '\u{2026}' => {
+                for _ in 0..3 {
+                    self.push('.', start, end);
+                }
+                return;
+            }
+            // Full-width ASCII forms fold to ASCII, as NFKC does.
+            '\u{ff01}'..='\u{ff5e}' => {
+                char::from_u32(u32::from(character) - 0xff01 + 0x21).unwrap_or(character)
+            }
+            other => other,
+        };
+        self.push(folded, start, end);
+    }
+
+    /// Source byte range covered by `len` output bytes starting at `index`.
+    fn source_span(&self, index: usize, len: usize) -> (usize, usize) {
+        let first = self.spans.partition_point(|span| span.0 < index);
+        let last = self.spans.partition_point(|span| span.0 < index + len);
+        let start = self.spans.get(first).map_or(0, |span| span.1);
+        let end = last
+            .checked_sub(1)
+            .and_then(|last| self.spans.get(last))
+            .map_or(start, |span| span.2);
+        (start, end.max(start))
+    }
+}
+
 fn read_bounded_text(path: &Path, max_bytes: usize) -> Result<String, ToolError> {
     let file = File::open(path).map_err(|error| map_path_io(path, error))?;
     let mut bytes = Vec::with_capacity(max_bytes.min(64 * 1024));
@@ -3418,8 +3611,10 @@ pub(crate) fn validate_call(call: &ToolCall) -> Result<(), ToolError> {
     }
     let serialized = serde_json::to_vec(call).map_err(ToolError::Json)?;
     if serialized.len() > MAX_TOOL_CALL_BYTES {
-        return Err(ToolError::InvalidCall(format!(
-            "serialized call exceeds {MAX_TOOL_CALL_BYTES} bytes"
+        return Err(ToolError::LimitExceeded(format!(
+            "tool call arguments are {} bytes; the limit is {MAX_TOOL_CALL_BYTES} bytes. \
+             Split the content into smaller writes or edits",
+            serialized.len()
         )));
     }
     Ok(())

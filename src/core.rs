@@ -5239,20 +5239,32 @@ impl Agent {
                     "provider requested tools but no tool registry is configured".into(),
                 ));
             }
-            let calls = completion.tool_calls;
+            let mut calls = completion.tool_calls;
             validate_provider_calls(&calls, self.session.turns(), turn_id)?;
+            // Oversized calls fail on their own with an error result; their
+            // arguments are not persisted so the journal record stays bounded.
+            let over_budget = over_budget_calls(&calls);
+            for call in &mut calls {
+                if over_budget.contains_key(&call.id) {
+                    call.arguments = Value::Object(serde_json::Map::new());
+                }
+            }
             let evidence = self.tool_execution_evidence()?;
             let call_metadata = calls
                 .iter()
                 .map(|call| {
-                    serde_json::json!({
+                    let mut metadata = serde_json::json!({
                         "id": call.id,
                         "name": call.name,
                         "arguments": call.arguments,
                         "execution": evidence,
                         "policy_digest": evidence.policy_digest,
                         "worker_binding": evidence.worker_binding,
-                    })
+                    });
+                    if over_budget.contains_key(&call.id) {
+                        metadata["arguments_omitted"] = Value::Bool(true);
+                    }
+                    metadata
                 })
                 .collect::<Vec<_>>();
             let mut assistant_call = Turn::with_parent(
@@ -5269,7 +5281,11 @@ impl Agent {
             let batch_ids: Vec<_> = calls.iter().map(|call| call.id.clone()).collect();
             gate.begin_tool_batch(&batch_ids)
                 .map_err(|e| AgentError::Recovery(e.to_string()))?;
-            let concurrency = self.parallel_tool_concurrency(&calls);
+            let concurrency = if over_budget.is_empty() {
+                self.parallel_tool_concurrency(&calls)
+            } else {
+                1
+            };
             if concurrency > 1 {
                 self.invoke_parallel_tools(turn_id, &calls, &evidence, concurrency, is_cancelled)?;
                 for id in &batch_ids {
@@ -5304,6 +5320,13 @@ impl Agent {
                         crate::tools::ToolErrorCode::Cancelled,
                         "call was not executed because the turn stopped",
                         ToolInvocationOutcome::Cancelled,
+                    )
+                } else if let Some(message) = over_budget.get(&call.id) {
+                    tool_failure(
+                        &call,
+                        crate::tools::ToolErrorCode::LimitExceeded,
+                        message,
+                        ToolInvocationOutcome::Failed,
                     )
                 } else {
                     match self.invoke_tool(
@@ -8621,7 +8644,6 @@ fn validate_provider_calls(
             }
         }
     }
-    let mut bytes = 0_usize;
     for call in calls {
         for (value, maximum) in [
             (call.id.as_str(), crate::tools::MAX_TOOL_ID_BYTES),
@@ -8640,23 +8662,46 @@ fn validate_provider_calls(
         if !call.arguments.is_object() {
             return Err(invalid("provider tool call arguments must be an object"));
         }
-        let size = serde_json::to_vec(call)
-            .map_err(|error| invalid(&error.to_string()))?
-            .len();
-        if size > crate::tools::MAX_TOOL_CALL_BYTES {
-            return Err(invalid("provider tool call exceeds its byte limit"));
-        }
-        bytes = bytes.saturating_add(size);
-        if bytes > 256 * 1024 {
-            return Err(invalid("provider tool batch exceeds 256 KiB"));
-        }
-    }
-    // Include the array brackets and separators checked by the executor too,
-    // so an oversized batch is rejected before any operation is announced.
-    if bytes.saturating_add(calls.len().saturating_add(1)) > crate::tool_runtime::MAX_BATCH_BYTES {
-        return Err(invalid("provider tool batch exceeds 256 KiB"));
     }
     Ok(())
+}
+
+/// Serialized argument budget for one assistant tool-call turn. It keeps the
+/// journal record below `MAX_SESSION_RECORD_BYTES` and every executed batch
+/// (array brackets and separators included) below the executor budget.
+const MAX_PROVIDER_BATCH_BYTES: usize = 768 * 1024;
+const _: () = assert!(
+    MAX_PROVIDER_BATCH_BYTES + crate::tool_runtime::MAX_BATCH_CALLS
+        < crate::tool_runtime::MAX_BATCH_BYTES
+);
+const _: () = assert!(crate::tools::MAX_TOOL_CALL_BYTES <= MAX_PROVIDER_BATCH_BYTES);
+
+/// Calls that exceed the per-call limit or the remaining batch budget, with
+/// the error text the model receives. These calls are answered with an error
+/// result and the turn continues; they never fail the whole turn.
+fn over_budget_calls(calls: &[crate::tools::ToolCall]) -> BTreeMap<String, String> {
+    let limit = crate::tools::MAX_TOOL_CALL_BYTES;
+    let mut used = 0_usize;
+    let mut rejected = BTreeMap::new();
+    for call in calls {
+        let size = serde_json::to_vec(call).map_or(usize::MAX, |bytes| bytes.len());
+        let message = if size > limit {
+            format!(
+                "tool call arguments are {size} bytes; the limit is {limit} bytes. \
+                 Split the content into smaller writes or edits"
+            )
+        } else if used.saturating_add(size) > MAX_PROVIDER_BATCH_BYTES {
+            format!(
+                "tool calls in this response exceed {MAX_PROVIDER_BATCH_BYTES} bytes \
+                 together; this call was not executed. Retry it in a separate response"
+            )
+        } else {
+            used += size;
+            continue;
+        };
+        rejected.insert(call.id.clone(), message);
+    }
+    rejected
 }
 
 fn command_source_destination(options: &CliOptions) -> Result<(&str, &str), ZenpiError> {
