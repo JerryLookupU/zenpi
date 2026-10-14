@@ -793,6 +793,7 @@ impl Backend for CaptureOnly {
                 input_tokens: 100,
                 output_tokens: 100,
                 total_tokens: 200,
+                ..Default::default()
             });
             return Ok(completion);
         }

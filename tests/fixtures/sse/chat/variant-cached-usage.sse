@@ -1,0 +1,8 @@
+data: {"id": "chatcache", "model": "gpt-4.1", "choices": [{"index": 0, "delta": {"content": "CACHED_319"}, "finish_reason": null}]}
+
+data: {"id": "chatcache", "model": "gpt-4.1", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
+
+data: {"id": "chatcache", "model": "gpt-4.1", "choices": [], "usage": {"prompt_tokens": 2006, "completion_tokens": 300, "total_tokens": 2306, "prompt_tokens_details": {"cached_tokens": 1920}}}
+
+data: [DONE]
+

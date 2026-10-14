@@ -450,6 +450,20 @@ fn request_body_inner(
     if max == 0 {
         return Err(config("Anthropic max_tokens must be positive"));
     }
+    if !deepseek {
+        // ZE-225: two ephemeral breakpoints — the stable system prefix and the
+        // newest user block — so every turn reads the previous turn's prefix.
+        if let Some(block) = system.last_mut() {
+            block["cache_control"] = json!({"type":"ephemeral"});
+        }
+        if let Some(block) = messages
+            .last_mut()
+            .and_then(|message| message["content"].as_array_mut())
+            .and_then(|blocks| blocks.last_mut())
+        {
+            block["cache_control"] = json!({"type":"ephemeral"});
+        }
+    }
     let mut body = json!({"model":model,"messages":messages,"stream":true,"max_tokens":max});
     if !system.is_empty() {
         body["system"] = json!(system);
@@ -825,6 +839,8 @@ impl Fold {
             input_tokens: input,
             output_tokens: self.usage[1],
             total_tokens: total,
+            cache_read_tokens: self.usage[2],
+            cache_write_tokens: self.usage[3],
         });
         let native_history = json!({"type":"native_history","wire":WIRE,"provider":provider,"model":self.model,"requested_model":self.requested_model,"blocks":blocks});
         let mut completion = Completion {

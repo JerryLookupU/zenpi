@@ -39,7 +39,7 @@ fn finalize(turns: &[Turn], session: &str) -> SemanticCheckpoint {
             turns,
             "Goal: improve project tabs. Preserve BentoBox and Unicode paths. Files updated; restart verification remains.".into(),
             "fixture".into(), "fixture-model".into(),
-            Usage { input_tokens: 100, output_tokens: 20, total_tokens: 120 },
+            Usage { input_tokens: 100, output_tokens: 20, total_tokens: 120, ..Default::default() },
             ContextBudget::default(), &|| false,
         ).unwrap()
 }

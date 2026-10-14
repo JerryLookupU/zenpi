@@ -470,9 +470,20 @@ impl ProviderEvent {
 /// Optional usage information returned by a provider.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
+    /// All prompt tokens, cached ones included.
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub total_tokens: u64,
+    /// Prompt tokens served from the provider's prompt cache (ZE-225).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cache_read_tokens: u64,
+    /// Prompt tokens written to the provider's prompt cache (Anthropic).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cache_write_tokens: u64,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 /// Why the provider ended a completion.
@@ -567,10 +578,12 @@ pub struct RequestScope {
 }
 
 impl RequestScope {
+    const LEGACY_SESSION: &'static str = "legacy";
+
     fn legacy(binding: BackendRequestBinding, request: &CompletionRequest<'_>) -> Self {
         Self {
             owner_id: "legacy".into(),
-            session_id: "legacy".into(),
+            session_id: Self::LEGACY_SESSION.into(),
             operation_id: request.turn_id.into(),
             purpose: if request
                 .metadata
@@ -1553,10 +1566,22 @@ impl OpenAiCompatibleBackend {
             capabilities,
             descriptor: descriptor.as_ref(),
         };
-        let body = match &route {
+        let mut body = match &route {
             Some(route) => protocols::encode_request_for_route(&request, &options, route)?,
             None => protocols::encode_request(&request, &options)?,
         };
+        // ZE-225: Responses and Codex key their prompt cache by session, so a
+        // session's turns land on the same cache shard. Ad-hoc calls outside a
+        // session (the `legacy` scope) and DeepSeek's dialect send no key.
+        if wire_api == OpenAiWireApi::Responses
+            && control.scope.session_id != RequestScope::LEGACY_SESSION
+            && !control.scope.session_id.is_empty()
+            && route
+                .as_ref()
+                .is_none_or(|route| route.dialect() != crate::providers::Dialect::DeepSeek)
+        {
+            body["prompt_cache_key"] = json!(control.scope.session_id);
+        }
         let endpoint = if let Some(route) = &route {
             route.url().to_owned()
         } else if wire_api == OpenAiWireApi::GoogleGenerativeAi {

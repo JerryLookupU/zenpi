@@ -1062,6 +1062,11 @@ fn default_codex_profile_task_issues_a_tool_call() {
     assert_eq!(outcome.assistant.unwrap().content, "the note says hello");
     let requests = peer.captured.lock().unwrap();
     assert_eq!(requests.len(), 2);
+    // ZE-225: Codex keys its prompt cache by the session.
+    let session = agent.session().session_id().to_owned();
+    for request in requests.iter() {
+        assert_eq!(request.body["prompt_cache_key"], json!(session));
+    }
     assert_eq!(requests[0].body["model"], model);
     assert!(
         requests[0].body["tools"]

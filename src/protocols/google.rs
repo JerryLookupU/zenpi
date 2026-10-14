@@ -591,6 +591,8 @@ impl Fold {
                 input_tokens: input,
                 output_tokens: output,
                 total_tokens: reported.flatten().unwrap_or(total),
+                cache_read_tokens: cached,
+                cache_write_tokens: 0,
             });
         }
         Ok(())

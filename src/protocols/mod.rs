@@ -709,10 +709,19 @@ fn parse_usage(value: &Value) -> Option<Usage> {
         .get("total_tokens")
         .and_then(Value::as_u64)
         .unwrap_or(input.saturating_add(output));
+    // Chat reports `prompt_tokens_details`, Responses `input_tokens_details`.
+    let cached = value
+        .get("prompt_tokens_details")
+        .or_else(|| value.get("input_tokens_details"))
+        .and_then(|details| details.get("cached_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
     Some(Usage {
         input_tokens: input,
         output_tokens: output,
         total_tokens: total,
+        cache_read_tokens: cached.min(input),
+        cache_write_tokens: 0,
     })
 }
 

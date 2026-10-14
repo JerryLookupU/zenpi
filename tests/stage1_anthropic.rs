@@ -180,7 +180,12 @@ fn native_headers_system_tool_schema_effort_and_usage_are_exact() {
     let p = &r[0].1;
     assert_eq!(
         p["system"],
-        json!([{"type":"text","text":"instructions"},{"type":"text","text":"system turn"}])
+        json!([{"type":"text","text":"instructions"},{"type":"text","text":"system turn","cache_control":{"type":"ephemeral"}}])
+    );
+    // ZE-225: the newest user block is the second cache breakpoint.
+    assert_eq!(
+        p["messages"],
+        json!([{"role":"user","content":[{"type":"text","text":"hello","cache_control":{"type":"ephemeral"}}]}])
     );
     assert_eq!(p["tools"][0]["input_schema"], tools[0].input_schema);
     assert_eq!(p["output_config"]["effort"], "max");
@@ -433,7 +438,7 @@ fn image_input_uses_native_base64_part() {
     h.join().unwrap();
     assert_eq!(
         requests.lock().unwrap()[0].1["messages"][0]["content"][1],
-        json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":"AQID"}})
+        json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":"AQID"},"cache_control":{"type":"ephemeral"}})
     );
 }
 
