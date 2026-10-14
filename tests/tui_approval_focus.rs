@@ -518,3 +518,47 @@ fn remember_confirm_and_reject_feedback_are_explicit_steps() {
         Some("use a safer path")
     );
 }
+
+/// ZS1-182: the production approval view names the current stage and its
+/// keys, so the operator always knows what Enter and Esc will do.
+#[test]
+fn approval_view_shows_the_current_stage_and_its_keys() {
+    use ratatui::{Terminal, backend::TestBackend};
+    let screen = |s: &mut TuiState| {
+        let mut terminal = Terminal::new(TestBackend::new(160, 48)).unwrap();
+        terminal.draw(|f| s.render_bentobox(f, "test")).unwrap();
+        let b = terminal.backend().buffer();
+        (0..b.area.height)
+            .map(|y| {
+                (0..b.area.width)
+                    .map(|x| b[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let mut s = TuiState::default();
+    s.present_approval(request("hints"));
+    let select = screen(&mut s);
+    assert!(select.contains("Enter DENY now"), "{select}");
+    assert!(select.contains("r remember"), "{select}");
+
+    plain(&mut s, KeyCode::Char('r'));
+    let confirm = screen(&mut s);
+    assert!(
+        confirm.contains("Confirm remember? Enter allow+remember · Esc cancel"),
+        "{confirm}"
+    );
+
+    plain(&mut s, KeyCode::Esc);
+    plain(&mut s, KeyCode::Char('n'));
+    for character in "why".chars() {
+        plain(&mut s, KeyCode::Char(character));
+    }
+    let reject = screen(&mut s);
+    assert!(
+        reject.contains("Reject message (optional): why"),
+        "{reject}"
+    );
+    assert!(reject.contains("Enter deny · Esc back"), "{reject}");
+}

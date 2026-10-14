@@ -1083,6 +1083,27 @@ fn unique_tool_calls_cannot_bypass_iteration_limit() {
     assert!(agent.unknown_tool_outcomes().is_empty());
 }
 
+#[test]
+fn tool_iteration_budget_defaults_high_and_is_clamped() {
+    let dir = tempdir().unwrap();
+    let completions = (0..3)
+        .map(|i| tool_completion(&[&format!("call-{i}")]))
+        .collect();
+    let (mut agent, requests) = scripted_agent(&dir.path().join("clamp.jsonl"), completions);
+    // ZS1-184: default 1000, bounds 1..=10000.
+    assert_eq!(agent.max_tool_iterations(), 1000);
+    agent.set_max_tool_iterations(usize::MAX);
+    assert_eq!(agent.max_tool_iterations(), 10_000);
+    agent.set_max_tool_iterations(0);
+    assert_eq!(agent.max_tool_iterations(), 1);
+    // A zero request still lets one tool round run before the limit trips.
+    assert!(matches!(
+        agent.process_sync("inspect"),
+        Err(AgentError::ToolLoopLimit(1))
+    ));
+    assert_eq!(requests.load(Ordering::SeqCst), 2);
+}
+
 struct CancellingTool {
     cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
     side_effect: zenpi::tools::ToolSideEffect,
@@ -1530,4 +1551,81 @@ fn doom_loop_repetition_is_denied_after_the_threshold_and_the_turn_continues() {
         .count();
     assert_eq!(successes, 5, "the first five identical calls run");
     assert_eq!(denials, 3, "later identical calls are denied");
+}
+
+/// ZE-212: a host that never calls `take_events` must not grow the agent's
+/// event buffer without bound. Deltas are shed oldest-first; terminal events
+/// (turn acceptance, `TextDone`) are never dropped.
+#[test]
+fn undrained_event_buffer_stays_bounded_across_one_hundred_turns() {
+    use zenpi::backend::ProviderEvent;
+    use zenpi::core::MAX_BUFFERED_AGENT_EVENTS;
+
+    struct DeltaFlood;
+    impl Backend for DeltaFlood {
+        crate::support::controlled_local_backend!();
+        fn complete(&self, _request: CompletionRequest<'_>) -> Result<Completion, BackendError> {
+            Ok(Completion::text("done"))
+        }
+        fn complete_with_control(
+            &self,
+            _request: CompletionRequest<'_>,
+            _cancelled: &dyn Fn() -> bool,
+            sink: &mut dyn FnMut(ProviderEvent) -> Result<(), BackendError>,
+        ) -> Result<Completion, BackendError> {
+            for _ in 0..200 {
+                sink(ProviderEvent::TextDelta { delta: "x".into() })?;
+            }
+            sink(ProviderEvent::TextDone {
+                text: "done".into(),
+            })?;
+            Ok(Completion::text("done"))
+        }
+    }
+
+    let dir = tempdir().unwrap();
+    let mut agent = Agent::new(
+        SessionStore::open(dir.path().join("flood.jsonl")).unwrap(),
+        Box::new(DeltaFlood),
+    );
+    for turn in 0..100 {
+        let submission = agent
+            .submit(TurnInputRequest::new(format!("turn {turn}")))
+            .unwrap();
+        assert!(submission.accepted());
+        agent.run_active_turn().unwrap();
+        assert!(
+            agent.buffered_event_count() <= MAX_BUFFERED_AGENT_EVENTS,
+            "turn {turn}: buffer exceeded cap"
+        );
+    }
+    let events = agent.take_events();
+    assert!(events.len() <= MAX_BUFFERED_AGENT_EVENTS);
+    let count = |pred: &dyn Fn(&AgentEvent) -> bool| events.iter().filter(|e| pred(e)).count();
+    assert_eq!(
+        count(&|e| matches!(e, AgentEvent::TurnAccepted { .. })),
+        100,
+        "terminal TurnAccepted events must survive"
+    );
+    assert_eq!(
+        count(&|e| matches!(
+            e,
+            AgentEvent::Provider {
+                event: ProviderEvent::TextDone { .. },
+                ..
+            }
+        )),
+        100,
+        "terminal TextDone events must survive"
+    );
+    assert!(
+        count(&|e| matches!(
+            e,
+            AgentEvent::Provider {
+                event: ProviderEvent::TextDelta { .. },
+                ..
+            }
+        )) > 0,
+        "the newest deltas are retained"
+    );
 }

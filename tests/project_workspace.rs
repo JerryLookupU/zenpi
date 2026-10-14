@@ -311,3 +311,49 @@ fn arch_owner_uses_an_independent_journal() {
     let again = pool.arch_agent(&id).unwrap();
     assert!(Arc::ptr_eq(&arch, &again));
 }
+
+/// ZS1-180: `zenpi --auto` builds its root owner with `Agent::new` and then
+/// calls `enable_auto_approve`. That explicit choice must reach the arch owner
+/// the pool prepares, not only the root's own approval mode.
+#[test]
+fn auto_flag_on_a_constructed_root_reaches_the_arch_owner() {
+    use std::sync::{Arc, Mutex};
+    use zenpi::approval::{ApprovalDecision, ApprovalMode, ApprovalPolicy};
+    use zenpi::core::Agent;
+    use zenpi::project_workspace::ProjectOwnerPool;
+    use zenpi::session::SessionStore;
+    use zenpi::tools::{SideEffectPolicy, ToolContext, ToolRegistry};
+
+    let root = tempdir().unwrap();
+    let mut agent = Agent::with_echo(
+        SessionStore::open_in_workspace(root.path().join("root.jsonl"), root.path()).unwrap(),
+    );
+    agent.set_tools(
+        ToolRegistry::with_all_builtins().unwrap(),
+        ToolContext::new(root.path()).unwrap(),
+        SideEffectPolicy::all_builtins(),
+    );
+    agent.set_approval_policy(ApprovalPolicy {
+        mode: ApprovalMode::ReadOnly,
+        per_tool: [("write_file".into(), ApprovalDecision::Deny)].into(),
+        ..ApprovalPolicy::default()
+    });
+    assert!(!agent.auto_approve());
+    agent.enable_auto_approve();
+    assert!(agent.auto_approve());
+    let policy = agent.configured_approval_policy().unwrap();
+    assert_eq!(policy.mode, ApprovalMode::Never);
+    assert_eq!(
+        policy.per_tool.get("write_file"),
+        Some(&ApprovalDecision::Deny),
+        "configured denials survive --auto"
+    );
+
+    let mut pool = ProjectOwnerPool::new(Arc::new(Mutex::new(agent))).unwrap();
+    assert!(pool.auto_approve());
+    let id = pool.workspace().active().unwrap().id().as_str().to_owned();
+    let arch = pool.arch_agent(&id).unwrap();
+    let arch = arch.lock().unwrap();
+    assert!(arch.auto_approve());
+    assert_eq!(arch.approval_policy().unwrap().mode, ApprovalMode::Never);
+}
