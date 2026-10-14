@@ -4,10 +4,86 @@ use super::{
     host_adapter::HostAdapter,
     protocol::{Envelope, ErrorCode, ExecutionState, Message},
 };
+use serde_json::{Value, json};
 use std::{
+    collections::BTreeMap,
     io,
     time::{Duration, Instant},
 };
+
+/// Replace every live text in a view (`desktop_stream_text` on a project,
+/// `stream_text` on its prompt and worker statuses) with an ordered delta:
+/// `<prefix>_offset` is the number of Unicode scalar values the client keeps
+/// from the text this subscription last sent for the same stream, and
+/// `<prefix>_delta` is appended after it. A new subscription starts every
+/// stream at offset 0, so replay after a reconnect neither repeats nor skips
+/// text; an offset below the sent length rewrites a suffix that the redactor
+/// changed once it saw later tokens. Streams absent from the view are
+/// forgotten, matching the client dropping their text.
+fn live_text_deltas(view: &mut Value, sent: &mut BTreeMap<String, String>) {
+    let mut current = BTreeMap::new();
+    if let Some(projects) = view
+        .pointer_mut("/listing/projects")
+        .and_then(Value::as_array_mut)
+    {
+        for project in projects {
+            let Some(id) = project["id"].as_str().map(str::to_owned) else {
+                continue;
+            };
+            delta(
+                project,
+                "desktop_stream",
+                format!("{id}\0desktop"),
+                sent,
+                &mut current,
+            );
+            for list in ["prompt_statuses", "worker_statuses"] {
+                let Some(items) = project.get_mut(list).and_then(Value::as_array_mut) else {
+                    continue;
+                };
+                for item in items {
+                    if let Some(request) = item["request_id"].as_str().map(str::to_owned) {
+                        let key = format!("{id}\0{list}\0{request}");
+                        delta(item, "stream", key, sent, &mut current);
+                    }
+                }
+            }
+        }
+    }
+    *sent = current;
+}
+
+fn delta(
+    object: &mut Value,
+    prefix: &str,
+    key: String,
+    sent: &BTreeMap<String, String>,
+    current: &mut BTreeMap<String, String>,
+) {
+    let Some(map) = object.as_object_mut() else {
+        return;
+    };
+    let field = format!("{prefix}_text");
+    if !map.get(&field).is_some_and(Value::is_string) {
+        return;
+    }
+    let Some(Value::String(text)) = map.remove(&field) else {
+        return;
+    };
+    let previous = sent.get(&key).map_or("", String::as_str);
+    let mut kept = 0;
+    let mut chars = 0usize;
+    for ((at, left), right) in text.char_indices().zip(previous.chars()) {
+        if left != right {
+            break;
+        }
+        kept = at + left.len_utf8();
+        chars += 1;
+    }
+    map.insert(format!("{prefix}_offset"), json!(chars));
+    map.insert(format!("{prefix}_delta"), json!(text[kept..]));
+    current.insert(key, text);
+}
 
 pub fn serve(
     request: &Envelope,
@@ -144,6 +220,7 @@ pub fn serve_with_view(
     let mut events = 0usize;
     let mut bytes = 0usize;
     let mut previous_view = None;
+    let mut sent_text = BTreeMap::new();
     let wakeup = super::wakeup::watch(&cursor.session_id);
     let mut batches = 0;
     loop {
@@ -183,7 +260,9 @@ pub fn serve_with_view(
         let next = serde_json::from_value(result["cursor"].clone()).map_err(io::Error::other)?;
         result["subscription_transcript"] = serde_json::Value::Bool(transcript_available);
         if sampled != previous_view {
-            result["subscription_view"] = sampled.clone().unwrap_or(serde_json::Value::Null);
+            let mut view = sampled.clone().unwrap_or(serde_json::Value::Null);
+            live_text_deltas(&mut view, &mut sent_text);
+            result["subscription_view"] = view;
             previous_view = sampled;
         }
         let frame_count = result["wire_frames"]

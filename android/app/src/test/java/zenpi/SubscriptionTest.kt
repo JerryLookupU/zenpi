@@ -13,7 +13,7 @@ class SubscriptionTest {
     private fun event(sequence: Int) = FrameCodec.decode("""{"schema_version":1,"channel":"event","session_id":"session","project_id":"project","turn_id":"turn-$sequence","sequence":$sequence,"payload":{"type":"event","name":"transcript_turn","data":{"id":"turn-$sequence","role":"assistant","content":"answer"}}}""".toByteArray())
     private fun transient() = result(0, false).apply {
         remove("phase"); remove("journal_next_sequence"); addProperty("subscription_transcript", false)
-        add("subscription_view", JsonParser.parseString("""{"listing":{"mutations_available":false,"active_project_id":"project","required_owner":"${"b".repeat(64)}","workspace_revision":4,"projects":[{"id":"project","title":"Workspace","session_id":"session","workspace_control":false,"desktop_stream_text":"live preview","desktop_terminal":{"project_id":"project","session_id":"session","subtab_id":"${"a".repeat(64)}","subtab_revision":2,"text":"live terminal","truncated":false,"read_only":true}}]},"subtabs":{"project_id":"project","session_id":"session","schema_version":2,"required_owner":"${"b".repeat(64)}","workspace_revision":4,"subtab_revision":2,"active_subtab_id":"${"a".repeat(64)}","tabs":[{"id":"${"a".repeat(64)}","name":"main","kind":"main","concurrency":1}],"subtab_control":false,"directory_tab_control":false,"worktree_control":false,"concurrency_control":false}}"""))
+        add("subscription_view", JsonParser.parseString("""{"listing":{"mutations_available":false,"active_project_id":"project","required_owner":"${"b".repeat(64)}","workspace_revision":4,"projects":[{"id":"project","title":"Workspace","session_id":"session","workspace_control":false,"desktop_stream_offset":0,"desktop_stream_delta":"live preview","desktop_terminal":{"project_id":"project","session_id":"session","subtab_id":"${"a".repeat(64)}","subtab_revision":2,"text":"live terminal","truncated":false,"read_only":true}}]},"subtabs":{"project_id":"project","session_id":"session","schema_version":2,"required_owner":"${"b".repeat(64)}","workspace_revision":4,"subtab_revision":2,"active_subtab_id":"${"a".repeat(64)}","tabs":[{"id":"${"a".repeat(64)}","name":"main","kind":"main","concurrency":1}],"subtab_control":false,"directory_tab_control":false,"worktree_control":false,"concurrency_control":false}}"""))
     }
     private fun model(revision: Int = 7) = JsonParser.parseString("""{"project_id":"project","session_id":"session","model":"gpt-5.2","reasoning_effort":"high","registry_bound":true,"selection_revision":$revision,"capabilities":null,"budget":{"max_tokens":1000,"reserved_output_tokens":10},"reasoning_choices":[null,"low","high"],"catalog":{"snapshot_id":"${"d".repeat(64)}","offset":0,"next_offset":null,"entries":[{"id":"gpt-5.2","status":"active","selectable":true}]}}""").asJsonObject
     private fun withModel(value: JsonObject?) = transient().apply {
@@ -47,7 +47,7 @@ class SubscriptionTest {
             }
             view.getAsJsonObject("listing").getAsJsonArray("projects")[0].asJsonObject
                 .apply {
-                    addProperty("desktop_stream_text", "stale authority update")
+                    addProperty("desktop_stream_delta", "stale authority update")
                     getAsJsonObject("desktop_terminal").addProperty("subtab_revision", 3)
                 }
         }
@@ -200,11 +200,46 @@ class SubscriptionTest {
             assertTrue(runCatching { FrameCodec.decode(value.toString().toByteArray()) }.isFailure)
         }
     }
+    @Test fun liveTextDeltasAppendInOrderRewriteOnlyHeldTextAndReplayWithoutDuplicates() {
+        fun page(offset: Int?, delta: String?, full: String? = null) = transient().apply {
+            val status = JsonObject().apply {
+                addProperty("request_id", "prompt"); addProperty("project_id", "project"); addProperty("session_id", "session")
+                addProperty("state", "running")
+                offset?.let { addProperty("stream_offset", it) }; delta?.let { addProperty("stream_delta", it) }
+                full?.let { addProperty("stream_text", it) }
+            }
+            getAsJsonObject("subscription_view").getAsJsonObject("listing").getAsJsonArray("projects")[0].asJsonObject
+                .add("prompt_statuses", com.google.gson.JsonArray().apply { add(status) })
+        }
+        fun text(projection: HostProjection) = projection.projects.single().promptStatuses.single().streamText
+        val reducer = SubscriptionReducer(initial, project)
+        assertEquals("Hello ", text(reducer.accept(emptyList(), page(0, "Hello "))))
+        assertEquals("Hello 中文 ", text(reducer.accept(emptyList(), page(6, "中文 "))))
+        // Offsets count code points, so a surrogate pair is one unit.
+        assertEquals("Hello 中文 😀 ", text(reducer.accept(emptyList(), page(9, "😀 "))))
+        assertEquals("Hello 中文 😀 end", text(reducer.accept(emptyList(), page(11, "end"))))
+        assertEquals("Hello world", text(reducer.accept(emptyList(), page(6, "world"))))
+        val held = reducer.projection
+        for (bad in listOf(page(12, "gap"), page(-1, "x"), page(1, null), page(null, "x"), page(0, "x", "Hello world"),
+            page(null, null, "Hello world"), page(0, "x").apply {
+                getAsJsonObject("subscription_view").getAsJsonObject("listing").getAsJsonArray("projects")[0].asJsonObject
+                    .getAsJsonArray("prompt_statuses")[0].asJsonObject.addProperty("stream_offset", 1.5)
+            })) {
+            assertTrue(runCatching { reducer.accept(emptyList(), bad) }.exceptionOrNull() is WireException)
+            assertEquals(held, reducer.projection)
+        }
+        // A reconnect replays from offset 0 and replaces, never doubles, the held text.
+        val replay = SubscriptionReducer(held, project)
+        assertEquals("Hello world", text(replay.accept(emptyList(), page(0, "Hello world"))))
+        // A finished stream drops the text; its next appearance starts again at 0.
+        assertNull(text(replay.accept(emptyList(), page(null, null))))
+        assertTrue(runCatching { replay.accept(emptyList(), page(1, "x")) }.exceptionOrNull() is WireException)
+    }
     @Test fun transientDisplayUpdatesWithoutInventingTranscriptOrOfflineAuthority() {
         val reducer = SubscriptionReducer(initial, project)
         val update = transient().apply {
             val target = getAsJsonObject("subscription_view").getAsJsonObject("listing").getAsJsonArray("projects")[0].asJsonObject
-            target.add("prompt_statuses", JsonParser.parseString("""[{"request_id":"prompt","project_id":"project","session_id":"session","state":"running","stream_text":"partial answer","stream_truncated":true}]"""))
+            target.add("prompt_statuses", JsonParser.parseString("""[{"request_id":"prompt","project_id":"project","session_id":"session","state":"running","stream_offset":0,"stream_delta":"partial answer","stream_truncated":true}]"""))
             target.add("pending_approvals", JsonParser.parseString("""[{"request_id":"approval","project_id":"project","session_id":"session","turn_id":"turn","call_id":"call","tool":"write","side_effect":"workspace_write","origin":"agent_tool","digest":"${"c".repeat(64)}"}]"""))
         }
         val next = reducer.accept(emptyList(), update)
@@ -244,7 +279,7 @@ class SubscriptionTest {
             val target = getAsJsonObject("subscription_view").getAsJsonObject("listing").getAsJsonArray("projects")[0].asJsonObject
             target.addProperty("worker_control", true)
             target.add("worker_statuses", JsonParser.parseString("""[{"request_id":"worktree-task","project_id":"project","session_id":"session","subtab_id":"${"a".repeat(64)}","state":"running"}]"""))
-            target.getAsJsonArray("worker_statuses")[0].asJsonObject.addProperty("stream_text", "live worker preview")
+            target.getAsJsonArray("worker_statuses")[0].asJsonObject.apply { addProperty("stream_offset", 0); addProperty("stream_delta", "live worker preview") }
         }
         val reducer = SubscriptionReducer(initial, project)
         val next = reducer.accept(emptyList(), update())
@@ -257,7 +292,7 @@ class SubscriptionTest {
         val completed = update().apply {
             getAsJsonObject("subscription_view").getAsJsonObject("listing").getAsJsonArray("projects")[0].asJsonObject
                 .getAsJsonArray("worker_statuses")[0].asJsonObject.apply {
-                    remove("stream_text")
+                    remove("stream_offset"); remove("stream_delta")
                     addProperty("state", "succeeded"); addProperty("output_text", "completed task output"); addProperty("output_truncated", false)
                 }
         }

@@ -45,13 +45,17 @@ class SessionScopeScreenTest {
         val running = scoped.copy(projects = listOf(project.copy(promptStatuses = listOf(
             RemotePromptStatus("first", "project", "old", "running")))))
         compose.runOnIdle { state.value = state.value.copy(projection = running) }
-        compose.onNodeWithContentDescription("Send steering input").assertIsNotEnabled()
+        // ZE-530: the empty steering draft turns the composer button into Stop.
+        compose.onNodeWithContentDescription("Send steering input").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Stop message").assertExists()
         compose.onNodeWithText("Steer").performTextInput("first task steering")
         compose.runOnIdle { state.value = state.value.copy(projection = running.copy(eventSequence = "3")) }
         compose.onNode(hasSetTextAction()).assertTextContains("first task steering")
         compose.runOnIdle { state.value = state.value.copy(projection = running.copy(projects = listOf(project.copy(promptStatuses = listOf(
             RemotePromptStatus("second", "project", "old", "running")))))) }
-        compose.onNodeWithContentDescription("Send steering input").assertIsNotEnabled()
+        // ZE-530: the empty steering draft turns the composer button into Stop.
+        compose.onNodeWithContentDescription("Send steering input").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Stop message").assertExists()
         compose.onNodeWithText("Steer").performTextInput("second task steering")
         compose.runOnIdle { state.value = state.value.copy(projection = scoped) }
         // The run finished: its steering text is dropped and the unsent message draft is back.

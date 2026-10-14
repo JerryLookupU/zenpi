@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-517",
+  "claim_id": "ZE-517@blueprint-4.0.0",
+  "from": "worker",
+  "to": "master",
+  "summary": "Streaming alignment. Host: live_text publishes at every whitespace (token) boundary instead of every newline, still redacting the whole publishable prefix so a partial word is never released before its redactor sees it (PEM/assignment/header/bearer tests unchanged and green at every split). subscription.rs turns each live text in an emitted view (project desktop_stream_text, prompt_statuses[].stream_text, worker_statuses[].stream_text) into an ordered delta {<prefix>_offset, <prefix>_delta}: offset = Unicode scalar values the client keeps from the text this subscription last sent for that stream, delta = appended suffix. Within a subscription every new token is a pure append (offset == held length); a TextDone/redaction rewrite resends only the changed suffix; a new subscription (reconnect) restarts every stream at offset 0 so replay replaces instead of doubling; streams absent from a view are forgotten on both sides. Android SubscriptionReducer rebuilds stream_text from the held projection before the unchanged codecs run, and refuses full texts on a subscription, offsets past the held text (gap), non-integer/negative offsets and half-present delta pairs, leaving the projection untouched.",
+  "changed_files": [
+    "Docs/quality/ze/ZE-517.json",
+    "android/app/src/main/java/zenpi/transport/SubscriptionReducer.kt",
+    "android/app/src/test/java/zenpi/AndroidRustStreamTest.kt",
+    "android/app/src/test/java/zenpi/SubscriptionTest.kt",
+    "src/remote/live_text.rs",
+    "src/remote/subscription.rs",
+    "tests/remote_android_interop.rs",
+    "tests/remote_live_text.rs",
+    "tests/remote_subscription.rs"
+  ],
+  "diff_stat": "8 files changed, 589 insertions(+), 10 deletions(-) (excluding this handoff)",
+  "commands_run": [
+    "cargo fmt --all",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo clippy --locked --all-targets --all-features -- -D warnings",
+    "cargo test --locked --all-features --test remote_live_text --test remote_subscription --test remote_events --test remote_android_interop",
+    "cd android && ./gradlew :app:writeInteropClasspath",
+    "ZENPI_ANDROID_INTEROP_JAVA/CLASSPATH=<writeInteropClasspath> cargo test --locked --test remote_android_interop -- --ignored --test-threads=1",
+    "same for remote_android_{ack,approval,session,terminal,workspace,worktree,model}_interop -- --ignored --test-threads=1",
+    "cargo test --locked --all-features --no-fail-fast",
+    "cargo test --locked --all-features --test stage1_gemini -- --test-threads=1",
+    "cd android && ./gradlew :app:testDebugUnitTest lint verifyRoborazziDebug",
+    "git diff -U0 origin/main -- 'src/*.rs' 'src/**/*.rs' | grep -E '^\\+.*#!?\\[allow\\((dead_code|unused)' (empty)"
+  ],
+  "validation_result": {
+    "interop_deltas_ordered_replay_no_dup_no_gap": "pass: remote_android_interop::android_reducer_rebuilds_streamed_live_text_in_order_across_replay drives real HostAdapter subscription frames (real listing/subtabs/model view + LivePromptText prompt status) through the Android SubscriptionReducer in a JVM (AndroidRustStreamTest): every page extends the previous text in order, the final TextDone rewrites only the tail, the published sequence equals the host's, a second subscription replays from offset 0 to the identical text, a gap offset or a full stream_text is refused atomically, no SECRET on the wire",
+    "remote_subscription": "pass 20/20 incl. live_text_streams_as_ordered_token_deltas_and_replay_neither_repeats_nor_skips (pure appends per token, suffix rewrite, offset-0 replay, forgotten stream)",
+    "remote_live_text": "pass 11/11 incl. deltas_publish_each_whole_token_and_hold_back_the_unfinished_one; all existing redaction-at-every-split tests unchanged",
+    "remote_events": "pass",
+    "remote_android_*_interop (8 suites, --ignored)": "pass: interop 3/3 (+1 non-ignored), ack 1, approval 1, session 1, terminal 1, workspace 1, worktree 1, model 6",
+    "cargo_test_all_features": "152 suites ok; 1 failure: stage1_gemini::cancellation_during_slow_body_drops_one_connection_without_retry (ConnectionReset in its fake HTTP server, also fails with --test-threads=1). The test does not touch src/remote and this change touches only src/remote/{live_text,subscription}.rs, so it is unrelated to ZE-517 (Master to triage on main)",
+    "clippy_default_and_all_features": "pass, -D warnings",
+    "fmt": "pass",
+    "new_allow_dead_code_unused": "none",
+    "SubscriptionTest": "pass incl. liveTextDeltasAppendInOrderRewriteOnlyHeldTextAndReplayWithoutDuplicates (code-point offsets with CJK and surrogate pairs, gap/negative/fractional/half-pair/full-text refusals, replay, drop and restart)",
+    "testDebugUnitTest": "pass: 639 tests, 0 failures, 0 errors, 21 skipped",
+    "lint": "pass: 0 errors, 14 warnings (none in changed files)",
+    "verifyRoborazziDebug": "pass, no goldens changed",
+    "G-ANDROID": "pass"
+  },
+  "notes": "Deviations / decisions: (1) The blueprint's owned path android/.../state/SubscriptionReducer.kt does not exist; the reducer lives in android/.../transport/SubscriptionReducer.kt, which is what was changed. (2) Tests outside the owned paths: tests/remote_live_text.rs, tests/remote_subscription.rs, tests/remote_android_interop.rs (new #[ignore] interop test, picked up by tools/build_android_interop_classes.sh --run in CI), android SubscriptionTest.kt (fixtures moved from full texts to the delta form) and new AndroidRustStreamTest.kt. (3) 'Token' = whitespace-delimited token: provider deltas are re-cut at whitespace so a credential word is only released whole and redacted; finer cuts would publish partial secrets. (4) The 4 KiB per-stream cap (MAX_LIVE_TEXT_BYTES) is kept on purpose: one-shot WorkspaceList responses still carry full texts for up to 16 prompts plus worker/desktop streams inside the 256 KiB control frame, and Android's codecs validate the same 4096-byte bound; with deltas a subscription no longer resends the preview on every change. (5) Offsets count Unicode scalar values (Rust chars == Kotlin code points), independent of UTF-8/UTF-16 width. (6) Non-subscription responses (WorkspaceList, worker pages) keep full stream_text as their snapshot; the subscription view is the only incremental channel. No protocol version bump: subscription_view content is host-defined and both sides ship together.",
+  "created_at": "2026-10-14T18:59:22Z",
+  "digest": "e712166916b0caac727ec5ee4b9fec73f77afb5847bbf6c41e969d1281a74328"
+}
