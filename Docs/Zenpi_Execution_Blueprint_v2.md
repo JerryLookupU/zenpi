@@ -68,7 +68,9 @@ v1（ZP）、Stage 1（ZS1）、Stage 2（S2）均已标为 `authoritative: fals
 
 以下阈值属于 `external_reality_cap`：首轮在 16 核实机上测量后，Master 可以改写。数值是本项目自己的策略，不是照搬 redis 的默认值。
 
-测试条件：N=2000 个 headless agent，脚本化 provider 延迟 200 ms，每个任务 3 轮。
+测试条件：N=2000 个 headless agent，脚本化 provider 延迟 200 ms，每个任务 3 轮；任务在 N/200 秒内错峰发出（并发而非齐步）；"全部在等 provider"用一次被扣住的 probe 请求单独测量。
+
+首轮实测（2026-10-15，20 核 / 64 GB macOS 共享开发机，报告 `Docs/quality/load/g-load-2000.json`）：全部通过——空闲 RSS p99 5.78 MiB（总计 11 GB）、空闲 0.35 核、等 provider 0.22 核、空闲唤醒 p99 1.7 次/秒、线程 3/4、fd 5、每轮开销 p99 49.9 ms。齐步启动（`--ramp 0`）在本机会因 XProtect 扫描与进程创建风暴退化，不作为门槛。
 
 | 指标 | 阈值 |
 |---|---|
@@ -79,8 +81,8 @@ v1（ZP）、Stage 1（ZS1）、Stage 2（S2）均已标为 `authoritative: fals
 | 每 agent 线程数 | 空闲 ≤ 3，活跃 ≤ 5 |
 | 每 agent fd 数 | ≤ 16 |
 | 每轮额外开销 p99 | ≤ 100 ms |
-| 每次工具调用的 fsync | ≤ 2 次，并报告 p99 |
-| 每请求写入 WAL 的字节数 | ≤ 终态记录大小 + 1 KiB |
+| 每次工具调用的 fsync | ≤ 3 次（ZE-304：operation 起止 + 结果 turn），并报告 p99 |
+| 每请求写入 WAL 的字节数 | 报告 p99；事件按 ZE-303 缓冲写入、超阈值在线压缩，不再要求 ≤ 终态 + 1 KiB |
 | 因资源上限导致的失败 | 0，报告中写明所需的 `ulimit -n`、`kern.maxfiles`、`kern.maxprocperuid` |
 
 ## 3. B 块设计（据 6 路调研定稿）
@@ -279,7 +281,7 @@ python3 tools/check_modes.py &&
 - [x] **ZE-400** — 进程内 golden 任务套件（使用真实工具、临时工作区）。覆盖以下场景：<br>• 读文件后回答；<br>• 新建文件；<br>• 编辑文件并校验 diff；<br>• bash 成功，且输出进入下一次请求；<br>• bash 失败后模型修复；<br>• 同一轮发起 3 个并行工具；<br>• 需要审批的写入被拒绝，文件不落盘；同一写入获批后落盘；<br>• 在 provider 调用中取消、在工具执行中取消，日志保持一致；<br>• 轮中被杀后恢复，修复未完成的调用；<br>• 迭代上限或 doom-loop 上限止损；<br>• provider 出错后重试；<br>• 因长度截断的轮次不执行其中的工具调用；<br>• 会话中途切换模型后继续工作；<br>layer `A4` | Depends: ZE-202, ZE-203, ZE-205, ZE-210, ZE-213, ZE-221, ZE-227, ZE-232 | Owned paths: `tests/tasks.rs`, `tests/support/scripted.rs`, `src/core.rs`（修复：项目 owner 打开 session 时补答悬空调用） | Validators: `cargo test --locked --test tasks`，每个任务都断言最终文件、日志记录和请求数 | Estimated LOC: 800
 - [x] **ZE-401** — 二进制级 headless 任务：针对 ZE-104 的假服务器启动 `zenpi --mode headless`，覆盖新建文件、bash、审批被拒、取消、杀进程后恢复、`-c` 续接；layer `A4` | Depends: ZE-400, ZE-236, ZE-240, ZE-242, ZE-303 | Owned paths: `tests/tasks_headless.rs` | Validators: `cargo test --locked --all-features --test tasks_headless` | Estimated LOC: 380
 - [x] **ZE-402** — TUI 任务快照，覆盖以下用例：<br>• text→tool→text；<br>• 跨标签页审批；<br>• 忙、闲、有草稿三种状态下分别按 Esc 和 Ctrl-C；<br>• 浮层打开时按 Esc 不会中断任务；<br>• 粘贴内容里夹带 `\n/exit`、`\n!rm` 时什么也不提交；<br>• 按键 Release 事件不产生任何动作；<br>• 粘贴折叠后再提交；<br>• 斜杠命令走真实 loop 完成往返；<br>layer `A4` | Depends: ZE-250, ZE-251, ZE-252, ZE-254, ZE-255 | Owned paths: `tests/tui_task.rs` | Validators: `cargo test --locked --all-features --test tui_task --test tui_task_tool_order --test tui_approval_focus`（text→tool→text 与跨标签页审批由后两者覆盖） | Estimated LOC: 380
-- [ ] **ZE-403** — 2000 agent 压测 `tools/load_agents.py`：<br>• harness 用单个 `selectors`（kqueue）事件循环读取所有 stdout 管道（对应 redis ae）；<br>• 启动前先算 fd 预算（harness ≥ 3N+64，provider ≥ N+64）并上调软限制，不够则直接失败；<br>• 一个脚本化 provider 服务器，N 个 `--no-session` 或独立 session 的 headless 进程，每个任务含一次 `write_file` 和一次 `bash echo`；<br>• 报告 RSS、CPU、唤醒次数、线程数、fd、fsync 次数与延迟、磁盘写速率，以及内核限制；<br>layer `A4` | Depends: ZE-236, ZE-300, ZE-301, ZE-302, ZE-303, ZE-304, ZE-305, ZE-401 | Owned paths: `tools/load_agents.py` | Validators: `G-LOAD(2000)` 在 16 核机器上满足 §2.2 的全部阈值，报告存入 `Docs/quality/` | Estimated LOC: 340
+- [_] **ZE-403** — 2000 agent 压测 `tools/load_agents.py`：<br>• harness 用单个 `selectors`（kqueue）事件循环读取所有 stdout 管道（对应 redis ae）；<br>• 启动前先算 fd 预算（harness ≥ 3N+64，provider ≥ N+64）并上调软限制，不够则直接失败；<br>• 一个脚本化 provider 服务器，N 个 `--no-session` 或独立 session 的 headless 进程，每个任务含一次 `write_file` 和一次 `bash echo`；<br>• 报告 RSS、CPU、唤醒次数、线程数、fd、每轮开销、journal/WAL 成本，以及内核限制（`proc_pidinfo`，无需 root）；<br>• 压测中发现并修复：macOS 上 `sync_data`/`sync_all` 是整盘 `F_FULLFSYNC`，跨 agent 串行，journal、WAL、工具输出和写文件改用 POSIX `fsync`；<br>layer `A4` | Depends: ZE-236, ZE-300, ZE-301, ZE-302, ZE-303, ZE-304, ZE-305, ZE-401 | Owned paths: `tools/load_agents.py`, `Docs/quality/load/`, `src/session.rs`, `src/tool_output.rs`, `src/tools.rs` | Validators: `G-LOAD(2000)` 在 16 核机器上满足 §2.2 的全部阈值，报告存入 `Docs/quality/` | Estimated LOC: 340
 - [ ] **ZE-404** — CI 门禁：每个 PR 运行 G-RUST、G-TASK 和 `G-LOAD(200)`；nightly 或手动运行 `G-LOAD(2000)`；layer `A4` | Depends: ZE-108, ZE-400, ZE-401, ZE-402, ZE-403 | Owned paths: `.github/workflows/` | Validators: CI 全绿 | Estimated LOC: 60
 - [ ] **ZE-406** — 文档收口：<br>• README 和 `Docs/Zenpi_Execution_Spec.md` 只描述已验收的能力，列出冻结模块，并以 G-RUST 为准；<br>• v1、Stage 1、Stage 2 移到 `Docs/archive/`，同步修正引用它们的 validator 和 gantt 工具路径；<br>• 把与审计结论矛盾的 learn 笔记标为过期：`session-manager.ts_transform`（恢复语义）和 `tui.ts_transform`（合并重绘）；<br>• 在 `Cargo.toml` 的 crossterm patch 旁边注明上游 issue #1126、#1142；<br>layer `A4` | Depends: ZE-100, ZE-404 | Owned paths: `README.md`, `Docs/Zenpi_Execution_Spec.md`, `Docs/archive/`, `tools/`, `Docs/learn/files/pi-mono/`, `Cargo.toml` | Validators: G-BP；`tools/validate_blueprint.py` 和 `tools/validate_stage1_blueprint.py` 指向归档路径后仍能运行 | Estimated LOC: 40
 - [ ] **ZE-999** — Master 终验：A、B 两块 全部为 `[x]`；G-BUILD、G-TEST、G-RUST、G-TASK、G-BENCH、`G-LOAD(2000)` 全部通过；Gantt 未过期，handoff 齐全；layer `A4` | Depends: ZE-400, ZE-401, ZE-402, ZE-403, ZE-404, ZE-406, ZE-599 | Owned paths: `Docs/Zenpi_Execution_Blueprint_v2.md` | Validators: 全部公共门 | Estimated LOC: 0

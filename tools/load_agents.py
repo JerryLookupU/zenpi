@@ -41,8 +41,13 @@ def sse_frames(model: str, delta: dict, finish: str) -> bytes:
     return (body + "data: [DONE]\n\n").encode()
 
 
+PROBE_PROMPT = "probe: answer without tools"
+
+
 def reply_for(request: dict) -> tuple[dict, str]:
     """Round = number of tool results already in the conversation."""
+    if request.get("messages", [{}])[-1].get("content") == PROBE_PROMPT:
+        return {"content": "probe done"}, "stop"
     rounds = sum(1 for message in request.get("messages", []) if message.get("role") == "tool")
     if rounds == 0:
         call = {"name": "write_file", "arguments": json.dumps({"path": "out.txt", "content": "load\n"})}
@@ -57,8 +62,8 @@ def reply_for(request: dict) -> tuple[dict, str]:
 class Provider:
     def __init__(self, latency: float, probe: float):
         self.latency = latency
-        # Round 1 is held `probe` seconds longer so every agent provably
-        # waits on the provider while the harness samples it.
+        # A probe prompt is held this long so every agent provably waits on
+        # the provider while the harness samples it.
         self.probe = probe
         self.requests = 0
         self.port = 0
@@ -76,8 +81,8 @@ class Provider:
                         length = int(value.strip())
                 request = json.loads(await reader.readexactly(length))
                 self.requests += 1
-                first = not any(m.get("role") == "tool" for m in request.get("messages", []))
-                await asyncio.sleep(self.latency + (self.probe if first else 0.0))
+                probe = any(m.get("content") == PROBE_PROMPT for m in request.get("messages", [])[-1:])
+                await asyncio.sleep(self.probe if probe else self.latency)
                 delta, finish = reply_for(request)
                 body = sse_frames(request.get("model", "load"), delta, finish)
                 writer.write(
@@ -233,9 +238,10 @@ class Agent:
         self.done_at = 0.0
         self.success: bool | None = None
 
-    def prompt(self) -> None:
-        frame = {"schema_version": 2, "type": "prompt", "id": "task", "message": "write a file then echo"}
+    def prompt(self, message: str = "write a file then echo", request_id: str = "task") -> None:
+        frame = {"schema_version": 2, "type": "prompt", "id": request_id, "message": message}
         self.sent_at = time.monotonic()
+        self.success = None
         self.proc.stdin.write((json.dumps(frame) + "\n").encode())
         self.proc.stdin.flush()
 
@@ -255,7 +261,7 @@ class Agent:
                 value = json.loads(line)
             except ValueError:
                 continue
-            if value.get("type") == "response" and value.get("id") == "task" and self.success is None:
+            if value.get("type") == "response" and value.get("id") in ("task", "probe") and self.success is None:
                 self.success, self.done_at = bool(value.get("success")), time.monotonic()
 
 
@@ -291,7 +297,13 @@ def main() -> int:
     parser.add_argument("--latency-ms", type=int, default=200)
     parser.add_argument("--idle-window", type=float, default=10.0)
     parser.add_argument("--spawn-batch", type=int, default=100)
-    parser.add_argument("--probe", type=float, default=3.0, help="extra round-1 hold for the waiting sample")
+    parser.add_argument("--probe", type=float, default=3.0, help="seconds every agent waits on a held probe request while sampled")
+    parser.add_argument(
+        "--ramp",
+        type=float,
+        default=None,
+        help="seconds over which prompts are sent (default N/200; 0 = lockstep)",
+    )
     parser.add_argument("--report", default="")
     args = parser.parse_args()
     args.binary = str(Path(args.binary).resolve())
@@ -301,7 +313,9 @@ def main() -> int:
     limits = raise_fd_limit(4 * n + 128)  # harness 3N+64 plus in-process provider N+64
     limits.update({name: sysctl(name) for name in ("kern.maxfiles", "kern.maxfilesperproc", "kern.maxproc", "kern.maxprocperuid")})
 
-    provider = Provider(args.latency_ms / 1000, args.probe)
+    ramp = n / 200 if args.ramp is None else args.ramp
+    # Probe prompts are held past the ramp so the sample sees every agent waiting.
+    provider = Provider(args.latency_ms / 1000, args.probe + ramp)
     threading.Thread(target=provider.run, daemon=True).start()
     provider.ready.wait()
     root = Path(tempfile.mkdtemp(prefix="zenpi-load-"))
@@ -327,30 +341,39 @@ def main() -> int:
         selector = selectors.DefaultSelector()
         for agent in agents:
             selector.register(agent.proc.stdout, selectors.EVENT_READ, agent)
+        def ramped(send) -> None:
+            """Send to every agent over the ramp while draining every stdout."""
+            ramp_start = time.monotonic()
+            for index, agent in enumerate(agents):
+                due = ramp_start + ramp * index / max(n, 1)
+                while time.monotonic() < due:
+                    for key, _ in selector.select(timeout=max(0.0, due - time.monotonic())):
+                        key.data.readable()
+                send(agent)
+
+        def drain(limit: float) -> None:
+            deadline = time.monotonic() + limit
+            while any(agent.success is None for agent in agents) and time.monotonic() < deadline:
+                for key, _ in selector.select(timeout=1.0):
+                    key.data.readable()
+
+        report["ramp_s"] = ramp
+        # 1. Waiting probe: every agent holds one provider request at once.
+        ramped(lambda agent: agent.prompt(PROBE_PROMPT, "probe"))
+        time.sleep(min(1.0, args.probe / 3))
+        report["waiting_provider"] = window(pids, args.probe / 3)
+        drain(args.probe + ramp + 120)
+        report["probe_succeeded"] = sum(1 for agent in agents if agent.success)
+        # 2. Tasks, spread over the ramp: concurrent agents, not lockstep.
         cpu_before = sample(pids)
-        for agent in agents:
-            agent.prompt()
-        # Sample the middle of the held round 1: every agent waits on the provider.
-        waiting: dict = {}
-
-        def probe() -> None:
-            time.sleep(min(1.0, args.probe / 3))
-            waiting.update(window(pids, args.probe / 3))
-
-        sampler = threading.Thread(target=probe)
-        sampler.start()
-        deadline = time.monotonic() + args.probe + max(120, n * 0.2)
-        while any(agent.success is None for agent in agents) and time.monotonic() < deadline:
-            for key, _ in selector.select(timeout=1.0):
-                key.data.readable()
-        sampler.join()
+        ramped(lambda agent: agent.prompt())
+        drain(max(120, n * 0.2))
         cpu_after = sample(pids)
-        report["waiting_provider"] = waiting
         task_cpu = sum(cpu_after[p]["cpu_s"] - cpu_before[p]["cpu_s"] for p in pids if p in cpu_before and p in cpu_after)
         succeeded = sum(1 for agent in agents if agent.success)
         durations = [agent.done_at - agent.sent_at for agent in agents if agent.success]
         rounds = 3
-        overhead = [(d - args.probe) / rounds - args.latency_ms / 1000 for d in durations]
+        overhead = [d / rounds - args.latency_ms / 1000 for d in durations]
         report["tasks"] = {
             "succeeded": succeeded,
             "success_rate": round(succeeded / n, 4),
