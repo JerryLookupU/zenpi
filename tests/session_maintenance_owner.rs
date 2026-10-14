@@ -220,7 +220,7 @@ fn session_maintenance_refuses_export_with_reconnect_sidecar() {
         b"transport-owner-marker\n",
     )
     .unwrap();
-    // ZE-303: only a LIVE transport owner (the WAL lock is held) blocks export.
+    // ZE-303: a live owner (the WAL lock is held) blocks export.
     let wal_path = format!("{}.reconnect", source_path.display());
     let held = fs::OpenOptions::new()
         .read(true)
@@ -232,20 +232,21 @@ fn session_maintenance_refuses_export_with_reconnect_sidecar() {
         unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&held), libc::LOCK_EX) },
         0
     );
-    let error = session_maintenance_view(&SessionAction::Export {
-        source: source_path.display().to_string(),
-        destination: directory.path().join("export.jsonl").display().to_string(),
-    })
-    .unwrap_err();
-    assert!(error.contains("active reconnect WAL"));
-    assert!(!directory.path().join("export.jsonl").exists());
-    // A closed WAL is plain transport state: export succeeds and never copies it.
+    let export = || {
+        session_maintenance_view(&SessionAction::Export {
+            source: source_path.display().to_string(),
+            destination: directory.path().join("export.jsonl").display().to_string(),
+        })
+    };
+    assert!(export().unwrap_err().contains("unresolved reconnect WAL"));
+    // Closed but unreadable evidence still blocks it.
     drop(held);
-    session_maintenance_view(&SessionAction::Export {
-        source: source_path.display().to_string(),
-        destination: directory.path().join("export.jsonl").display().to_string(),
-    })
-    .unwrap();
+    assert!(export().unwrap_err().contains("unresolved reconnect WAL"));
+    assert!(!directory.path().join("export.jsonl").exists());
+    // A closed WAL with nothing unresolved is plain transport state: export
+    // succeeds and never copies it.
+    fs::write(&wal_path, b"").unwrap();
+    export().unwrap();
     assert!(directory.path().join("export.jsonl").exists());
     assert!(!directory.path().join("export.jsonl.reconnect").exists());
 }

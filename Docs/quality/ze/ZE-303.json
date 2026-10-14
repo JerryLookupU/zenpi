@@ -4,7 +4,7 @@
   "claim_id": "ZE-303@blueprint-4.0.0",
   "from": "master",
   "to": "master",
-  "summary": "Reconnect WAL converges redis-AOF style: unsynced event appends, fsync only on reserved/terminal/ack, poison on failed append, online compaction with a 2x floor, ledger counts only unresolved ids, export/delete/GC refuse only a live owner and remove the WAL.",
+  "summary": "Reconnect WAL converges redis-AOF style: unsynced event appends, fsync only on reserved/terminal/ack, poison on failed append, online compaction with a 2x floor, ledger counts only unresolved ids; export/delete/GC refuse a live owner or unresolved WAL evidence and otherwise remove the WAL with the session.",
   "changed_files": [
     "src/session.rs",
     "src/headless.rs",
@@ -14,26 +14,24 @@
     "Docs/Zenpi_Execution_Blueprint_v2.md",
     "Docs/quality/ze/ZE-303.json"
   ],
-  "diff_stat": "6 files changed, 374 insertions(+), 13 deletions(-)",
+  "diff_stat": "3 files changed, 113 insertions(+), 36 deletions(-)",
   "commands_run": [
     "cargo fmt --all",
     "cargo clippy --locked --all-targets -- -D warnings",
     "cargo clippy --locked --all-targets --all-features -- -D warnings",
-    "cargo test --locked --all-features --test headless_wal --test headless_wal_compaction --test session_maintenance_owner",
-    "cargo test --locked --all-features --lib headless",
-    "cargo test --locked --all-features --lib reconnect_wal_drops"
+    "cargo test --locked --all-features --no-fail-fast",
+    "cargo test --locked --all-features --lib",
+    "cargo test --locked --all-features --test headless_wal --test headless_wal_compaction --test session_maintenance_owner --test session_recovery --test session_cli --test headless_lifecycle --test headless_input_shutdown"
   ],
   "validation_result": {
     "fmt": "ok",
     "clippy_default": "ok",
     "clippy_all_features": "ok",
-    "headless_wal": "1 passed",
-    "headless_wal_compaction": "1 passed",
-    "session_maintenance_owner": "6 passed",
-    "lib_headless": "23 passed",
-    "lib_reconnect_wal_drops": "1 passed"
+    "full_suite": "2189 passed; 4 failed -> 2 fixed (gc semantics), 2 known load-flaky pass serially",
+    "lib": "468 passed; 1 known load-flaky (existing_terminal_projects...) passes serially",
+    "session_and_headless_suites": "all passed"
   },
-  "notes": "Design adjusted vs original row: events are buffered (appended without fsync) instead of removed; WAL kept after clean close for cross-process idempotency; no .torn copy for WAL (torn append was never acknowledged). Compaction waits for 2x the last compacted size; without it live state near the threshold rewrote per append (562s quadratic test run). 20k ledger check moved to a ReplayState unit test because the sequential harness costs ~81ms CPU per request.",
-  "created_at": "2026-10-14T17:50:40Z",
-  "digest": "0824d797e40be97347ea84f82b224f941e6ed99899f9647575e0bf1da7f04ba1"
+  "notes": "Design adjusted vs original row: events buffered (appended without fsync) instead of removed; WAL kept after clean close for cross-process idempotency; a closed WAL blocks removal only while it holds unresolved evidence. Compaction waits for 2x the last compacted size (otherwise quadratic rewrite near threshold). 20k ledger check is a ReplayState unit test (sequential harness ~81ms CPU/request).",
+  "created_at": "2026-10-14T18:06:19Z",
+  "digest": "3305144745165ea51dba18481cefa8d5d696003c5dbc8d7d51af8239847fe90d"
 }

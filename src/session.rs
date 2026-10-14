@@ -1684,10 +1684,9 @@ impl SessionStore {
                 "export destination already exists".into(),
             ));
         }
-        if transport_owner_live(&self.path)? {
+        if reconnect_blocks_removal(&self.path)? {
             return Err(SessionError::InvalidRecord(
-                "cannot export a session with an active reconnect WAL; close the owner first"
-                    .into(),
+                "cannot export a session with a live owner or unresolved reconnect WAL".into(),
             ));
         }
         if let Some(parent) = destination.parent()
@@ -1953,7 +1952,7 @@ pub(crate) struct ReconnectJournal {
 /// True when `session`'s transport WAL is owned by a live host (this
 /// process or another one holding its lock). A closed WAL is plain durable
 /// state that export may skip and delete/GC remove alongside the session.
-pub(crate) fn transport_owner_live(session: &Path) -> Result<bool, SessionError> {
+fn transport_owner_live(session: &Path) -> Result<bool, SessionError> {
     let wal = reconnect_path(session);
     if !wal.try_exists()? {
         return Ok(false);
@@ -1972,6 +1971,49 @@ pub(crate) fn transport_owner_live(session: &Path) -> Result<bool, SessionError>
         Err(SessionError::Locked) => Ok(true),
         Err(error) => Err(error),
     }
+}
+
+/// A session's WAL blocks export, delete and GC while its owner is live or
+/// while a closed WAL still holds evidence a restart needs: a reservation
+/// without a terminal, a torn tail, or a record it cannot read (ZE-303).
+fn reconnect_blocks_removal(session: &Path) -> Result<bool, SessionError> {
+    let wal = reconnect_path(session);
+    if !wal.try_exists()? {
+        return Ok(false);
+    }
+    if !fs::symlink_metadata(&wal)?.is_file() || transport_owner_live(session)? {
+        return Ok(true);
+    }
+    let mut bytes = Vec::new();
+    File::open(&wal)?
+        .take(ReconnectJournal::MAX_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > ReconnectJournal::MAX_BYTES
+        || bytes.last().is_some_and(|byte| *byte != b'\n')
+    {
+        return Ok(true);
+    }
+    let mut pending = BTreeSet::new();
+    for line in bytes
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+    {
+        let Ok(record) = serde_json::from_slice::<Value>(line) else {
+            return Ok(true);
+        };
+        let event = &record["event"];
+        match (event["type"].as_str(), event["id"].as_str()) {
+            (Some("reserved"), Some(id)) => {
+                pending.insert(id.to_owned());
+            }
+            (Some("terminal" | "released"), Some(id)) => {
+                pending.remove(id);
+            }
+            (Some("owner" | "event" | "acknowledged"), _) => {}
+            _ => return Ok(true),
+        }
+    }
+    Ok(!pending.is_empty())
 }
 
 fn local_transport_owners() -> &'static Mutex<BTreeSet<PathBuf>> {
@@ -2787,12 +2829,12 @@ pub fn garbage_collect_sessions_with_active(
                 "garbage collection cannot orphan a durable session mailbox".into(),
             ));
         }
-        // Match explicit delete/export: the WAL is durable reconnect state,
-        // even when its owner is closed or its contents need recovery. Refuse
-        // the entire selection before any unlink instead of orphaning it.
-        if transport_owner_live(path)? {
+        // Match explicit delete/export: a live owner or unresolved reconnect
+        // evidence refuses the entire selection before any unlink.
+        if reconnect_blocks_removal(path)? {
             return Err(SessionError::InvalidRecord(
-                "garbage collection cannot remove a session with a live reconnect owner".into(),
+                "garbage collection cannot remove a session with a live owner or unresolved reconnect WAL"
+                    .into(),
             ));
         }
     }
@@ -3398,9 +3440,9 @@ pub fn execute_session_lifecycle(
                     "delete requires retaining or removing the session mailbox first".into(),
                 ));
             }
-            if transport_owner_live(&path)? {
+            if reconnect_blocks_removal(&path)? {
                 return Err(SessionError::InvalidRecord(
-                    "delete requires closing the reconnect owner first".into(),
+                    "delete requires a closed reconnect owner with no unresolved requests".into(),
                 ));
             }
             fs::remove_file(&path)?;
@@ -5187,10 +5229,45 @@ mod session_reliability_tests {
     }
 
     #[test]
-    fn gc_reconnect_preserves_closed_empty_torn_malformed_and_nonfile_states() {
+    fn closed_settled_or_empty_reconnect_wal_does_not_block_export_or_delete() {
+        // ZE-303: once every reservation reached a terminal, the WAL is only
+        // an idempotency cache; export works and delete removes it too.
+        for settled in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let export_dir = tempfile::tempdir().unwrap();
+            let store = SessionStore::open(dir.path().join("owned.jsonl")).unwrap();
+            let wal_path = reconnect_path(store.path());
+            if settled {
+                let (mut wal, _) = ReconnectJournal::open(&store).unwrap();
+                wal.append(json!({"type":"reserved","id":"a","fingerprint":"f"}))
+                    .unwrap();
+                wal.append(json!({"type":"terminal","id":"a","fingerprint":"f","line":"{}"}))
+                    .unwrap();
+            } else {
+                fs::write(&wal_path, b"").unwrap();
+            }
+            store
+                .export_to(export_dir.path().join("export.jsonl"))
+                .unwrap();
+            execute_session_lifecycle(
+                SessionLifecycleRequest::Delete {
+                    path: store.path().to_owned(),
+                    confirmed: true,
+                },
+                None,
+                u64::MAX,
+            )
+            .unwrap();
+            assert!(!store.path().exists());
+            assert!(!wal_path.exists());
+        }
+    }
+
+    #[test]
+    fn gc_reconnect_preserves_closed_torn_malformed_and_nonfile_states() {
         use std::os::unix::fs::PermissionsExt;
         let mut failures = Vec::new();
-        for state in ["closed", "empty", "torn", "malformed", "directory"] {
+        for state in ["closed", "torn", "malformed", "directory"] {
             let dir = tempfile::tempdir().unwrap();
             let export_dir = tempfile::tempdir().unwrap();
             let store = SessionStore::open(dir.path().join("owned.jsonl")).unwrap();
@@ -5202,7 +5279,6 @@ mod session_reliability_tests {
                     wal.append(json!({"type":"reserved"})).unwrap();
                     drop(wal);
                 }
-                "empty" => fs::write(&wal_path, b"").unwrap(),
                 "torn" => fs::write(&wal_path, b"{unfinished").unwrap(),
                 "malformed" => fs::write(&wal_path, b"{invalid}\n").unwrap(),
                 "directory" => fs::create_dir(&wal_path).unwrap(),
