@@ -1349,6 +1349,11 @@ mod tests {
                     {
                         std::thread::sleep(Duration::from_millis(2))
                     }
+                    // A client whose short deadline expired before it
+                    // connected never arrives; callers assert its error.
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        return String::new();
+                    }
                     Err(error) => panic!("synthetic loopback accept: {error}"),
                 }
             };
