@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "kind": "master_acceptance",
+  "integrated_head": "223d4b9",
+  "accepted": [
+    "ZE-201",
+    "ZE-202",
+    "ZE-203",
+    "ZE-207",
+    "ZE-220",
+    "ZE-221",
+    "ZE-223",
+    "ZE-226",
+    "ZE-236",
+    "ZE-250",
+    "ZE-251",
+    "ZE-500"
+  ],
+  "commands_run": [
+    "cargo fmt --all -- --check",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo clippy --locked --all-targets --all-features -- -D warnings",
+    "CARGO_INCREMENTAL=0 cargo test --locked --all-features --no-fail-fast",
+    "cargo test --locked --all-features --lib existing_terminal_projects_only_matching_live_session_and_root -- --test-threads=1 (x4)",
+    "cd android && ./gradlew :app:testDebugUnitTest lint (ZE-500)"
+  ],
+  "validation_result": {
+    "fmt": "clean",
+    "clippy_default": 0,
+    "clippy_all_features": 0,
+    "full_suite": "2172 passed / 1 failed (PTY preview test with a 5 s deadline; failed once under load ~15 while two workers compiled, then 3/3 serial passes)",
+    "gradle": "testDebugUnitTest + lint green on main (ZE-500)",
+    "interop": "ZE-500 worker ran 8 interop suites green; the Master rerun compiled a mid-edit tree and is re-run at B acceptance"
+  },
+  "notes": "Merge conflict in tests/support/scripted.rs (TextThenCall vs TruncatedCall) resolved by keeping both variants.",
+  "created_at": "2026-10-14T16:31:37Z",
+  "digest": "07ed49809c83fa80b01fff87f663ef345d9cfe358bfa9eaa9df25a7a29e57799"
+}
