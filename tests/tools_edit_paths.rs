@@ -1,12 +1,13 @@
 mod support;
 
 use serde_json::{Value, json};
+use std::fs;
 use support::scripted::{ScriptedBackend, call, text};
 use tempfile::tempdir;
 use zenpi::{
     core::{Agent, TurnInputRequest, TurnRole},
     session::SessionStore,
-    tools::{self, SideEffectPolicy, ToolContext, ToolRegistry},
+    tools::{self, SideEffectPolicy, ToolCall, ToolContext, ToolRegistry, ToolResult},
 };
 
 fn writing_agent(root: &std::path::Path, backend: ScriptedBackend) -> Agent {
@@ -116,4 +117,98 @@ fn over_limit_tool_call_returns_an_error_result_and_the_turn_continues() {
     let requests = backend.requests();
     assert_eq!(requests.len(), 3);
     assert_eq!(requests[1].tool_results, 1);
+}
+
+fn execute(root: &std::path::Path, name: &str, arguments: Value) -> ToolResult {
+    ToolRegistry::with_all_builtins().unwrap().execute(
+        &ToolContext::new(root).unwrap(),
+        SideEffectPolicy::all_builtins(),
+        ToolCall {
+            id: "call-1".into(),
+            name: name.into(),
+            arguments,
+        },
+    )
+}
+
+fn edit(root: &std::path::Path, path: &str, old: &str, new: &str) -> ToolResult {
+    execute(
+        root,
+        "edit_file",
+        json!({"path": path, "old": old, "new": new}),
+    )
+}
+
+fn error_message(result: ToolResult) -> String {
+    match result {
+        ToolResult::Error { error, .. } => error.message,
+        ToolResult::Success { output, .. } => panic!("unexpected success: {output}"),
+    }
+}
+
+// ZE-205: LF-written old text matches a CRLF file (with a BOM) and the file
+// keeps CRLF and its BOM.
+#[test]
+fn edit_crlf_file_with_lf_old_text_keeps_crlf() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("crlf.txt");
+    fs::write(&path, "\u{feff}first\r\nsecond\r\nthird\r\n").unwrap();
+
+    let result = edit(dir.path(), "crlf.txt", "first\nsecond\n", "one\ntwo\n");
+    assert!(result.is_success(), "{result:?}");
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        "\u{feff}one\r\ntwo\r\nthird\r\n"
+    );
+}
+
+// ZE-205: an LF file is untouched outside the edited span.
+#[test]
+fn edit_lf_file_keeps_lf_and_other_trailing_whitespace() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("lf.txt");
+    fs::write(&path, "keep  \nalpha\nbeta\n").unwrap();
+
+    assert!(edit(dir.path(), "lf.txt", "alpha", "ALPHA").is_success());
+    assert_eq!(fs::read_to_string(&path).unwrap(), "keep  \nALPHA\nbeta\n");
+}
+
+// ZE-205: curly quotes, dashes and trailing whitespace fall back to a fuzzy
+// match; only the matched span changes.
+#[test]
+fn edit_fuzzy_match_handles_curly_quotes_and_trailing_whitespace() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("quotes.txt");
+    fs::write(
+        &path,
+        "intro \u{201c}keep\u{201d}\nsay(\u{201c}hello\u{201d}) \u{2014} it\u{2019}s  \nnext line\t\nend\n",
+    )
+    .unwrap();
+
+    let result = edit(
+        dir.path(),
+        "quotes.txt",
+        "say(\"hello\") - it's\nnext line",
+        "say(\"bye\")\nnext line",
+    );
+    assert!(result.is_success(), "{result:?}");
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        "intro \u{201c}keep\u{201d}\nsay(\"bye\")\nnext line\t\nend\n"
+    );
+}
+
+// ZE-205: uniqueness is judged after normalization.
+#[test]
+fn edit_rejects_matches_that_are_ambiguous_after_normalization() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("ambiguous.txt");
+    let original = "print(\u{201c}x\u{201d})\nprint(\"x\")\n";
+    fs::write(&path, original).unwrap();
+
+    let message = error_message(edit(dir.path(), "ambiguous.txt", "print(\"x\")", "y"));
+    assert!(message.contains("found 2"), "{message}");
+    let message = error_message(edit(dir.path(), "ambiguous.txt", "missing", "y"));
+    assert!(message.contains("found 0"), "{message}");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
 }
