@@ -1767,9 +1767,10 @@ fn acceptance101_sync_tui_probe() {
         "fixture",
     )
     .unwrap();
-    let mut agent = Agent::new(
+    let agent = Agent::new(
         SessionStore::open_in_workspace(root.join("session.jsonl"), &root).unwrap(),
         Box::new(backend),
     );
-    zenpi::tui::run(&mut agent).unwrap();
+    // ZE-254: the legacy sync loop is gone; probe the production TUI loop.
+    zenpi::tui::run_async_with_profile(agent, None).unwrap();
 }
