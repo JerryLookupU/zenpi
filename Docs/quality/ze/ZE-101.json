@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "from": "worker",
+  "to": "master",
+  "created_at": "2026-10-14T09:00:32Z",
+  "item_id": "ZE-101",
+  "summary": "Rewrote tools/validate_blueprint_v2.py for the b3ehive checklist form: rejects duplicate IDs, missing/unknown dependencies, cycles, illegal states, LOC >= cap, per-block layer-gate violations, [x] with open dependencies and dependencies on higher layers; unit tests in tools/test_validate_blueprint_v2.py.",
+  "changed_files": [
+    "tools/test_validate_blueprint_v2.py",
+    "tools/validate_blueprint_v2.py"
+  ],
+  "diff_stat": "2 files changed, 236 insertions(+), 151 deletions(-)",
+  "commands_run": [
+    "python3 tools/test_validate_blueprint_v2.py",
+    "python3 tools/validate_blueprint_v2.py",
+    "python3 tools/generate_blueprint_v2_gantt.py --check"
+  ],
+  "validation_result": {
+    "unit_tests": "pass",
+    "G-BP": "pass"
+  },
+  "notes": "Retroactive handoff written by ZE-109 from commit 649536a.",
+  "claim_id": "ZE-101@blueprint-4.0.0",
+  "digest": "f12fdfc6637ddd0e22e5c980888ccabc38a0b2ecdf50039900bf3f9d36bfbad1"
+}

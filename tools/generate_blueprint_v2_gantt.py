@@ -19,7 +19,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from validate_blueprint_v2 import BlueprintError, parse_header, parse_items, validate  # noqa: E402
+from validate_blueprint_v2 import (  # noqa: E402
+    EVIDENCE_DIR,
+    BlueprintError,
+    load_handoff,
+    parse_header,
+    parse_items,
+    validate,
+)
 
 
 BLUEPRINT = Path("Docs/Zenpi_Execution_Blueprint_v2.md")
@@ -29,8 +36,16 @@ STATE_TAG = {" ": "", "_": "active, ", "x": "done, "}
 GENERATED_PREFIX = "generated_at: "
 
 
-def render(text: str, generated_at: str) -> str:
-    validate(text)
+def integration(state: str, has_handoff: bool) -> str:
+    if state == "x":
+        return "accepted"
+    if state == "_" and has_handoff:
+        return "handoff"
+    return "—"
+
+
+def render(text: str, generated_at: str, evidence_dir: Path | None = EVIDENCE_DIR) -> str:
+    validate(text, evidence_dir)
     header = parse_header(text)
     items = parse_items(text)
     by_id = {item["id"]: item for item in items}
@@ -81,23 +96,29 @@ def render(text: str, generated_at: str) -> str:
     )
     out += [
         "",
-        "| ID | Layer | State | Ready | Depends | Claim | Est. LOC | Title |",
-        "|---|---|---|---|---|---|---:|---|",
+        "| ID | Layer | State | Ready | Depends | Claim | Integration | Est. LOC | Title |",
+        "|---|---|---|---|---|---|---|---:|---|",
     ]
     for item in items:
         ready = item["state"] != "x" and all(by_id[dep]["state"] == "x" for dep in item["depends"])
         deps = ", ".join(item["depends"]) or "—"
         title = item["title"].replace("|", "\\|")
+        handoff = load_handoff(evidence_dir, item["id"]) if evidence_dir is not None else None
+        claim = str(handoff.get("claim_id") or "—") if handoff else "—"
+        claim = claim.replace("|", "\\|")
         out.append(
             f"| {item['id']} | {item['layer']} | {STATE_LABEL[item['state']]} | "
-            f"{'yes' if ready else 'no'} | {deps} | — | {item['loc']} | {title} |"
+            f"{'yes' if ready else 'no'} | {deps} | {claim} | "
+            f"{integration(item['state'], handoff is not None)} | {item['loc']} | {title} |"
         )
     out += [
         "",
         "## Unscheduled",
         "",
         "No item has a recorded start or due date; all "
-        f"{len(items)} items are unscheduled. Claims are empty until the controller records them.",
+        f"{len(items)} items are unscheduled. Claim and Integration come from the handoffs in "
+        f"`{EVIDENCE_DIR.as_posix()}/<ID>.json`: `handoff` marks a self-tested item with evidence, "
+        "`accepted` an item the Master integrated, `—` neither.",
         "",
     ]
     return "\n".join(out)
