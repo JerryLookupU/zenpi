@@ -5,9 +5,9 @@
 
 ```yaml
 source: Docs/Zenpi_Execution_Blueprint_v2.md
-source_sha256: f326a2a8996e5c63a0b049f559427ccb29d324263c9404ab63d02a79d9738359
+source_sha256: aaeb0ec720f99f4b06598e11d8bc6c823025d5a63a20b3e5d8b65fefc057417a
 blueprint_version: 4.0.0
-generated_at: 2026-10-14T19:00:07Z
+generated_at: 2026-10-14T19:07:16Z
 ```
 
 ## Dependency-order view
@@ -98,7 +98,7 @@ gantt
     ZE-305 session 内存瘦身：去掉  records  Vec<Value>  和 :ZE_305, after ZE_232, 1d
     ZE-306 session 目录每个日志只解析一次（catalog 与搜索不再先 inspe :active, ZE_306, after ZE_236, 1d
     ZE-307 凭据元数据缓存：领取前先用计数器核实问题确实存在。实测（release，2000 :active, ZE_307, 0, 1d
-    ZE-308 拆分 DAG 存储：<br>•  nodes.json  用原子写（rename :ZE_308, after ZE_260, 1d
+    ZE-308 DAG 存储降本（实测后按奥卡姆裁剪，不拆文件）：<br>• 原实现每个等待者每 :active, ZE_308, after ZE_260, 1d
     ZE-309 TUI 渲染成本：按消息缓存已渲染的行，只让正在流式输出的那条失效 项目 che :ZE_309, after ZE_106, 1d
     section A4
     ZE-400 进程内 golden 任务套件（使用真实工具、临时工作区）。覆盖以下场景：<br :ZE_400, after ZE_202 ZE_203 ZE_205 ZE_210 ZE_213 ZE_221 ZE_227 ZE_232, 1d
@@ -144,7 +144,7 @@ gantt
 
 ## Monitoring index
 
-Counts: open 36 · self-tested 7 · accepted 70 · total 113
+Counts: open 35 · self-tested 8 · accepted 70 · total 113
 
 | ID | Layer | State | Ready | Depends | Claim | Integration | Est. LOC | Title |
 |---|---|---|---|---|---|---|---:|---|
@@ -224,7 +224,7 @@ Counts: open 36 · self-tested 7 · accepted 70 · total 113
 | ZE-305 | A3 | open | no | ZE-232 | — | — | 260 | session 内存瘦身：去掉 `records: Vec<Value>` 和 `event_values` 这两份重复副本（只保留序号、类型、偏移，需要时重新解析）；缓存已校验过的 checkpoint；`tree_ancestry_turns` 不再克隆整棵树 |
 | ZE-306 | A3 | self-tested | yes | ZE-236 | ZE-306@blueprint-4.0.0 | handoff | 70 | session 目录每个日志只解析一次（catalog 与搜索不再先 inspect 再 open）；"最新 session"（`-c`）只读文件头并按 cwd 过滤（ZE-236 已交付）。名称、归档状态和计数来自日志任意位置的事件，列表不做只读文件头的裁剪（YAGNI：不在热路径上） |
 | ZE-307 | A3 | self-tested | yes | — | ZE-307@blueprint-4.0.0 | handoff | 0 | 凭据元数据缓存：领取前先用计数器核实问题确实存在。实测（release，2000 次）：API key 每次解析 0.22 ms、OAuth 0.40 ms，每次 provider 请求只解析一次；2000 agent 每几秒一次请求合计约 0.1 核，问题不成立，按 YAGNI 不加缓存，也不改账户锁 |
-| ZE-308 | A3 | open | yes | ZE-260 | — | — | 280 | 拆分 DAG 存储：<br>• `nodes.json` 用原子写（rename 加目录 fsync），只在拓扑或状态变化时写；<br>• 每个节点一个 append-only 的 `inbox/<node>.jsonl`，追加时 fsync，ack 用游标记录；<br>• 心跳写在独立文件里；<br>• `wait_for_message` 只检查自己 inbox 的大小，发现变大才加锁；<br>• DAG 的状态永远不会改动蓝图的勾选；<br>layer `A3` \| Depends: ZE-260 \| Owned paths: `src/dag.rs`, `tests/dag.rs` \| Validators: 256 个线程各做 20 轮收发和心跳，无丢失、无重复；心跳不改变 `nodes.json` 的字节；未 ack 的消息会重投；2000 个等待中的 worker 合计 ≤ 0.25 核；写到一半崩溃后存储仍可解析 \| Estimated LOC: 280 |
+| ZE-308 | A3 | self-tested | yes | ZE-260 | ZE-308@blueprint-4.0.0 | handoff | 280 | DAG 存储降本（实测后按奥卡姆裁剪，不拆文件）：<br>• 原实现每个等待者每 250 ms 都持全局锁重写整个 store 并 fsync，2000 个等待者即每秒约 8000 次串行 fsync；<br>• 没有变化的更新（空 claim）不再写盘；<br>• `wait_for_message` 先看 store 的 (len, mtime)，变了才做无锁快照读，确有待收消息才加锁 claim，轮询间隔 500 ms；<br>• 心跳仍在 store 内（只让等待者多一次只读重读，不触发写）；原子写（rename + 目录 fsync）不变；DAG 状态永远不会改动蓝图的勾选；<br>layer `A3` \| Depends: ZE-260 \| Owned paths: `src/dag.rs`, `tests/dag.rs`, `tests/dag_idle_cost.rs` \| Validators: `cargo test --locked --all-features --test dag --test dag_idle_cost`：64 个节点各收发 20 条无丢失无重复；未 ack 的消息重投；2000 个空等待者 < 0.25 核且 store 的 mtime 不变；写到一半崩溃后仍可解析 \| Estimated LOC: 280 |
 | ZE-309 | A3 | open | yes | ZE-106 | — | — | 180 | TUI 渲染成本：按消息缓存已渲染的行，只让正在流式输出的那条失效；项目 checkpoint 不再包含 transcript（目前有改动时每 250 ms 序列化一遍全部 transcript）；删除 250 ms 和 20 ms 的无条件重绘，但事件循环的超时仍要包含粘贴突发的截止时间（对应 codex `paste_burst_learn`） |
 | ZE-400 | A4 | open | no | ZE-202, ZE-203, ZE-205, ZE-210, ZE-213, ZE-221, ZE-227, ZE-232 | — | — | 800 | 进程内 golden 任务套件（使用真实工具、临时工作区）。覆盖以下场景：<br>• 读文件后回答；<br>• 新建文件；<br>• 编辑文件并校验 diff；<br>• bash 成功，且输出进入下一次请求；<br>• bash 失败后模型修复；<br>• 同一轮发起 3 个并行工具；<br>• 需要审批的写入被拒绝，文件不落盘；同一写入获批后落盘；<br>• 在 provider 调用中取消、在工具执行中取消，日志保持一致；<br>• 轮中被杀后恢复，修复未完成的调用；<br>• 迭代上限或 doom-loop 上限止损；<br>• provider 出错后重试；<br>• 因长度截断的轮次不执行其中的工具调用；<br>• 会话中途切换模型后继续工作；<br>layer `A4` \| Depends: ZE-202, ZE-203, ZE-205, ZE-210, ZE-213, ZE-221, ZE-227, ZE-232 \| Owned paths: `tests/tasks.rs` \| Validators: `cargo test --locked --test tasks`，每个任务都断言最终文件、日志记录和请求数 \| Estimated LOC: 800 |
 | ZE-401 | A4 | open | no | ZE-400, ZE-236, ZE-240, ZE-242, ZE-303 | — | — | 380 | 二进制级 headless 任务：针对 ZE-104 的假服务器启动 `zenpi --mode headless`，覆盖新建文件、bash、审批被拒、取消、杀进程后恢复、`-c` 续接 |

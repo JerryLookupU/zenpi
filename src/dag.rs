@@ -262,12 +262,18 @@ impl DagStore {
         apply: impl FnOnce(&mut DagFile) -> Result<T, String>,
     ) -> Result<T, String> {
         let mut state = self.read_locked()?;
+        let before =
+            serde_json::to_vec(&state).map_err(|error| format!("dag store encode: {error}"))?;
         let result = apply(&mut state)?;
         if state.messages.len() > MAX_DAG_MESSAGES || state.nodes.len() > MAX_DAG_NODES {
             return Err("dag store is full".into());
         }
         let bytes =
             serde_json::to_vec(&state).map_err(|error| format!("dag store encode: {error}"))?;
+        // An update that changed nothing (an empty claim) writes nothing.
+        if bytes == before {
+            return Ok(result);
+        }
         let temp = self.temp_path();
         let mut file = OpenOptions::new()
             .write(true)
@@ -837,15 +843,40 @@ pub fn wait_for_message(
     cancelled: &dyn Fn() -> bool,
 ) -> Result<Vec<DagMessage>, String> {
     let deadline = std::time::Instant::now() + wait.min(Duration::from_secs(30));
+    // Waiters re-read only when the store file changed, and take the store
+    // lock only to claim a message that is there (ZE-308): 2000 idle workers
+    // cost one stat each per poll, not a locked rewrite and fsync.
+    let mut seen = None;
     loop {
         if cancelled() {
             return Err("cancelled".into());
         }
-        let messages = store.claim_inbox(node)?;
-        if !messages.is_empty() || std::time::Instant::now() >= deadline {
-            return Ok(messages);
+        let stamp = fs::metadata(store.path())
+            .ok()
+            .map(|metadata| (metadata.len(), metadata.modified().ok()));
+        if seen.as_ref() != Some(&stamp) {
+            seen = Some(stamp);
+            let pending = store.read_locked()?.messages.iter().any(|message| {
+                message.to == node
+                    && message
+                        .claimed_by
+                        .as_deref()
+                        .is_none_or(|owner| owner == node)
+            });
+            if pending {
+                let messages = store.claim_inbox(node)?;
+                if !messages.is_empty() {
+                    return Ok(messages);
+                }
+            }
         }
-        std::thread::sleep(Duration::from_millis(250));
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            return Ok(Vec::new());
+        }
+        // 500 ms keeps 2000 idle waiters near 0.15 core; mail and cancel
+        // latency stay under half a second.
+        std::thread::sleep(Duration::from_millis(500).min(deadline - now));
     }
 }
 

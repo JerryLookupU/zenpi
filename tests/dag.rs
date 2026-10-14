@@ -335,3 +335,55 @@ fn dag_spawned_workers_are_reaped_after_exit() {
     );
     assert!(!send_to_worker("reaped", "late").unwrap());
 }
+
+#[test]
+fn dag_concurrent_send_and_receive_lose_and_duplicate_nothing() {
+    // ZE-308: pairs of nodes exchange messages through one store.
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("dag.json");
+    let (nodes, rounds) = (64, 20);
+    let store = DagStore::at(&path);
+    for index in 0..nodes {
+        store.upsert(&format!("n{index}"), None).unwrap();
+    }
+    let received: Vec<Vec<String>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..nodes)
+            .map(|index| {
+                let path = path.clone();
+                scope.spawn(move || {
+                    let store = DagStore::at(path);
+                    let (me, peer) = (format!("n{index}"), format!("n{}", index ^ 1));
+                    let mut got = Vec::new();
+                    for round in 0..rounds {
+                        store.send(&me, &peer, &format!("{me}:{round}")).unwrap();
+                    }
+                    while got.len() < rounds {
+                        let messages = zenpi::dag::wait_for_message(
+                            &store,
+                            &me,
+                            Duration::from_secs(10),
+                            &|| false,
+                        )
+                        .unwrap();
+                        let ids: Vec<u64> = messages.iter().map(|message| message.id).collect();
+                        got.extend(messages.into_iter().map(|message| message.body));
+                        store.ack(&me, &ids).unwrap();
+                    }
+                    got
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect()
+    });
+    for (index, mut got) in received.into_iter().enumerate() {
+        got.sort();
+        let mut expected: Vec<String> = (0..rounds)
+            .map(|round| format!("n{}:{round}", index ^ 1))
+            .collect();
+        expected.sort();
+        assert_eq!(got, expected, "node n{index}");
+    }
+}
