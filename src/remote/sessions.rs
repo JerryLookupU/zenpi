@@ -119,7 +119,8 @@ fn catalog(
         digest.update(path.to_string_lossy().as_bytes());
         digest.update(serde_json::to_vec(&value).map_err(|_| ErrorCode::InternalError)?);
         for record in session.records() {
-            digest.update(serde_json::to_vec(&record.value).map_err(|_| ErrorCode::InternalError)?);
+            digest
+                .update(serde_json::to_vec(&record.value()).map_err(|_| ErrorCode::InternalError)?);
         }
         // Hash the complete catalog, but search only public conversation text.
         // Redact before matching so a query cannot probe a hidden credential.

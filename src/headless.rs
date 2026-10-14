@@ -2459,11 +2459,12 @@ fn project_session_record(record: &crate::session::SessionRecord) -> serde_json:
         "session" => json!({
             "sequence": record.sequence,
             "kind": "session",
-            "session_id": record.value.get("session_id"),
-            "version": record.value.get("version"),
+            "session_id": record.value().get("session_id"),
+            "version": record.value().get("version"),
         }),
         "turn" => {
-            let turn = record.value.get("turn");
+            let value = record.value();
+            let turn = value.get("turn");
             let content = turn
                 .and_then(|value| value.get("content"))
                 .and_then(serde_json::Value::as_str)
@@ -2483,7 +2484,7 @@ fn project_session_record(record: &crate::session::SessionRecord) -> serde_json:
             })
         }
         "event" => {
-            let event = record.value.get("event").cloned().unwrap_or_default();
+            let event = record.value().get("event").cloned().unwrap_or_default();
             let encoded_len = serde_json::to_vec(&event).map_or(0, |bytes| bytes.len());
             if encoded_len > MAX_SLASH_RESUME_EVENT_BYTES {
                 json!({

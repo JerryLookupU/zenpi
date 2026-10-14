@@ -312,9 +312,9 @@ impl SessionPaneSnapshot {
             .map(|record| {
                 // Project envelope identity only. Never expose arbitrary event
                 // payloads, shell output, or credentials in this side pane.
+                let value = record.value();
                 let label = match record.kind.as_str() {
-                    "event" => record
-                        .value
+                    "event" => value
                         .get("event")
                         .and_then(|value| value.get("type"))
                         .and_then(serde_json::Value::as_str)

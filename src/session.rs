@@ -5,7 +5,7 @@
 //! malformed trailing line, and append again without rewriting the transcript.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fs::{self, File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
@@ -334,11 +334,47 @@ pub struct SessionInspection {
 /// metadata.  Resume/recovery owners need that metadata to page through the
 /// append-only journal without reparsing the file (and without accidentally
 /// following a symlink), so the validated envelope is retained separately.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SessionRecord {
     pub sequence: u64,
     pub kind: String,
-    pub value: Value,
+    /// The validated JSON line, parsed on demand: a long session keeps one
+    /// compact copy instead of a `Value` tree per record (ZE-305).
+    line: Box<str>,
+}
+
+/// Serialized exactly as the former `{sequence, kind, value}` struct, so
+/// record digests stored in journals stay valid.
+impl Serialize for SessionRecord {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut record = serializer.serialize_struct("SessionRecord", 3)?;
+        record.serialize_field("sequence", &self.sequence)?;
+        record.serialize_field("kind", &self.kind)?;
+        record.serialize_field("value", &self.value())?;
+        record.end()
+    }
+}
+
+impl SessionRecord {
+    fn new(sequence: u64, value: &Value) -> Result<Self, SessionError> {
+        let kind = value
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_owned();
+        Ok(Self {
+            sequence,
+            kind,
+            line: serde_json::to_string(value)?.into_boxed_str(),
+        })
+    }
+
+    /// The record as JSON. It was validated when read or written, so a parse
+    /// failure here would mean memory corruption; it yields `Null`.
+    pub fn value(&self) -> Value {
+        serde_json::from_str(&self.line).unwrap_or(Value::Null)
+    }
 }
 
 impl SessionStore {
@@ -504,12 +540,13 @@ impl SessionStore {
             .iter()
             .rev()
             .find(|event| event["type"] == "extensions_selected");
-        let prefix_matches =
-            current.header == self.header
-                && current.records.len() >= self.records.len()
-                && current.records.iter().zip(&self.records).all(|(a, b)| {
-                    a.sequence == b.sequence && a.kind == b.kind && a.value == b.value
-                });
+        let prefix_matches = current.header == self.header
+            && current.records.len() >= self.records.len()
+            && current
+                .records
+                .iter()
+                .zip(&self.records)
+                .all(|(a, b)| a == b);
         let tail = current
             .records
             .get(self.records.len()..)
@@ -520,7 +557,7 @@ impl SessionStore {
             || tail.len() > 64
             || !tail.iter().all(|record| {
                 record.kind == "event"
-                    && selected.is_some_and(|event| &record.value["event"] == event)
+                    && selected.is_some_and(|event| &record.value()["event"] == event)
             })
         {
             return Err(SessionError::InvalidRecord(
@@ -799,16 +836,7 @@ impl SessionStore {
             if accepted {
                 last_seq = Some(record_sequence);
                 next_seq = following_sequence;
-                let kind = raw_value
-                    .get("kind")
-                    .and_then(Value::as_str)
-                    .unwrap_or("unknown")
-                    .to_owned();
-                records.push(SessionRecord {
-                    sequence: record_sequence,
-                    kind,
-                    value: raw_value,
-                });
+                records.push(SessionRecord::new(record_sequence, &raw_value)?);
             }
         }
 
@@ -864,8 +892,8 @@ impl SessionStore {
             }
         }
         if store.records.iter().any(|record| {
-            record.value.get("tree_entry").is_some()
-                || record.value["event"]["type"] == "session_tree"
+            record.value().get("tree_entry").is_some()
+                || record.value()["event"]["type"] == "session_tree"
         }) {
             store.tree = Some(crate::session_tree::SessionTree::recover(
                 store.session_id(),
@@ -1112,26 +1140,39 @@ impl SessionStore {
         leaf: Option<&str>,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<Vec<Turn>, SessionError> {
-        let tree = self.tree_snapshot(cancelled)?;
+        // Borrow the live tree and clone only the ancestry's turns (ZE-305);
+        // a snapshot is recovered only for a journal without a live tree.
+        let recovered;
+        let tree = match &self.tree {
+            Some(tree) => tree,
+            None => {
+                recovered = self.tree_snapshot(cancelled)?;
+                &recovered
+            }
+        };
         let path = tree.ancestry(leaf, cancelled)?;
-        let turns: BTreeMap<_, _> = self
-            .turns
+        let wanted: HashMap<&str, usize> = path
             .iter()
-            .map(|turn| (turn.id.as_str(), turn))
+            .enumerate()
+            .map(|(index, entry)| (entry.turn_id.as_str(), index))
             .collect();
-        path.iter()
-            .map(|entry| {
-                if cancelled() {
-                    return Err(SessionError::InvalidRecord(
-                        "tree projection cancelled".into(),
-                    ));
-                }
-                turns
-                    .get(entry.turn_id.as_str())
-                    .map(|turn| (*turn).clone())
-                    .ok_or_else(|| {
-                        SessionError::InvalidRecord("tree entry lost its durable turn".into())
-                    })
+        let mut selected: Vec<Option<Turn>> = vec![None; path.len()];
+        for turn in &self.turns {
+            if let Some(&index) = wanted.get(turn.id.as_str()) {
+                selected[index] = Some(turn.clone());
+            }
+        }
+        if cancelled() {
+            return Err(SessionError::InvalidRecord(
+                "tree projection cancelled".into(),
+            ));
+        }
+        selected
+            .into_iter()
+            .map(|turn| {
+                turn.ok_or_else(|| {
+                    SessionError::InvalidRecord("tree entry lost its durable turn".into())
+                })
             })
             .collect()
     }
@@ -1752,13 +1793,14 @@ impl SessionStore {
             for record in &self.records {
                 match record.kind.as_str() {
                     "turn" => {
-                        fork.append_turn(serde_json::from_value(record.value["turn"].clone())?)?
+                        fork.append_turn(serde_json::from_value(record.value()["turn"].clone())?)?
                     }
-                    "handoff" => fork
-                        .append_handoff(serde_json::from_value(record.value["handoff"].clone())?)?,
+                    "handoff" => fork.append_handoff(serde_json::from_value(
+                        record.value()["handoff"].clone(),
+                    )?)?,
                     "handoff_record" => {
                         let mut handoff: HandoffRecord =
-                            serde_json::from_value(record.value["handoff"].clone())?;
+                            serde_json::from_value(record.value()["handoff"].clone())?;
                         handoff.session_id = fork.session_id().to_owned();
                         handoff.digest = handoff
                             .compute_digest()
@@ -1766,7 +1808,7 @@ impl SessionStore {
                         fork.append_handoff_record(handoff)?;
                     }
                     "event" => {
-                        let mut event = record.value["event"].clone();
+                        let mut event = record.value()["event"].clone();
                         let kind = event["type"].as_str().unwrap_or_default();
                         // A fork copies history, never pending work or the original
                         // session's transport/lifecycle ownership and request ledger.
@@ -1878,16 +1920,7 @@ impl SessionStore {
         self.needs_separator = false;
         self.observed_bytes = file.metadata()?.len();
         self.next_seq = following_sequence;
-        let kind = record
-            .get("kind")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown")
-            .to_owned();
-        self.records.push(SessionRecord {
-            sequence,
-            kind,
-            value: record,
-        });
+        self.records.push(SessionRecord::new(sequence, &record)?);
         Ok(())
     }
 }
@@ -3073,7 +3106,7 @@ impl SessionStore {
             last_activity_ms: self
                 .records
                 .iter()
-                .filter_map(|record| record.value["timestamp_ms"].as_u64())
+                .filter_map(|record| record.value()["timestamp_ms"].as_u64())
                 .max()
                 .unwrap_or(self.header.created_at_ms),
         }

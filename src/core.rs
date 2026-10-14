@@ -1617,7 +1617,7 @@ impl Agent {
             .iter()
             .rev()
             .find(|record| {
-                record.kind == "event" && record.value["event"]["type"] == "model_selected"
+                record.kind == "event" && record.value()["event"]["type"] == "model_selected"
             })
             .map_or(0, |record| record.sequence)
     }
@@ -2018,7 +2018,7 @@ impl Agent {
             });
         }
         let saved = session.records().iter().rev().find_map(|record| {
-            let event = record.value.get("event")?;
+            let event = record.value().get("event")?.clone();
             (record.kind == "event" && event["type"] == "model_selected").then_some(event)
         });
         let Some(saved) = saved else {
@@ -9095,13 +9095,13 @@ fn restore_resource_state(
     let snapshot = loader.reload(cancelled).map_err(resource_agent_error)?;
     let mut expected = BTreeMap::<String, String>::new();
     for record in session.records() {
-        let event = &record.value["event"];
+        let event = &record.value()["event"];
         if event["type"] == "resources_selected" {
             expected = serde_json::from_value(event["skill_hashes"].clone()).map_err(|error| {
                 AgentError::InvalidTurn(format!("invalid resource hash checkpoint: {error}"))
             })?;
         }
-        let resource = &record.value["turn"]["metadata"]["resource"];
+        let resource = &record.value()["turn"]["metadata"]["resource"];
         if resource["kind"] == "skill"
             && let (Some(name), Some(hash)) =
                 (resource["name"].as_str(), resource["source_hash"].as_str())
@@ -9137,7 +9137,7 @@ fn trusted_output_reference(
     request.validate()?;
     let mut found: Option<ArtifactRef> = None;
     for record in session.records() {
-        let event = &record.value["event"];
+        let event = &record.value()["event"];
         if record.kind != "event" || event["type"] != "tool_output_captured" {
             continue;
         }
@@ -9165,7 +9165,7 @@ fn trusted_output_reference(
                 .iter()
                 .take_while(|prior| prior.sequence < record.sequence)
                 .any(|prior| {
-                    let prior_event = &prior.value["event"];
+                    let prior_event = &prior.value()["event"];
                     prior.kind == "event"
                         && prior_event["type"] == "tool_execution_started"
                         && prior_event["operation_id"] == operation
