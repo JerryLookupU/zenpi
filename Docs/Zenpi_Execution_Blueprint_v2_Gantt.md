@@ -5,9 +5,9 @@
 
 ```yaml
 source: Docs/Zenpi_Execution_Blueprint_v2.md
-source_sha256: 967512f95ee1aae34a70dee8f97110df3ce84e316f16e579c3630b704ebe105d
+source_sha256: 692b096a71cc2b0202da50a9f6f4a8cd9ac0ce37e7510c0065f3dda106c1c617
 blueprint_version: 4.0.0
-generated_at: 2026-10-14T23:19:32Z
+generated_at: 2026-10-14T23:20:32Z
 ```
 
 ## Dependency-order view
@@ -112,13 +112,13 @@ gantt
     ZE-500 代码入库与 CI 基线：<br>• 提交  android/ 、 src/rem :done, ZE_500, after ZE_100 ZE_108, 1d
     ZE-502 接受已有的核心成果：<br>• 主机侧：线协议（frame、envelope v :done, ZE_502, after ZE_500, 1d
     section B2
-    ZE-510 把远程状态（回执、ack、intent）从  project-workspace :active, ZE_510, after ZE_502, 1d
-    ZE-511 把 worktree、worker、subtab 子系统从  src/remot :active, ZE_511, after ZE_510, 1d
+    ZE-510 把远程状态（回执、ack、intent）从  project-workspace :done, ZE_510, after ZE_502, 1d
+    ZE-511 把 worktree、worker、subtab 子系统从  src/remot :done, ZE_511, after ZE_510, 1d
     ZE-512 远程宿主去轮询（实测后按奥卡姆裁剪）：owner 线程不再每 10 ms 无条件 :done, ZE_512, after ZE_243 ZE_502, 1d
     ZE-513 常驻的  zenpi host serve ：<br>• 监听器的生命周期与邀请 :done, ZE_513, after ZE_502, 1d
-    ZE-514 配对后即可使用：<br>• 桌面确认后，授予所挂载项目的 Control 和 A :active, ZE_514, after ZE_513, 1d
-    ZE-515 基于密钥的身份与二维码 v2：<br>•  host_id = sha256(S :active, ZE_515, after ZE_514, 1d
-    ZE-516 网络 T1 叠加网：<br>• 主机端  --tailnet  按网卡地址识别 :active, ZE_516, after ZE_515, 1d
+    ZE-514 配对后即可使用：<br>• 桌面确认后，授予所挂载项目的 Control 和 A :done, ZE_514, after ZE_513, 1d
+    ZE-515 基于密钥的身份与二维码 v2：<br>•  host_id = sha256(S :done, ZE_515, after ZE_514, 1d
+    ZE-516 网络 T1 叠加网：<br>• 主机端  --tailnet  按网卡地址识别 :done, ZE_516, after ZE_515, 1d
     ZE-517 流式对齐：把  live_text  目前 4 KiB 的整行预览改为逐 tok :done, ZE_517, after ZE_502, 1d
     ZE-518 拆分 Android UI：<br>• 把  PairingScreen （约 :done, ZE_518, after ZE_502, 1d
     ZE-519 竖屏截图测试底座：Roborazzi，分辨率 360×800 和 412×915 :done, ZE_519, after ZE_518, 1d
@@ -144,7 +144,7 @@ gantt
 
 ## Monitoring index
 
-Counts: open 12 · self-tested 7 · accepted 94 · total 113
+Counts: open 12 · self-tested 2 · accepted 99 · total 113
 
 | ID | Layer | State | Ready | Depends | Claim | Integration | Est. LOC | Title |
 |---|---|---|---|---|---|---|---:|---|
@@ -235,13 +235,13 @@ Counts: open 12 · self-tested 7 · accepted 94 · total 113
 | ZE-999 | A4 | open | no | ZE-400, ZE-401, ZE-402, ZE-403, ZE-404, ZE-406, ZE-599 | — | — | 0 | Master 终验：A、B 两块 全部为 `[x]`；G-BUILD、G-TEST、G-RUST、G-TASK、G-BENCH、`G-LOAD(2000)` 全部通过；Gantt 未过期，handoff 齐全 |
 | ZE-500 | B1 | accepted | no | ZE-100, ZE-108 | ZE-500@blueprint-4.0.0 | accepted | 150 | 代码入库与 CI 基线：<br>• 提交 `android/`、`src/remote/`、`src/host_pair.rs`、`tests/remote_*.rs`、`fuzz/remote_protocol/`；<br>• CI 增加 G-ANDROID，并在 CI 中运行原本 `#[ignore]` 的 8 个 `remote_android_*_interop` 测试；<br>• Stage 2 的执行脚手架（`tools/*stage2*`、`.ops/stage2_android2unix/`）中 CI 用不到的部分，原样移到 `Docs/archive/stage2/`；<br>layer `B1` \| Depends: ZE-100, ZE-108 \| Owned paths: `android/`, `src/remote/`, `src/host_pair.rs`, `tests/remote_*.rs`, `fuzz/remote_protocol/`, `.github/workflows/ci.yml`, `tools/`, `.ops/stage2_android2unix/`, `Docs/archive/stage2/` \| Validators: `git ls-files android src/remote \\| wc -l` > 0；G-REMOTE；G-ANDROID；interop 测试在 CI 中通过 \| Estimated LOC: 150 |
 | ZE-502 | B1 | accepted | no | ZE-500 | ZE-502@blueprint-4.0.0 | accepted | 50 | 接受已有的核心成果：<br>• 主机侧：线协议（frame、envelope v1、严格 JSON）、TLS 1.3 监听与 ALPN、二维码邀请与证书 pin 配对、设备注册表与撤销、owner 路由、事件 cursor、回放与订阅；<br>• Android 侧：`pairing/`、`security/`、`transport/`、`state/`；<br>• 运行原有的测试和 fuzz 语料，结果写进 handoff；<br>layer `B1` \| Depends: ZE-500 \| Owned paths: `src/remote/{frame,protocol,strict_json,listener,lan,pairing,auth,command,host_adapter,events,subscription,transcript,live_text,wakeup}.rs`, `android/app/src/main/java/zenpi/{pairing,security,transport,state}/` \| Validators: G-REMOTE（含 `remote_protocol`、`remote_pairing`、`remote_auth`、`remote_events`、`remote_subscription_tls`、`remote_parity`）；G-ANDROID 的 JVM 部分全部通过 \| Estimated LOC: 50 |
-| ZE-510 | B2 | self-tested | yes | ZE-502 | ZE-510@blueprint-4.0.0 | handoff | 400 | 把远程状态（回执、ack、intent）从 `project-workspace.json` 移到独立的 `remote-state.json`，保证不带 feature 的构建也能读取由 remote 构建写出的 checkpoint |
-| ZE-511 | B2 | self-tested | no | ZE-510 | ZE-511@blueprint-4.0.0 | handoff | 600 | 把 worktree、worker、subtab 子系统从 `src/remote/` 移到 `src/worktree/`。这部分 TUI 也在用，行为不变，按 §7 冻结；目的是解除对 remote feature 开关的阻塞 |
+| ZE-510 | B2 | accepted | no | ZE-502 | ZE-510@blueprint-4.0.0 | accepted | 400 | 把远程状态（回执、ack、intent）从 `project-workspace.json` 移到独立的 `remote-state.json`，保证不带 feature 的构建也能读取由 remote 构建写出的 checkpoint |
+| ZE-511 | B2 | accepted | no | ZE-510 | ZE-511@blueprint-4.0.0 | accepted | 600 | 把 worktree、worker、subtab 子系统从 `src/remote/` 移到 `src/worktree/`。这部分 TUI 也在用，行为不变，按 §7 冻结；目的是解除对 remote feature 开关的阻塞 |
 | ZE-512 | B2 | accepted | no | ZE-243, ZE-502 | ZE-512@blueprint-4.0.0 | accepted | 1200 | 远程宿主去轮询（实测后按奥卡姆裁剪）：owner 线程不再每 10 ms 无条件 sleep，空闲时阻塞在请求邮箱上（500 ms 兜底，用于 shutdown），只有 prompt、worker 或 steer 在途时才 10 ms 推进；空闲 `host serve` 168 → 86 次上下文切换/s（剩余为监听器 10 ms accept 轮询，归 ZE-541）。未把 `HeadlessHost` 的 prompt runner 合并进 headless 异步 host：两者已共用 `ProjectOwnerPool` 与 runtime，合并约 1200 LOC 的重构收益只剩"概念单一"，按 YAGNI 不做 |
 | ZE-513 | B2 | accepted | no | ZE-502 | ZE-513@blueprint-4.0.0 | accepted | 250 | 常驻的 `zenpi host serve`：<br>• 监听器的生命周期与邀请解耦；<br>• 固定端口写进 identity 旁的 `identity.port`（不改 identity.json 的严格 schema）；<br>• 默认绑定选中的网卡，而不是 0.0.0.0；<br>• 保留挂载在桌面 TUI 上的模式；<br>layer `B2` \| Depends: ZE-502 \| Owned paths: `src/host_pair.rs`, `src/remote/listener.rs`, `src/core.rs`, `tests/remote_host_e2e.rs` \| Validators: `cargo test --locked --all-features --test remote_host_e2e -- --ignored production_serve`：配对 → 邀请过期 → 已配对设备仍可重连；重启后端口不变（10 分钟缩为邀请过期 + 1 s：监听器与邀请无关，等待更久不改变结论） \| Estimated LOC: 250 |
-| ZE-514 | B2 | self-tested | yes | ZE-513 | ZE-514@blueprint-4.0.0 | handoff | 600 | 配对后即可使用：<br>• 桌面确认后，授予所挂载项目的 Control 和 Approval；<br>• 保留 `--list-devices` 和 `--revoke-device`，删除 4 个 grant CLI；<br>• 删除可以由二维码推出的 6 位安全码；<br>• Pair 和 Authenticate 的响应如实报告 `control_available`；<br>layer `B2` \| Depends: ZE-513 \| Owned paths: `src/remote/auth.rs`, `src/remote/pairing.rs`, `src/host_pair.rs`, `android/.../pairing/`, `tests/remote_auth.rs`, `tests/remote_device_grants.rs` \| Validators: 新配对的设备能直接发 prompt；被撤销或重放的 token 会被拒绝；撤销在下一帧生效 \| Estimated LOC: 600 |
-| ZE-515 | B2 | self-tested | no | ZE-514 | ZE-515@blueprint-4.0.0 | handoff | 700 | 基于密钥的身份与二维码 v2：<br>• `host_id = sha256(SPKI)`，证书轮换后 pin 仍然有效；<br>• 二维码 v2 带上与 token 绑定的有序地址提示（`lan`、`tailnet`），v1 仍可解析；<br>• Android 端已保存的主机自动迁移；<br>layer `B2` \| Depends: ZE-514 \| Owned paths: `src/remote/pairing.rs`, `src/remote/auth.rs`, `android/.../pairing/`, `android/.../transport/PairingClient.kt`, `android/.../security/PairedHostStore.kt` \| Validators: v1 和 v2 邀请都按严格模式解析；证书轮换后仍能连接；已存主机的迁移测试 \| Estimated LOC: 700 |
-| ZE-516 | B2 | self-tested | no | ZE-515 | ZE-516@blueprint-4.0.0 | handoff | 600 | 网络 T1 叠加网：<br>• 主机端 `--tailnet` 按网卡地址识别 `100.64.0.0/10` 和 `fd7a:115c:a1e0::/48`，加入地址提示，不调用 Tailscale API；<br>• Android 只对这两个网段放行 `TRANSPORT_VPN`；<br>• 多提示拨号：局域网优先，失败后依次尝试下一个；任何一个 pin 不符都直接失败，不回退；<br>• 用户指南补上 Tailscale/Headscale 的配置，以及 `ssh -R` 兜底方案；<br>layer `B2` \| Depends: ZE-515 \| Owned paths: `src/remote/lan.rs`, `src/host_pair.rs`, `android/.../lifecycle/LanSocketRouting.kt`, `android/.../lifecycle/NetworkMonitor.kt`, `android/.../transport/HostClient.kt`, `Docs/stage2_android2unix_user_guide.md` \| Validators: CGNAT 和 fd7a 地址被识别为叠加网；局域网不可达时回退到 tailnet 提示；任一提示 pin 错误时直接失败；非叠加网段的 VPN 仍被拒绝 \| Estimated LOC: 600 |
+| ZE-514 | B2 | accepted | no | ZE-513 | ZE-514@blueprint-4.0.0 | accepted | 600 | 配对后即可使用：<br>• 桌面确认后，授予所挂载项目的 Control 和 Approval；<br>• 保留 `--list-devices` 和 `--revoke-device`，删除 4 个 grant CLI；<br>• 删除可以由二维码推出的 6 位安全码；<br>• Pair 和 Authenticate 的响应如实报告 `control_available`；<br>layer `B2` \| Depends: ZE-513 \| Owned paths: `src/remote/auth.rs`, `src/remote/pairing.rs`, `src/host_pair.rs`, `android/.../pairing/`, `tests/remote_auth.rs`, `tests/remote_device_grants.rs` \| Validators: 新配对的设备能直接发 prompt；被撤销或重放的 token 会被拒绝；撤销在下一帧生效 \| Estimated LOC: 600 |
+| ZE-515 | B2 | accepted | no | ZE-514 | ZE-515@blueprint-4.0.0 | accepted | 700 | 基于密钥的身份与二维码 v2：<br>• `host_id = sha256(SPKI)`，证书轮换后 pin 仍然有效；<br>• 二维码 v2 带上与 token 绑定的有序地址提示（`lan`、`tailnet`），v1 仍可解析；<br>• Android 端已保存的主机自动迁移；<br>layer `B2` \| Depends: ZE-514 \| Owned paths: `src/remote/pairing.rs`, `src/remote/auth.rs`, `android/.../pairing/`, `android/.../transport/PairingClient.kt`, `android/.../security/PairedHostStore.kt` \| Validators: v1 和 v2 邀请都按严格模式解析；证书轮换后仍能连接；已存主机的迁移测试 \| Estimated LOC: 700 |
+| ZE-516 | B2 | accepted | no | ZE-515 | ZE-516@blueprint-4.0.0 | accepted | 600 | 网络 T1 叠加网：<br>• 主机端 `--tailnet` 按网卡地址识别 `100.64.0.0/10` 和 `fd7a:115c:a1e0::/48`，加入地址提示，不调用 Tailscale API；<br>• Android 只对这两个网段放行 `TRANSPORT_VPN`；<br>• 多提示拨号：局域网优先，失败后依次尝试下一个；任何一个 pin 不符都直接失败，不回退；<br>• 用户指南补上 Tailscale/Headscale 的配置，以及 `ssh -R` 兜底方案；<br>layer `B2` \| Depends: ZE-515 \| Owned paths: `src/remote/lan.rs`, `src/host_pair.rs`, `android/.../lifecycle/LanSocketRouting.kt`, `android/.../lifecycle/NetworkMonitor.kt`, `android/.../transport/HostClient.kt`, `Docs/stage2_android2unix_user_guide.md` \| Validators: CGNAT 和 fd7a 地址被识别为叠加网；局域网不可达时回退到 tailnet 提示；任一提示 pin 错误时直接失败；非叠加网段的 VPN 仍被拒绝 \| Estimated LOC: 600 |
 | ZE-517 | B2 | accepted | no | ZE-502 | ZE-517@blueprint-4.0.0 | accepted | 600 | 流式对齐：把 `live_text` 目前 4 KiB 的整行预览改为逐 token 的增量，回放时顺序正确 |
 | ZE-518 | B2 | accepted | no | ZE-502 | ZE-518@blueprint-4.0.0 | accepted | 1800 | 拆分 Android UI：<br>• 把 `PairingScreen`（约 60 个参数）拆到 `ui/` 包，`PairingState`（约 90 个字段）拆成子状态；<br>• 修掉每秒一次的空转重组；<br>• 草稿只以 host、session、tab 的 id 为键，不含 revision，避免远端改名时清空草稿；<br>行为保持不变 |
 | ZE-519 | B2 | accepted | no | ZE-518 | ZE-519@blueprint-4.0.0 | accepted | 400 | 竖屏截图测试底座：Roborazzi，分辨率 360×800 和 412×915，字号 1.0 和 1.3，覆盖明暗主题 |
@@ -251,10 +251,10 @@ Counts: open 12 · self-tested 7 · accepted 94 · total 113
 | ZE-533 | B2 | accepted | no | ZE-530 | ZE-533@blueprint-4.0.0 | accepted | 1800 | 次级页与路由栈：<br>• Sessions：搜索和恢复；<br>• Diff：全屏、逐文件、+/- 着色，返回时恢复原滚动位置；<br>• Terminal：按视口计算行列数，按键行在键盘上方，旋转后重新计算；<br>• Tasks；<br>• 模型面板；<br>layer `B2` \| Depends: ZE-530 \| Owned paths: `android/.../ui/nav/`, `android/.../ui/SessionsScreen.kt`, `android/.../ui/DiffScreen.kt`, `android/.../ui/TerminalScreen.kt`, `android/.../ui/TasksScreen.kt`, `android/.../ui/ModelSheet.kt` \| Validators: 原有的 Session、Diff、Terminal、Worker、ModelStatus 屏幕测试迁移后通过；返回栈测试；黄金图 \| Estimated LOC: 1800 |
 | ZE-534 | B2 | accepted | no | ZE-530, ZE-253 | ZE-534@blueprint-4.0.0 | accepted | 450 | 输入框命令板：输入 `/` 时弹出底部面板，列出主机端的斜杠命令和资源；输入 `@` 时弹出文件选择；不支持的桌面专属命令在面板中注明 |
 | ZE-535 | B2 | open | yes | ZE-533 | — | — | 350 | 安全与无障碍：<br>• 默认开启 `FLAG_SECURE`；<br>• 支持深色和动态色；<br>• 同一个图标不再复用于多个功能；<br>• TalkBack 朗读内容不含 UUID，补上标题语义；<br>• release 构建开启 R8；<br>layer `B2` \| Depends: ZE-533 \| Owned paths: `android/.../ui/theme/`, `android/app/src/main/res/`, `android/app/build.gradle.kts` \| Validators: Compose `enableAccessibilityChecks` 通过；release 包能安装并完成配对；深色主题黄金图 \| Estimated LOC: 350 |
-| ZE-520 | B3 | self-tested | no | ZE-510, ZE-511, ZE-108 | ZE-520@blueprint-4.0.0 | handoff | 300 | `remote` feature 开关（默认关闭）：<br>• `cfg` 覆盖 `src/remote/`、`host_pair`、rcgen、qrcode、`wakeup::notify` 和 `RemoteApprovalActor`；<br>• 去掉 rustls 中未使用的 `tls12`；<br>• 依赖数门按实测收紧；<br>• 核心 crate 永远不引入 tokio；<br>layer `B3` \| Depends: ZE-510, ZE-511, ZE-108 \| Owned paths: `Cargo.toml`, `src/lib.rs`, `src/core.rs`, `src/tui.rs`, `src/session.rs`, `src/approval.rs`, `src/pty_shell.rs`, `src/slash_actions.rs`, `tools/bench_runtime.py` \| Validators: 默认构建中没有 rcgen 和 qrcode；`cargo tree -i tokio` 为空；`cargo clippy --locked --all-targets --features remote -- -D warnings` 通过；G-REMOTE；G-BENCH \| Estimated LOC: 300 |
+| ZE-520 | B3 | self-tested | yes | ZE-510, ZE-511, ZE-108 | ZE-520@blueprint-4.0.0 | handoff | 300 | `remote` feature 开关（默认关闭）：<br>• `cfg` 覆盖 `src/remote/`、`host_pair`、rcgen、qrcode、`wakeup::notify` 和 `RemoteApprovalActor`；<br>• 去掉 rustls 中未使用的 `tls12`；<br>• 依赖数门按实测收紧；<br>• 核心 crate 永远不引入 tokio；<br>layer `B3` \| Depends: ZE-510, ZE-511, ZE-108 \| Owned paths: `Cargo.toml`, `src/lib.rs`, `src/core.rs`, `src/tui.rs`, `src/session.rs`, `src/approval.rs`, `src/pty_shell.rs`, `src/slash_actions.rs`, `tools/bench_runtime.py` \| Validators: 默认构建中没有 rcgen 和 qrcode；`cargo tree -i tokio` 为空；`cargo clippy --locked --all-targets --features remote -- -D warnings` 通过；G-REMOTE；G-BENCH \| Estimated LOC: 300 |
 | ZE-541 | B3 | open | yes | ZE-513 | — | — | 270 | 监听器加固：<br>• accept 改为事件驱动，不再每 10 ms 轮询；<br>• 每个 IP 只给 1 个未认证连接槽，未认证阶段总时限 5 s；<br>• 为已认证连接预留槽位；<br>layer `B3` \| Depends: ZE-513 \| Owned paths: `src/remote/listener.rs` \| Validators: 有 N 个半开连接时，已认证客户端仍能连上；空闲时每秒唤醒 0 次 \| Estimated LOC: 270 |
 | ZE-542 | B3 | open | no | ZE-541, ZE-512 | — | — | 800 | 持久认证连接：订阅复用同一条 TLS 会话，空闲时每分钟握手不超过 1 次；订阅循环改由 wakeup 驱动，不再每 250 ms 内部调度 4 次 |
-| ZE-543 | B3 | open | no | ZE-514 | — | — | 150 | 设备注册表按 mtime 缓存，不再在每一帧都 flock 并解析一遍；撤销仍在下一帧生效 |
+| ZE-543 | B3 | open | yes | ZE-514 | — | — | 150 | 设备注册表按 mtime 缓存，不再在每一帧都 flock 并解析一遍；撤销仍在下一帧生效 |
 | ZE-544 | B3 | open | no | ZE-531, ZE-542 | — | — | 350 | 后台审批通知：<br>• 申请 `POST_NOTIFICATIONS` 权限；<br>• `ResumeWorker` 读到有待审批时，发一条高优先级通知，带"拒绝 / 允许一次"按钮（需要解锁），点击后深链到对应会话；<br>• 审批在别处处理后，1 s 内撤销这条通知；<br>• 不使用前台服务，也不使用 FCM；<br>layer `B3` \| Depends: ZE-531, ZE-542 \| Owned paths: `android/.../lifecycle/ResumeWorker.kt`, `android/app/src/main/AndroidManifest.xml` \| Validators: `ResumeWorkerTest` 中有通知断言；生命周期校验脚本确认没有前台服务 \| Estimated LOC: 350 |
 | ZE-590 | B4 | open | no | ZE-104, ZE-514, ZE-517, ZE-542 | — | — | 600 | 生产端到端测试：`zenpi host serve` 配合 ZE-104 的脚本化 provider，Kotlin JVM 客户端走真实 TCP，依次完成配对 → prompt → 流式输出 → 审批 → 断线 → 回放，全程零重复、零遗漏 |
 | ZE-591 | B4 | open | no | ZE-530, ZE-531, ZE-532, ZE-533, ZE-534, ZE-535, ZE-544 | — | — | 500 | Android 体验验收，覆盖以下必做要求：<br>• 审批通知在 2 s 内送达；<br>• 从通知深链进入会话不超过 1 s；<br>• 审批条在任何滚动位置都可见；<br>• 1 万轮对话滚动 p95 ≥ 55 fps（Macrobenchmark）；<br>• 断网 30 s 后重连，零重复、零遗漏，草稿保留；<br>• 离线时 500 ms 内渲染出缓存内容；<br>• 主要操作都在屏幕下方 40% 区域内；<br>layer `B4` \| Depends: ZE-530, ZE-531, ZE-532, ZE-533, ZE-534, ZE-535, ZE-544 \| Owned paths: `android/app/src/androidTest/`, `android/macrobenchmark/` \| Validators: 上述每一条都有对应的 instrumentation 或 Macrobenchmark 断言 \| Estimated LOC: 500 |
