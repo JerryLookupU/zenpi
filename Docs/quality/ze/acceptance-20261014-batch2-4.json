@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "kind": "master_acceptance",
+  "integrated_head": "666738f",
+  "accepted": [
+    "ZE-105",
+    "ZE-106",
+    "ZE-107",
+    "ZE-200",
+    "ZE-204",
+    "ZE-205",
+    "ZE-206",
+    "ZE-210",
+    "ZE-211",
+    "ZE-212",
+    "ZE-213",
+    "ZE-214",
+    "ZE-230",
+    "ZE-231",
+    "ZE-234",
+    "ZE-240",
+    "ZE-241",
+    "ZE-242",
+    "ZE-253",
+    "ZE-255",
+    "ZE-260"
+  ],
+  "commands_run": [
+    "cargo fmt --all -- --check",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo clippy --locked --all-targets --all-features -- -D warnings",
+    "CARGO_INCREMENTAL=0 cargo test --locked --all-features --no-fail-fast",
+    "cargo test --locked --all-features --test stage1_extension_hooks -- --test-threads=1 (x4)"
+  ],
+  "validation_result": {
+    "fmt": "clean",
+    "clippy_default": 0,
+    "clippy_all_features": 0,
+    "full_suite": "2146 passed / 1 failed (stage1_extension_hooks, load-flaky: 3 consecutive serial reruns 22/22)",
+    "integration_regression": "backend::explicit_tests Codex Responses stream regression from ZE-210 found and fixed in bd23c1d before acceptance"
+  },
+  "notes": "Earlier parallel runs showed PTY/user-shell/extension-hook timeouts that pass under CI's --test-threads=1; root cause is slow first exec of freshly written scripts on this macOS host.",
+  "created_at": "2026-10-14T15:29:10Z",
+  "digest": "1cb58471666079cebcd388aa27989f9a460f3e0f498fa302bc0cf8f0590cd6a2"
+}
