@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-106",
+  "claim_id": "ZE-106@blueprint-4.0.0",
+  "from": "worker",
+  "to": "master",
+  "summary": "Test seam for the production TUI loop: run_async_with_remote's body moved verbatim into private run_tui_loop(agent, profile, remote, io: TuiIo). run_async_with_remote passes TuiIo::Terminal (real crossterm events, CrosstermBackend, TerminalGuard); the new #[doc(hidden)] pub run_async_with_harness(agent, TuiHarness { events: mpsc::Receiver<Event>, screen: Arc<Mutex<TestBackend>> }) passes TuiIo::Harness (scripted events, shared TestBackend, detached guard). The 5 event::poll/read calls in the loop now go through LoopEvents; frames go through LoopBackend (enum over CrosstermBackend/TestBackend implementing ratatui Backend). tests/tui_task.rs drives keys + bracketed paste -> Enter -> ScriptedBackend streamed answer -> resize -> /quit, snapshots the Conversation pane from the TestBackend buffer and the durable session turns, and pins that harness and binary share run_tui_loop.",
+  "changed_files": [
+    "src/tui.rs",
+    "tests/tui_task.rs"
+  ],
+  "diff_stat": "2 files changed, 416 insertions(+), 25 deletions(-)",
+  "commands_run": [
+    "git fetch && git merge --ff-only origin/main",
+    "cargo fmt --all",
+    "cargo fmt --all -- --check",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo clippy --locked --all-targets --all-features -- -D warnings",
+    "python3 tools/check_modes.py",
+    "git diff -U0 origin/main -- src/tui.rs | grep -cE '^\\+.*#!?\\[allow\\((dead_code|unused)'",
+    "cargo test --locked --test tui_task",
+    "cargo test --locked --lib tui",
+    "cargo test --locked --test tui_approval_focus --test tui_bentobox --test tui_busy_diff --test tui_command_palette --test tui_composer --test tui_directory_picker --test tui_goal_owner --test tui_interaction --test tui_logs --test tui_markdown --test tui_preview_graphemes --test tui_project_workspace --test tui_resize --test tui_task --test tui_transcript_ux"
+  ],
+  "validation_result": {
+    "tui_task": "pass: 2 passed (production_loop_streams_an_answer_and_exits, harness_and_binary_share_the_production_loop); 5 consecutive reruns green, ~1.8s each",
+    "fmt": "pass",
+    "clippy": "pass",
+    "clippy_all_features": "pass",
+    "check_modes": "pass: exactly tui/headless",
+    "new_allow_dead_code_unused": "0",
+    "lib_tui": "pass: 61 passed",
+    "tests_tui_star": "pass: all 15 tui_* integration binaries green"
+  },
+  "notes": "Same-function proof: run_async_with_remote and run_async_with_harness are both one-line calls into run_tui_loop (the only definition), and core.rs RunMode::Tui -> run_async_with_profile -> run_async_with_remote; harness_and_binary_share_the_production_loop asserts this wiring from source. run_interactive (legacy) now wraps its CrosstermBackend in LoopBackend::Terminal because the external-editor helpers take Terminal<LoopBackend>. Harness mode uses TerminalGuard::detached() (no raw mode/signals/panic hook), so the external editor reports unavailable. Scripted input disconnect ends the loop with an IO error instead of idling. The harness still runs the real side workers (resource/LAN/Gantt/shell pane); the test sets ZENPI_HOME to a tempdir and SHELL=/bin/sh. Enter is sent 250ms after typing because the loop correctly folds an Enter within the 120ms ordinary-paste window into the draft. No new non-test unwrap/expect/panic!, unsafe, or Arc<Mutex> in src (the TestBackend Arc<Mutex> is shared with the test caller to observe frames); test uses unsafe env::set_var with a SAFETY comment.",
+  "created_at": "2026-10-14T13:13:30Z",
+  "digest": "5e7400eb5d598836d49dcbfd4b15f410f541a9d2f261c128784e5060abc3dee5"
+}
