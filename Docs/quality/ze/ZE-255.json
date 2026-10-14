@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-255",
+  "claim_id": "ZE-255@blueprint-4.0.0",
+  "from": "worker",
+  "to": "master",
+  "summary": "TerminalGuard::enter installs a panic hook chained to the previous hook (std::panic::take_hook) that runs leave()'s restoration (show cursor, disable mouse capture, disable bracketed paste, leave alternate screen, disable raw mode, reclaim+restore saved termios) exactly once via the PANIC_RESTORE_PENDING AtomicBool shared with leave(); leave() reinstates the previous hook when not panicking. Debug-only ZENPI_DEBUG_PANIC_AFTER_START=1 panics right after terminal entry and then aborts (mirroring release panic=abort, so Drop never runs). New PTY smoke tools/tui_panic_restore_smoke.py verifies it.",
+  "changed_files": [
+    "src/tui.rs",
+    "tools/tui_panic_restore_smoke.py",
+    "Docs/quality/ze/ZE-255.json"
+  ],
+  "diff_stat": "src/tui.rs | 101 +++++++++++++++++++++++++--; tools/tui_panic_restore_smoke.py | 139 +++++++++++++++++++++++; 2 files changed, 233 insertions(+), 7 deletions(-) (excluding this handoff)",
+  "commands_run": [
+    "cargo fmt --all",
+    "cargo build --locked",
+    "python3 tools/tui_panic_restore_smoke.py",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo clippy --locked --all-targets --all-features -- -D warnings",
+    "cargo test --locked --lib tui",
+    "cargo test --locked --test tui_approval_focus --test tui_bentobox --test tui_busy_diff --test tui_command_palette --test tui_composer --test tui_directory_picker --test tui_goal_owner --test tui_interaction --test tui_logs --test tui_markdown --test tui_preview_graphemes --test tui_project_workspace --test tui_resize --test tui_transcript_ux"
+  ],
+  "validation_result": {
+    "fmt": "clean",
+    "clippy_default": "pass",
+    "clippy_all_features": "pass",
+    "pty_smoke": "PASS: entered/left alternate screen (\\x1b[?1049l after \\x1b[?1049h), cursor shown, panic message printed, exit 134 (SIGABRT), stty -a before == after (icanon, echo restored)",
+    "pty_smoke_negative_control": "with hook restoration temporarily disabled the smoke fails (left_alternate_screen_after_enter, cursor_shown, icanon_restored, ...)",
+    "lib_tui_tests": "61 passed (one earlier run hit a timing flake in local_remote_preview_tests::existing_terminal_projects_only_matching_live_session_and_root, unrelated PTY timing; passes alone and on rerun)",
+    "tui_integration_tests": "14 targets, all passed"
+  },
+  "notes": "Smoke runs the TUI under /bin/sh as session leader so stty -a snapshots are taken on the live controlling tty (macOS revokes the slave after the leader exits). The kernel-managed PENDIN lflag is excluded from comparison because BSD sets it on every raw->canonical transition. Under unwinding (debug), the hook only restores for panics on the guard's owning thread so a caught worker-thread panic does not tear down a live TUI; under panic=abort any thread restores. original_terminal is now Option<Arc<TerminalState>> so the hook can share it.",
+  "created_at": "2026-10-14T12:19:59Z",
+  "digest": "08160a22a1459d6b22eb74afce1b326d54eb32b4c0d05f92bae7654651a02e32"
+}
