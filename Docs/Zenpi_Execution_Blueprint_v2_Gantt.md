@@ -5,9 +5,9 @@
 
 ```yaml
 source: Docs/Zenpi_Execution_Blueprint_v2.md
-source_sha256: 78d35e4a4903085d9a6fc2b9491d9895745d5a1a958fc946cc2436988f44ac24
+source_sha256: 9eddcd378024f674af89ffcd898eac57b626172b713a507e0e05787f448b5080
 blueprint_version: 4.0.0
-generated_at: 2026-10-14T20:39:15Z
+generated_at: 2026-10-14T21:09:36Z
 ```
 
 ## Dependency-order view
@@ -103,7 +103,7 @@ gantt
     section A4
     ZE-400 进程内 golden 任务套件（使用真实工具、临时工作区）。覆盖以下场景：<br :done, ZE_400, after ZE_202 ZE_203 ZE_205 ZE_210 ZE_213 ZE_221 ZE_227 ZE_232, 1d
     ZE-401 二进制级 headless 任务：针对 ZE-104 的假服务器启动  zenp :ZE_401, after ZE_400 ZE_236 ZE_240 ZE_242 ZE_303, 1d
-    ZE-402 TUI 任务快照，覆盖以下用例：<br>• text→tool→text <br :ZE_402, after ZE_250 ZE_251 ZE_252 ZE_254 ZE_255, 1d
+    ZE-402 TUI 任务快照，覆盖以下用例：<br>• text→tool→text <br :active, ZE_402, after ZE_250 ZE_251 ZE_252 ZE_254 ZE_255, 1d
     ZE-403 2000 agent 压测  tools/load_agents.py ：<br :ZE_403, after ZE_236 ZE_300 ZE_301 ZE_302 ZE_303 ZE_304 ZE_305 ZE_401, 1d
     ZE-404 CI 门禁：每个 PR 运行 G-RUST、G-TASK 和  G-LOAD(2 :ZE_404, after ZE_108 ZE_400 ZE_401 ZE_402 ZE_403, 1d
     ZE-406 文档收口：<br>• README 和  Docs/Zenpi_Executio :ZE_406, after ZE_100 ZE_404, 1d
@@ -144,7 +144,7 @@ gantt
 
 ## Monitoring index
 
-Counts: open 25 · self-tested 0 · accepted 88 · total 113
+Counts: open 24 · self-tested 1 · accepted 88 · total 113
 
 | ID | Layer | State | Ready | Depends | Claim | Integration | Est. LOC | Title |
 |---|---|---|---|---|---|---|---:|---|
@@ -228,7 +228,7 @@ Counts: open 25 · self-tested 0 · accepted 88 · total 113
 | ZE-309 | A3 | accepted | no | ZE-106 | ZE-309@blueprint-4.0.0 | accepted | 180 | TUI 渲染成本：按消息缓存已渲染的行，只让正在流式输出的那条失效；项目 checkpoint 不再包含 transcript（目前有改动时每 250 ms 序列化一遍全部 transcript）；删除 250 ms 和 20 ms 的无条件重绘，但事件循环的超时仍要包含粘贴突发的截止时间（对应 codex `paste_burst_learn`） |
 | ZE-400 | A4 | accepted | no | ZE-202, ZE-203, ZE-205, ZE-210, ZE-213, ZE-221, ZE-227, ZE-232 | ZE-400@blueprint-4.0.0 | accepted | 800 | 进程内 golden 任务套件（使用真实工具、临时工作区）。覆盖以下场景：<br>• 读文件后回答；<br>• 新建文件；<br>• 编辑文件并校验 diff；<br>• bash 成功，且输出进入下一次请求；<br>• bash 失败后模型修复；<br>• 同一轮发起 3 个并行工具；<br>• 需要审批的写入被拒绝，文件不落盘；同一写入获批后落盘；<br>• 在 provider 调用中取消、在工具执行中取消，日志保持一致；<br>• 轮中被杀后恢复，修复未完成的调用；<br>• 迭代上限或 doom-loop 上限止损；<br>• provider 出错后重试；<br>• 因长度截断的轮次不执行其中的工具调用；<br>• 会话中途切换模型后继续工作；<br>layer `A4` \| Depends: ZE-202, ZE-203, ZE-205, ZE-210, ZE-213, ZE-221, ZE-227, ZE-232 \| Owned paths: `tests/tasks.rs`, `tests/support/scripted.rs`, `src/core.rs`（修复：项目 owner 打开 session 时补答悬空调用） \| Validators: `cargo test --locked --test tasks`，每个任务都断言最终文件、日志记录和请求数 \| Estimated LOC: 800 |
 | ZE-401 | A4 | open | yes | ZE-400, ZE-236, ZE-240, ZE-242, ZE-303 | — | — | 380 | 二进制级 headless 任务：针对 ZE-104 的假服务器启动 `zenpi --mode headless`，覆盖新建文件、bash、审批被拒、取消、杀进程后恢复、`-c` 续接 |
-| ZE-402 | A4 | open | yes | ZE-250, ZE-251, ZE-252, ZE-254, ZE-255 | — | — | 380 | TUI 任务快照，覆盖以下用例：<br>• text→tool→text；<br>• 跨标签页审批；<br>• 忙、闲、有草稿三种状态下分别按 Esc 和 Ctrl-C；<br>• 浮层打开时按 Esc 不会中断任务；<br>• 粘贴内容里夹带 `\n/exit`、`\n!rm` 时什么也不提交；<br>• 按键 Release 事件不产生任何动作；<br>• 粘贴折叠后再提交；<br>• 斜杠命令走真实 loop 完成往返；<br>layer `A4` \| Depends: ZE-250, ZE-251, ZE-252, ZE-254, ZE-255 \| Owned paths: `tests/tui_task.rs` \| Validators: `cargo test --locked --test tui_task` \| Estimated LOC: 380 |
+| ZE-402 | A4 | self-tested | yes | ZE-250, ZE-251, ZE-252, ZE-254, ZE-255 | ZE-402@blueprint-4.0.0 | handoff | 380 | TUI 任务快照，覆盖以下用例：<br>• text→tool→text；<br>• 跨标签页审批；<br>• 忙、闲、有草稿三种状态下分别按 Esc 和 Ctrl-C；<br>• 浮层打开时按 Esc 不会中断任务；<br>• 粘贴内容里夹带 `\n/exit`、`\n!rm` 时什么也不提交；<br>• 按键 Release 事件不产生任何动作；<br>• 粘贴折叠后再提交；<br>• 斜杠命令走真实 loop 完成往返；<br>layer `A4` \| Depends: ZE-250, ZE-251, ZE-252, ZE-254, ZE-255 \| Owned paths: `tests/tui_task.rs` \| Validators: `cargo test --locked --all-features --test tui_task --test tui_task_tool_order --test tui_approval_focus`（text→tool→text 与跨标签页审批由后两者覆盖） \| Estimated LOC: 380 |
 | ZE-403 | A4 | open | no | ZE-236, ZE-300, ZE-301, ZE-302, ZE-303, ZE-304, ZE-305, ZE-401 | — | — | 340 | 2000 agent 压测 `tools/load_agents.py`：<br>• harness 用单个 `selectors`（kqueue）事件循环读取所有 stdout 管道（对应 redis ae）；<br>• 启动前先算 fd 预算（harness ≥ 3N+64，provider ≥ N+64）并上调软限制，不够则直接失败；<br>• 一个脚本化 provider 服务器，N 个 `--no-session` 或独立 session 的 headless 进程，每个任务含一次 `write_file` 和一次 `bash echo`；<br>• 报告 RSS、CPU、唤醒次数、线程数、fd、fsync 次数与延迟、磁盘写速率，以及内核限制；<br>layer `A4` \| Depends: ZE-236, ZE-300, ZE-301, ZE-302, ZE-303, ZE-304, ZE-305, ZE-401 \| Owned paths: `tools/load_agents.py` \| Validators: `G-LOAD(2000)` 在 16 核机器上满足 §2.2 的全部阈值，报告存入 `Docs/quality/` \| Estimated LOC: 340 |
 | ZE-404 | A4 | open | no | ZE-108, ZE-400, ZE-401, ZE-402, ZE-403 | — | — | 60 | CI 门禁：每个 PR 运行 G-RUST、G-TASK 和 `G-LOAD(200)`；nightly 或手动运行 `G-LOAD(2000)` |
 | ZE-406 | A4 | open | no | ZE-100, ZE-404 | — | — | 40 | 文档收口：<br>• README 和 `Docs/Zenpi_Execution_Spec.md` 只描述已验收的能力，列出冻结模块，并以 G-RUST 为准；<br>• v1、Stage 1、Stage 2 移到 `Docs/archive/`，同步修正引用它们的 validator 和 gantt 工具路径；<br>• 把与审计结论矛盾的 learn 笔记标为过期：`session-manager.ts_transform`（恢复语义）和 `tui.ts_transform`（合并重绘）；<br>• 在 `Cargo.toml` 的 crossterm patch 旁边注明上游 issue #1126、#1142；<br>layer `A4` \| Depends: ZE-100, ZE-404 \| Owned paths: `README.md`, `Docs/Zenpi_Execution_Spec.md`, `Docs/archive/`, `tools/`, `Docs/learn/files/pi-mono/`, `Cargo.toml` \| Validators: G-BP；`tools/validate_blueprint.py` 和 `tools/validate_stage1_blueprint.py` 指向归档路径后仍能运行 \| Estimated LOC: 40 |
@@ -246,10 +246,10 @@ Counts: open 25 · self-tested 0 · accepted 88 · total 113
 | ZE-518 | B2 | accepted | no | ZE-502 | ZE-518@blueprint-4.0.0 | accepted | 1800 | 拆分 Android UI：<br>• 把 `PairingScreen`（约 60 个参数）拆到 `ui/` 包，`PairingState`（约 90 个字段）拆成子状态；<br>• 修掉每秒一次的空转重组；<br>• 草稿只以 host、session、tab 的 id 为键，不含 revision，避免远端改名时清空草稿；<br>行为保持不变 |
 | ZE-519 | B2 | accepted | no | ZE-518 | ZE-519@blueprint-4.0.0 | accepted | 400 | 竖屏截图测试底座：Roborazzi，分辨率 360×800 和 412×915，字号 1.0 和 1.3，覆盖明暗主题 |
 | ZE-530 | B2 | accepted | no | ZE-519, ZE-517 | ZE-530@blueprint-4.0.0 | accepted | 1300 | 对话主屏：<br>• 用 reverse 的 `LazyColumn`，自动贴底，带流式行；<br>• 工具行默认折叠；<br>• 轻量 markdown：代码块、行内代码、列表，不引入第三方库；<br>• 底部固定输入框：发送 / steer / 停止三态，配 `ImeAction.Send` 和 `imePadding`；<br>• 顶栏放 Agent/Arch 模式切换、worktree chip 和模型 chip；<br>layer `B2` \| Depends: ZE-519, ZE-517 \| Owned paths: `android/.../ui/ConversationScreen.kt`, `android/.../ui/Markdown.kt`, `android/.../ui/Composer.kt` \| Validators: 截图黄金图；500 轮对话的 fixture 卡顿帧 < 5%；草稿在旋转后仍保留 \| Estimated LOC: 1300 |
-| ZE-531 | B2 | open | yes | ZE-530 | — | — | 450 | 审批：常驻审批条加底部面板。面板显示 i/N 和彩色补丁，点一次即决定，有待决审批时无法关闭；可以开启生物识别确认 |
+| ZE-531 | B2 | open | yes | ZE-530 | ZE-531@blueprint-4.0.0 | — | 450 | 审批：常驻审批条加底部面板。面板显示 i/N 和彩色补丁，点一次即决定，有待决审批时无法关闭；可以开启生物识别确认 |
 | ZE-532 | B2 | accepted | no | ZE-518 | ZE-532@blueprint-4.0.0 | accepted | 600 | 抽屉收件箱：会话和项目按"需要你 / 运行中 / 空闲"分组，角标等于待审批数；项目和 worktree 的管理入口移进抽屉 |
-| ZE-533 | B2 | open | yes | ZE-530 | — | — | 1800 | 次级页与路由栈：<br>• Sessions：搜索和恢复；<br>• Diff：全屏、逐文件、+/- 着色，返回时恢复原滚动位置；<br>• Terminal：按视口计算行列数，按键行在键盘上方，旋转后重新计算；<br>• Tasks；<br>• 模型面板；<br>layer `B2` \| Depends: ZE-530 \| Owned paths: `android/.../ui/nav/`, `android/.../ui/SessionsScreen.kt`, `android/.../ui/DiffScreen.kt`, `android/.../ui/TerminalScreen.kt`, `android/.../ui/TasksScreen.kt`, `android/.../ui/ModelSheet.kt` \| Validators: 原有的 Session、Diff、Terminal、Worker、ModelStatus 屏幕测试迁移后通过；返回栈测试；黄金图 \| Estimated LOC: 1800 |
-| ZE-534 | B2 | open | yes | ZE-530, ZE-253 | — | — | 450 | 输入框命令板：输入 `/` 时弹出底部面板，列出主机端的斜杠命令和资源；输入 `@` 时弹出文件选择；不支持的桌面专属命令在面板中注明 |
+| ZE-533 | B2 | open | yes | ZE-530 | ZE-533@blueprint-4.0.0 | — | 1800 | 次级页与路由栈：<br>• Sessions：搜索和恢复；<br>• Diff：全屏、逐文件、+/- 着色，返回时恢复原滚动位置；<br>• Terminal：按视口计算行列数，按键行在键盘上方，旋转后重新计算；<br>• Tasks；<br>• 模型面板；<br>layer `B2` \| Depends: ZE-530 \| Owned paths: `android/.../ui/nav/`, `android/.../ui/SessionsScreen.kt`, `android/.../ui/DiffScreen.kt`, `android/.../ui/TerminalScreen.kt`, `android/.../ui/TasksScreen.kt`, `android/.../ui/ModelSheet.kt` \| Validators: 原有的 Session、Diff、Terminal、Worker、ModelStatus 屏幕测试迁移后通过；返回栈测试；黄金图 \| Estimated LOC: 1800 |
+| ZE-534 | B2 | open | yes | ZE-530, ZE-253 | ZE-534@blueprint-4.0.0 | — | 450 | 输入框命令板：输入 `/` 时弹出底部面板，列出主机端的斜杠命令和资源；输入 `@` 时弹出文件选择；不支持的桌面专属命令在面板中注明 |
 | ZE-535 | B2 | open | no | ZE-533 | — | — | 350 | 安全与无障碍：<br>• 默认开启 `FLAG_SECURE`；<br>• 支持深色和动态色；<br>• 同一个图标不再复用于多个功能；<br>• TalkBack 朗读内容不含 UUID，补上标题语义；<br>• release 构建开启 R8；<br>layer `B2` \| Depends: ZE-533 \| Owned paths: `android/.../ui/theme/`, `android/app/src/main/res/`, `android/app/build.gradle.kts` \| Validators: Compose `enableAccessibilityChecks` 通过；release 包能安装并完成配对；深色主题黄金图 \| Estimated LOC: 350 |
 | ZE-520 | B3 | open | no | ZE-510, ZE-511, ZE-108 | — | — | 300 | `remote` feature 开关（默认关闭）：<br>• `cfg` 覆盖 `src/remote/`、`host_pair`、rcgen、qrcode、`wakeup::notify` 和 `RemoteApprovalActor`；<br>• 去掉 rustls 中未使用的 `tls12`；<br>• 依赖数门按实测收紧；<br>• 核心 crate 永远不引入 tokio；<br>layer `B3` \| Depends: ZE-510, ZE-511, ZE-108 \| Owned paths: `Cargo.toml`, `src/lib.rs`, `src/core.rs`, `src/tui.rs`, `src/session.rs`, `src/approval.rs`, `src/pty_shell.rs`, `src/slash_actions.rs`, `tools/bench_runtime.py` \| Validators: 默认构建中没有 rcgen 和 qrcode；`cargo tree -i tokio` 为空；`cargo clippy --locked --all-targets --features remote -- -D warnings` 通过；G-REMOTE；G-BENCH \| Estimated LOC: 300 |
 | ZE-541 | B3 | open | yes | ZE-513 | — | — | 270 | 监听器加固：<br>• accept 改为事件驱动，不再每 10 ms 轮询；<br>• 每个 IP 只给 1 个未认证连接槽，未认证阶段总时限 5 s；<br>• 为已认证连接预留槽位；<br>layer `B3` \| Depends: ZE-513 \| Owned paths: `src/remote/listener.rs` \| Validators: 有 N 个半开连接时，已认证客户端仍能连上；空闲时每秒唤醒 0 次 \| Estimated LOC: 270 |
