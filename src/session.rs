@@ -157,6 +157,9 @@ pub struct SessionStore {
     needs_separator: bool,
     next_seq: u64,
     observed_bytes: u64,
+    /// Byte offset of a torn (newline-less, unparsable) final line when that
+    /// line is the journal's only defect; writable opens may quarantine it.
+    torn_tail_offset: Option<u64>,
     tree: Option<crate::session_tree::SessionTree>,
 }
 
@@ -387,12 +390,14 @@ impl SessionStore {
                 needs_separator: false,
                 next_seq: 0,
                 observed_bytes: 0,
+                torn_tail_offset: None,
                 tree: None,
             };
             let header = store.header.clone();
             let result = store.append_json_to_file(&json!({"kind":"session", "version":header.version,
                 "session_id":header.session_id, "created_at_ms":header.created_at_ms, "cwd":header.cwd}), &guard.file)
-                .and_then(|_| guard.verify());
+                .and_then(|_| guard.verify())
+                .and_then(|_| sync_parent_directory(&store.path));
             if let Err(error) = result {
                 return match guard.cleanup() {
                     Ok(()) => Err(error),
@@ -440,17 +445,34 @@ impl SessionStore {
     /// boundary so probing a user path cannot mutate it into a zenpi journal.
     pub fn open_existing_writable(path: impl AsRef<Path>) -> Result<Self, SessionError> {
         let path = path.as_ref();
-        let inspected = Self::open_existing(path)?;
-        let valid_header = inspected
-            .records
-            .first()
-            .is_some_and(|record| record.kind == "session" && record.sequence == 0);
-        if !valid_header || !inspected.warnings.is_empty() {
+        let mut inspected = Self::open_existing(path)?;
+        if inspected.has_valid_header()
+            && let Some(offset) = inspected.torn_tail_offset
+        {
+            // A crash or ENOSPC mid-append leaves only a newline-less final
+            // fragment. Quarantine it beside the journal, then truncate back
+            // to the last complete record so startup can continue.
+            quarantine_torn_tail(path, offset, inspected.observed_bytes)?;
+            inspected = Self::open_existing(path)?;
+        }
+        if !inspected.has_valid_header() || !inspected.warnings.is_empty() {
             return Err(SessionError::InvalidRecord(
                 "resume source is not a clean zenpi session journal".into(),
             ));
         }
         Self::open_with_options(path, true, None)
+    }
+
+    fn has_valid_header(&self) -> bool {
+        self.records
+            .first()
+            .is_some_and(|record| record.kind == "session" && record.sequence == 0)
+    }
+
+    /// True when the journal is clean, or when its only defect is a torn final
+    /// line that a writable open repairs (see [`Self::open_existing_writable`]).
+    fn is_resumable(&self) -> bool {
+        self.has_valid_header() && (self.warnings.is_empty() || self.torn_tail_offset.is_some())
     }
 
     /// Reconcile duplicate startup audits from a competing host after a
@@ -585,6 +607,13 @@ impl SessionStore {
         let mut warnings = Vec::new();
         let mut next_seq = 0_u64;
         let mut last_seq = None;
+        // The unterminated final line, if any, begins after the last newline.
+        let tail_start = bytes
+            .iter()
+            .rposition(|byte| *byte == b'\n')
+            .map_or(0, |index| index + 1);
+        let final_line_number = bytes.iter().filter(|byte| **byte == b'\n').count() + 1;
+        let mut torn_tail = false;
 
         for (index, raw_line) in bytes.split(|byte| *byte == b'\n').enumerate() {
             let line_number = index + 1;
@@ -595,6 +624,7 @@ impl SessionStore {
             let value = match serde_json::from_slice::<Value>(line) {
                 Ok(value) => value,
                 Err(error) => {
+                    torn_tail |= needs_separator && line_number == final_line_number;
                     warnings.push(RecoveryWarning {
                         line: line_number,
                         reason: format!("ignored malformed record: {error}"),
@@ -769,6 +799,13 @@ impl SessionStore {
         }
 
         let needs_header = header.is_none();
+        let torn_tail_offset = (torn_tail
+            && tail_start > 0
+            && warnings
+                .iter()
+                .all(|warning| warning.line == final_line_number))
+        .then_some(tail_start as u64);
+        let created = writable && existing.is_none();
         let mut store = Self {
             path,
             header: header.unwrap_or_else(|| SessionHeader {
@@ -794,6 +831,7 @@ impl SessionStore {
             needs_separator,
             next_seq,
             observed_bytes,
+            torn_tail_offset,
             tree: None,
         };
         if writable && (!had_content || needs_header) {
@@ -807,6 +845,9 @@ impl SessionStore {
                 "created_at_ms": header.created_at_ms,
                 "cwd": header.cwd,
             }))?;
+            if created {
+                sync_parent_directory(&store.path)?;
+            }
         }
         if store.records.iter().any(|record| {
             record.value.get("tree_entry").is_some()
@@ -1805,13 +1846,15 @@ impl SessionStore {
                 "session writer is stale; reopen the journal before retrying".into(),
             ));
         }
-        if self.needs_separator {
-            file.write_all(b"\n")?;
-            self.needs_separator = false;
-        }
-        file.write_all(&encoded)?;
-        file.flush()?;
-        file.sync_data()?;
+        let separator: &[u8] = if self.needs_separator { b"\n" } else { b"" };
+        let observed = self.observed_bytes;
+        write_or_rollback(
+            &mut file,
+            &[separator, &encoded],
+            |file| file.sync_data(),
+            |file| file.set_len(observed).and_then(|()| file.sync_data()),
+        )?;
+        self.needs_separator = false;
         self.observed_bytes = file.metadata()?.len();
         self.next_seq = following_sequence;
         let kind = record
@@ -2653,6 +2696,86 @@ fn clean_owned_session(path: &Path) -> Result<bool, SessionError> {
     }
 }
 
+/// Write `parts`, flush and sync. On any failure, roll the file back to its
+/// last observed length so a partial write neither leaves a torn record nor
+/// makes every later append fail as a "stale" writer.
+fn write_or_rollback<W: Write>(
+    writer: &mut W,
+    parts: &[&[u8]],
+    sync: impl FnOnce(&mut W) -> io::Result<()>,
+    rollback: impl FnOnce(&mut W) -> io::Result<()>,
+) -> io::Result<()> {
+    let result = parts
+        .iter()
+        .try_for_each(|part| writer.write_all(part))
+        .and_then(|()| writer.flush())
+        .and_then(|()| sync(writer));
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) => match rollback(writer) {
+            Ok(()) => Err(error),
+            Err(rollback_error) => Err(io::Error::new(
+                error.kind(),
+                format!("{error}; rollback failed: {rollback_error}"),
+            )),
+        },
+    }
+}
+
+/// Copy a torn final fragment to `<journal>.torn` (0600) and truncate the
+/// journal to its last complete record, under the journal's append lock.
+fn quarantine_torn_tail(path: &Path, offset: u64, observed: u64) -> Result<(), SessionError> {
+    reject_session_symlink(path)?;
+    let mut options = OpenOptions::new();
+    options.read(true).write(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NOFOLLOW);
+    let file = options.open(path)?;
+    let _lock = AppendLock::new(&file)?;
+    if file.metadata()?.len() != observed || offset >= observed {
+        return Err(SessionError::InvalidRecord(
+            "session changed while recovering its torn tail; reopen the journal".into(),
+        ));
+    }
+    let mut fragment = Vec::new();
+    let mut reader = &file;
+    reader.seek(SeekFrom::Start(offset))?;
+    reader.take(observed - offset).read_to_end(&mut fragment)?;
+    let mut torn_name = path.as_os_str().to_owned();
+    torn_name.push(".torn");
+    let torn_path = PathBuf::from(torn_name);
+    reject_session_symlink(&torn_path)?;
+    let mut torn_options = OpenOptions::new();
+    torn_options.create(true).append(true);
+    #[cfg(unix)]
+    torn_options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    let mut torn = torn_options.open(&torn_path)?;
+    restrict_session_permissions(&torn_path)?;
+    fragment.push(b'\n');
+    torn.write_all(&fragment)?;
+    torn.sync_all()?;
+    sync_parent_directory(&torn_path)?;
+    file.set_len(offset)?;
+    file.sync_data()?;
+    Ok(())
+}
+
+/// Make a newly created directory entry durable. Directory fsync is a Unix
+/// concept; elsewhere the entry is persisted with the file metadata.
+fn sync_parent_directory(path: &Path) -> Result<(), SessionError> {
+    #[cfg(unix)]
+    {
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        File::open(parent)?.sync_all()?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
 fn require_clean_session(store: &SessionStore) -> Result<(), SessionError> {
     if store
         .records
@@ -2842,20 +2965,56 @@ pub fn resolve_session_reference(
     None
 }
 
+/// A journal left out of the catalog because it could not be resumed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkippedSession {
+    pub path: PathBuf,
+    pub reason: String,
+}
+
 /// A local catalog, not a claim that these sessions have running agents.
+/// Dirty journals are skipped (see [`session_catalog_with_skipped`]) so one
+/// corrupt file cannot break listing or resume-last for every session.
 pub fn session_catalog(
     directory: impl AsRef<Path>,
     include_archived: bool,
 ) -> Result<Vec<SessionCatalogEntry>, SessionError> {
+    session_catalog_with_skipped(directory, include_archived).map(|(entries, _)| entries)
+}
+
+/// Like [`session_catalog`], also returning a warning for each skipped
+/// journal. Journals whose only defect is a recoverable torn tail are kept.
+pub fn session_catalog_with_skipped(
+    directory: impl AsRef<Path>,
+    include_archived: bool,
+) -> Result<(Vec<SessionCatalogEntry>, Vec<SkippedSession>), SessionError> {
     let mut entries = Vec::new();
+    let mut skipped = Vec::new();
     for summary in list_sessions(directory)? {
         if entries.len() >= MAX_GC_CANDIDATES {
             return Err(SessionError::InvalidRecord(
                 "session catalog limit exceeded".into(),
             ));
         }
-        let store = SessionStore::open_existing(summary.path)?;
-        require_clean_session(&store)?;
+        let path = PathBuf::from(&summary.path);
+        let store = match SessionStore::open_existing(&path) {
+            Ok(store) => store,
+            Err(error @ SessionError::Symlink(_)) => return Err(error),
+            Err(error) => {
+                skipped.push(SkippedSession {
+                    path,
+                    reason: error.to_string(),
+                });
+                continue;
+            }
+        };
+        if !store.is_resumable() {
+            skipped.push(SkippedSession {
+                path,
+                reason: "not a clean zenpi session journal".into(),
+            });
+            continue;
+        }
         if include_archived || !store.is_archived() {
             entries.push(store.catalog_entry());
         }
@@ -2866,7 +3025,7 @@ pub fn session_catalog(
             .cmp(&left.last_activity_ms)
             .then_with(|| left.summary.path.cmp(&right.summary.path))
     });
-    Ok(entries)
+    Ok((entries, skipped))
 }
 
 pub fn resume_last_session(directory: impl AsRef<Path>) -> Result<SessionStore, SessionError> {
@@ -4938,5 +5097,66 @@ mod session_name_tests {
             Some(path.as_path())
         );
         assert_eq!(resolve_session_reference("missing", dir.path()), None);
+    }
+}
+
+#[cfg(test)]
+mod append_rollback_tests {
+    use super::*;
+    use crate::core::TurnRole;
+
+    /// Accepts `budget` bytes, then fails like ENOSPC mid-record.
+    struct FailingWriter<'a> {
+        file: &'a File,
+        budget: usize,
+    }
+
+    impl Write for FailingWriter<'_> {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            if self.budget == 0 {
+                return Err(io::Error::other("simulated ENOSPC"));
+            }
+            let take = buf.len().min(self.budget);
+            let written = (&mut &*self.file).write(&buf[..take])?;
+            self.budget -= written;
+            Ok(written)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            (&mut &*self.file).flush()
+        }
+    }
+
+    #[test]
+    fn failed_partial_write_truncates_back_to_observed_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let mut store = SessionStore::open(&path).unwrap();
+        store
+            .append_turn(Turn::new("u", TurnRole::User, "before"))
+            .unwrap();
+        let before = fs::read(&path).unwrap();
+        let file = OpenOptions::new().append(true).open(&path).unwrap();
+        let observed = file.metadata().unwrap().len();
+        let mut writer = FailingWriter {
+            file: &file,
+            budget: 7,
+        };
+        let error = write_or_rollback(
+            &mut writer,
+            &[b"\n", b"{\"kind\":\"event\",\"event\":{}}\n"],
+            |writer| writer.file.sync_data(),
+            |writer| writer.file.set_len(observed),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("simulated ENOSPC"));
+        assert_eq!(fs::read(&path).unwrap(), before);
+        // The writer is not left stale: a later append succeeds and reopens clean.
+        store
+            .append_turn(Turn::new("a", TurnRole::Assistant, "after"))
+            .unwrap();
+        let reopened = SessionStore::open_existing(&path).unwrap();
+        assert!(reopened.recovery_warnings().is_empty());
+        assert_eq!(reopened.turns().len(), 2);
     }
 }

@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-231",
+  "claim_id": "ZE-231@blueprint-4.0.0",
+  "from": "worker",
+  "to": "master",
+  "summary": "Torn session tails are recoverable: open_existing_writable (and thus open_in_workspace / resume) quarantines a newline-less unparsable final line to <file>.torn (0600, appended, fsynced) under the append lock and truncates to the last complete record; any other corruption still rejects. session_catalog skips dirty journals (new session_catalog_with_skipped returns SkippedSession warnings) and keeps torn-tail-only journals, so one corrupt file no longer breaks listing/resume-last. append_encoded writes via write_or_rollback, truncating to observed_bytes on write/flush/sync failure so the writer never goes stale. New session files (create_fresh and writable open that creates the file) fsync the parent directory.",
+  "changed_files": [
+    "src/session.rs",
+    "tests/session_torn_tail.rs",
+    "Docs/quality/ze/ZE-231.json"
+  ],
+  "diff_stat": "src/session.rs | 254 +++-, tests/session_torn_tail.rs | 142 +++ (code: 2 files changed, 379 insertions(+), 17 deletions(-)) + handoff json",
+  "commands_run": [
+    "git fetch && git merge --ff-only origin/main",
+    "cargo fmt --all",
+    "cargo build",
+    "cargo test --test session_torn_tail",
+    "cargo test --lib append_rollback",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo clippy --locked --all-targets --all-features -- -D warnings",
+    "cargo test --no-fail-fast --test core_session --test session_new --test session_recovery --test stage1_session_tree --test resume_compact_owner --test headless_protocol --test session_torn_tail --test session_cli",
+    "cargo test --test core_session -- --test-threads=1"
+  ],
+  "validation_result": {
+    "fmt": "pass",
+    "clippy": "pass (default and --all-features; only pre-existing vendored crossterm warning)",
+    "torn_tail_open_in_workspace_append": "pass: open_in_workspace + append_turn succeed; .torn holds fragment, mode 0600; file = clean prefix + new turn",
+    "mid_file_corruption_still_rejected": "pass: file unchanged, no .torn created",
+    "corrupt_sibling_resume_last": "pass: catalog lists 1 entry + 1 skipped; resume_last_session and lifecycle ResumeLast return the good session",
+    "resume_last_repairs_torn_latest": "pass",
+    "failed_write_rollback_unit": "pass: partial write then error truncates to observed_bytes; later append succeeds and journal reopens clean",
+    "session_suites": "pass: headless_protocol 45, resume_compact_owner 6, session_cli 5, session_new 14, session_recovery 45, session_torn_tail 4, stage1_session_tree 13(+1 ignored); core_session 40/41 in parallel, 41/41 with --test-threads=1"
+  },
+  "notes": "core_session::user_shell_preserves_nonzero_signal_and_cancellation_evidence is timing-based (<2s cancel bound) and flaked under parallel load; passes alone and with --test-threads=1. SessionLifecycleReceipt::Catalog is unchanged (headless.rs not owned), so skipped-session warnings are exposed via session_catalog_with_skipped for a later owner to surface. .torn is appended (not overwritten) so repeated crashes keep earlier fragments. Torn-tail repair requires a valid header and that the only warning is a JSON parse failure on the newline-less final line.",
+  "created_at": "2026-10-14T13:10:03Z",
+  "digest": "37c8897f27a9a3a01b208bf3faa8ef356f08844aaa75ab0821e9dc3d196c831c"
+}
