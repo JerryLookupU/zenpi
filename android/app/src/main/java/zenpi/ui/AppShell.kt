@@ -21,9 +21,13 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
+import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
@@ -31,6 +35,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.PlainTooltip
 import androidx.compose.material3.Scaffold
@@ -39,6 +45,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TooltipBox
 import androidx.compose.material3.TooltipDefaults
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -48,6 +55,7 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -61,6 +69,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
 import zenpi.pairing.DeviceActionPolicy
 import zenpi.pairing.PairingConfirmationPolicy
 import zenpi.pairing.PairingPhase
@@ -79,10 +88,15 @@ import zenpi.ui.dialogs.WorkerHistoryDialog
 import zenpi.ui.dialogs.WorkerStatusesDialog
 import zenpi.ui.dialogs.WorkspaceDialogs
 
-/** Root of the paired-device screen: header, workspace, invitation and the modal layer. */
+/**
+ * Root of the paired-device screen: header, workspace, invitation and the modal layer.
+ * Project and worktree switching lives in [SwitcherDrawer], hosted in a modal drawer opened
+ * from the top bar (badged with pending approvals). [inlineSwitcher] renders the same drawer
+ * content inline above the workspace instead; only the [PairingScreen] test adapter uses it.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AppShell(state: PairingState, actions: PairingActions) {
+fun AppShell(state: PairingState, actions: PairingActions, inlineSwitcher: Boolean = false) {
     val scope = ScreenScope(state)
     val keyboard = LocalSoftwareKeyboardController.current
     val focus = LocalFocusManager.current
@@ -102,20 +116,39 @@ fun AppShell(state: PairingState, actions: PairingActions) {
     LaunchedEffect(state.resourcesOpen, state.filesOpen) {
         if (state.resourcesOpen || state.filesOpen) { keyboard?.hide(); focus.clearFocus() }
     }
-    Scaffold(contentWindowInsets = WindowInsets.safeDrawing,
-        topBar = { TopAppBar(title = { Text("Zenpi") }, windowInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal)) }) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding).imePadding().verticalScroll(rememberScrollState()).padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            ConnectionHeader(state, remaining, actions)
-            state.projection?.let { projection ->
-                if (projection.projects.isEmpty()) Text("No projects authorized")
-                else WorkspaceSection(scope, projection, workspaceUi, subtabUi, message, steer, workerPrompt, actions)
+    val drawer = rememberDrawerState(DrawerValue.Closed)
+    val drawerScope = rememberCoroutineScope()
+    val switcher = !inlineSwitcher && state.projection != null
+    val screen = @Composable {
+        Scaffold(contentWindowInsets = WindowInsets.safeDrawing,
+            topBar = { TopAppBar(title = { Text("Zenpi") }, windowInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal),
+                navigationIcon = { if (switcher) SwitcherButton(SwitcherInbox.pendingApprovals(state.projection)) { drawerScope.launch { drawer.open() } } }) }) { padding ->
+            Column(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding).imePadding().verticalScroll(rememberScrollState()).padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                ConnectionHeader(state, remaining, actions)
+                state.projection?.let { projection ->
+                    if (projection.projects.isEmpty()) Text("No projects authorized")
+                    else {
+                        if (inlineSwitcher) SwitcherDrawer(scope, projection, workspaceUi, subtabUi, actions)
+                        WorkspaceSection(scope, projection, workspaceUi, subtabUi, message, steer, workerPrompt, actions)
+                    }
+                }
+                state.invite?.let { InviteSection(state, clock, remaining, actions) }
+                DeviceSection(state, actions, revokeDialog, forgetDialog)
             }
-            state.invite?.let { InviteSection(state, clock, remaining, actions) }
-            DeviceSection(state, actions, revokeDialog, forgetDialog)
+            if (revokeDialog.value) DeviceDialogs.Revoke(state, revokeDialog, actions)
         }
-        if (revokeDialog.value) DeviceDialogs.Revoke(state, revokeDialog, actions)
     }
+    if (inlineSwitcher) screen()
+    else ModalNavigationDrawer(drawerState = drawer, gesturesEnabled = switcher, drawerContent = {
+        ModalDrawerSheet(Modifier.fillMaxWidth(0.85f)) {
+            Column(Modifier.verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                state.projection?.takeIf { it.projects.isNotEmpty() }?.let { projection ->
+                    SwitcherDrawer(scope, projection, workspaceUi, subtabUi, actions) { drawerScope.launch { drawer.close() } }
+                }
+            }
+        }
+    }, content = screen)
     if (forgetDialog.value) DeviceDialogs.Forget(state, forgetDialog, actions)
     if (state.diffOpen) DiffDialog(state, scope, actions)
     if (state.workerStatusesOpen) WorkerStatusesDialog(state, actions)
@@ -129,6 +162,17 @@ fun AppShell(state: PairingState, actions: PairingActions) {
     workspaceUi.approvalDecision?.let { (target, decision) -> ApprovalDecisionDialog(state, target, decision, workspaceUi, actions) }
     WorkspaceDialogs(state, scope, workspaceUi, directory, actions)
     SubtabDialogs(state, scope, subtabUi, actions)
+}
+
+/** Opens the switcher drawer; the badge counts approvals waiting across all projects. */
+@Composable
+private fun SwitcherButton(approvals: Int, onClick: () -> Unit) {
+    IconButton(onClick = onClick, modifier = Modifier.testTag("switcher-open")) {
+        BadgedBox(badge = { if (approvals > 0) Badge { Text(approvals.toString()) } }) {
+            Icon(Icons.Outlined.Menu, contentDescription = when (approvals) { 0 -> "Open switcher"; 1 -> "Open switcher, 1 pending approval"
+                else -> "Open switcher, $approvals pending approvals" })
+        }
+    }
 }
 
 /** Connection phase, scan entry and the paired host card. */

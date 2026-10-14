@@ -6,7 +6,8 @@ import zenpi.transport.RemoteApproval
 
 /**
  * Lambda-per-intent entry point kept for the instrumentation suites, which observe
- * individual callbacks. It adapts the lambdas to [PairingActions] and renders [AppShell];
+ * individual callbacks. It adapts the lambdas to [PairingActions] and renders [AppShell] with the
+ * switcher drawer content inline, so the suites reach project and worktree controls without opening it;
  * production code calls [AppShell] directly.
  */
 @Composable
@@ -38,7 +39,7 @@ fun PairingScreen(state: PairingState, onScan: () -> Unit, onConfirm: (String) -
     onResources: (Int) -> Unit = {}, onCloseResources: () -> Unit = {}, onReloadResources: () -> Unit = {},
     onModel: () -> Unit = {}, onCloseModel: () -> Unit = {}, onSelectModel: (String) -> Unit = {}, onSelectReasoning: (String?) -> Unit = {}, onModelPage: (Int) -> Unit = {},
     onPreviousTranscript: () -> Unit = {}, onWorkerPrompt: (String) -> Unit = {}, onCancelWorker: (String) -> Unit = {}, onConcurrency: (String, Int) -> Unit = { _, _ -> }) {
-    AppShell(state, object : PairingActions {
+    AppShell(state, inlineSwitcher = true, actions = object : PairingActions {
         override fun scan() = onScan()
         override fun confirm(code: String) = onConfirm(code)
         override fun cancel() = onCancel()

@@ -59,7 +59,7 @@ fun WorkspaceSection(scope: ScreenScope, projection: HostProjection, workspaceUi
     val selected = scope.selected
     // The composer edits the message draft, or the steering draft while a run is active.
     val prompt = if (selected?.promptStatuses?.any { it.state in activePromptStates } == true) steer else message
-    WorkspaceTabs(scope, projection, workspaceUi, subtabUi, actions)
+    SessionToolbar(scope, projection, workspaceUi, actions)
     Text(projection.phase ?: "Unavailable", style = MaterialTheme.typography.labelLarge)
     ApprovalCards(state, selected, workspaceUi)
     PromptStatuses(state, projection, selected, actions)

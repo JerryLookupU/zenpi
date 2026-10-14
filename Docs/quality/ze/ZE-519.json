@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-519",
+  "claim_id": "ZE-519@blueprint-4.0.0",
+  "from": "worker",
+  "to": "master",
+  "summary": "Portrait screenshot test base with Roborazzi 1.32.2 on Robolectric 4.14.1 (native graphics). zenpi.screenshot.Portrait defines the golden matrix 360x800 and 412x915 dp x font scale 1.0/1.3 x light/dark (8 cells, mdpi so one pixel = one dp); PortraitRule applies qualifiers/font scale before the compose rule launches; ScreenshotTheme uses the production light scheme and Material dark defaults; assertNoHorizontalClipping walks the unmerged semantics tree and fails on any on-screen node straddling the left/right window edge (horizontal scrollers exempt). MainScreenScreenshotTest renders AppShell with a connected fixture (one project awaiting approval, one running, one idle), asserts no horizontal clipping and captures main_<cell>.png goldens under android/app/src/test/resources/golden/. app/build.gradle.kts applies the Roborazzi plugin (outputDir = golden dir), enables unitTests.isIncludeAndroidResources and adds the Robolectric/Roborazzi/compose ui-test-junit4 test dependencies.",
+  "changed_files": [
+    "Docs/quality/ze/ZE-519.json",
+    "android/app/build.gradle.kts",
+    "android/app/src/test/java/zenpi/screenshot/MainScreenScreenshotTest.kt",
+    "android/app/src/test/java/zenpi/screenshot/Portrait.kt",
+    "android/app/src/test/resources/golden/main_360x800_font1.0_dark.png",
+    "android/app/src/test/resources/golden/main_360x800_font1.0_light.png",
+    "android/app/src/test/resources/golden/main_360x800_font1.3_dark.png",
+    "android/app/src/test/resources/golden/main_360x800_font1.3_light.png",
+    "android/app/src/test/resources/golden/main_412x915_font1.0_dark.png",
+    "android/app/src/test/resources/golden/main_412x915_font1.0_light.png",
+    "android/app/src/test/resources/golden/main_412x915_font1.3_dark.png",
+    "android/app/src/test/resources/golden/main_412x915_font1.3_light.png"
+  ],
+  "diff_stat": "11 files changed, 157 insertions(+) (excluding this handoff); 8 PNG goldens, 182 KB total",
+  "commands_run": [
+    "git fetch && git merge-base --is-ancestor 6138c74 HEAD",
+    "cd android && ./gradlew :app:recordRoborazziDebug --tests 'zenpi.screenshot.*'",
+    "cd android && ./gradlew :app:testDebugUnitTest lint verifyRoborazziDebug",
+    "cd android && ./gradlew clean"
+  ],
+  "validation_result": {
+    "verifyRoborazziDebug": "pass: results-summary total 8, unchanged 8, changed 0",
+    "main_screen_no_horizontal_clipping": "pass: assertNoHorizontalClipping in all 8 cells (360x800/412x915, font 1.0/1.3, light/dark)",
+    "testDebugUnitTest": "pass: 626 tests (618 baseline + 8 screenshot cells), 0 failures, 0 errors, 20 skipped",
+    "lint": "pass: 0 errors, 14 warnings (1 new: GradleDependency on the testImplementation compose-bom, same pin as the existing BOM lines)",
+    "G-ANDROID": "pass (:app:testDebugUnitTest lint verifyRoborazziDebug in one invocation)"
+  },
+  "notes": "Goldens recorded on macOS arm64; CI runs ubuntu, so captures use a 1% changeThreshold to absorb font anti-aliasing differences. If Linux rendering exceeds it, re-record on CI's OS. Not done (outside Owned paths): .github/workflows/ci.yml still runs ':app:testDebugUnitTest lint' and carries the comment 'verifyRoborazziDebug joins this step once ZE-519 adds Roborazzi' - Master should append verifyRoborazziDebug there. Dark scheme is Material's darkColorScheme() as a placeholder; ZE-535 owns the real dark palette (ui/theme/) and will re-record dark goldens. Robolectric downloads android-all-instrumented for SDK 35 on first run. No production code changed.",
+  "created_at": "2026-10-14T18:16:53Z",
+  "digest": "5f40fddac00194f673b89d5c39ce2438b89329070d2096413f10bb68877886d3"
+}
