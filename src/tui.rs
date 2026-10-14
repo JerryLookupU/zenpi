@@ -5338,6 +5338,13 @@ impl TuiState {
     /// messages.  Input is sanitized and bounded because provider data is
     /// displayed in a terminal context.
     pub fn tool_call_started(&mut self, call_id: impl AsRef<str>, name: impl AsRef<str>) {
+        // ZE-250: a tool call ends the current streamed text segment, so text
+        // that streams after the tool lands after its row and never rewrites
+        // the text before it.
+        if self.streaming_message_started {
+            self.streaming_message_started = false;
+            self.streaming_role = None;
+        }
         self.upsert_tool_log(call_id.as_ref(), name.as_ref(), ToolRunStatus::Running);
     }
 
@@ -6480,9 +6487,12 @@ impl TuiState {
         let content = content.into();
         if self.streaming_message_started {
             self.finish_stream_impl(role, content);
-        } else {
+        } else if !content.trim().is_empty() {
             self.streaming_role = None;
             self.push_message(role, content);
+        } else {
+            // An empty answer after tools (ZE-210) adds no blank message.
+            self.streaming_role = None;
         }
         self.streaming_job_id = None;
         self.streaming_message_started = false;

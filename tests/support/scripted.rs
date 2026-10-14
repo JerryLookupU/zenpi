@@ -26,6 +26,8 @@ use zenpi::{
 pub enum Reply {
     Text(String),
     Call(ToolCall),
+    /// Streamed text followed by a tool call in the same response.
+    TextThenCall(String, ToolCall),
     /// Transport failure in-process; HTTP 400 on the wire.
     Fail(String),
     /// Block until the caller cancels (in-process only).
@@ -133,6 +135,17 @@ impl Backend for ScriptedBackend {
             Reply::Call(call) => {
                 sink(ProviderEvent::ToolCallDone { call: call.clone() })?;
                 Completion {
+                    tool_calls: vec![call],
+                    ..Completion::default()
+                }
+            }
+            Reply::TextThenCall(text, call) => {
+                sink(ProviderEvent::TextDelta {
+                    delta: text.clone(),
+                })?;
+                sink(ProviderEvent::ToolCallDone { call: call.clone() })?;
+                Completion {
+                    content: text,
                     tool_calls: vec![call],
                     ..Completion::default()
                 }
