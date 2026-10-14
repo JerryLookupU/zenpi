@@ -180,7 +180,12 @@ fn native_headers_system_tool_schema_effort_and_usage_are_exact() {
     let p = &r[0].1;
     assert_eq!(
         p["system"],
-        json!([{"type":"text","text":"instructions"},{"type":"text","text":"system turn"}])
+        json!([{"type":"text","text":"instructions"},{"type":"text","text":"system turn","cache_control":{"type":"ephemeral"}}])
+    );
+    // ZE-225: the newest user block is the second cache breakpoint.
+    assert_eq!(
+        p["messages"],
+        json!([{"role":"user","content":[{"type":"text","text":"hello","cache_control":{"type":"ephemeral"}}]}])
     );
     assert_eq!(p["tools"][0]["input_schema"], tools[0].input_schema);
     assert_eq!(p["output_config"]["effort"], "max");
@@ -383,25 +388,29 @@ fn native_history_integrity_and_cross_wire_are_authoritative() {
         )),
         Err(BackendError::Configuration(_))
     ));
+    // ZE-227: another wire or model replays the turn as text and tool calls,
+    // so encoding succeeds and only the closed fixture port fails.
     let chat = OpenAiCompatibleBackend::new("http://127.0.0.1:1", None, "gpt-4.1").unwrap();
-    assert!(matches!(
-        chat.complete(CompletionRequest::new(
-            "u",
-            &[user.clone(), a.clone(), result.clone()],
-            None,
-            &[tool()]
-        )),
-        Err(BackendError::Configuration(_))
+    let cross_wire = chat.complete(CompletionRequest::new(
+        "u",
+        &[user.clone(), a.clone(), result.clone()],
+        None,
+        &[tool()],
     ));
-    assert!(matches!(
-        b.complete(CompletionRequest::new(
-            "u",
-            &[user, a, result],
-            Some("other"),
-            &[tool()]
-        )),
-        Err(BackendError::Configuration(_))
+    assert!(
+        matches!(cross_wire, Err(ref e) if !matches!(e, BackendError::Configuration(_))),
+        "{cross_wire:?}"
+    );
+    let other_model = b.complete(CompletionRequest::new(
+        "u",
+        &[user, a, result],
+        Some("other"),
+        &[tool()],
     ));
+    assert!(
+        matches!(other_model, Err(ref e) if !matches!(e, BackendError::Configuration(_))),
+        "{other_model:?}"
+    );
 }
 
 #[test]
@@ -433,7 +442,7 @@ fn image_input_uses_native_base64_part() {
     h.join().unwrap();
     assert_eq!(
         requests.lock().unwrap()[0].1["messages"][0]["content"][1],
-        json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":"AQID"}})
+        json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":"AQID"},"cache_control":{"type":"ephemeral"}})
     );
 }
 

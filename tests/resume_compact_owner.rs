@@ -49,6 +49,7 @@ impl Backend for CaptureBackend {
                 input_tokens: 100,
                 output_tokens: 80,
                 total_tokens: 180,
+                ..Default::default()
             });
             return Ok(completion);
         }

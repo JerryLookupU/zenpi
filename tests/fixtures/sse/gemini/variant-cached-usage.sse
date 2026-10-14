@@ -1,0 +1,2 @@
+data: {"responseId": "googlecache", "modelVersion": "gemini-2.5-flash", "candidates": [{"index": 0, "content": {"role": "model", "parts": [{"text": "CACHED_319"}]}, "finishReason": "STOP"}], "usageMetadata": {"promptTokenCount": 2000, "cachedContentTokenCount": 1500, "candidatesTokenCount": 5, "totalTokenCount": 2005}}
+

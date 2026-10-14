@@ -328,7 +328,9 @@ impl ProviderCapabilities {
                 tools: true,
                 structured_output: true,
                 streaming: true,
-                reasoning: false,
+                // `reasoning_effort` (ZE-224); a model still needs catalogued
+                // or user-declared levels before an effort is sent.
+                reasoning: true,
             },
         }
     }
@@ -468,9 +470,20 @@ impl ProviderEvent {
 /// Optional usage information returned by a provider.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
+    /// All prompt tokens, cached ones included.
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub total_tokens: u64,
+    /// Prompt tokens served from the provider's prompt cache (ZE-225).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cache_read_tokens: u64,
+    /// Prompt tokens written to the provider's prompt cache (Anthropic).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cache_write_tokens: u64,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 /// Why the provider ended a completion.
@@ -565,10 +578,12 @@ pub struct RequestScope {
 }
 
 impl RequestScope {
+    const LEGACY_SESSION: &'static str = "legacy";
+
     fn legacy(binding: BackendRequestBinding, request: &CompletionRequest<'_>) -> Self {
         Self {
             owner_id: "legacy".into(),
-            session_id: "legacy".into(),
+            session_id: Self::LEGACY_SESSION.into(),
             operation_id: request.turn_id.into(),
             purpose: if request
                 .metadata
@@ -1551,10 +1566,22 @@ impl OpenAiCompatibleBackend {
             capabilities,
             descriptor: descriptor.as_ref(),
         };
-        let body = match &route {
+        let mut body = match &route {
             Some(route) => protocols::encode_request_for_route(&request, &options, route)?,
             None => protocols::encode_request(&request, &options)?,
         };
+        // ZE-225: Responses and Codex key their prompt cache by session, so a
+        // session's turns land on the same cache shard. Ad-hoc calls outside a
+        // session (the `legacy` scope) and DeepSeek's dialect send no key.
+        if wire_api == OpenAiWireApi::Responses
+            && control.scope.session_id != RequestScope::LEGACY_SESSION
+            && !control.scope.session_id.is_empty()
+            && route
+                .as_ref()
+                .is_none_or(|route| route.dialect() != crate::providers::Dialect::DeepSeek)
+        {
+            body["prompt_cache_key"] = json!(control.scope.session_id);
+        }
         let endpoint = if let Some(route) = &route {
             route.url().to_owned()
         } else if wire_api == OpenAiWireApi::GoogleGenerativeAi {
@@ -1935,43 +1962,19 @@ impl Backend for OpenAiCompatibleBackend {
                     OpenAiWireApi::GoogleGenerativeAi => "google",
                     _ => "openai",
                 });
-        for turn in turns {
+        // ZE-227: turns from another provider, wire or model are replayed as
+        // plain text and tool calls (see `protocols::history`); only history
+        // the target owns is checked as native replay.
+        let transformed = crate::protocols::history::transform(
+            turns,
+            crate::protocols::history::Target {
+                wire: wire_api,
+                provider,
+                model,
+            },
+        );
+        for turn in transformed.as_deref().unwrap_or(turns) {
             chat::validate_history(turn, provider, model, wire_api.as_str())?;
-            for a in turn
-                .metadata
-                .as_ref()
-                .and_then(|m| m.get("annotations"))
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter(|a| a["type"] == "native_history")
-            {
-                if a["wire"] != wire_api.as_str() || a["provider"] != provider {
-                    return Err(BackendError::Configuration(
-                        "native history provider/wire cannot represent selected model".into(),
-                    ));
-                }
-                let opaque = a
-                    .get("blocks")
-                    .and_then(Value::as_array)
-                    .is_some_and(|blocks| {
-                        blocks.iter().any(|b| {
-                            matches!(b["type"].as_str(), Some("thinking" | "redacted_thinking"))
-                        })
-                    })
-                    || a.get("parts")
-                        .and_then(Value::as_array)
-                        .is_some_and(|parts| {
-                            parts.iter().any(|p| {
-                                p.get("thoughtSignature").is_some() || p["thought"] == true
-                            })
-                        });
-                if opaque && a["model"] != model {
-                    return Err(BackendError::Configuration(
-                        "opaque signed history cannot move to another model".into(),
-                    ));
-                }
-            }
         }
         Ok(())
     }

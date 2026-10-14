@@ -77,12 +77,14 @@ fn call(block: &Value) -> Result<ToolCall, BackendError> {
     Ok(c)
 }
 
-/// Runtime effort is native adaptive effort only for the frozen supported
-/// model. Unknown models still work as conservative text-only registry entries.
+/// Runtime effort is native adaptive effort only for catalogued adaptive
+/// models and their levels. Unknown models run without an effort.
 pub(crate) fn validate_effort(model: &str, effort: Option<&str>) -> Result<(), BackendError> {
     if let Some(e) = effort
-        && (model != "claude-sonnet-4-6"
-            || !matches!(e, "none" | "low" | "medium" | "high" | "max"))
+        && !crate::providers::registry::ReasoningLevel::parse(e).is_ok_and(|level| {
+            crate::providers::registry::builtin_reasoning_levels("anthropic", model)
+                .contains(&level)
+        })
     {
         return Err(config("unsupported Anthropic model/effort combination"));
     }
@@ -447,6 +449,20 @@ fn request_body_inner(
         .unwrap_or(crate::context::DEFAULT_RESERVED_OUTPUT_TOKENS);
     if max == 0 {
         return Err(config("Anthropic max_tokens must be positive"));
+    }
+    if !deepseek {
+        // ZE-225: two ephemeral breakpoints — the stable system prefix and the
+        // newest user block — so every turn reads the previous turn's prefix.
+        if let Some(block) = system.last_mut() {
+            block["cache_control"] = json!({"type":"ephemeral"});
+        }
+        if let Some(block) = messages
+            .last_mut()
+            .and_then(|message| message["content"].as_array_mut())
+            .and_then(|blocks| blocks.last_mut())
+        {
+            block["cache_control"] = json!({"type":"ephemeral"});
+        }
     }
     let mut body = json!({"model":model,"messages":messages,"stream":true,"max_tokens":max});
     if !system.is_empty() {
@@ -823,6 +839,8 @@ impl Fold {
             input_tokens: input,
             output_tokens: self.usage[1],
             total_tokens: total,
+            cache_read_tokens: self.usage[2],
+            cache_write_tokens: self.usage[3],
         });
         let native_history = json!({"type":"native_history","wire":WIRE,"provider":provider,"model":self.model,"requested_model":self.requested_model,"blocks":blocks});
         let mut completion = Completion {

@@ -40,6 +40,7 @@ impl Backend for UsageBackend {
                 input_tokens: 2,
                 output_tokens: 3,
                 total_tokens: 5,
+                ..Default::default()
             }),
             ..Completion::default()
         })

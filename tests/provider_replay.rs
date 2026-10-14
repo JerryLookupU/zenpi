@@ -994,3 +994,38 @@ fn length_cut_tool_arguments_are_reported_not_rejected() {
     );
     assert!(r.error().contains("malformed Anthropic tool input JSON"));
 }
+
+/// ZE-225: every wire's prompt-cache counters land in `Usage` (input tokens
+/// stay the whole prompt, cached ones included).
+#[test]
+fn cached_prompt_tokens_are_reported_per_wire() {
+    for (wire, input, output, total, read, write) in [
+        (Wire::Chat, 2006, 300, 2306, 1920, 0),
+        (Wire::Responses, 2500, 150, 2650, 2048, 0),
+        (Wire::Anthropic, 4507, 4, 4511, 3000, 1500),
+        (Wire::Gemini, 2000, 5, 2005, 1500, 0),
+    ] {
+        let r = replay(wire, "variant-cached-usage.sse");
+        let c = r.completion();
+        assert_eq!(c.content, "CACHED_319", "{}", wire.dir());
+        let usage = c.usage.unwrap();
+        assert_eq!(
+            (
+                usage.input_tokens,
+                usage.output_tokens,
+                usage.total_tokens,
+                usage.cache_read_tokens,
+                usage.cache_write_tokens
+            ),
+            (input, output, total, read, write),
+            "{}",
+            wire.dir()
+        );
+        assert!(
+            r.trace.contains(&format!("usage {input}/{output}/{total}")),
+            "{}: {:?}",
+            wire.dir(),
+            r.trace
+        );
+    }
+}

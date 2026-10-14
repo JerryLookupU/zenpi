@@ -3,6 +3,7 @@ pub(crate) mod anthropic;
 pub(crate) mod chat;
 pub(crate) mod content;
 pub(crate) mod google;
+pub(crate) mod history;
 mod responses;
 
 use crate::backend::{
@@ -34,16 +35,51 @@ impl RequestOptions<'_> {
             _ => "openai",
         })
     }
+
+    fn history_target(&self) -> history::Target<'_> {
+        history::Target {
+            wire: self.wire_api,
+            provider: self.provider(),
+            model: self.model,
+        }
+    }
+}
+
+/// Encode with foreign turns rewritten for this request's target (ZE-227).
+fn with_target_history<T>(
+    request: &CompletionRequest<'_>,
+    options: &RequestOptions<'_>,
+    encode: impl FnOnce(&CompletionRequest<'_>) -> T,
+) -> T {
+    match history::transform(request.turns, options.history_target()) {
+        Some(turns) => encode(&CompletionRequest {
+            turns: &turns,
+            ..*request
+        }),
+        None => encode(request),
+    }
 }
 
 pub(crate) fn encode_request(
     request: &CompletionRequest<'_>,
     options: &RequestOptions<'_>,
 ) -> Result<Value, BackendError> {
-    encode_request_inner(request, options, None)
+    with_target_history(request, options, |request| {
+        encode_request_inner(request, options, None)
+    })
 }
 
 pub(crate) fn encode_request_for_route(
+    request: &CompletionRequest<'_>,
+    options: &RequestOptions<'_>,
+    route: &ValidatedRoute,
+) -> Result<Value, BackendError> {
+    with_target_history(request, options, |request| {
+        encode_checked_route_request(request, options, route)
+    })
+}
+
+fn encode_checked_route_request(
     request: &CompletionRequest<'_>,
     options: &RequestOptions<'_>,
     route: &ValidatedRoute,
@@ -307,7 +343,9 @@ fn encode_request_inner(
                 anthropic::request_body(request, model, reasoning_effort, provider)?
             }
         }
-        OpenAiWireApi::ChatCompletions => chat::encode_request(request, model, provider)?,
+        OpenAiWireApi::ChatCompletions => {
+            chat::encode_request(request, model, provider, reasoning_effort)?
+        }
         OpenAiWireApi::Responses => {
             if let Some(route) = route {
                 responses::encode_request_for_route(
@@ -707,10 +745,19 @@ fn parse_usage(value: &Value) -> Option<Usage> {
         .get("total_tokens")
         .and_then(Value::as_u64)
         .unwrap_or(input.saturating_add(output));
+    // Chat reports `prompt_tokens_details`, Responses `input_tokens_details`.
+    let cached = value
+        .get("prompt_tokens_details")
+        .or_else(|| value.get("input_tokens_details"))
+        .and_then(|details| details.get("cached_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
     Some(Usage {
         input_tokens: input,
         output_tokens: output,
         total_tokens: total,
+        cache_read_tokens: cached.min(input),
+        cache_write_tokens: 0,
     })
 }
 
@@ -993,6 +1040,37 @@ mod route_tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn chat_sends_the_selected_reasoning_effort() {
+        let turns = [Turn::new("user", TurnRole::User, "Think.")];
+        let route = route("openai", Protocol::ChatCompletions, true);
+        assert!(route.options().reasoning_effort);
+        let mut options = options(&route);
+        let request = CompletionRequest::new("op", &turns, None, &[]);
+        let body = encode_request_for_route(&request, &options, &route).unwrap();
+        assert!(body.get("reasoning_effort").is_none());
+        options.reasoning_effort = Some("high");
+        let body = encode_request_for_route(&request, &options, &route).unwrap();
+        assert_eq!(
+            body,
+            json!({
+                "model": "fixture-model",
+                "messages": [{"role":"user","content":"Think."}],
+                "stream": true,
+                "stream_options": {"include_usage": true},
+                "reasoning_effort": "high",
+            })
+        );
+        // The legacy (catalog) path encodes the same field.
+        assert_eq!(
+            encode_request(&request, &options).unwrap()["reasoning_effort"],
+            "high"
+        );
+        // A level the model does not declare never reaches the wire.
+        options.reasoning_effort = Some("xhigh");
+        assert!(encode_request_for_route(&request, &options, &route).is_err());
     }
 
     #[test]
@@ -1576,5 +1654,92 @@ mod route_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod catalog_tests {
+    use super::*;
+    use crate::core::{Turn, TurnRole};
+
+    #[test]
+    fn catalogued_native_models_accept_their_levels_only() {
+        assert!(anthropic::validate_effort("claude-opus-4-7", Some("xhigh")).is_ok());
+        assert!(anthropic::validate_effort("claude-opus-4-6", Some("xhigh")).is_err());
+        // Thinking cannot be disabled on Opus 5.5.
+        assert!(anthropic::validate_effort("claude-opus-5-5", Some("none")).is_err());
+        assert!(anthropic::validate_effort("claude-haiku-4-5", Some("low")).is_err());
+        assert!(anthropic::validate_effort("claude-unknown", None).is_ok());
+        assert!(google::validate_effort("gemini-2.5-pro", Some("none")).is_err());
+        assert!(google::validate_effort("gemini-2.5-pro", Some("high")).is_ok());
+        assert!(google::validate_effort("gemini-3-pro-preview", Some("medium")).is_err());
+    }
+
+    #[test]
+    fn claude_tool_turn_replays_on_gemini_without_native_parts() {
+        let mut assistant = Turn::new("a", TurnRole::Assistant, "");
+        assistant.metadata = Some(json!({
+            "tool_calls": [{"id":"toolu_1","name":"read_file","arguments":{"path":"a"}}],
+            "annotations": [{"type":"native_history","wire":"anthropic_messages","provider":"anthropic",
+                "model":"claude-sonnet-4-6","requested_model":"claude-sonnet-4-6",
+                "blocks":[{"type":"thinking","thinking":"look","signature":"sig"},
+                          {"type":"tool_use","id":"toolu_1","name":"read_file","input":{"path":"a"}}]}]
+        }));
+        let mut tool = Turn::new("t", TurnRole::Tool, "{}");
+        tool.metadata = Some(json!({"tool_call_id":"toolu_1","model_text":"content"}));
+        let turns = [
+            Turn::new("u", TurnRole::User, "read a"),
+            assistant,
+            tool,
+            Turn::new("u2", TurnRole::User, "next"),
+        ];
+        let request = CompletionRequest::new("u2", &turns, None, &[]);
+        for (model, signature) in [
+            ("gemini-2.5-flash", None),
+            (
+                "gemini-3-pro-preview",
+                Some("skip_thought_signature_validator"),
+            ),
+        ] {
+            let options = RequestOptions {
+                wire_api: OpenAiWireApi::GoogleGenerativeAi,
+                model,
+                provider: Some("google"),
+                reasoning_effort: None,
+                verbosity: None,
+                capabilities: ProviderCapabilities::for_wire_api(OpenAiWireApi::GoogleGenerativeAi),
+                descriptor: None,
+            };
+            let body = encode_request(&request, &options).unwrap();
+            let mut call = json!({"functionCall":{"name":"read_file","args":{"path":"a"}}});
+            if let Some(signature) = signature {
+                call["thoughtSignature"] = json!(signature);
+            }
+            assert_eq!(
+                body["contents"][1],
+                json!({"role":"model","parts":[{"text":"look"},call]})
+            );
+            assert_eq!(
+                body["contents"][2]["parts"][0],
+                json!({"functionResponse":{"name":"read_file","response":{"output":"content"}}})
+            );
+        }
+    }
+
+    #[test]
+    fn gemini_3_sends_a_thinking_level_and_2_5_a_budget() {
+        let turns = [Turn::new("u", TurnRole::User, "hi")];
+        let request = CompletionRequest::new("u", &turns, None, &[]);
+        let body =
+            google::request_body(&request, "gemini-3-pro-preview", Some("high"), "google").unwrap();
+        assert_eq!(
+            body["generationConfig"]["thinkingConfig"],
+            json!({"thinkingLevel":"high","includeThoughts":true})
+        );
+        let body = google::request_body(&request, "gemini-2.5-pro", Some("low"), "google").unwrap();
+        assert_eq!(
+            body["generationConfig"]["thinkingConfig"],
+            json!({"thinkingBudget":2048,"includeThoughts":true})
+        );
     }
 }

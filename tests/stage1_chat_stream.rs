@@ -684,7 +684,7 @@ fn malformed_or_oversized_reasoning_never_publishes_ready_tools() {
 }
 
 #[test]
-fn altered_duplicate_or_foreign_reasoning_history_fails_before_http() {
+fn altered_or_duplicate_reasoning_history_fails_before_http_and_foreign_history_is_accepted() {
     use zenpi::core::{Turn, TurnRole};
     let (c, _) = run(event(
         json!({"reasoning_details":[{"type":"reasoning.encrypted","data":"opaque"}],"content":"answer"}),
@@ -737,16 +737,6 @@ fn altered_duplicate_or_foreign_reasoning_history_fails_before_http() {
         zenpi::providers::registry::ModelRegistry::default(),
     )
     .unwrap();
-    assert!(
-        other_provider
-            .complete(CompletionRequest::new(
-                "provider",
-                &[original.clone()],
-                None,
-                &[]
-            ))
-            .is_err()
-    );
     let other_wire = OpenAiCompatibleBackend::new_with_wire_api(
         format!("http://{}", listener.local_addr().unwrap()),
         None,
@@ -754,29 +744,19 @@ fn altered_duplicate_or_foreign_reasoning_history_fails_before_http() {
         zenpi::backend::OpenAiWireApi::Responses,
     )
     .unwrap();
-    assert!(
-        other_wire
-            .complete(CompletionRequest::new(
-                "wire",
-                &[original.clone()],
-                None,
-                &[]
-            ))
-            .is_err()
-    );
-    assert!(
-        b.validate_history_model(&[original.clone()], Some("another-model"))
-            .is_err()
-    );
-    assert!(
-        b.complete(CompletionRequest::new(
-            "foreign",
-            &[original],
-            Some("another-model"),
-            &[]
-        ))
-        .is_err()
-    );
+    // ZE-227: another provider, wire or model no longer rejects the history;
+    // its opaque details are dropped and the turn replays as plain text.
+    for (backend, model) in [
+        (&other_provider, None),
+        (&other_wire, None),
+        (&b, Some("another-model")),
+    ] {
+        assert!(
+            backend
+                .validate_history_model(std::slice::from_ref(&original), model)
+                .is_ok()
+        );
+    }
     assert!(matches!(listener.accept(),Err(e) if e.kind()==std::io::ErrorKind::WouldBlock));
 }
 

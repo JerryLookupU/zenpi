@@ -8007,8 +8007,12 @@ fn backend_from_effective(
         let registry =
             crate::providers::registry::ModelRegistry::with_overrides(&effective.model_overrides)
                 .map_err(|error| ZenpiError::Message(error.to_string()))?;
+        // A profile that names no model uses the provider default (ZE-222).
         let model = effective
             .model
+            .or_else(|| {
+                crate::providers::registry::default_model(&connection.provider).map(str::to_owned)
+            })
             .ok_or_else(|| ZenpiError::arguments("explicit connection requires a model"))?;
         let backend = OpenAiCompatibleBackend::from_connection(
             connection,

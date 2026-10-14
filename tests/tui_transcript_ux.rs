@@ -301,6 +301,7 @@ fn actual_usage_is_visible_and_stale_usage_does_not_replace_current_job() {
                 input_tokens: 123,
                 output_tokens: 45,
                 total_tokens: 168,
+                ..Default::default()
             },
         },
     );
@@ -312,6 +313,7 @@ fn actual_usage_is_visible_and_stale_usage_does_not_replace_current_job() {
                 input_tokens: 999,
                 output_tokens: 999,
                 total_tokens: 1998,
+                ..Default::default()
             },
         },
     );

@@ -201,7 +201,8 @@ fn capabilities_are_explicit_per_adapter() {
     let chat = ProviderCapabilities::for_wire_api(OpenAiWireApi::ChatCompletions);
     assert!(chat.text && chat.tools);
     assert!(chat.streaming);
-    assert!(!chat.reasoning);
+    // ZE-224: Chat carries `reasoning_effort` for models that declare levels.
+    assert!(chat.reasoning);
 }
 
 #[test]
