@@ -231,11 +231,7 @@ fn assistant_blocks(
         if blocks
             .iter()
             .any(|b| matches!(b["type"].as_str(), Some("thinking" | "redacted_thinking")))
-            && if deepseek {
-                a.get("requested_model").unwrap_or(&a["model"]) != model
-            } else {
-                a["model"] != model
-            }
+            && a.get("requested_model").unwrap_or(&a["model"]) != model
         {
             return Err(config("signed Anthropic history belongs to another model"));
         }
@@ -584,10 +580,8 @@ impl Fold {
             {
                 return Err(invalid("invalid Anthropic message_start"));
             }
+            // An alias resolves to a dated serving ID; record both.
             let model = identity(m, "model")?;
-            if !self.deepseek && model != expected_model {
-                return Err(invalid("unexpected Anthropic serving model"));
-            }
             self.id = Some(identity(m, "id")?);
             self.model = Some(model);
             self.requested_model = Some(expected_model.to_owned());
@@ -821,10 +815,7 @@ impl Fold {
             output_tokens: self.usage[1],
             total_tokens: total,
         });
-        let mut native_history = json!({"type":"native_history","wire":WIRE,"provider":provider,"model":self.model,"blocks":blocks});
-        if self.deepseek {
-            native_history["requested_model"] = json!(self.requested_model);
-        }
+        let native_history = json!({"type":"native_history","wire":WIRE,"provider":provider,"model":self.model,"requested_model":self.requested_model,"blocks":blocks});
         let mut completion = Completion {
             content,
             tool_calls,

@@ -66,8 +66,9 @@ impl Wire {
     }
 }
 
-/// Drains one HTTP request (headers plus `Content-Length` body).
-fn drain_request(stream: &mut TcpStream) {
+/// Drains one HTTP request (headers plus `Content-Length` body) and returns
+/// its lowercased header block.
+fn drain_request(stream: &mut TcpStream) -> String {
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
@@ -96,6 +97,7 @@ fn drain_request(stream: &mut TcpStream) {
         assert!(n > 0, "client closed before sending body");
         bytes.extend_from_slice(&chunk[..n]);
     }
+    headers.to_ascii_lowercase()
 }
 
 fn fixture(wire: Wire, name: &str) -> Vec<u8> {
@@ -113,6 +115,8 @@ fn fixture(wire: Wire, name: &str) -> Vec<u8> {
 struct Replay {
     trace: Vec<String>,
     result: Result<Completion, BackendError>,
+    /// Lowercased request headers the backend sent.
+    headers: String,
 }
 
 impl Replay {
@@ -217,12 +221,12 @@ fn serve(wire: Wire, status: &'static str, content_type: &'static str, body: Vec
                 Err(e) if e.kind() == ErrorKind::WouldBlock && Instant::now() < deadline => {
                     thread::sleep(Duration::from_millis(5));
                 }
-                Err(e) if e.kind() == ErrorKind::WouldBlock => return,
+                Err(e) if e.kind() == ErrorKind::WouldBlock => return String::new(),
                 Err(e) => panic!("replay server accept: {e}"),
             }
         };
         stream.set_nonblocking(false).unwrap();
-        drain_request(&mut stream);
+        let headers = drain_request(&mut stream);
         let head = format!(
             "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n",
             body.len()
@@ -232,6 +236,7 @@ fn serve(wire: Wire, status: &'static str, content_type: &'static str, body: Vec
         let _ = stream.write_all(head.as_bytes());
         let _ = stream.write_all(&body);
         let _ = stream.flush();
+        headers
     });
     let turns = [Turn::new("replay-user", TurnRole::User, "replay")];
     let tools = tools();
@@ -244,10 +249,11 @@ fn serve(wire: Wire, status: &'static str, content_type: &'static str, body: Vec
             Ok(())
         },
     );
-    server.join().unwrap();
+    let headers = server.join().unwrap();
     Replay {
         trace: events.iter().map(normalize).collect(),
         result,
+        headers,
     }
 }
 
@@ -596,12 +602,53 @@ fn anthropic_unknown_event_is_currently_an_error() {
 }
 
 #[test]
-fn anthropic_dated_serving_model_is_currently_rejected() {
-    // Known bug, ZE-223 flips this: a dated model id resolved from the
-    // requested alias must be recorded, not rejected.
+fn anthropic_dated_serving_model_is_recorded() {
+    // ZE-223: a dated model id resolved from the requested alias is
+    // recorded, not rejected.
     let r = replay(Wire::Anthropic, "variant-dated-model.sse");
-    assert!(r.trace.is_empty(), "{:?}", r.trace);
-    assert!(r.error().contains("unexpected Anthropic serving model"));
+    assert_trace(
+        &r,
+        &[
+            r#"created Some("msg319") Some("claude-sonnet-4-6-20260101")"#,
+            "text FRESH_FINAL_319",
+            "text_done FRESH_FINAL_319",
+            "usage 7/4/11",
+            r#"completed Some("msg319") Some("claude-sonnet-4-6-20260101")"#,
+        ],
+    );
+    let c = r.completion();
+    assert_eq!(c.content, "FRESH_FINAL_319");
+    assert_eq!(c.model.as_deref(), Some("claude-sonnet-4-6-20260101"));
+    let history = c
+        .annotations
+        .iter()
+        .find(|a| a["type"] == "native_history")
+        .expect("native_history annotation");
+    assert_eq!(history["model"], "claude-sonnet-4-6-20260101");
+    assert_eq!(history["requested_model"], "claude-sonnet-4-6");
+}
+
+#[test]
+fn legacy_anthropic_sends_native_auth_headers() {
+    // ZE-223: backend="anthropic" without an explicit connection uses
+    // x-api-key + anthropic-version, never a Bearer token.
+    let r = replay(Wire::Anthropic, "kill319-final-text.sse");
+    r.completion();
+    assert!(
+        r.headers.contains("\r\nx-api-key: replay-fixture-key\r\n"),
+        "{}",
+        r.headers
+    );
+    assert!(r.headers.contains("\r\nanthropic-version: 2023-06-01\r\n"));
+    assert!(!r.headers.contains("authorization:"), "{}", r.headers);
+    // The OpenAI wires keep Bearer.
+    let r = replay(Wire::Chat, "kill319-final-text.sse");
+    r.completion();
+    assert!(
+        r.headers
+            .contains("\r\nauthorization: bearer replay-fixture-key\r\n")
+    );
+    assert!(!r.headers.contains("x-api-key:"));
 }
 
 // -------------------------------------------------------------- gemini

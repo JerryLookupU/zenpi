@@ -365,9 +365,8 @@ fn malformed_finish_signature_usage_and_candidate_never_publish_calls() {
     let mut v = base.clone();
     v["candidates"][0]["index"] = json!(1);
     cases.push(v);
-    let mut wrong_model = base.clone();
-    wrong_model["modelVersion"] = json!("different-provider-model");
-    cases.push(wrong_model);
+    // ZE-223: a different served modelVersion is recorded, not rejected
+    // (see served_model_version_is_recorded_not_rejected).
     for v in cases {
         let (url, _, h) = serve(vec![("application/json".into(), v.to_string())]);
         let mut done = false;
@@ -383,6 +382,21 @@ fn malformed_finish_signature_usage_and_candidate_never_publish_calls() {
         assert!(!done);
         h.join().unwrap();
     }
+}
+#[test]
+fn served_model_version_is_recorded_not_rejected() {
+    let mut v = answer(signed(), "STOP");
+    v["modelVersion"] = json!("gemini-flash-latest-served-0915");
+    let (url, _, h) = serve(vec![("application/json".into(), v.to_string())]);
+    let c = backend(url)
+        .complete(CompletionRequest::new("u", &user(), None, &[tool()]))
+        .unwrap();
+    h.join().unwrap();
+    assert_eq!(c.model.as_deref(), Some(MODEL));
+    assert!(
+        c.annotations.iter().any(|a| a["type"] == "gemini_finish"
+            && a["model_version"] == "gemini-flash-latest-served-0915")
+    );
 }
 #[test]
 fn truncated_and_post_terminal_streams_fail_closed() {

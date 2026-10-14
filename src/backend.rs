@@ -1675,37 +1675,37 @@ impl OpenAiCompatibleBackend {
                     }
                 })
                 .map_err(auth_error)??;
-        } else if let Some(secret) = &self.secret_handle {
-            let digest = self.secret_policy_digest.as_deref().ok_or_else(|| {
-                BackendError::Configuration("secret policy binding missing".into())
-            })?;
-            let header_value = |key: &str| {
-                if self.wire_api == OpenAiWireApi::GoogleGenerativeAi {
-                    key.to_owned()
-                } else {
-                    format!("Bearer {key}")
+        } else {
+            // Legacy (no explicit connection) credentials use each wire's
+            // native header: Anthropic and Gemini do not accept Bearer keys.
+            let (header_name, bearer) = match self.wire_api {
+                OpenAiWireApi::GoogleGenerativeAi => ("x-goog-api-key", false),
+                OpenAiWireApi::AnthropicMessages => ("x-api-key", false),
+                OpenAiWireApi::Responses | OpenAiWireApi::ChatCompletions => {
+                    ("authorization", true)
                 }
             };
-            let header = if secret.is_scoped() {
-                secret.with_scoped_secret(digest, &secret_scope, header_value)
-            } else {
-                secret.with_secret(digest, header_value)
-            }
-            .map_err(secret_error)?;
-            request_builder = request_builder.header(
-                if self.wire_api == OpenAiWireApi::GoogleGenerativeAi {
-                    "x-goog-api-key"
+            let header_value = |key: &str| {
+                if bearer {
+                    format!("Bearer {key}")
                 } else {
-                    "authorization"
-                },
-                header,
-            );
-        } else if let Some(key) = &self.api_key {
-            request_builder = if self.wire_api == OpenAiWireApi::GoogleGenerativeAi {
-                request_builder.header("x-goog-api-key", key)
-            } else {
-                request_builder.header("authorization", format!("Bearer {key}"))
+                    key.to_owned()
+                }
             };
+            if let Some(secret) = &self.secret_handle {
+                let digest = self.secret_policy_digest.as_deref().ok_or_else(|| {
+                    BackendError::Configuration("secret policy binding missing".into())
+                })?;
+                let header = if secret.is_scoped() {
+                    secret.with_scoped_secret(digest, &secret_scope, header_value)
+                } else {
+                    secret.with_secret(digest, header_value)
+                }
+                .map_err(secret_error)?;
+                request_builder = request_builder.header(header_name, header);
+            } else if let Some(key) = &self.api_key {
+                request_builder = request_builder.header(header_name, header_value(key));
+            }
         }
         // Both adapters use short receive slices so host cancellation can be
         // observed while a provider is sending a slow body. The Chat JSON

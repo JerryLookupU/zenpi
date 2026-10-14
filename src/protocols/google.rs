@@ -595,20 +595,9 @@ impl Fold {
         if !self.stop || (self.parts.is_empty() && !self.truncated) {
             return Err(invalid("Gemini response missing complete terminal content"));
         }
-        if self.model_version.as_deref().is_none_or(|version| {
-            version != model
-                && !version
-                    .strip_prefix(&format!("{model}-"))
-                    .is_some_and(|suffix| {
-                        !suffix.is_empty()
-                            && suffix.bytes().any(|b| b.is_ascii_digit())
-                            && suffix.bytes().all(|b| b.is_ascii_digit() || b == b'-')
-                    })
-        }) {
-            return Err(invalid(
-                "Gemini response model version does not match requested model",
-            ));
-        }
+        // An alias may resolve to another served version: it is recorded in
+        // the gemini_finish annotation, not rejected. History stays keyed by
+        // the requested model.
         let response_id = self
             .response_id
             .ok_or_else(|| invalid("Gemini responseId missing"))?;
