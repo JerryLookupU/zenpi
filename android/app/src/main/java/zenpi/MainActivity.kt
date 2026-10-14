@@ -5,18 +5,16 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
-import androidx.compose.ui.graphics.Color
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import zenpi.pairing.PairingViewModel
 import zenpi.transport.RemoteApproval
 import zenpi.ui.AppShell
 import zenpi.ui.PairingActions
+import zenpi.ui.theme.ZenpiTheme
 
 class MainActivity : ComponentActivity() {
     private val model: PairingViewModel by viewModels()
@@ -45,10 +43,11 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         val uri = takePairingIntent(intent)
         super.onCreate(savedInstanceState)
+        // Conversations, diffs and approvals stay out of screenshots, screen recording and the recents thumbnail.
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
         if (savedInstanceState == null) uri?.let(model::acceptUri)
         setContent {
-            MaterialTheme(colorScheme = lightColorScheme(primary = Color(0xFF166A4C), secondary = Color(0xFF934A25),
-                background = Color(0xFFF5F7F8), surface = Color.White)) {
+            ZenpiTheme {
                 val state by model.state.collectAsState()
                 val actions = remember { ViewModelActions(model, ::scan) }
                 AppShell(state, actions)

@@ -29,14 +29,14 @@ class WorkerScreenTest {
         } } }
         compose.onNodeWithContentDescription("Worktree tasks").performScrollTo().performClick()
         compose.onNodeWithText("Task runtime active").performScrollTo().assertIsDisplayed()
-        val button = compose.onNodeWithContentDescription("Cancel worktree task uncertain")
+        val button = compose.onNodeWithTag("Cancel worktree task uncertain")
         button.performScrollTo().performClick()
         assertEquals(listOf("uncertain"), cancelled)
         compose.runOnUiThread { state.value = state.value.copy(phase = PairingPhase.OFFLINE) }
         button.assertIsNotEnabled()
         compose.runOnUiThread { state.value = state.value.copy(phase = PairingPhase.CONNECTED, projection = projection.copy(
             projects = projection.projects.map { it.copy(workerStatuses = listOf(status.copy(runtimeActive = false))) })) }
-        compose.onNodeWithContentDescription("Cancel worktree task uncertain").assertDoesNotExist()
+        compose.onNodeWithTag("Cancel worktree task uncertain").assertDoesNotExist()
         compose.onNodeWithText("Task runtime active").assertDoesNotExist()
         compose.onNodeWithText("Task result unknown").performScrollTo().assertIsDisplayed()
     }
@@ -62,10 +62,10 @@ class WorkerScreenTest {
             original.copy(workerHistoryPage = history.copy(turns = listOf(turn.copy(toolCalls = listOf(call.copy(argumentsPreview = "x".repeat(513))))))),
             original.copy(projection = projection.copy(sessionId = "foreign")), original.copy(workerHistoryPrevious = listOf(history)))) {
             compose.runOnUiThread { state.value = bad }
-            compose.onNodeWithContentDescription("Read tool arguments call-a").performScrollTo().assertIsNotEnabled()
+            compose.onNodeWithTag("Read tool arguments call-a").performScrollTo().assertIsNotEnabled()
         }
         compose.runOnUiThread { state.value = original }
-        compose.onNodeWithContentDescription("Read tool arguments call-a").performScrollTo().performClick()
+        compose.onNodeWithTag("Read tool arguments call-a").performScrollTo().performClick()
         compose.onNodeWithText("Task history").assertDoesNotExist()
         compose.onNodeWithText("read_file").assertIsDisplayed()
         compose.onNodeWithTag("transcript-page").assertTextEquals("abc")
@@ -75,7 +75,7 @@ class WorkerScreenTest {
         compose.onNodeWithContentDescription("Next message page").assertIsNotEnabled()
         compose.onNodeWithContentDescription("Close message").performClick()
         compose.onNodeWithText("Task history").assertIsDisplayed()
-        compose.onNodeWithContentDescription("Read tool arguments call-a").assertIsNotEnabled()
+        compose.onNodeWithTag("Read tool arguments call-a").assertIsNotEnabled()
         assertNull(state.value.transcriptToolCall)
     }
     @Test fun emptyAssistantMessageStillShowsToolInvocationInNarrowHistory() {
@@ -90,7 +90,7 @@ class WorkerScreenTest {
         } } }
         compose.onNodeWithText("read_file").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("{\"path\":\"evidence.txt\"}").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithContentDescription("Read task message call-message").performScrollTo().assertIsEnabled()
+        compose.onNodeWithTag("Read task message call-message").performScrollTo().assertIsEnabled()
     }
     @Test fun fullTaskMessageDismissalRestoresHistoryAndDoesNotStackDialogs() {
         val project = "a".repeat(64); val tab = "b".repeat(64)
@@ -107,7 +107,7 @@ class WorkerScreenTest {
                     transcriptPage = TranscriptPage(project, "session", message.id, "tool", "d".repeat(64), 0, 14, 14, false, "Full tool text", "done", tab))
             }, onCloseTranscript = { state.value = WorkerHistoryNavigation.dismissMessage(state.value) })
         } } }
-        compose.onNodeWithContentDescription("Read task message tool-message").performScrollTo().performClick()
+        compose.onNodeWithTag("Read task message tool-message").performScrollTo().performClick()
         compose.onNodeWithText("Task history").assertDoesNotExist()
         compose.onNodeWithTag("transcript-page").assertTextEquals("Full tool text")
         compose.onNodeWithContentDescription("Close message").performClick()
@@ -129,7 +129,7 @@ class WorkerScreenTest {
             PairingScreen(state.value, {}, {}, {}, onWorkerHistoryTurn = { messages.add(it) }, onWorkerHistory = { id, next -> advances.add(id to next) })
         } } }
         compose.onNodeWithText("Tool result").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithContentDescription("Read task message tool").performScrollTo().performClick()
+        compose.onNodeWithTag("Read task message tool").performScrollTo().performClick()
         assertEquals(listOf("tool"), messages)
         compose.onNodeWithContentDescription("Next task history page").performClick()
         assertEquals(listOf("done" to true), advances)
@@ -139,7 +139,7 @@ class WorkerScreenTest {
             compose.runOnUiThread { state.value = bad }
             compose.onNodeWithContentDescription("Next task history page").assertIsNotEnabled()
             compose.onNodeWithContentDescription("Previous task history page").assertIsNotEnabled()
-            compose.onNodeWithContentDescription("Read task message tool").assertIsNotEnabled()
+            compose.onNodeWithTag("Read task message tool").assertIsNotEnabled()
         }
         assertEquals(listOf("tool"), messages); assertEquals(listOf("done" to true), advances)
     }
@@ -155,7 +155,7 @@ class WorkerScreenTest {
                 onTranscript = { _, _ -> error("worker page used master route") })
         } } }
         compose.onNodeWithContentDescription("Worktree tasks").performScrollTo().performClick()
-        val open = compose.onNodeWithContentDescription("Read task output done")
+        val open = compose.onNodeWithTag("Read task output done")
         open.performScrollTo().performClick()
         assertEquals(listOf("done" to false), calls)
         compose.runOnUiThread { state.value = state.value.copy(transcriptTurn = "done", transcriptWorker = true,
@@ -213,7 +213,7 @@ class WorkerScreenTest {
         compose.onNodeWithText("Verified task output").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("Task output truncated").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("Task output withheld").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithContentDescription("Cancel worktree task done").assertDoesNotExist()
+        compose.onNodeWithTag("Cancel worktree task done").assertDoesNotExist()
         compose.onNodeWithContentDescription("Send worktree task").assertDoesNotExist()
     }
     @Test fun workerSubmissionAndCancellationAreSeparateFromMasterAndLoseAuthorityOffline() {
@@ -234,7 +234,7 @@ class WorkerScreenTest {
         compose.onNodeWithText("Task running").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("Live task output").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("Task preview truncated").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithContentDescription("Cancel worktree task running-worker").performScrollTo().performClick()
+        compose.onNodeWithTag("Cancel worktree task running-worker").performScrollTo().performClick()
         assertEquals(listOf("running-worker"), cancelled)
         compose.onNodeWithText("Task: main").performTextInput("review the worktree")
         compose.onNodeWithContentDescription("Send worktree task").assertIsEnabled().performClick()
@@ -260,16 +260,16 @@ class WorkerScreenTest {
         compose.onNodeWithText("Task: other").performTextInput("review other tab")
         compose.onNodeWithContentDescription("Send worktree task").performClick()
         assertEquals("review other tab", sent.last())
-        compose.onNodeWithContentDescription("Cancel worktree task running-worker").performScrollTo().assertIsEnabled()
+        compose.onNodeWithTag("Cancel worktree task running-worker").performScrollTo().assertIsEnabled()
         compose.runOnUiThread { state.value = state.value.copy(projection = revised) }
         compose.runOnUiThread { state.value = state.value.copy(phase = PairingPhase.ERROR) }
         compose.onNodeWithContentDescription("Send worktree task").assertIsNotEnabled()
-        compose.onNodeWithContentDescription("Cancel worktree task running-worker").performScrollTo().assertIsEnabled()
+        compose.onNodeWithTag("Cancel worktree task running-worker").performScrollTo().assertIsEnabled()
         compose.runOnUiThread { state.value = state.value.copy(phase = PairingPhase.OFFLINE) }
-        compose.onNodeWithContentDescription("Cancel worktree task running-worker").assertIsNotEnabled()
+        compose.onNodeWithTag("Cancel worktree task running-worker").assertIsNotEnabled()
         compose.runOnUiThread { state.value = AuthorityLossPolicy.displayOnly(state.value) }
         compose.onNodeWithContentDescription("Send worktree task").assertDoesNotExist()
-        compose.onNodeWithContentDescription("Cancel worktree task running-worker").assertDoesNotExist()
+        compose.onNodeWithTag("Cancel worktree task running-worker").assertDoesNotExist()
         assertEquals(listOf("review the worktree", "new scope task", "review other tab"), sent)
     }
 }

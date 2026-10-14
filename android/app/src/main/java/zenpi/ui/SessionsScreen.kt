@@ -1,5 +1,9 @@
 package zenpi.ui
 
+import androidx.compose.material.icons.automirrored.outlined.ArrowLeft
+import androidx.compose.material.icons.automirrored.outlined.ArrowRight
+import androidx.compose.material.icons.outlined.PlayArrow
+import zenpi.ui.theme.spokenAs
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -13,11 +17,8 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.automirrored.outlined.ArrowForward
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.HorizontalDivider
@@ -58,10 +59,10 @@ fun SessionsScreen(scope: ScreenScope, actions: SessionActions, onBack: () -> Un
     val searchValid = runCatching { SessionCatalogCodec.validateQuery(search.trim()) }.isSuccess
     SecondaryPage("Sessions", "Close sessions", onBack, actions = {
         IconButton(onClick = { state.sessionsPrevious.lastOrNull()?.offset?.let(actions::sessions) }, enabled = navigation && state.sessionsPrevious.isNotEmpty()) {
-            Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "Previous sessions page")
+            Icon(Icons.AutoMirrored.Outlined.ArrowLeft, contentDescription = "Previous sessions page")
         }
         IconButton(onClick = { state.sessions?.nextOffset?.let(actions::sessions) }, enabled = navigation && state.sessions?.nextOffset != null) {
-            Icon(Icons.AutoMirrored.Outlined.ArrowForward, contentDescription = "Next sessions page")
+            Icon(Icons.AutoMirrored.Outlined.ArrowRight, contentDescription = "Next sessions page")
         }
         IconButton(onClick = { actions.sessions(-1) }, enabled = searchEnabled) { Icon(Icons.Outlined.Refresh, contentDescription = "Refresh sessions") }
     }) { padding ->
@@ -93,19 +94,21 @@ fun SessionsScreen(scope: ScreenScope, actions: SessionActions, onBack: () -> Un
             state.sessions?.entries?.forEach { session ->
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Text(session.name ?: session.id, style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Text(session.name ?: session.id, style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                            modifier = if (session.name == null) Modifier.spokenAs("Unnamed session") else Modifier)
                         Text(if (session.current) "Current" else "${session.turnCount} messages", style = MaterialTheme.typography.labelSmall)
                         if (session.matches > 0) Text("${session.matches} matches", style = MaterialTheme.typography.labelSmall)
                         session.snippets.forEach { snippet -> Text(snippet, style = MaterialTheme.typography.bodySmall,
                             maxLines = 3, overflow = TextOverflow.Ellipsis) }
                     }
-                    IconButton(onClick = { resumeTarget = session.id }, enabled = enabled
+                    IconButton(modifier = Modifier.testTag("Resume session ${session.id}"), onClick = { resumeTarget = session.id }, enabled = enabled
                         && state.sessions?.let { SessionCatalogCodec.resumable(it, state.projection, session.id) } == true) {
-                        Icon(Icons.Outlined.History, contentDescription = "Resume session ${session.id}")
+                        Icon(Icons.Outlined.PlayArrow, contentDescription = "Resume session${session.name?.let { " $it" }.orEmpty()}")
                     }
                 }
                 if (resumeTarget == session.id) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text("Resume ${session.name ?: session.id}?", style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f))
+                    Text("Resume ${session.name ?: session.id}?", style = MaterialTheme.typography.labelMedium,
+                        modifier = Modifier.weight(1f).spokenAs("Resume ${session.name ?: "unnamed session"}?"))
                     IconButton(onClick = { resumeTarget = null; actions.resumeSession(session.id) }, enabled = enabled
                         && state.sessions?.let { SessionCatalogCodec.resumable(it, state.projection, session.id) } == true) {
                         Icon(Icons.Outlined.Check, contentDescription = "Confirm resume session")

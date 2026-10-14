@@ -26,7 +26,7 @@ class PromptScreenTest {
         compose.setContent{MaterialTheme{Box(Modifier.width(320.dp)){PairingScreen(PairingState(phase=PairingPhase.OFFLINE,projection=cached),{},{},{},
             onPrompt={writes++},onCancelPrompt={writes++})}}}
         compose.onNodeWithText("Message input rejected").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithContentDescription("Cancel message $target").assertDoesNotExist()
+        compose.onNodeWithTag("Cancel message $target").assertDoesNotExist()
         assertEquals(0,writes)
     }
     @Test fun liveComposerSteersExactTargetAndOfflineCacheRemovesWriteControls() {
@@ -45,13 +45,13 @@ class PromptScreenTest {
             compose.runOnUiThread { state.value = blocked }
             send.assertIsNotEnabled()
             compose.onNodeWithText("Steer").assertIsNotEnabled()
-            compose.onNodeWithContentDescription("Cancel message $target").assertIsNotEnabled()
+            compose.onNodeWithTag("Cancel message $target").assertIsNotEnabled()
         }
         compose.runOnUiThread { state.value = healthy.copy(projection = projection.copy(
             projects = projection.projects + projection.projects.single().copy(sessionId = "foreign"))) }
         send.assertDoesNotExist()
         compose.onNodeWithText("Steer").assertDoesNotExist()
-        compose.onNodeWithContentDescription("Cancel message $target").assertDoesNotExist()
+        compose.onNodeWithTag("Cancel message $target").assertDoesNotExist()
         compose.onNodeWithContentDescription("Send message").assertIsNotEnabled()
         compose.runOnIdle { assertEquals(listOf(target to "change direction"), steered); assertEquals(0, prompts) }
         compose.runOnUiThread { state.value = healthy }
@@ -83,7 +83,7 @@ class PromptScreenTest {
         compose.onNodeWithText("Durable prefix").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("Message truncated").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("Transcript truncated").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithContentDescription("Read full message large").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithTag("Read full message large").performScrollTo().assertIsNotEnabled()
     }
     @Test fun messagePageShowsNextAndCloseWithoutAccumulatingTranscript() {
         val page = TranscriptPage("project", "session", "large", "assistant", "a".repeat(64), 0, 3, 6, true, "abc")
@@ -119,7 +119,7 @@ class PromptScreenTest {
         val state = mutableStateOf(PairingState(phase = PairingPhase.ERROR, projection = live))
         compose.setContent { MaterialTheme { PairingScreen(state.value, {}, {}, {}) } }
         compose.onNodeWithTag("desktop-live-text").performScrollTo().assertTextEquals("Local desktop partial")
-        compose.onNodeWithContentDescription("Cancel message $target").assertDoesNotExist()
+        compose.onNodeWithTag("Cancel message $target").assertDoesNotExist()
         compose.onNodeWithContentDescription("Send steering input").assertDoesNotExist()
         val encoded = ProjectionCacheCodec.encode(live)
         assertFalse(encoded.toString().contains("Local desktop partial"))
@@ -160,11 +160,11 @@ class PromptScreenTest {
         compose.setContent { MaterialTheme { Box(Modifier.width(320.dp)) {
             PairingScreen(state.value, {}, {}, {}, onCancelPrompt = { cancelled.add(it) })
         } } }
-        val stop = compose.onNodeWithContentDescription("Cancel message $target")
+        val stop = compose.onNodeWithTag("Cancel message $target")
         stop.performScrollTo().assertIsDisplayed().assertIsEnabled()
         val label = compose.onNodeWithText("Message running").getUnclippedBoundsInRoot()
         val icon = stop.getUnclippedBoundsInRoot()
-        val id = compose.onNodeWithText("12345678").getUnclippedBoundsInRoot()
+        val id = compose.onNodeWithTag("prompt-request-$target").getUnclippedBoundsInRoot()
         assertTrue(id.right <= label.left)
         assertTrue(label.right <= icon.left)
         stop.performClick()
@@ -192,12 +192,12 @@ class PromptScreenTest {
             projection = ProjectionCacheCodec.decode(ProjectionCacheCodec.encode(projection))))
         compose.setContent { MaterialTheme { PairingScreen(state.value, {}, {}, {}) } }
         compose.onNodeWithText("Message result unknown").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithContentDescription("Cancel message $target").assertDoesNotExist()
+        compose.onNodeWithTag("Cancel message $target").assertDoesNotExist()
         compose.runOnUiThread { state.value = PairingState(phase = PairingPhase.CONNECTED,
             projection = projection.copy(projects = projection.projects.map {
                 it.copy(promptStatuses = it.promptStatuses.map { status -> status.copy(state = "cancelled") })
             })) }
         compose.onNodeWithText("Message cancelled").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithContentDescription("Cancel message $target").assertDoesNotExist()
+        compose.onNodeWithTag("Cancel message $target").assertDoesNotExist()
     }
 }

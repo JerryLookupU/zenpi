@@ -311,7 +311,7 @@ class HostPairingTest {
                         }
                         val running = requireNotNull(model.state.value.projection).projects.single().promptStatuses.single { it.state == "running" }
                         assertNull(model.state.value.pendingWorkspace)
-                        compose.onNodeWithContentDescription("Cancel message ${running.requestId}").performScrollTo().assertIsEnabled().performClick()
+                        compose.onNodeWithTag("Cancel message ${running.requestId}").performScrollTo().assertIsEnabled().performClick()
                         repeat(100) {
                             if (model.state.value.projection?.projects?.single()?.promptStatuses?.none { it.requestId == running.requestId && it.state == "cancelled" } != false
                                 || model.state.value.pendingWorkspace != null || model.state.value.phase != PairingPhase.CONNECTED) {

@@ -1,12 +1,13 @@
 package zenpi.ui
 
+import androidx.compose.material.icons.outlined.Forum
+import androidx.compose.material.icons.outlined.AddComment
+import androidx.compose.material.icons.outlined.AttachFile
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.MenuBook
-import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Checklist
 import androidx.compose.material.icons.outlined.Difference
 import androidx.compose.material.icons.outlined.Edit
-import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -40,12 +41,12 @@ fun SessionToolbar(scope: ScreenScope, projection: HostProjection, workspaceUi: 
     val state = scope.state
     val selected = scope.selected
     TooltipBox(positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(), tooltip = { PlainTooltip { Text("Sessions") } }, state = rememberTooltipState()) {
-        IconButton(onClick = { actions.sessions(-1) }, enabled = SessionCatalogReadPolicy.browse(state)) { Icon(Icons.Outlined.History, contentDescription = "Browse sessions") }
+        IconButton(onClick = { actions.sessions(-1) }, enabled = SessionCatalogReadPolicy.browse(state)) { Icon(Icons.Outlined.Forum, contentDescription = "Browse sessions") }
     }
     TooltipBox(positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
         tooltip = { PlainTooltip { Text("Browse conversation") } }, state = rememberTooltipState()) {
         IconButton(onClick = { actions.sessionHistory(false) }, enabled = SessionHistoryReadPolicy.browse(state)) {
-            Icon(Icons.AutoMirrored.Outlined.MenuBook, contentDescription = "Browse conversation")
+            Icon(Icons.Outlined.History, contentDescription = "Browse conversation")
         }
     }
     if (selected?.sessionControl == true && zenpi.transport.SessionCommandCodec.mainSelected(projection)) {
@@ -62,7 +63,7 @@ fun SessionToolbar(scope: ScreenScope, projection: HostProjection, workspaceUi: 
                 && !state.scanInProgress && !state.resetting && !state.resetRequired && zenpi.transport.SessionCatalogCodec.readable(projection)
                 && state.pendingWorkspace == null && state.pendingRevoke == null && projection.phase == "idle"
                 && selected.promptStatuses.none { it.state in activePromptStates }) {
-                Icon(Icons.Outlined.Add, contentDescription = "New session")
+                Icon(Icons.Outlined.AddComment, contentDescription = "New session")
             }
         }
     }
@@ -95,7 +96,7 @@ fun SessionToolbar(scope: ScreenScope, projection: HostProjection, workspaceUi: 
         && projection.subtabs != null) TooltipBox(positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
         tooltip = { PlainTooltip { Text("Browse host files") } }, state = rememberTooltipState()) {
         IconButton(onClick = { actions.files(".") }, enabled = FileReadPolicy.browse(state)) {
-            Icon(Icons.Outlined.Folder, contentDescription = "Browse host files")
+            Icon(Icons.Outlined.AttachFile, contentDescription = "Browse host files")
         }
     }
 }

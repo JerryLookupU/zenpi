@@ -1,5 +1,10 @@
 package zenpi.ui
 
+import androidx.compose.material.icons.automirrored.outlined.ArrowLeft
+import androidx.compose.material.icons.automirrored.outlined.ArrowRight
+import androidx.compose.material.icons.outlined.Sync
+import androidx.compose.material.icons.outlined.ArrowUpward
+import zenpi.ui.theme.asHeading
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -12,8 +17,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.automirrored.outlined.ArrowForward
 import androidx.compose.material.icons.automirrored.outlined.InsertDriveFile
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Folder
@@ -119,21 +122,21 @@ fun CommandPalette(scope: ScreenScope, prompt: Draft, workspaceUi: WorkspaceUiSt
                 val enabled = ResourceReadPolicy.navigation(state)
                 IconButton(onClick = { actions.resources(state.resourcesPrevious.lastOrNull()?.offset ?: (catalog.offset - 32).coerceAtLeast(0)) },
                     enabled = enabled && state.resourcesPrevious.isNotEmpty()) {
-                    Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "Previous resource page")
+                    Icon(Icons.AutoMirrored.Outlined.ArrowLeft, contentDescription = "Previous resource page")
                 }
                 Text("${catalog.offset / 32 + 1}", modifier = Modifier.width(24.dp), textAlign = TextAlign.Center, style = MaterialTheme.typography.labelMedium)
                 IconButton(onClick = { catalog.nextOffset?.let(actions::resources) }, enabled = enabled && catalog.nextOffset != null) {
-                    Icon(Icons.AutoMirrored.Outlined.ArrowForward, contentDescription = "Next resource page")
+                    Icon(Icons.AutoMirrored.Outlined.ArrowRight, contentDescription = "Next resource page")
                 }
                 if (selected?.resourcesReloadControl == true) IconButton(onClick = actions::reloadResources, enabled = enabled) {
-                    Icon(Icons.Outlined.Refresh, contentDescription = "Reload host resources")
+                    Icon(Icons.Outlined.Sync, contentDescription = "Reload host resources")
                 }
             }
         }) {
             val scroll = rememberScrollState()
             LaunchedEffect(state.resources?.snapshotId, state.resources?.generation, state.resources?.offset) { scroll.scrollTo(0) }
             Column(Modifier.fillMaxWidth().weight(1f, fill = false).verticalScroll(scroll).testTag("resource-catalog-list")) {
-                Text("Host resources", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                Text("Host resources", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary, modifier = Modifier.asHeading())
                 if (state.resourcesLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
                 state.resourcesError?.let {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -164,7 +167,8 @@ fun CommandPalette(scope: ScreenScope, prompt: Draft, workspaceUi: WorkspaceUiSt
                 }
                 if (selected?.promptControl == true) {
                     HorizontalDivider(Modifier.padding(vertical = 8.dp))
-                    Text("Desktop commands", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                    Text("Desktop commands", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.asHeading())
                     DesktopCommands.names.forEach { name -> DesktopCommandRow(scope, name, prompt, workspaceUi, actions) }
                 }
             }
@@ -219,11 +223,11 @@ fun FilePalette(state: PairingState, prompt: Draft, actions: BrowserActions) {
                 val enabled = FileReadPolicy.navigation(state)
                 IconButton(onClick = { actions.filePage(state.filesPrevious.lastOrNull()?.page?.offset ?: (page.offset - 64).coerceAtLeast(0)) },
                     enabled = enabled && state.filesPrevious.isNotEmpty()) {
-                    Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "Previous files page")
+                    Icon(Icons.AutoMirrored.Outlined.ArrowLeft, contentDescription = "Previous files page")
                 }
                 Text("${page.offset / 64 + 1}", modifier = Modifier.width(24.dp), textAlign = TextAlign.Center, style = MaterialTheme.typography.labelMedium)
                 IconButton(onClick = { page.nextOffset?.let(actions::filePage) }, enabled = enabled && page.nextOffset != null) {
-                    Icon(Icons.AutoMirrored.Outlined.ArrowForward, contentDescription = "Next files page")
+                    Icon(Icons.AutoMirrored.Outlined.ArrowRight, contentDescription = "Next files page")
                 }
             }
         }) {
@@ -243,7 +247,7 @@ fun FilePalette(state: PairingState, prompt: Draft, actions: BrowserActions) {
                     val enabled = FileReadPolicy.navigation(state)
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         if (files.path != ".") IconButton(onClick = { actions.files(files.path.substringBeforeLast('/', ".")) }, enabled = enabled) {
-                            Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "Parent directory")
+                            Icon(Icons.Outlined.ArrowUpward, contentDescription = "Parent directory")
                         }
                         Text(files.path, style = MaterialTheme.typography.labelMedium)
                     }
@@ -271,7 +275,7 @@ fun FilePalette(state: PairingState, prompt: Draft, actions: BrowserActions) {
 private fun PaletteFrame(title: String, close: String, onClose: () -> Unit, pager: @Composable () -> Unit, body: @Composable ColumnScope.() -> Unit) {
     Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 16.dp).padding(bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+            Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f).asHeading())
             pager()
             IconButton(onClick = onClose) { Icon(Icons.Outlined.Close, contentDescription = close) }
         }

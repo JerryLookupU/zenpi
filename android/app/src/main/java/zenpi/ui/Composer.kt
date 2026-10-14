@@ -1,5 +1,6 @@
 package zenpi.ui
 
+import androidx.compose.material.icons.automirrored.outlined.AltRoute
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.text.KeyboardActions
@@ -103,7 +104,7 @@ fun Composer(state: PairingState, projection: HostProjection, prompt: Draft, act
         IconButton(onClick = submit, enabled = enabled, modifier = Modifier.testTag("composer-action")) {
             when (mode) {
                 ComposerMode.SEND -> Icon(Icons.AutoMirrored.Outlined.Send, contentDescription = "Send message")
-                ComposerMode.STEER -> Icon(Icons.AutoMirrored.Outlined.Send, contentDescription = "Send steering input")
+                ComposerMode.STEER -> Icon(Icons.AutoMirrored.Outlined.AltRoute, contentDescription = "Send steering input")
                 ComposerMode.STOP -> Icon(Icons.Outlined.Stop, contentDescription = "Stop message")
             }
         }

@@ -70,7 +70,7 @@ class ApprovalSheetTest {
         val decisions = mutableListOf<String>()
         compose.setContent { MaterialTheme { AppShell(state.value, recorder(decisions)) } }
         // Only the head is offered: the second approval has no decision control until it reaches the head.
-        compose.onNodeWithContentDescription("Allow approval ${second.requestId}").assertDoesNotExist()
+        compose.onNodeWithTag("Allow approval ${second.requestId}").assertDoesNotExist()
         compose.onNodeWithContentDescription("Review approvals").performClick()
         compose.onNodeWithTag("approval-position").assertTextEquals("1/2")
         compose.onNodeWithTag("approval-patch").assertIsDisplayed()
@@ -101,7 +101,7 @@ class ApprovalSheetTest {
             compose.runOnIdle { state.value = withQueue(Fixtures.queuedState, queue) }
             compose.onNodeWithText("Allow once").assertIsNotEnabled()
             compose.onNodeWithText("Deny").assertIsNotEnabled()
-            compose.onNodeWithContentDescription("Allow approval ${first.requestId}").assertIsNotEnabled()
+            compose.onNodeWithTag("Allow approval ${first.requestId}").assertIsNotEnabled()
         }
         compose.runOnIdle { state.value = Fixtures.queuedState.copy(scanInProgress = true) }
         compose.onNodeWithText("Allow once").assertIsNotEnabled()

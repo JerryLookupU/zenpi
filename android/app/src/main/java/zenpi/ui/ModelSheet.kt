@@ -1,5 +1,10 @@
 package zenpi.ui
 
+import androidx.compose.material.icons.automirrored.outlined.ArrowLeft
+import androidx.compose.material.icons.automirrored.outlined.ArrowRight
+import androidx.compose.material.icons.outlined.ToggleOn
+import androidx.compose.material.icons.outlined.ToggleOff
+import zenpi.ui.theme.asHeading
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -12,9 +17,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.ArrowDropDown
-import androidx.compose.material.icons.outlined.ArrowForward
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Refresh
@@ -61,7 +64,7 @@ fun ModelSheet(state: PairingState, projection: HostProjection, selected: Remote
     ModalBottomSheet(onDismissRequest = actions::closeModel, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 16.dp).padding(bottom = 16.dp).testTag("model-sheet")) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text("Host model", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+            Text("Host model", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f).asHeading())
             IconButton(onClick = actions::model, enabled = ModelReadPolicy.browse(state)) {
                 Icon(Icons.Outlined.Refresh, contentDescription = "Refresh host model")
             }
@@ -120,10 +123,10 @@ fun ModelSheet(state: PairingState, projection: HostProjection, selected: Remote
                     }
                     Row {
                         IconButton(onClick = { actions.modelPage(state.modelPrevious.lastOrNull()?.catalog?.offset ?: (catalog.offset - 16).coerceAtLeast(0)) }, enabled = enabled && state.modelPrevious.isNotEmpty()) {
-                            Icon(Icons.Outlined.ArrowBack, contentDescription = "Previous model page")
+                            Icon(Icons.AutoMirrored.Outlined.ArrowLeft, contentDescription = "Previous model page")
                         }
                         IconButton(onClick = { actions.modelPage(requireNotNull(catalog.nextOffset)) }, enabled = enabled && catalog.nextOffset != null) {
-                            Icon(Icons.Outlined.ArrowForward, contentDescription = "Next model page")
+                            Icon(Icons.AutoMirrored.Outlined.ArrowRight, contentDescription = "Next model page")
                         }
                     }
                 }
@@ -131,7 +134,7 @@ fun ModelSheet(state: PairingState, projection: HostProjection, selected: Remote
                 if (status.capabilities == null) Text("Capabilities unavailable")
                 status.capabilities?.forEach { (name, available) ->
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(if (available) Icons.Outlined.Check else Icons.Outlined.Close, contentDescription = null)
+                        Icon(if (available) Icons.Outlined.ToggleOn else Icons.Outlined.ToggleOff, contentDescription = null)
                         Spacer(Modifier.width(8.dp)); Text(name.replace('_', ' '), modifier = Modifier.weight(1f))
                     }
                 }

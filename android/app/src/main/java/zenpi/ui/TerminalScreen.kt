@@ -1,5 +1,8 @@
 package zenpi.ui
 
+import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.automirrored.outlined.OpenInNew
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -18,14 +21,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.KeyboardReturn
 import androidx.compose.material.icons.automirrored.outlined.KeyboardTab
-import androidx.compose.material.icons.automirrored.outlined.MenuBook
 import androidx.compose.material.icons.automirrored.outlined.Send
-import androidx.compose.material.icons.outlined.ArrowDownward
-import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.Keyboard
-import androidx.compose.material.icons.outlined.KeyboardArrowLeft
-import androidx.compose.material.icons.outlined.KeyboardArrowRight
-import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
@@ -96,13 +93,13 @@ fun TerminalScreen(scope: ScreenScope, actions: TerminalActions, onBack: () -> U
     var fit by remember { mutableStateOf<TerminalSize?>(null) }
     SecondaryPage("Desktop terminal", "Back to conversation", onBack, actions = {
         if (terminal?.terminalId != null) IconButton(onClick = { actions.terminalPage(false) }, enabled = TerminalReadPolicy.browse(state)) {
-            Icon(Icons.AutoMirrored.Outlined.MenuBook, contentDescription = "Read terminal history")
+            Icon(Icons.Outlined.History, contentDescription = "Read terminal history")
         }
         if (state.phase == PairingPhase.CONNECTED && projection != null && (selected?.terminal == null || selected.terminal.running == false)
             && selected?.terminalOpenControl == true) {
             IconButton(onClick = actions::openDesktopTerminal, enabled = enabled
                 && runCatching { zenpi.transport.TerminalCommandCodec.open(projection) }.isSuccess) {
-                Icon(Icons.Outlined.Terminal, contentDescription = "Open desktop terminal")
+                Icon(Icons.AutoMirrored.Outlined.OpenInNew, contentDescription = "Open desktop terminal")
             }
         }
     }, bottomBar = {
@@ -172,11 +169,18 @@ private fun TerminalKeys(scope: ScreenScope, terminal: RemoteTerminal, enabled: 
     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).testTag("terminal-keys"), verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(0.dp)) {
         TextButton(onClick = { actions.terminalInput("\u001b") }, enabled = enabled) { Text("Esc") }
-        listOf(Triple("Tab", "\t", Icons.AutoMirrored.Outlined.KeyboardTab), Triple("Interrupt terminal", "\u0003", Icons.Outlined.Stop),
-            Triple("Up", "\u001b[A", Icons.Outlined.ArrowUpward), Triple("Down", "\u001b[B", Icons.Outlined.ArrowDownward),
-            Triple("Left", "\u001b[D", Icons.Outlined.KeyboardArrowLeft), Triple("Right", "\u001b[C", Icons.Outlined.KeyboardArrowRight),
-            Triple("Enter", "\r", Icons.AutoMirrored.Outlined.KeyboardReturn)).forEach { (name, bytes, icon) ->
-            IconButton(onClick = { actions.terminalInput(bytes) }, enabled = enabled) { Icon(icon, contentDescription = name) }
+        IconButton(onClick = { actions.terminalInput("\t") }, enabled = enabled) {
+            Icon(Icons.AutoMirrored.Outlined.KeyboardTab, contentDescription = "Tab")
+        }
+        // Keys drawn as keycap text, so their glyphs never double as the app's stop, expand or paging icons.
+        listOf(Triple("Interrupt terminal", "\u0003", "^C"), Triple("Up", "\u001b[A", "\u2191"), Triple("Down", "\u001b[B", "\u2193"),
+            Triple("Left", "\u001b[D", "\u2190"), Triple("Right", "\u001b[C", "\u2192")).forEach { (name, bytes, cap) ->
+            IconButton(onClick = { actions.terminalInput(bytes) }, enabled = enabled, modifier = Modifier.semantics { contentDescription = name }) {
+                Text(cap, style = MaterialTheme.typography.titleLarge, modifier = Modifier.clearAndSetSemantics {})
+            }
+        }
+        IconButton(onClick = { actions.terminalInput("\r") }, enabled = enabled) {
+            Icon(Icons.AutoMirrored.Outlined.KeyboardReturn, contentDescription = "Enter")
         }
         Box {
             IconButton(onClick = { keysOpen = true }, enabled = enabled) { Icon(Icons.Outlined.Keyboard, contentDescription = "Terminal keys") }

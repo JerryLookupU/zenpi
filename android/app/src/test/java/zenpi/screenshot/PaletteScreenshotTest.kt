@@ -29,6 +29,7 @@ class PaletteScreenshotTest(private val portrait: Portrait) {
         compose.setContent { ScreenshotTheme { AppShell(state, object : PairingActions {}) } }
         compose.waitForIdle()
         compose.assertNoHorizontalClipping()
+        compose.assertAccessibleText()
         captureScreenGolden(name, portrait)
     }
 

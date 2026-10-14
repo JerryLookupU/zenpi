@@ -1,5 +1,7 @@
 package zenpi.ui
 
+import androidx.compose.material.icons.automirrored.outlined.ArrowLeft
+import androidx.compose.material.icons.automirrored.outlined.ArrowRight
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -15,8 +17,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.automirrored.outlined.ArrowForward
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -67,10 +67,10 @@ fun DiffScreen(scope: ScreenScope, actions: BrowserActions, onBack: () -> Unit) 
         val navigation = DiffReadPolicy.navigation(state)
         val previous = state.diff?.let { runCatching { DiffProjectionCodec.previous(state.diffPrevious, it) }.getOrNull() }
         IconButton(onClick = actions::previousDiff, enabled = navigation && previous != null) {
-            Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "Previous diff page")
+            Icon(Icons.AutoMirrored.Outlined.ArrowLeft, contentDescription = "Previous diff page")
         }
         IconButton(onClick = actions::nextDiff, enabled = navigation && state.diff?.page?.hasMore == true) {
-            Icon(Icons.AutoMirrored.Outlined.ArrowForward, contentDescription = "Next diff page")
+            Icon(Icons.AutoMirrored.Outlined.ArrowRight, contentDescription = "Next diff page")
         }
         IconButton(onClick = { load(path) }, enabled = diffEnabled && path.isNotBlank()) {
             Icon(Icons.Outlined.Refresh, contentDescription = "Refresh diff")

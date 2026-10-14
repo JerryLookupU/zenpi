@@ -1,5 +1,9 @@
 package zenpi.ui.dialogs
 
+import androidx.compose.material.icons.automirrored.outlined.ArrowLeft
+import androidx.compose.material.icons.automirrored.outlined.ArrowRight
+import zenpi.ui.theme.asHeading
+import androidx.compose.ui.platform.testTag
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -8,8 +12,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.ArrowForward
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.OpenInFull
@@ -37,7 +39,7 @@ import zenpi.ui.WorkspaceUiState
 @Composable
 fun SessionHistoryDialog(state: PairingState, actions: SessionActions) {
     AlertDialog(onDismissRequest = actions::closeSessionHistory,
-        title = { Text("Conversation") }, text = {
+        title = { Text("Conversation", Modifier.asHeading()) }, text = {
             val scroll = rememberScrollState()
             LaunchedEffect(state.sessionHistory?.offset) { scroll.scrollTo(0) }
             Column(Modifier.fillMaxWidth().heightIn(max = 420.dp).verticalScroll(scroll), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -49,14 +51,14 @@ fun SessionHistoryDialog(state: PairingState, actions: SessionActions) {
                     page.turns.forEach { turn ->
                         Text(turn.role, style = MaterialTheme.typography.labelSmall)
                         Text(turn.content, style = MaterialTheme.typography.bodySmall)
-                        IconButton(onClick = { actions.sessionHistoryTurn(turn.id) }, enabled = enabled) {
-                            Icon(Icons.Outlined.OpenInFull, contentDescription = "Read conversation message ${turn.id}")
+                        IconButton(modifier = Modifier.testTag("Read conversation message ${turn.id}"), onClick = { actions.sessionHistoryTurn(turn.id) }, enabled = enabled) {
+                            Icon(Icons.Outlined.OpenInFull, contentDescription = "Read conversation message")
                         }
                         turn.toolCalls.forEach { call ->
                             Text(call.name, style = MaterialTheme.typography.labelSmall)
                             Text(call.argumentsPreview, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
-                            IconButton(onClick = { actions.sessionHistoryTool(turn.id, call.id) }, enabled = enabled) {
-                                Icon(Icons.Outlined.OpenInFull, contentDescription = "Read conversation tool arguments ${call.id}")
+                            IconButton(modifier = Modifier.testTag("Read conversation tool arguments ${call.id}"), onClick = { actions.sessionHistoryTool(turn.id, call.id) }, enabled = enabled) {
+                                Icon(Icons.Outlined.OpenInFull, contentDescription = "Read conversation tool arguments")
                             }
                         }
                         HorizontalDivider()
@@ -70,10 +72,10 @@ fun SessionHistoryDialog(state: PairingState, actions: SessionActions) {
                     Icon(Icons.Outlined.Refresh, contentDescription = "Refresh conversation")
                 }
                 IconButton(onClick = actions::previousSessionHistory, enabled = enabled && state.sessionHistoryPrevious.isNotEmpty()) {
-                    Icon(Icons.Outlined.ArrowBack, contentDescription = "Previous conversation page")
+                    Icon(Icons.AutoMirrored.Outlined.ArrowLeft, contentDescription = "Previous conversation page")
                 }
                 IconButton(onClick = { actions.sessionHistory(true) }, enabled = enabled && state.sessionHistory?.hasMore == true) {
-                    Icon(Icons.Outlined.ArrowForward, contentDescription = "Next conversation page")
+                    Icon(Icons.AutoMirrored.Outlined.ArrowRight, contentDescription = "Next conversation page")
                 }
             }
         }, dismissButton = { IconButton(onClick = actions::closeSessionHistory) { Icon(Icons.Outlined.Close, contentDescription = "Close conversation") } })
@@ -87,7 +89,7 @@ fun NewSessionDialog(state: PairingState, target: Pair<String, String>, workspac
         && !state.scanInProgress && !state.resetting && !state.resetRequired && zenpi.transport.SessionCatalogCodec.readable(state.projection)
         && state.phase == PairingPhase.CONNECTED && state.pendingWorkspace == null && state.pendingRevoke == null
         && state.projection?.phase == "idle" && zenpi.transport.SessionCommandCodec.mainSelected(state.projection)
-    AlertDialog(onDismissRequest = { workspaceUi.newSessionTarget = null }, title = { Text("Start a new session?") },
+    AlertDialog(onDismissRequest = { workspaceUi.newSessionTarget = null }, title = { Text("Start a new session?", Modifier.asHeading()) },
         text = { Text("The current conversation remains on the desktop. A new empty conversation will become active.") },
         confirmButton = { IconButton(onClick = { workspaceUi.newSessionTarget = null; actions.newSession() }, enabled = enabled) { Icon(Icons.Outlined.Check, contentDescription = "Confirm new session") } },
         dismissButton = { IconButton(onClick = { workspaceUi.newSessionTarget = null }) { Icon(Icons.Outlined.Close, contentDescription = "Cancel new session") } })
@@ -103,7 +105,7 @@ fun RenameSessionDialog(state: PairingState, target: Pair<String, String>, works
         && zenpi.transport.SessionCommandCodec.mainSelected(state.projection)
     val draft = workspaceUi.sessionNameDraft
     val valid = runCatching { zenpi.transport.SessionCommandCodec.validateName(draft) }.isSuccess
-    AlertDialog(onDismissRequest = { workspaceUi.renameSessionTarget = null }, title = { Text("Rename session") }, text = {
+    AlertDialog(onDismissRequest = { workspaceUi.renameSessionTarget = null }, title = { Text("Rename session", Modifier.asHeading()) }, text = {
         OutlinedTextField(value = draft, onValueChange = { workspaceUi.sessionNameDraft = it }, label = { Text("Session name") },
             singleLine = true, isError = draft.isNotEmpty() && !valid, modifier = Modifier.fillMaxWidth())
     }, confirmButton = { IconButton(onClick = { workspaceUi.renameSessionTarget = null; actions.renameSession(workspaceUi.sessionNameDraft) }, enabled = enabled && valid) {

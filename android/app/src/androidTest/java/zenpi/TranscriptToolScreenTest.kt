@@ -32,7 +32,7 @@ class TranscriptToolScreenTest {
             PairingScreen(state.value, {}, {}, {}, onToolArguments = { id, tool -> opened += id to tool },
                 onTranscript = { id, forward -> next += id to forward })
         } } }
-        compose.onNodeWithContentDescription("Read tool arguments call").performScrollTo().performClick()
+        compose.onNodeWithTag("Read tool arguments call").performScrollTo().performClick()
         compose.runOnIdle {
             assertEquals(listOf("turn" to "call"), opened)
             state.value = state.value.copy(transcriptTurn = "turn", transcriptToolCall = call, transcriptPage = page)
@@ -50,12 +50,12 @@ class TranscriptToolScreenTest {
         compose.runOnIdle { state.value = valid.copy(phase = PairingPhase.OFFLINE) }
         compose.onNodeWithContentDescription("Next message page").assertIsNotEnabled()
         compose.runOnIdle { state.value = state.value.copy(transcriptTurn = null, transcriptToolCall = null, transcriptPage = null) }
-        compose.onNodeWithContentDescription("Read tool arguments call").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithTag("Read tool arguments call").performScrollTo().assertIsNotEnabled()
         for (bad in listOf(turn.copy(toolCallsTruncated = true),
             turn.copy(toolCalls = listOf(call.copy(argumentsPreview = "x".repeat(513)))))) {
             compose.runOnIdle { state.value = PairingState(phase = PairingPhase.CONNECTED,
                 projection = projection.copy(turns = listOf(bad))) }
-            compose.onNodeWithContentDescription("Read tool arguments call").performScrollTo().assertIsNotEnabled()
+            compose.onNodeWithTag("Read tool arguments call").performScrollTo().assertIsNotEnabled()
         }
     }
 

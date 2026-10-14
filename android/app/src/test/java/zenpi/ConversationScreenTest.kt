@@ -30,6 +30,8 @@ import zenpi.ui.PairingActions
 class ConversationScreenTest {
     @get:Rule val compose = createComposeRule()
     private val running = Fixtures.connected
+    private val request = running.projection!!.projects.first().promptStatuses.first().requestId
+    private val call = running.projection!!.turns.flatMap { it.toolCalls }.single().id
     private val idle = running.copy(projection = running.projection!!.copy(projects = running.projection!!.projects.map {
         it.copy(promptStatuses = it.promptStatuses.map { status -> status.copy(state = "succeeded", streamText = null) })
     }, phase = "idle"))
@@ -57,15 +59,15 @@ class ConversationScreenTest {
         compose.onNodeWithContentDescription("Stop message").performClick()
         compose.onNodeWithTag("prompt-composer").performTextInput("go left")
         compose.onNodeWithContentDescription("Send steering input").performClick()
-        compose.runOnIdle { assertEquals(listOf("prompt:fix it", "stop:request-1", "steer:request-1:go left"), sent) }
+        compose.runOnIdle { assertEquals(listOf("prompt:fix it", "stop:$request", "steer:$request:go left"), sent) }
     }
 
     @Test fun toolRowsStartCollapsedAndExpandOnDemand() {
         compose.setContent { MaterialTheme { AppShell(running, object : PairingActions {}) } }
-        compose.onNodeWithTag("transcript-tool-call-1").assertIsDisplayed()
+        compose.onNodeWithTag("transcript-tool-$call").assertIsDisplayed()
         compose.onNodeWithText("{\"command\":\"cargo test reconnect\"}").assertIsDisplayed()
-        compose.onNodeWithContentDescription("Show arguments call-1").performClick()
-        compose.onNodeWithContentDescription("Hide arguments call-1").assertIsDisplayed()
+        compose.onNodeWithTag("Show arguments $call").performClick()
+        compose.onNodeWithTag("Hide arguments $call").assertIsDisplayed()
     }
 
     @Test fun newestTurnAndStreamingRowStayInViewWhileFollowing() {

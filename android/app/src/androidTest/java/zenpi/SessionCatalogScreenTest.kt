@@ -31,7 +31,7 @@ class SessionCatalogScreenTest {
         } } }
         compose.onNodeWithText("Historical conversation preview").assertExists()
         compose.onNodeWithContentDescription("Previous conversation page").assertIsNotEnabled()
-        compose.onNodeWithContentDescription("Read conversation message old").performClick()
+        compose.onNodeWithTag("Read conversation message old").performClick()
         compose.onNodeWithContentDescription("Next conversation page").performClick()
         compose.runOnIdle { assertEquals(listOf("old"), turns); assertEquals(listOf(true), pages) }
         val message = TranscriptPage(project.id, "session", "old", "assistant", "a".repeat(64), 0, 13, 13, false, "Full old text", journalRevision = "80")
@@ -56,7 +56,7 @@ class SessionCatalogScreenTest {
         compose.runOnIdle { state.value = state.value.copy(phase = PairingPhase.OFFLINE) }
         compose.onNodeWithContentDescription("Next conversation page").assertIsNotEnabled()
         compose.onNodeWithContentDescription("Refresh conversation").assertIsNotEnabled()
-        compose.onNodeWithContentDescription("Read conversation message old").assertIsNotEnabled()
+        compose.onNodeWithTag("Read conversation message old").assertIsNotEnabled()
         androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().sendStatus(0, android.os.Bundle().apply {
             putString("zenpi_session_history_ui", "paging_message_return_offline_verified")
         })
@@ -76,35 +76,35 @@ class SessionCatalogScreenTest {
         compose.setContent { MaterialTheme { Box(Modifier.width(320.dp)) {
             PairingScreen(state.value, {}, {}, {}, onResumeSession = { resumed += it }, onSessions = { pages += it }, onSearchSessions = { searches += it })
         } } }
-        compose.onNodeWithContentDescription("Resume session current").assertIsNotEnabled()
+        compose.onNodeWithTag("Resume session current").assertIsNotEnabled()
         compose.onNodeWithText("1 matches").assertExists()
         compose.onNodeWithText("Mailbox api_key=<redacted>").assertExists()
         compose.onNodeWithTag("session-search").performTextReplacement("history")
         compose.onNodeWithContentDescription("Search sessions").performClick()
         compose.runOnIdle { assertEquals(listOf("history"), searches) }
-        compose.onNodeWithContentDescription("Resume session history").performClick()
+        compose.onNodeWithTag("Resume session history").performClick()
         compose.runOnIdle { assertEquals(emptyList<String>(), resumed) }
         compose.onNodeWithContentDescription("Confirm resume session").performClick()
         compose.onNodeWithContentDescription("Next sessions page").performClick()
         compose.runOnIdle { assertEquals(listOf("history"), resumed); assertEquals(listOf(16), pages) }
-        compose.onNodeWithContentDescription("Resume session history").performClick()
+        compose.onNodeWithTag("Resume session history").performClick()
         compose.onNodeWithContentDescription("Confirm resume session").assertExists()
         compose.runOnIdle { state.value = state.value.copy(sessions = catalog.copy(offset = 16, nextOffset = null,
             entries = listOf(RemoteSession("another", "1", 4, false))), sessionsPrevious = listOf(catalog)) }
         compose.onNodeWithContentDescription("Confirm resume session").assertDoesNotExist()
-        compose.onNodeWithContentDescription("Resume session another").performClick()
+        compose.onNodeWithTag("Resume session another").performClick()
         compose.onNodeWithContentDescription("Confirm resume session").assertExists()
         compose.runOnIdle { state.value = state.value.copy(sessions = catalog, sessionsPrevious = emptyList()) }
         compose.onNodeWithContentDescription("Confirm resume session").assertDoesNotExist()
         val healthy = state.value
         val tabs = requireNotNull(projection.subtabs)
         compose.runOnIdle { state.value = healthy.copy(sessions = catalog.copy(snapshotId = "invalid")) }
-        compose.onNodeWithContentDescription("Resume session history").assertIsNotEnabled()
+        compose.onNodeWithTag("Resume session history").assertIsNotEnabled()
         compose.onNodeWithContentDescription("Next sessions page").assertIsNotEnabled()
         compose.onNodeWithContentDescription("Search sessions").assertIsEnabled()
         for (invalid in listOf(tabs.copy(tabs = tabs.tabs + tabs.tabs), tabs.copy(projectId = "foreign"))) {
             compose.runOnIdle { state.value = healthy.copy(projection = projection.copy(subtabs = invalid)) }
-            compose.onNodeWithContentDescription("Resume session history").assertIsNotEnabled()
+            compose.onNodeWithTag("Resume session history").assertIsNotEnabled()
             compose.onNodeWithContentDescription("Search sessions").assertIsEnabled()
         }
         for (blocked in listOf(healthy.copy(scanInProgress = true), healthy.copy(resetting = true), healthy.copy(resetRequired = true),
@@ -125,20 +125,20 @@ class SessionCatalogScreenTest {
         compose.runOnIdle { state.value = healthy.copy(projection = projection.copy(projects = listOf(project.copy(sessionControl = false)))) }
         compose.onNodeWithContentDescription("Next sessions page").assertIsEnabled()
         compose.onNodeWithContentDescription("Search sessions").assertIsEnabled()
-        compose.onNodeWithContentDescription("Resume session history").assertIsNotEnabled()
+        compose.onNodeWithTag("Resume session history").assertIsNotEnabled()
         compose.runOnIdle { state.value = healthy }
         for (blocked in listOf(state.value.copy(sessions = catalog.copy(projectId = "foreign")),
             state.value.copy(sessions = catalog.copy(sessionId = "other")),
             state.value.copy(projection = projection.copy(projects = listOf(project.copy(sessionId = "other")))),
             state.value.copy(resetRequired = true), state.value.copy(resetting = true), state.value.copy(scanInProgress = true))) {
             compose.runOnIdle { state.value = blocked }
-            compose.onNodeWithContentDescription("Resume session history").assertIsNotEnabled()
+            compose.onNodeWithTag("Resume session history").assertIsNotEnabled()
             compose.onNodeWithContentDescription("Next sessions page").assertIsNotEnabled()
         }
         compose.runOnIdle { state.value = state.value.copy(projection = projection, sessions = catalog,
             resetRequired = false, resetting = false, scanInProgress = false) }
         compose.runOnIdle { state.value = state.value.copy(phase = PairingPhase.OFFLINE) }
-        compose.onNodeWithContentDescription("Resume session history").assertIsNotEnabled()
+        compose.onNodeWithTag("Resume session history").assertIsNotEnabled()
         compose.onNodeWithContentDescription("Next sessions page").assertIsNotEnabled()
         compose.onNodeWithContentDescription("Search sessions").assertIsNotEnabled()
         compose.onNodeWithTag("session-search").assertIsNotEnabled()

@@ -45,9 +45,9 @@ class DiffScreenTest {
             compose.onNodeWithContentDescription("Next message page").assertIsNotEnabled()
         }
         compose.runOnIdle { state = valid.copy(transcriptTurn = null, transcriptPage = null, scanInProgress = true) }
-        compose.onNodeWithContentDescription("Read full message turn").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithTag("Read full message turn").performScrollTo().assertIsNotEnabled()
         compose.runOnIdle { state = state.copy(scanInProgress = false) }
-        compose.onNodeWithContentDescription("Read full message turn").assertIsEnabled()
+        compose.onNodeWithTag("Read full message turn").assertIsEnabled()
     }
     @Test fun readOnlyDiffControlIsFencedOfflineAndDuringPendingWrites() {
         var state by mutableStateOf(PairingState(phase = PairingPhase.CONNECTED, projection = projection))

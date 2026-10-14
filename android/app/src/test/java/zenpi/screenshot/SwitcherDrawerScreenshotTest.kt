@@ -32,6 +32,7 @@ class SwitcherDrawerScreenshotTest(private val portrait: Portrait) {
         compose.waitForIdle()
         compose.onNodeWithTag("inbox-zenpi").assertIsSelected()
         compose.assertNoHorizontalClipping()
+        compose.assertAccessibleText()
         compose.captureGolden("drawer", portrait)
         compose.onNodeWithContentDescription("infra, idle").performClick()
         compose.waitForIdle()

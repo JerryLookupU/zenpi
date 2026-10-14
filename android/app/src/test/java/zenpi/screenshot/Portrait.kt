@@ -1,13 +1,8 @@
 package zenpi.screenshot
 
-import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.SemanticsNode
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
@@ -22,6 +17,8 @@ import org.junit.Assert.assertTrue
 import org.junit.rules.TestWatcher
 import org.junit.runner.Description
 import org.robolectric.RuntimeEnvironment
+import zenpi.ui.theme.ZenpiTheme
+import androidx.compose.ui.semantics.SemanticsConfiguration
 
 /**
  * One cell of the portrait golden matrix: two phone sizes, font scale 1.0 / 1.3, light / dark.
@@ -46,13 +43,9 @@ class PortraitRule(private val portrait: Portrait) : TestWatcher() {
     }
 }
 
-/** The production light scheme from MainActivity; dark uses Material defaults until ZE-535 ships a dark palette. */
+/** The production theme with Zenpi's own palette: dynamic (wallpaper) colour is off so goldens do not depend on the host. */
 @Composable
-fun ScreenshotTheme(content: @Composable () -> Unit) {
-    MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme(
-        primary = Color(0xFF166A4C), secondary = Color(0xFF934A25),
-        background = Color(0xFFF5F7F8), surface = Color.White), content = content)
-}
+fun ScreenshotTheme(content: @Composable () -> Unit) = ZenpiTheme(dynamic = false, content = content)
 
 /** Goldens are recorded on one OS and verified on another; tolerate anti-aliasing noise only. */
 private val options = RoborazziOptions(compareOptions = RoborazziOptions.CompareOptions(changeThreshold = 0.01f))
@@ -88,4 +81,25 @@ fun ComposeContentTestRule.assertNoHorizontalClipping() {
     }
     roots.forEach(::visit)
     assertTrue("horizontally clipped in a ${width}px window: $clipped", clipped.isEmpty())
+}
+
+/** A UUID or any prefix of one ("4e9b7d0c", "4e9b7d0c-1f3"): how request, session and worker ids are shown. */
+private val identifier = Regex("""\b[0-9a-fA-F]{8}(\b|-[0-9a-fA-F])""")
+
+/** Everything TalkBack can read from one node: text, edit text, content and state descriptions. */
+private fun SemanticsConfiguration.spoken(): List<String> =
+    getOrNull(SemanticsProperties.Text).orEmpty().map { it.text } + getOrNull(SemanticsProperties.ContentDescription).orEmpty() +
+        listOfNotNull(getOrNull(SemanticsProperties.EditableText)?.text, getOrNull(SemanticsProperties.StateDescription))
+
+/**
+ * Screen-reader contract (ZE-535) over every window: nothing spoken contains a UUID or a UUID prefix
+ * (request, session and worker ids are shown at most, never read), and at least one node is a heading.
+ */
+fun ComposeContentTestRule.assertAccessibleText() {
+    val nodes = onAllNodes(isRoot(), useUnmergedTree = true).fetchSemanticsNodes().flatMap { root ->
+        generateSequence(listOf(root)) { level -> level.flatMap { it.children }.ifEmpty { null } }.flatten().toList()
+    }
+    val spoken = nodes.flatMap { it.config.spoken() }.filter { identifier.containsMatchIn(it) }
+    assertTrue("TalkBack would read identifiers: $spoken", spoken.isEmpty())
+    assertTrue("no heading on screen", nodes.any { it.config.contains(SemanticsProperties.Heading) })
 }
