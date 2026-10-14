@@ -31,21 +31,21 @@ class ApprovalScreenTest {
             PairingScreen(state.value, {}, {}, {}, onApprove = { target, choice -> decisions.add(target to choice) })
         } } }
         // The bar offers one-tap decisions for the head only.
-        compose.onNodeWithContentDescription("Deny approval same for worker worker-two").assertDoesNotExist()
+        compose.onNodeWithTag("Deny approval same for worker worker-two").assertDoesNotExist()
         compose.onNodeWithContentDescription("Review approvals").performClick()
-        sheet(hasText("Worker worker-one")).assertIsDisplayed()
+        sheet(hasTestTag("approval-worker-worker-one")).assertIsDisplayed()
         compose.onNodeWithTag("approval-position").assertTextEquals("1/2")
         compose.onNodeWithText("Deny").performClick()
         org.junit.Assert.assertEquals(listOf(first to "deny"), decisions)
         compose.runOnUiThread { state.value = state.value.copy(projection = projection.copy(projects = projection.projects.map {
             it.copy(pendingApprovals = listOf(second)) })) }
         compose.onNodeWithTag("approval-position").assertTextEquals("2/2")
-        sheet(hasText("Worker worker-two")).assertIsDisplayed()
+        sheet(hasTestTag("approval-worker-worker-two")).assertIsDisplayed()
         // A replaced worker session is a different approval: the sheet shows (and decides) the replacement only.
         val replacement = second.copy(workerSessionId = "replacement")
         compose.runOnUiThread { state.value = state.value.copy(projection = projection.copy(projects = projection.projects.map {
             it.copy(pendingApprovals = listOf(replacement)) })) }
-        sheet(hasText("Worker replacement")).assertIsDisplayed()
+        sheet(hasTestTag("approval-worker-replacement")).assertIsDisplayed()
         compose.onNodeWithText("Allow once").performClick()
         org.junit.Assert.assertEquals(listOf(first to "deny", replacement to "allow"), decisions)
     }
@@ -59,15 +59,15 @@ class ApprovalScreenTest {
         val state = mutableStateOf(PairingState(phase = PairingPhase.ERROR, projection = projection))
         var decisions = 0
         compose.setContent { MaterialTheme { PairingScreen(state.value, {}, {}, {}, onApprove = { _, _ -> decisions++ }) } }
-        compose.onNodeWithContentDescription("Cancel message running").performScrollTo().assertIsEnabled()
-        compose.onNodeWithContentDescription("Allow approval approval").assertIsEnabled()
+        compose.onNodeWithTag("Cancel message running").performScrollTo().assertIsEnabled()
+        compose.onNodeWithTag("Allow approval approval").assertIsEnabled()
         compose.onNodeWithContentDescription("Review approvals").performClick()
         compose.onNodeWithText("Allow once").assertIsEnabled()
         compose.runOnUiThread { state.value = AuthorityLossPolicy.displayOnly(state.value) }
         compose.onNodeWithText("Allow once").assertDoesNotExist()
         compose.onNodeWithTag("approval-bar").assertDoesNotExist()
-        compose.onNodeWithContentDescription("Cancel message running").assertDoesNotExist()
-        compose.onNodeWithContentDescription("Allow approval approval").assertDoesNotExist()
+        compose.onNodeWithTag("Cancel message running").assertDoesNotExist()
+        compose.onNodeWithTag("Allow approval approval").assertDoesNotExist()
         compose.onNodeWithText("TRANSIENT").assertDoesNotExist()
         compose.onNodeWithText("durable display").performScrollTo().assertIsDisplayed()
         org.junit.Assert.assertEquals(0, decisions)
@@ -82,12 +82,12 @@ class ApprovalScreenTest {
             PairingScreen(state.value, {}, {}, {})
         } } }
         compose.onNodeWithTag("approval-bar").assertIsDisplayed()
-        compose.onNodeWithContentDescription("Allow approval ${approval.requestId}").assertDoesNotExist()
+        compose.onNodeWithTag("Allow approval ${approval.requestId}").assertDoesNotExist()
         compose.onNodeWithContentDescription("Review approvals").performClick()
         compose.onNodeWithText("Awaiting approval").assertIsDisplayed()
         sheet(hasText("write_file")).assertIsDisplayed()
         sheet(hasText("Workspace write")).assertIsDisplayed()
-        compose.onNodeWithText(approval.requestId).performScrollTo().assertIsDisplayed()
+        compose.onNodeWithTag("approval-request").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("Allow once").assertDoesNotExist()
         compose.onNodeWithText("Deny").assertDoesNotExist()
         val instrumentation = InstrumentationRegistry.getInstrumentation()

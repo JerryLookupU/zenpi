@@ -84,7 +84,7 @@ class SessionHostTest {
             assertEquals(2, catalog.entries.size)
             assertEquals("Android development", catalog.entries.single { it.id == original }.name)
             assertTrue(catalog.entries.single { it.id == replacement.sessionId }.current)
-            compose.onNodeWithContentDescription("Resume session ${replacement.sessionId}").assertIsNotEnabled()
+            compose.onNodeWithTag("Resume session ${replacement.sessionId}").assertIsNotEnabled()
             compose.onNodeWithTag("session-search").performTextReplacement("STAGE2_ANDROID_REAL_PROVIDER_TRANSCRIPT")
             compose.onNodeWithContentDescription("Search sessions").performClick()
             repeat(100) { if (model.state.value.sessionsLoading) delay(100) }
@@ -99,7 +99,7 @@ class SessionHostTest {
             assertNull(model.state.value.pendingWorkspace); assertNull(store.loadState()?.pendingWorkspace)
             compose.onNodeWithText("1 matches").assertExists()
             compose.onNodeWithText("STAGE2_ANDROID_REAL_PROVIDER_TRANSCRIPT").assertExists()
-            compose.onNodeWithContentDescription("Resume session $original").performClick()
+            compose.onNodeWithTag("Resume session $original").performClick()
             assertEquals(replacement.sessionId, model.state.value.projection?.sessionId)
             compose.onNodeWithContentDescription("Confirm resume session").performClick()
             val resumed = awaitProjection { it.sessionId == original && it.turns == initial.turns }
@@ -120,7 +120,7 @@ class SessionHostTest {
             assertNull(model.state.value.pendingWorkspace); assertNull(store.loadState()?.pendingWorkspace)
             compose.onNodeWithContentDescription("Next conversation page").assertIsNotEnabled()
             val historicalTurn = conversation.turns.single { it.content == "STAGE2_ANDROID_REAL_PROVIDER_TRANSCRIPT" }
-            compose.onNodeWithContentDescription("Read conversation message ${historicalTurn.id}").performScrollTo().performClick()
+            compose.onNodeWithTag("Read conversation message ${historicalTurn.id}").performScrollTo().performClick()
             repeat(100) { if (model.state.value.transcriptLoading) delay(100) }
             assertNull(model.state.value.transcriptError)
             assertEquals(conversation.journalRevision, model.state.value.transcriptPage?.journalRevision)

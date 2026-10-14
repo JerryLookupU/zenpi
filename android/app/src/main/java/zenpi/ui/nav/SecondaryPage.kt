@@ -1,5 +1,7 @@
 package zenpi.ui.nav
 
+import zenpi.ui.theme.asHeading
+import androidx.compose.ui.Modifier
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.WindowInsets
@@ -33,7 +35,7 @@ fun SecondaryPage(title: String, back: String, onBack: () -> Unit, actions: @Com
     bottomBar: @Composable () -> Unit = {}, content: @Composable (PaddingValues) -> Unit) {
     Scaffold(contentWindowInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal),
         topBar = {
-            TopAppBar(title = { Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+            TopAppBar(title = { Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.asHeading()) },
                 navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = back) } },
                 actions = actions, windowInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))
         }, bottomBar = { Column { LocalPageBanner.current(); bottomBar() } }, content = content)

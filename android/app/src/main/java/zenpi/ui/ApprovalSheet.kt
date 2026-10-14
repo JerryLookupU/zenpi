@@ -16,8 +16,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Check
-import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.TaskAlt
+import androidx.compose.material.icons.outlined.Block
 import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -60,6 +60,8 @@ import androidx.compose.ui.unit.dp
 import zenpi.pairing.ApprovalDecisionPolicy
 import zenpi.pairing.PairingState
 import zenpi.transport.RemoteApproval
+import zenpi.ui.theme.asHeading
+import zenpi.ui.theme.spokenAs
 
 private fun sideEffectLabel(approval: RemoteApproval): String = when (approval.sideEffect) {
     "workspace_write" -> "Workspace write"; "command_execution" -> "Command execution"; else -> "Read only"
@@ -67,7 +69,12 @@ private fun sideEffectLabel(approval: RemoteApproval): String = when (approval.s
 
 private fun key(approval: RemoteApproval): String = "${approval.workerSessionId}/${approval.requestId}"
 
-private fun suffix(approval: RemoteApproval): String = approval.workerSessionId?.let { " for worker $it" } ?: ""
+/** Test tag of the bar's decision buttons; it carries the ids, which TalkBack never reads. */
+private fun tag(decision: String, approval: RemoteApproval): String =
+    "$decision approval ${approval.requestId}" + (approval.workerSessionId?.let { " for worker $it" } ?: "")
+
+private fun spoken(decision: String, approval: RemoteApproval): String =
+    "$decision approval" + (if (approval.workerSessionId != null) " for worktree task" else "")
 
 /**
  * The approval bar, pinned above the composer so it stays visible wherever the conversation is
@@ -128,11 +135,11 @@ private fun ApprovalBar(state: PairingState, head: RemoteApproval, pending: Int,
             }
             if (control) {
                 val enabled = ApprovalDecisionPolicy.decides(state, head)
-                IconButton(onClick = { decide(head, "deny") }, enabled = enabled) {
-                    Icon(Icons.Outlined.Close, contentDescription = "Deny approval ${head.requestId}${suffix(head)}")
+                IconButton(onClick = { decide(head, "deny") }, enabled = enabled, modifier = Modifier.testTag(tag("Deny", head))) {
+                    Icon(Icons.Outlined.Block, contentDescription = spoken("Deny", head))
                 }
-                IconButton(onClick = { decide(head, "allow") }, enabled = enabled) {
-                    Icon(Icons.Outlined.Check, contentDescription = "Allow approval ${head.requestId}${suffix(head)}")
+                IconButton(onClick = { decide(head, "allow") }, enabled = enabled, modifier = Modifier.testTag(tag("Allow", head))) {
+                    Icon(Icons.Outlined.TaskAlt, contentDescription = spoken("Allow", head))
                 }
             }
         }
@@ -145,14 +152,15 @@ private fun ApprovalSheetContent(state: PairingState, head: RemoteApproval, inde
     Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 16.dp).padding(bottom = 16.dp).testTag("approval-sheet"),
         verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text("Awaiting approval", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+            Text("Awaiting approval", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f).asHeading())
             Text("$index/$total", style = MaterialTheme.typography.labelLarge, modifier = Modifier.testTag("approval-position"))
         }
         Column(Modifier.fillMaxWidth().heightIn(max = 360.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(head.tool, style = MaterialTheme.typography.bodyLarge)
             Text(sideEffectLabel(head), style = MaterialTheme.typography.labelMedium)
-            Text(head.requestId, style = MaterialTheme.typography.labelSmall)
-            head.workerSessionId?.let { Text("Worker $it", style = MaterialTheme.typography.labelSmall) }
+            Text(head.requestId, style = MaterialTheme.typography.labelSmall, modifier = Modifier.testTag("approval-request").spokenAs(null))
+            head.workerSessionId?.let { Text("Worker $it", style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier.testTag("approval-worker-$it").spokenAs("Worktree task")) }
             head.preview?.let { preview ->
                 Text(preview.path, style = MaterialTheme.typography.labelLarge)
                 if (preview.withheld) Text("Preview withheld", color = MaterialTheme.colorScheme.error)
@@ -161,7 +169,8 @@ private fun ApprovalSheetContent(state: PairingState, head: RemoteApproval, inde
                 if (preview.redacted && !preview.withheld) Text("Sensitive values redacted", style = MaterialTheme.typography.labelSmall)
                 if (preview.truncated) Text("Preview truncated", color = MaterialTheme.colorScheme.error)
             }
-            Text(head.digest.chunked(16).joinToString("\n"), style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace)
+            Text(head.digest.chunked(16).joinToString("\n"), style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace,
+                modifier = Modifier.spokenAs(null))
         }
         if (control) {
             if (confirmation.available) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {

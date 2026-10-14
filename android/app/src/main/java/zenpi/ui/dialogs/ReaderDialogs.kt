@@ -1,5 +1,10 @@
 package zenpi.ui.dialogs
 
+import androidx.compose.material.icons.automirrored.outlined.ArrowLeft
+import androidx.compose.material.icons.automirrored.outlined.ArrowRight
+import androidx.compose.material.icons.outlined.History
+import zenpi.ui.theme.asHeading
+import zenpi.ui.theme.spokenAs
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -10,9 +15,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.MenuBook
-import androidx.compose.material.icons.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.ArrowForward
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.OpenInFull
 import androidx.compose.material.icons.outlined.Refresh
@@ -45,7 +47,7 @@ import zenpi.ui.TerminalActions
 /** Paged list of every worktree task of the selected project. */
 @Composable
 fun WorkerStatusesDialog(state: PairingState, actions: ConversationActions) {
-    AlertDialog(onDismissRequest = actions::closeWorkerStatuses, title = { Text("Worktree tasks") }, text = {
+    AlertDialog(onDismissRequest = actions::closeWorkerStatuses, title = { Text("Worktree tasks", Modifier.asHeading()) }, text = {
         Column(Modifier.fillMaxWidth().heightIn(max = 420.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             if (state.workerStatusesLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
             state.workerStatusesError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
@@ -54,23 +56,24 @@ fun WorkerStatusesDialog(state: PairingState, actions: ConversationActions) {
                 page.tasks.forEach { task ->
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
-                            Text(task.requestId, style = MaterialTheme.typography.labelMedium, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                            Text(task.requestId, style = MaterialTheme.typography.labelMedium, maxLines = 3, overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.spokenAs("Worktree task"))
                             Text(task.state, style = MaterialTheme.typography.bodySmall)
                             if (task.runtimeActive) Text("Task runtime active", style = MaterialTheme.typography.labelSmall)
                         }
-                        if (task.canCancel) IconButton(onClick = { actions.cancelWorker(task.requestId) },
+                        if (task.canCancel) IconButton(modifier = Modifier.testTag("Cancel listed task ${task.requestId}"), onClick = { actions.cancelWorker(task.requestId) },
                             enabled = !state.workerStatusesLoading && state.workerStatusesError == null
                                 && state.phase == PairingPhase.CONNECTED && state.pendingWorkspace == null && state.pendingRevoke == null
                                 && WorkerTargetPolicy.cancellable(state, task.requestId) != null) {
-                            Icon(Icons.Outlined.Stop, contentDescription = "Cancel listed task ${task.requestId}")
+                            Icon(Icons.Outlined.Stop, contentDescription = "Cancel listed task")
                         }
                         if (task.state == "succeeded") {
                             val readable = WorkerStatusReadPolicy.navigation(state) && WorkerReadPolicy.projection(state, task.requestId) != null
-                            IconButton(onClick = { actions.workerTranscript(task.requestId, false) }, enabled = readable && TranscriptReadPolicy.browse(state)) {
-                                Icon(Icons.Outlined.OpenInFull, contentDescription = "Read listed task output ${task.requestId}")
+                            IconButton(modifier = Modifier.testTag("Read listed task output ${task.requestId}"), onClick = { actions.workerTranscript(task.requestId, false) }, enabled = readable && TranscriptReadPolicy.browse(state)) {
+                                Icon(Icons.Outlined.OpenInFull, contentDescription = "Read listed task output")
                             }
-                            IconButton(onClick = { actions.workerHistory(task.requestId, false) }, enabled = readable && !state.workerHistoryLoading) {
-                                Icon(Icons.AutoMirrored.Outlined.MenuBook, contentDescription = "Read listed task history ${task.requestId}")
+                            IconButton(modifier = Modifier.testTag("Read listed task history ${task.requestId}"), onClick = { actions.workerHistory(task.requestId, false) }, enabled = readable && !state.workerHistoryLoading) {
+                                Icon(Icons.Outlined.History, contentDescription = "Read listed task history")
                             }
                         }
                     }
@@ -85,10 +88,10 @@ fun WorkerStatusesDialog(state: PairingState, actions: ConversationActions) {
         IconButton(onClick = { state.workerStatusesPage?.let { page ->
             actions.workerStatuses(state.workerStatusesPrevious.lastOrNull()?.offset ?: (page.offset - 16).coerceAtLeast(0))
         } }, enabled = enabled && state.workerStatusesPrevious.isNotEmpty()) {
-            Icon(Icons.Outlined.ArrowBack, contentDescription = "Previous task list page")
+            Icon(Icons.AutoMirrored.Outlined.ArrowLeft, contentDescription = "Previous task list page")
         }
         IconButton(onClick = { state.workerStatusesPage?.let { actions.workerStatuses(it.nextOffset) } }, enabled = enabled && state.workerStatusesPage?.hasMore == true) {
-            Icon(Icons.Outlined.ArrowForward, contentDescription = "Next task list page")
+            Icon(Icons.AutoMirrored.Outlined.ArrowRight, contentDescription = "Next task list page")
         }
     } }, dismissButton = { IconButton(onClick = actions::closeWorkerStatuses) { Icon(Icons.Outlined.Close, contentDescription = "Close task list") } })
 }
@@ -97,7 +100,7 @@ fun WorkerStatusesDialog(state: PairingState, actions: ConversationActions) {
 @Composable
 fun WorkerHistoryDialog(state: PairingState, requestId: String, scroll: ScrollState, actions: ConversationActions) {
     val historyEnabled = WorkerHistoryNavigation.navigation(state)
-    AlertDialog(onDismissRequest = actions::closeWorkerHistory, title = { Text("Task history") }, text = {
+    AlertDialog(onDismissRequest = actions::closeWorkerHistory, title = { Text("Task history", Modifier.asHeading()) }, text = {
         Column(Modifier.fillMaxWidth().heightIn(max = 420.dp).verticalScroll(scroll), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             if (state.workerHistoryLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
             state.workerHistoryError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
@@ -109,8 +112,8 @@ fun WorkerHistoryDialog(state: PairingState, requestId: String, scroll: ScrollSt
                     turn.toolCalls.forEach { call ->
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                             Text(call.name, modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelMedium)
-                            IconButton(onClick = { actions.workerToolArguments(turn.id, call.id) }, enabled = historyEnabled) {
-                                Icon(Icons.Outlined.OpenInFull, contentDescription = "Read tool arguments ${call.id}")
+                            IconButton(modifier = Modifier.testTag("Read tool arguments ${call.id}"), onClick = { actions.workerToolArguments(turn.id, call.id) }, enabled = historyEnabled) {
+                                Icon(Icons.Outlined.OpenInFull, contentDescription = "Read tool arguments")
                             }
                         }
                         SelectionContainer {
@@ -119,25 +122,25 @@ fun WorkerHistoryDialog(state: PairingState, requestId: String, scroll: ScrollSt
                         }
                     }
                     if (turn.toolCallsTruncated) Text("...", style = MaterialTheme.typography.labelSmall)
-                    IconButton(onClick = { actions.workerHistoryTurn(turn.id) }, enabled = historyEnabled) {
-                        Icon(Icons.Outlined.OpenInFull, contentDescription = "Read task message ${turn.id}")
+                    IconButton(modifier = Modifier.testTag("Read task message ${turn.id}"), onClick = { actions.workerHistoryTurn(turn.id) }, enabled = historyEnabled) {
+                        Icon(Icons.Outlined.OpenInFull, contentDescription = "Read task message")
                     }
                 }
             }
         }
     }, confirmButton = { Row {
         IconButton(onClick = actions::previousWorkerHistory, enabled = historyEnabled && state.workerHistoryPrevious.isNotEmpty()) {
-            Icon(Icons.Outlined.ArrowBack, contentDescription = "Previous task history page")
+            Icon(Icons.AutoMirrored.Outlined.ArrowLeft, contentDescription = "Previous task history page")
         }
         IconButton(onClick = { actions.workerHistory(requestId, true) }, enabled = historyEnabled && state.workerHistoryPage?.hasMore == true) {
-            Icon(Icons.Outlined.ArrowForward, contentDescription = "Next task history page")
+            Icon(Icons.AutoMirrored.Outlined.ArrowRight, contentDescription = "Next task history page")
         } } }, dismissButton = { IconButton(onClick = actions::closeWorkerHistory) { Icon(Icons.Outlined.Close, contentDescription = "Close task history") } })
 }
 
 /** Paged desktop terminal scrollback. */
 @Composable
 fun TerminalHistoryDialog(state: PairingState, actions: TerminalActions) {
-    AlertDialog(onDismissRequest = actions::closeTerminal, title = { Text("Terminal history") }, text = {
+    AlertDialog(onDismissRequest = actions::closeTerminal, title = { Text("Terminal history", Modifier.asHeading()) }, text = {
         val scroll = rememberScrollState()
         LaunchedEffect(state.terminalPage?.offset) { scroll.scrollTo(0) }
         Column(Modifier.fillMaxWidth().heightIn(max = 420.dp).verticalScroll(scroll), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -156,10 +159,10 @@ fun TerminalHistoryDialog(state: PairingState, actions: TerminalActions) {
         val navigationEnabled = TerminalReadPolicy.navigation(state)
         val previous = state.terminalPage?.let { runCatching { zenpi.transport.TerminalPageCodec.previous(state.terminalPrevious, it) }.getOrNull() }
         IconButton(onClick = actions::previousTerminalPage, enabled = navigationEnabled && previous != null) {
-            Icon(Icons.Outlined.ArrowBack, contentDescription = "Previous terminal history page")
+            Icon(Icons.AutoMirrored.Outlined.ArrowLeft, contentDescription = "Previous terminal history page")
         }
         IconButton(onClick = { actions.terminalPage(true) }, enabled = navigationEnabled && state.terminalPage?.hasMore == true) {
-            Icon(Icons.Outlined.ArrowForward, contentDescription = "Next terminal history page")
+            Icon(Icons.AutoMirrored.Outlined.ArrowRight, contentDescription = "Next terminal history page")
         }
         IconButton(onClick = { actions.terminalPage(false) }, enabled = enabled && zenpi.transport.TerminalPageCodec.terminal(state.projection) != null) { Icon(Icons.Outlined.Refresh, contentDescription = "Refresh terminal history") }
     } }, dismissButton = { IconButton(onClick = actions::closeTerminal) { Icon(Icons.Outlined.Close, contentDescription = "Close terminal history") } })
@@ -168,7 +171,7 @@ fun TerminalHistoryDialog(state: PairingState, actions: TerminalActions) {
 /** Full message or tool-argument reader for [turnId] (main session or worker). */
 @Composable
 fun TranscriptDialog(state: PairingState, turnId: String, actions: ConversationActions) {
-    AlertDialog(onDismissRequest = actions::closeTranscript, title = { Text(state.transcriptToolCall?.name ?: "Message") },
+    AlertDialog(onDismissRequest = actions::closeTranscript, title = { Text(state.transcriptToolCall?.name ?: "Message", Modifier.asHeading()) },
         text = { val pageScroll = rememberScrollState()
             LaunchedEffect(state.transcriptPage?.offset) { pageScroll.scrollTo(0) }
             Column(Modifier.fillMaxWidth().heightIn(max = 420.dp).verticalScroll(pageScroll), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -184,9 +187,9 @@ fun TranscriptDialog(state: PairingState, turnId: String, actions: ConversationA
             } }, confirmButton = { Row {
             val navigation = TranscriptReadPolicy.navigation(state)
             IconButton(onClick = actions::previousTranscript, enabled = TranscriptReadPolicy.previous(state) != null) {
-                Icon(Icons.Outlined.ArrowBack, contentDescription = "Previous message page")
+                Icon(Icons.AutoMirrored.Outlined.ArrowLeft, contentDescription = "Previous message page")
             }
             IconButton(onClick = { if (state.transcriptWorker) actions.workerTranscript(turnId, true) else actions.transcript(turnId, true) }, enabled = navigation && state.transcriptPage?.hasMore == true) {
-                Icon(Icons.Outlined.ArrowForward, contentDescription = "Next message page")
+                Icon(Icons.AutoMirrored.Outlined.ArrowRight, contentDescription = "Next message page")
             } } }, dismissButton = { IconButton(onClick = actions::closeTranscript) { Icon(Icons.Outlined.Close, contentDescription = "Close message") } })
 }

@@ -1,5 +1,7 @@
 package zenpi.ui
 
+import zenpi.ui.theme.asHeading
+import zenpi.ui.theme.spokenAs
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -25,7 +27,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowForward
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.AccountTree
 import androidx.compose.material.icons.outlined.ArrowDropDown
@@ -124,7 +125,7 @@ private fun ConversationTopBar(scope: ScreenScope, projection: HostProjection, w
     navigation: @Composable () -> Unit, onOpenSwitcher: () -> Unit, onRoute: (Route) -> Unit, status: @Composable () -> Unit) {
     Surface { Column(Modifier.padding(bottom = 4.dp)) {
         TopAppBar(title = { Column {
-            Text(scope.selected?.title ?: "Zenpi", maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(scope.selected?.title ?: "Zenpi", maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.asHeading())
             scope.selected?.sessionName?.let { Text(it, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis) }
         } },
             navigationIcon = navigation, windowInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))
@@ -204,8 +205,8 @@ private fun TurnRow(state: PairingState, turn: RemoteTurn, actions: Conversation
         if (turn.toolCallsTruncated) Text("Tool list truncated", style = MaterialTheme.typography.labelSmall)
         if (turn.contentTruncated) Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Message truncated", style = MaterialTheme.typography.labelSmall, modifier = Modifier.weight(1f))
-            IconButton(onClick = { actions.transcript(turn.id, false) }, enabled = TranscriptReadPolicy.browse(state)) {
-                Icon(Icons.AutoMirrored.Outlined.ArrowForward, contentDescription = "Read full message ${turn.id}")
+            IconButton(modifier = Modifier.testTag("Read full message ${turn.id}"), onClick = { actions.transcript(turn.id, false) }, enabled = TranscriptReadPolicy.browse(state)) {
+                Icon(Icons.Outlined.OpenInFull, contentDescription = "Read full message")
             }
         }
         HorizontalDivider(Modifier.padding(top = 4.dp))
@@ -219,9 +220,10 @@ private fun ToolRow(state: PairingState, turn: RemoteTurn, call: RemoteToolCall,
     var expanded by rememberSaveable(turn.id, call.id) { mutableStateOf(false) }
     Column {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = { expanded = !expanded }) {
+            IconButton(onClick = { expanded = !expanded },
+                modifier = Modifier.testTag((if (expanded) "Hide arguments " else "Show arguments ") + call.id)) {
                 Icon(if (expanded) Icons.Outlined.KeyboardArrowDown else Icons.AutoMirrored.Outlined.KeyboardArrowRight,
-                    contentDescription = (if (expanded) "Hide arguments " else "Show arguments ") + call.id)
+                    contentDescription = (if (expanded) "Hide " else "Show ") + call.name + " arguments")
             }
             Text(call.name, style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.testTag("transcript-tool-${call.id}"))
@@ -230,8 +232,8 @@ private fun ToolRow(state: PairingState, turn: RemoteTurn, call: RemoteToolCall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f).padding(horizontal = 8.dp))
             TooltipBox(positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
                 tooltip = { PlainTooltip { Text("Read tool arguments") } }, state = rememberTooltipState()) {
-                IconButton(onClick = { actions.toolArguments(turn.id, call.id) }, enabled = TranscriptReadPolicy.tool(state, turn.id, call.id)) {
-                    Icon(Icons.Outlined.OpenInFull, contentDescription = "Read tool arguments ${call.id}")
+                IconButton(modifier = Modifier.testTag("Read tool arguments ${call.id}"), onClick = { actions.toolArguments(turn.id, call.id) }, enabled = TranscriptReadPolicy.tool(state, turn.id, call.id)) {
+                    Icon(Icons.Outlined.OpenInFull, contentDescription = "Read tool arguments")
                 }
             }
         }
@@ -267,7 +269,8 @@ private val activePromptStates = setOf("accepted", "running")
 private fun PromptStatuses(state: PairingState, projection: HostProjection, selected: RemoteProject?, actions: ConversationActions) {
     Column { projection.projects.find { it.id == projection.selectedId }?.promptStatuses?.forEach { status ->
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text(status.requestId.take(8), style = MaterialTheme.typography.labelSmall)
+            Text(status.requestId.take(8), style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier.testTag("prompt-request-${status.requestId}").spokenAs(null))
             Text(when (status.state) { "accepted" -> "Message accepted"; "running" -> "Message running"
                 "succeeded" -> "Message succeeded"; "failed" -> when(status.failureCode){
                     "invalid_request"->"Message input rejected";"busy"->"Message owner busy";"resource_limit"->"Message limit reached"
@@ -275,8 +278,8 @@ private fun PromptStatuses(state: PairingState, projection: HostProjection, sele
                 else -> "Message result unknown" }, style = MaterialTheme.typography.labelMedium,
                 modifier=Modifier.weight(1f).padding(horizontal=8.dp),maxLines=2,overflow=TextOverflow.Ellipsis)
             if (status.state in activePromptStates && selected?.promptControl == true) {
-                IconButton(onClick = { actions.cancelPrompt(status.requestId) }, enabled = PromptControlPolicy.active(state, status.requestId)) {
-                    Icon(Icons.Outlined.Stop, contentDescription = "Cancel message ${status.requestId}")
+                IconButton(modifier = Modifier.testTag("Cancel message ${status.requestId}"), onClick = { actions.cancelPrompt(status.requestId) }, enabled = PromptControlPolicy.active(state, status.requestId)) {
+                    Icon(Icons.Outlined.Stop, contentDescription = "Cancel message")
                 }
             }
         }

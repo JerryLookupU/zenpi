@@ -42,13 +42,14 @@ class SecondaryPagesScreenshotTest(private val portrait: Portrait) {
         open?.let { compose.onNodeWithContentDescription(it).performScrollTo().performClick() }
         compose.waitForIdle()
         compose.assertNoHorizontalClipping()
+        compose.assertAccessibleText()
         captureScreenGolden(name, portrait)
     }
 
     @Test fun sessions() = capture(base.copy(sessionsOpen = true, sessionsQuery = "flaky", sessions = SessionCatalog("zenpi", "s-zenpi", "d".repeat(64), 0, 16, listOf(
         RemoteSession("s-zenpi", "1", 4, true, name = "Fix the flaky test", matches = 2, snippets = listOf("fix the flaky test")),
-        RemoteSession("s-older", "1", 12, false, name = "Reconnect cursor", matches = 1, snippets = listOf("the flaky reconnect test drops the cursor")),
-        RemoteSession("s-oldest", "1", 3, false)), query = "flaky")), "sessions")
+        RemoteSession("f5c2e8a0-6d47-4b19-8e3a-7c1f9d0b2e65", "1", 12, false, name = "Reconnect cursor", matches = 1, snippets = listOf("the flaky reconnect test drops the cursor")),
+        RemoteSession("8e1d4b7f-0a62-4c95-b3f8-4d6a2e9c1b70", "1", 3, false)), query = "flaky")), "sessions")
 
     @Test fun diff() = capture(project { it.copy(diffAvailable = true) }.copy(diffOpen = true, diff = RemoteDiff("zenpi", "s-zenpi", tabs.activeId, tabs.revision,
         ".", true, false, false, "diff --git a/src/remote/subscription.rs b/src/remote/subscription.rs\n@@ -41,3 +41,4 @@ fn reconnect\n" +
@@ -60,8 +61,8 @@ class SecondaryPagesScreenshotTest(private val portrait: Portrait) {
         false, "c".repeat(64), TerminalSize(24, 80))) }, "terminal", open = "Desktop terminal")
 
     @Test fun tasks() = capture(project { it.copy(workerControl = true, workerStatuses = listOf(
-        RemoteWorkerStatus("task-1", "zenpi", "s-zenpi", tabs.activeId, "running", streamText = "Reading src/remote/subscription.rs"),
-        RemoteWorkerStatus("task-2", "zenpi", "s-zenpi", tabs.activeId, "succeeded", outputText = "All 412 tests pass."))) }, "tasks", open = "Worktree tasks")
+        RemoteWorkerStatus("6b3f9e2d-8c04-4a71-9d5e-0f7a2c6b4e93", "zenpi", "s-zenpi", tabs.activeId, "running", streamText = "Reading src/remote/subscription.rs"),
+        RemoteWorkerStatus("d0a4c7e1-3f96-4b28-a7c5-2e8d6f0b9a34", "zenpi", "s-zenpi", tabs.activeId, "succeeded", outputText = "All 412 tests pass."))) }, "tasks", open = "Worktree tasks")
 
     @Test fun modelSheet() = capture(project { it.copy(modelControl = true, reasoningControl = true) }.copy(modelOpen = true,
         modelStatus = RemoteModelStatus("zenpi", "s-zenpi", "gpt-x", "high", true, "7", mapOf("tools" to true, "images" to false), "128000", "8192",

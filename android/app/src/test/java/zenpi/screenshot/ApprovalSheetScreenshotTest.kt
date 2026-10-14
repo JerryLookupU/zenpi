@@ -24,6 +24,7 @@ class ApprovalSheetScreenshotTest(private val portrait: Portrait) {
         compose.onNodeWithContentDescription("Review approvals").performClick()
         compose.waitForIdle()
         compose.assertNoHorizontalClipping()
+        compose.assertAccessibleText()
         captureScreenGolden("approval_sheet", portrait)
     }
 

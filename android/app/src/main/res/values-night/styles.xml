@@ -1,0 +1,8 @@
+<resources>
+    <!-- Dark system theme: dark window (no white flash before Compose draws) and light status bar icons. -->
+    <style name="AppTheme" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:colorAccent">#8BD5B0</item>
+    </style>
+</resources>

@@ -1,5 +1,13 @@
 package zenpi.ui
 
+import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.outlined.FolderOff
+import androidx.compose.material.icons.automirrored.outlined.CallSplit
+import androidx.compose.material.icons.outlined.CreateNewFolder
+import androidx.compose.material.icons.outlined.RemoveCircleOutline
+import androidx.compose.material.icons.outlined.KeyboardDoubleArrowLeft
+import androidx.compose.material.icons.outlined.KeyboardDoubleArrowRight
+import zenpi.ui.theme.asHeading
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -14,10 +22,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.AccountTree
 import androidx.compose.material.icons.outlined.Add
-import androidx.compose.material.icons.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.ArrowForward
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Edit
@@ -93,20 +98,20 @@ fun SwitcherDrawer(scope: ScreenScope, projection: HostProjection, workspaceUi: 
     actions: PairingActions, onSwitched: () -> Unit = {}) {
     Inbox(scope, projection, actions, onSwitched)
     HorizontalDivider()
-    Text("Projects", style = MaterialTheme.typography.titleSmall)
+    Text("Projects", style = MaterialTheme.typography.titleSmall, modifier = Modifier.asHeading())
     ProjectTabs(scope, projection, actions)
     val selected = scope.selected
     if (selected?.workspaceControl == true) {
         Row {
             IconButton(onClick = { workspaceUi.openWorkspace = true }, enabled = scope.workspaceEnabled) {
-                Icon(Icons.Outlined.Add, contentDescription = "Open workspace")
+                Icon(Icons.Outlined.FolderOpen, contentDescription = "Open workspace")
             }
             IconButton(onClick = { workspaceUi.closeProject = selected.id }, enabled = scope.workspaceEnabled && projection.projects.size > 1) {
-                Icon(Icons.Outlined.Close, contentDescription = "Close workspace")
+                Icon(Icons.Outlined.FolderOff, contentDescription = "Close workspace")
             }
         }
     }
-    if (projection.subtabs?.tabs?.isNotEmpty() == true) Text("Worktrees", style = MaterialTheme.typography.titleSmall)
+    if (projection.subtabs?.tabs?.isNotEmpty() == true) Text("Worktrees", style = MaterialTheme.typography.titleSmall, modifier = Modifier.asHeading())
     SubtabStrip(scope, projection, subtabUi, actions)
 }
 
@@ -114,7 +119,7 @@ fun SwitcherDrawer(scope: ScreenScope, projection: HostProjection, workspaceUi: 
 private fun Inbox(scope: ScreenScope, projection: HostProjection, actions: PairingActions, onSwitched: () -> Unit) {
     SwitcherInbox.groups(projection).forEach { (group, projects) ->
         Text(group.label, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.padding(top = 8.dp))
+            modifier = Modifier.padding(top = 8.dp).asHeading())
         projects.forEach { project ->
             InboxRow(project, group, project.id == projection.selectedId, switchable(scope, projection, project)) {
                 switchTo(scope, project, actions); onSwitched()
@@ -178,7 +183,7 @@ private fun SubtabStrip(scope: ScreenScope, projection: HostProjection, subtabUi
             FlowRow {
                 if (subtabs.worktreeControl) {
                     IconButton(enabled = enabled && subtabs.tabs.size < 32, onClick = { subtabUi.worktreeDialog = true }) {
-                        Icon(Icons.Outlined.AccountTree, contentDescription = "Add Git worktree")
+                        Icon(Icons.AutoMirrored.Outlined.CallSplit, contentDescription = "Add Git worktree")
                     }
                     IconButton(enabled = enabled && subtabs.tabs[index].kind == "worktree", onClick = { subtabUi.closeWorktree = subtabs.activeId }) {
                         Icon(Icons.Outlined.DeleteOutline, contentDescription = "Remove Git worktree")
@@ -186,10 +191,10 @@ private fun SubtabStrip(scope: ScreenScope, projection: HostProjection, subtabUi
                 }
                 if (subtabs.directoryControl) {
                     IconButton(enabled = enabled && subtabs.tabs.size < 32, onClick = { subtabUi.directoryTabDialog = true }) {
-                        Icon(Icons.Outlined.Add, contentDescription = "Add directory tab")
+                        Icon(Icons.Outlined.CreateNewFolder, contentDescription = "Add directory tab")
                     }
                     IconButton(enabled = enabled && subtabs.tabs[index].kind == "in_place", onClick = { subtabUi.closeDirectoryTab = subtabs.activeId }) {
-                        Icon(Icons.Outlined.Close, contentDescription = "Close directory tab")
+                        Icon(Icons.Outlined.RemoveCircleOutline, contentDescription = "Close directory tab")
                     }
                 }
                 IconButton(enabled = enabled, onClick = {
@@ -197,10 +202,10 @@ private fun SubtabStrip(scope: ScreenScope, projection: HostProjection, subtabUi
                 }) { Icon(Icons.Outlined.Edit, contentDescription = "Rename worktree tab") }
                 IconButton(enabled = enabled && index > 1, onClick = {
                     actions.subtab("subtab_move", subtabs.activeId, subtabs.tabs[index - 1].id)
-                }) { Icon(Icons.Outlined.ArrowBack, contentDescription = "Move worktree tab left") }
+                }) { Icon(Icons.Outlined.KeyboardDoubleArrowLeft, contentDescription = "Move worktree tab left") }
                 IconButton(enabled = enabled && index > 0 && index < subtabs.tabs.lastIndex, onClick = {
                     actions.subtab("subtab_move", subtabs.activeId, subtabs.tabs.getOrNull(index + 2)?.id)
-                }) { Icon(Icons.Outlined.ArrowForward, contentDescription = "Move worktree tab right") }
+                }) { Icon(Icons.Outlined.KeyboardDoubleArrowRight, contentDescription = "Move worktree tab right") }
             }
         }
         if (subtabs.concurrencyControl && currentSubtabs != null) {

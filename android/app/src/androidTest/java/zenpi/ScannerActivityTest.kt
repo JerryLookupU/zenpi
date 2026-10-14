@@ -16,6 +16,8 @@ class ScannerActivityTest {
 
     @Test fun actualCameraPermissionDenialReturnsToProductionPairingScreen() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val secure = android.view.WindowManager.LayoutParams.FLAG_SECURE
+        compose.runOnUiThread { assertEquals(secure, compose.activity.window.attributes.flags and secure) }
         assertNotEquals(PackageManager.PERMISSION_GRANTED,
             instrumentation.targetContext.checkSelfPermission(Manifest.permission.CAMERA))
         val monitor = instrumentation.addMonitor(PairingCaptureActivity::class.java.name, null, false)
@@ -55,6 +57,8 @@ class ScannerActivityTest {
         compose.onNodeWithText("Scan QR").assertIsEnabled()
         assertNotEquals(PackageManager.PERMISSION_GRANTED,
             instrumentation.targetContext.checkSelfPermission(Manifest.permission.CAMERA))
+        // FLAG_SECURE (on by default) blanks screenshots; lift it for this evidence capture only.
+        compose.runOnUiThread { compose.activity.window.clearFlags(secure) }
         automation.waitForIdle(500, 5000)
         var screenshot: android.graphics.Bitmap? = null
         repeat(20) {

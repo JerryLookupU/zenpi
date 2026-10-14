@@ -1,5 +1,7 @@
 package zenpi.ui
 
+import androidx.compose.material.icons.outlined.Replay
+import zenpi.ui.theme.asHeading
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -171,7 +173,7 @@ fun AppShell(state: PairingState, actions: PairingActions, inlineSwitcher: Boole
                 }
             }
         } else Scaffold(contentWindowInsets = WindowInsets.safeDrawing,
-            topBar = { TopAppBar(title = { Text("Zenpi") }, windowInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal),
+            topBar = { TopAppBar(title = { Text("Zenpi", Modifier.asHeading()) }, windowInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal),
                 navigationIcon = navigation) }) { padding ->
             Column(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding).imePadding().verticalScroll(rememberScrollState()).padding(20.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -222,7 +224,7 @@ private fun SwitcherButton(approvals: Int, onClick: () -> Unit) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ConnectionHeader(state: PairingState, remaining: State<Long>, actions: ConnectionActions) {
-    Text("Desktop", style = MaterialTheme.typography.headlineSmall)
+    Text("Desktop", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.asHeading())
     PhaseLabel(state, remaining)
     if (state.canScan) {
         FilledTonalButton(onClick = actions::scan) {
@@ -268,7 +270,7 @@ fun StatusStrip(state: PairingState, actions: ConnectionActions) {
             modifier = Modifier.testTag("workspace-unknown-outcome"))
     }
     if (state.pendingWorkspace != null && state.phase != PairingPhase.CONNECTING) {
-        Button(onClick = actions::retryWorkspace) { Icon(Icons.Outlined.Refresh, null); Spacer(Modifier.width(8.dp)); Text("Retry same request") }
+        Button(onClick = actions::retryWorkspace) { Icon(Icons.Outlined.Replay, null); Spacer(Modifier.width(8.dp)); Text("Retry same request") }
     }
     if (state.phase == PairingPhase.CONNECTING) LinearProgressIndicator(Modifier.fillMaxWidth())
 }
@@ -307,7 +309,7 @@ private fun InviteSection(state: PairingState, clock: State<Long>, remaining: St
 @Composable
 private fun DeviceSection(state: PairingState, actions: ConnectionActions, revokeDialog: MutableState<Boolean>, forgetDialog: MutableState<Boolean>) {
     if (state.phase == PairingPhase.ACCEPTED && state.registered && state.host != null) {
-        Text("Device registered", style = MaterialTheme.typography.titleSmall)
+        Text("Device registered", style = MaterialTheme.typography.titleSmall, modifier = Modifier.asHeading())
         Text("Host control unavailable", color = MaterialTheme.colorScheme.secondary)
     }
     if (state.registered) {

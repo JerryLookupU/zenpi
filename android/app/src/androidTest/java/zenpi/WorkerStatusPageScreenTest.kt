@@ -22,7 +22,7 @@ class WorkerStatusPageScreenTest {
             workerStatusesOpen = true, workerStatusesPage = page))
         val cancelled = mutableListOf<String>()
         compose.setContent { MaterialTheme { PairingScreen(state.value, {}, {}, {}, onCancelWorker = { cancelled.add(it) }) } }
-        val button = compose.onNodeWithContentDescription("Cancel listed task second-page")
+        val button = compose.onNodeWithTag("Cancel listed task second-page")
         button.assertIsEnabled().performClick()
         assertEquals(listOf("second-page"), cancelled)
         for (mixed in listOf(task.copy(state = "succeeded"), task.copy(sessionId = "foreign", state = "succeeded"))) {
@@ -51,8 +51,8 @@ class WorkerStatusPageScreenTest {
         compose.setContent { MaterialTheme { PairingScreen(state.value, {}, {}, {},
             onWorkerTranscript = { id, next -> assertFalse(next); output.add(id) },
             onWorkerHistory = { id, next -> assertFalse(next); history.add(id) }) } }
-        val outputButton = compose.onNodeWithContentDescription("Read listed task output completed-page")
-        val historyButton = compose.onNodeWithContentDescription("Read listed task history completed-page")
+        val outputButton = compose.onNodeWithTag("Read listed task output completed-page")
+        val historyButton = compose.onNodeWithTag("Read listed task history completed-page")
         outputButton.assertIsEnabled().performClick(); historyButton.assertIsEnabled().performClick()
         assertEquals(listOf(task.requestId), output); assertEquals(listOf(task.requestId), history)
         val ready = state.value
