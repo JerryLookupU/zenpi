@@ -17922,6 +17922,27 @@ pub fn run_async_with_remote(
     profile: Option<String>,
     remote: Option<crate::host_pair::HostPairOptions>,
 ) -> Result<(), crate::error::ZenpiError> {
+    run_tui_loop(agent, profile, remote, TuiIo::Terminal)
+}
+
+/// Test hook: run the same production loop as [`run_async_with_remote`], but
+/// read scripted events from `harness.events` and draw into `harness.screen`
+/// instead of the real terminal. No raw mode, signals or panic hook are
+/// installed, and the external editor reports itself unavailable.
+#[doc(hidden)]
+pub fn run_async_with_harness(
+    agent: crate::core::Agent,
+    harness: TuiHarness,
+) -> Result<(), crate::error::ZenpiError> {
+    run_tui_loop(agent, None, None, TuiIo::Harness(harness))
+}
+
+fn run_tui_loop(
+    agent: crate::core::Agent,
+    profile: Option<String>,
+    remote: Option<crate::host_pair::HostPairOptions>,
+    io: TuiIo,
+) -> Result<(), crate::error::ZenpiError> {
     use crate::core::AgentError;
     use crate::runtime::{BackgroundRunner, JobOutcome, RuntimeConfig, RuntimeEvent};
 
@@ -18283,8 +18304,8 @@ pub fn run_async_with_remote(
     // agent independently of the terminal.  Terminal setup can still fail
     // (for example when stdin is not a TTY), so every early return here must
     // close and join the worker instead of relying on `Drop` to detach it.
-    let mut guard = match TerminalGuard::enter() {
-        Ok(guard) => guard,
+    let (mut guard, mut terminal, mut events) = match io.open() {
+        Ok(opened) => opened,
         Err(error) => {
             let _ = runner.shutdown_and_join();
             let _ = new_sessions.worker.shutdown_and_join();
@@ -18292,20 +18313,6 @@ pub fn run_async_with_remote(
             let _ = completion_runner.shutdown_and_join();
             let _ = gantt_runner.shutdown_and_join();
             let _ = lan_runner.shutdown_and_join();
-            return Err(crate::error::ZenpiError::Message(error.to_string()));
-        }
-    };
-    let backend = CrosstermBackend::new(io::stdout());
-    let mut terminal = match Terminal::new(backend) {
-        Ok(terminal) => terminal,
-        Err(error) => {
-            let _ = runner.shutdown_and_join();
-            let _ = new_sessions.worker.shutdown_and_join();
-            let _ = resource_runner.shutdown_and_join();
-            let _ = completion_runner.shutdown_and_join();
-            let _ = gantt_runner.shutdown_and_join();
-            let _ = lan_runner.shutdown_and_join();
-            guard.leave();
             return Err(crate::error::ZenpiError::Message(error.to_string()));
         }
     };
@@ -18715,8 +18722,8 @@ pub fn run_async_with_remote(
                     render_result = host.render(frame);
                 })?;
                 render_result?;
-                if event::poll(Duration::from_millis(20))?
-                    && let Event::Key(key) = event::read()?
+                if events.poll(Duration::from_millis(20))?
+                    && let Event::Key(key) = events.read()?
                     && key.kind == KeyEventKind::Press
                 {
                     match key.code {
@@ -19478,7 +19485,8 @@ pub fn run_async_with_remote(
             };
             let wait = state.ordinary_paste_wait(Instant::now(), wait);
             state.pump_shell();
-            if !event::poll(wait)
+            if !events
+                .poll(wait)
                 .map_err(|error| crate::error::ZenpiError::Message(error.to_string()))?
             {
                 // Idle tick: keep the embedded Shell pane's scrollback live
@@ -19488,7 +19496,8 @@ pub fn run_async_with_remote(
             }
             let mut processed = 0usize;
             loop {
-                let event = event::read()
+                let event = events
+                    .read()
                     .map_err(|error| crate::error::ZenpiError::Message(error.to_string()))?;
                 if matches!(event, Event::Resize(_, _)) {
                     resize_pending = true;
@@ -20545,7 +20554,8 @@ pub fn run_async_with_remote(
                 }
                 processed += 1;
                 if processed >= 256
-                    || !event::poll(Duration::ZERO)
+                    || !events
+                        .poll(Duration::ZERO)
                         .map_err(|error| crate::error::ZenpiError::Message(error.to_string()))?
                 {
                     break;
@@ -20659,7 +20669,7 @@ where
 {
     let mut editor = ExternalEditorHost::capture_startup();
     let mut guard = TerminalGuard::enter()?;
-    let backend = CrosstermBackend::new(io::stdout());
+    let backend = LoopBackend::Terminal(CrosstermBackend::new(io::stdout()));
     let mut terminal = Terminal::new(backend)?;
     // Public config fields can be constructed directly, so normalize both
     // intervals at the loop boundary instead of relying on CLI defaults.
@@ -20914,7 +20924,7 @@ impl ExternalEditorHost {
         &mut self,
         state: &mut TuiState,
         guard: &mut TerminalGuard,
-        terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+        terminal: &mut Terminal<LoopBackend>,
         owner: Option<&Arc<Mutex<crate::core::Agent>>>,
     ) -> Result<(), TuiError> {
         #[cfg(not(unix))]
@@ -20980,7 +20990,7 @@ impl ExternalEditorHost {
         &mut self,
         state: &mut TuiState,
         guard: &mut TerminalGuard,
-        terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+        terminal: &mut Terminal<LoopBackend>,
         owner: Option<&Arc<Mutex<crate::core::Agent>>>,
     ) -> Result<bool, TuiError> {
         #[cfg(not(unix))]
@@ -21112,6 +21122,18 @@ fn uninstall_panic_restore_hook(previous: Arc<PanicHook>) {
 }
 
 impl TerminalGuard {
+    /// A guard that owns no terminal state, for harness-driven loops.
+    fn detached() -> Self {
+        Self {
+            active: false,
+            #[cfg(unix)]
+            original_terminal: None,
+            #[cfg(unix)]
+            signals: None,
+            previous_panic_hook: None,
+        }
+    }
+
     fn enter() -> Result<Self, TuiError> {
         #[cfg(unix)]
         let signals = terminal_signals::SignalGuard::install()?;
@@ -21193,7 +21215,7 @@ impl TerminalGuard {
     fn resume_editor(
         &mut self,
         reset_reader: fn() -> io::Result<()>,
-        terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+        terminal: &mut Terminal<LoopBackend>,
     ) -> Result<(), TuiError> {
         let original = self
             .original_terminal
@@ -21265,6 +21287,156 @@ impl TerminalGuard {
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         self.leave();
+    }
+}
+
+/// Scripted IO for [`run_async_with_harness`]: events arrive on `events` in
+/// order, and every frame is drawn into `screen`, which the caller can read
+/// (or resize before sending `Event::Resize`) while the loop runs. Dropping
+/// the sender ends the loop with an error rather than letting it idle.
+#[doc(hidden)]
+pub struct TuiHarness {
+    pub events: std::sync::mpsc::Receiver<Event>,
+    pub screen: Arc<Mutex<ratatui::backend::TestBackend>>,
+}
+
+/// Where the production loop reads input and draws frames.
+enum TuiIo {
+    Terminal,
+    Harness(TuiHarness),
+}
+
+impl TuiIo {
+    fn open(self) -> Result<(TerminalGuard, Terminal<LoopBackend>, LoopEvents), TuiError> {
+        match self {
+            Self::Terminal => {
+                let mut guard = TerminalGuard::enter()?;
+                match Terminal::new(LoopBackend::Terminal(CrosstermBackend::new(io::stdout()))) {
+                    Ok(terminal) => Ok((guard, terminal, LoopEvents::Terminal)),
+                    Err(error) => {
+                        guard.leave();
+                        Err(error.into())
+                    }
+                }
+            }
+            Self::Harness(harness) => {
+                let terminal = Terminal::new(LoopBackend::Harness(harness.screen))?;
+                let events = LoopEvents::Scripted {
+                    events: harness.events,
+                    pending: None,
+                };
+                Ok((TerminalGuard::detached(), terminal, events))
+            }
+        }
+    }
+}
+
+/// Event source with crossterm's `poll`/`read` contract.
+enum LoopEvents {
+    Terminal,
+    Scripted {
+        events: std::sync::mpsc::Receiver<Event>,
+        pending: Option<Event>,
+    },
+}
+
+impl LoopEvents {
+    fn poll(&mut self, timeout: Duration) -> io::Result<bool> {
+        match self {
+            Self::Terminal => event::poll(timeout),
+            Self::Scripted { events, pending } => {
+                if pending.is_some() {
+                    return Ok(true);
+                }
+                match events.recv_timeout(timeout) {
+                    Ok(event) => {
+                        *pending = Some(event);
+                        Ok(true)
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Ok(false),
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                        Err(io::Error::other("scripted input closed"))
+                    }
+                }
+            }
+        }
+    }
+
+    fn read(&mut self) -> io::Result<Event> {
+        match self {
+            Self::Terminal => event::read(),
+            Self::Scripted { events, pending } => match pending.take() {
+                Some(event) => Ok(event),
+                None => events
+                    .recv()
+                    .map_err(|_| io::Error::other("scripted input closed")),
+            },
+        }
+    }
+}
+
+/// The real terminal, or a shared `TestBackend` the harness caller observes.
+enum LoopBackend {
+    Terminal(CrosstermBackend<io::Stdout>),
+    Harness(Arc<Mutex<ratatui::backend::TestBackend>>),
+}
+
+impl LoopBackend {
+    fn with_test<T>(
+        screen: &Mutex<ratatui::backend::TestBackend>,
+        f: impl FnOnce(&mut ratatui::backend::TestBackend) -> Result<T, std::convert::Infallible>,
+    ) -> io::Result<T> {
+        let mut backend = screen
+            .lock()
+            .map_err(|_| io::Error::other("test screen lock poisoned"))?;
+        f(&mut backend).map_err(|never| match never {})
+    }
+}
+
+macro_rules! loop_backend_call {
+    ($self:expr, $backend:ident => $call:expr) => {
+        match $self {
+            LoopBackend::Terminal($backend) => $call,
+            LoopBackend::Harness(screen) => LoopBackend::with_test(screen, |$backend| $call),
+        }
+    };
+}
+
+impl ratatui::backend::Backend for LoopBackend {
+    type Error = io::Error;
+
+    fn draw<'a, I>(&mut self, content: I) -> io::Result<()>
+    where
+        I: Iterator<Item = (u16, u16, &'a ratatui::buffer::Cell)>,
+    {
+        loop_backend_call!(self, backend => backend.draw(content))
+    }
+    fn hide_cursor(&mut self) -> io::Result<()> {
+        loop_backend_call!(self, backend => backend.hide_cursor())
+    }
+    fn show_cursor(&mut self) -> io::Result<()> {
+        loop_backend_call!(self, backend => backend.show_cursor())
+    }
+    fn get_cursor_position(&mut self) -> io::Result<Position> {
+        loop_backend_call!(self, backend => backend.get_cursor_position())
+    }
+    fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> io::Result<()> {
+        loop_backend_call!(self, backend => backend.set_cursor_position(position))
+    }
+    fn clear(&mut self) -> io::Result<()> {
+        loop_backend_call!(self, backend => backend.clear())
+    }
+    fn clear_region(&mut self, clear_type: ratatui::backend::ClearType) -> io::Result<()> {
+        loop_backend_call!(self, backend => backend.clear_region(clear_type))
+    }
+    fn size(&self) -> io::Result<ratatui::layout::Size> {
+        loop_backend_call!(self, backend => backend.size())
+    }
+    fn window_size(&mut self) -> io::Result<ratatui::backend::WindowSize> {
+        loop_backend_call!(self, backend => backend.window_size())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        loop_backend_call!(self, backend => backend.flush())
     }
 }
 
