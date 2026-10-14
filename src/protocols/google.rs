@@ -48,7 +48,9 @@ fn name(s: &str) -> bool {
 }
 pub(crate) fn validate_effort(model: &str, effort: Option<&str>) -> Result<(), BackendError> {
     if effort.is_some_and(|e| {
-        model != "gemini-2.5-flash" || !matches!(e, "none" | "minimal" | "low" | "medium" | "high")
+        !crate::providers::registry::ReasoningLevel::parse(e).is_ok_and(|level| {
+            crate::providers::registry::builtin_reasoning_levels("google", model).contains(&level)
+        })
     }) {
         return Err(config("unsupported Gemini model/effort combination"));
     }
@@ -409,7 +411,13 @@ pub(crate) fn request_body(
     if !request.tools.is_empty() {
         body["tools"] = json!([{"functionDeclarations":request.tools.iter().map(|t|json!({"name":t.name,"description":t.description,"parametersJsonSchema":t.input_schema})).collect::<Vec<_>>()}]);
     }
-    if let Some(e) = effort {
+    if let Some(e) = effort
+        && model.starts_with("gemini-3")
+    {
+        // Gemini 3 takes a named level; thinking cannot be turned off.
+        body["generationConfig"]["thinkingConfig"] =
+            json!({"thinkingLevel":e,"includeThoughts":true});
+    } else if let Some(e) = effort {
         let budget = match e {
             "none" => 0,
             "minimal" => 128,

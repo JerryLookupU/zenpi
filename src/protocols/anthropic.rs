@@ -77,12 +77,14 @@ fn call(block: &Value) -> Result<ToolCall, BackendError> {
     Ok(c)
 }
 
-/// Runtime effort is native adaptive effort only for the frozen supported
-/// model. Unknown models still work as conservative text-only registry entries.
+/// Runtime effort is native adaptive effort only for catalogued adaptive
+/// models and their levels. Unknown models run without an effort.
 pub(crate) fn validate_effort(model: &str, effort: Option<&str>) -> Result<(), BackendError> {
     if let Some(e) = effort
-        && (model != "claude-sonnet-4-6"
-            || !matches!(e, "none" | "low" | "medium" | "high" | "max"))
+        && !crate::providers::registry::ReasoningLevel::parse(e).is_ok_and(|level| {
+            crate::providers::registry::builtin_reasoning_levels("anthropic", model)
+                .contains(&level)
+        })
     {
         return Err(config("unsupported Anthropic model/effort combination"));
     }

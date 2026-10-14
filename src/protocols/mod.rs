@@ -1578,3 +1578,39 @@ mod route_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod catalog_tests {
+    use super::*;
+    use crate::core::{Turn, TurnRole};
+
+    #[test]
+    fn catalogued_native_models_accept_their_levels_only() {
+        assert!(anthropic::validate_effort("claude-opus-4-7", Some("xhigh")).is_ok());
+        assert!(anthropic::validate_effort("claude-opus-4-6", Some("xhigh")).is_err());
+        // Thinking cannot be disabled on Opus 5.5.
+        assert!(anthropic::validate_effort("claude-opus-5-5", Some("none")).is_err());
+        assert!(anthropic::validate_effort("claude-haiku-4-5", Some("low")).is_err());
+        assert!(anthropic::validate_effort("claude-unknown", None).is_ok());
+        assert!(google::validate_effort("gemini-2.5-pro", Some("none")).is_err());
+        assert!(google::validate_effort("gemini-2.5-pro", Some("high")).is_ok());
+        assert!(google::validate_effort("gemini-3-pro-preview", Some("medium")).is_err());
+    }
+
+    #[test]
+    fn gemini_3_sends_a_thinking_level_and_2_5_a_budget() {
+        let turns = [Turn::new("u", TurnRole::User, "hi")];
+        let request = CompletionRequest::new("u", &turns, None, &[]);
+        let body =
+            google::request_body(&request, "gemini-3-pro-preview", Some("high"), "google").unwrap();
+        assert_eq!(
+            body["generationConfig"]["thinkingConfig"],
+            json!({"thinkingLevel":"high","includeThoughts":true})
+        );
+        let body = google::request_body(&request, "gemini-2.5-pro", Some("low"), "google").unwrap();
+        assert_eq!(
+            body["generationConfig"]["thinkingConfig"],
+            json!({"thinkingBudget":2048,"includeThoughts":true})
+        );
+    }
+}
