@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-206",
+  "claim_id": "ZE-206@blueprint-4.0.0",
+  "from": "worker",
+  "to": "master",
+  "summary": "Tool paths follow pi rules via ToolContext::workspace_path, applied in resolve_existing, resolve_for_write and check_path_gate (Blueprint gate sees the converted relative path): a leading '@' is dropped, '~' and '~/x' expand to $HOME, and an absolute path is accepted only when it lies inside the workspace (direct prefix of the canonical root, else the deepest existing ancestor is canonicalized so /var vs /private/var spellings match). Absolute paths containing '..' are denied. The converted relative path still passes validate_relative_path and the existing canonicalize/symlink/private-output checks, so outside paths and symlink escapes stay PathDenied. validate_relative_path itself is unchanged (Blueprint policy and preview paths stay strictly relative).",
+  "changed_files": [
+    "src/tools.rs",
+    "tests/tools_edit_paths.rs",
+    "Docs/quality/ze/ZE-206.json"
+  ],
+  "diff_stat": "2 files changed, 163 insertions(+), 5 deletions(-) (plus this handoff)",
+  "commands_run": [
+    "CARGO_TARGET_DIR=/Users/mac/Github/zenpi/.claude/targets/ze204 CARGO_INCREMENTAL=0 cargo fmt --all",
+    "CARGO_TARGET_DIR=/Users/mac/Github/zenpi/.claude/targets/ze204 CARGO_INCREMENTAL=0 cargo clippy --locked --all-targets -- -D warnings",
+    "CARGO_TARGET_DIR=/Users/mac/Github/zenpi/.claude/targets/ze204 CARGO_INCREMENTAL=0 cargo clippy --locked --all-targets --all-features -- -D warnings",
+    "CARGO_TARGET_DIR=/Users/mac/Github/zenpi/.claude/targets/ze204 CARGO_INCREMENTAL=0 cargo test --locked --no-fail-fast --test tools --test tools_edit_paths --test tool_result_text --test core_session",
+    "CARGO_TARGET_DIR=/Users/mac/Github/zenpi/.claude/targets/ze204 CARGO_INCREMENTAL=0 cargo test --locked -q --test core_session -- --test-threads=1",
+    "CARGO_TARGET_DIR=/Users/mac/Github/zenpi/.claude/targets/ze204 CARGO_INCREMENTAL=0 cargo test --locked -q --test stage1_tool_batch --test stage1_tool_output --test tool_scope"
+  ],
+  "validation_result": {
+    "fmt": "pass",
+    "clippy": "pass (default and --all-features, -D warnings)",
+    "absolute_in_workspace": "pass: absolute_and_at_prefixed_workspace_paths_read_and_write (write/read/edit via tempdir path and its canonical spelling, '@' path, list_directory on the absolute root)",
+    "etc_passwd_rejected": "pass: absolute_paths_outside_the_workspace_and_symlink_escapes_are_rejected (/etc/passwd, other tempdir, root/../x, write to /etc all PathDenied)",
+    "symlink_escape_rejected": "pass: same test, directory and file symlinks pointing outside rejected via absolute and relative spellings; outside file unchanged",
+    "regression": "tools 42, tool_result_text 5, tools_edit_paths 8, stage1_tool_batch, stage1_tool_output, tool_scope pass; core_session 41/41 with --test-threads=1 (load-flaky user_shell_preserves_nonzero_signal_and_cancellation_evidence fails only in parallel)"
+  },
+  "notes": "'~' expansion is not covered by an integration test because mutating HOME in a parallel test binary is unsafe; it uses the same canonical-prefix path as absolute paths. A file literally named with a leading '@' must now be addressed as './@name'. No new unwrap/expect/panic in non-test code.",
+  "created_at": "2026-10-14T15:13:27Z",
+  "digest": "7287b9fc012a577cc4f726270c00bf85a4fba837b72ad5e9a8eec045f02b1ba9"
+}

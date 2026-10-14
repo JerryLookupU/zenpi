@@ -7,6 +7,7 @@
 //! explicit policy grants and are guarded by the host approval boundary.
 
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet, VecDeque},
     fs::{self, File, OpenOptions},
     io::{self, Read, Write},
@@ -934,10 +935,67 @@ impl ToolContext {
     }
 
     fn check_path_gate(&self, requested: &str, write: bool) -> Result<(), ToolError> {
+        let requested = self.workspace_path(requested)?;
+        self.check_relative_path_gate(&requested, write)
+    }
+
+    fn check_relative_path_gate(&self, relative: &str, write: bool) -> Result<(), ToolError> {
         if let Some(gate) = self.checked_gate()? {
-            gate.check_path(requested, write)?;
+            gate.check_path(relative, write)?;
         }
         Ok(())
+    }
+
+    /// Map a model-supplied path to a workspace-relative one (pi path rules).
+    /// A leading `@` is dropped, `~` and `~/x` expand to the home directory,
+    /// and an absolute path is accepted only when it names something inside
+    /// the workspace, comparing canonical prefixes so symlinked spellings of
+    /// the root (for example `/var` vs `/private/var`) still match. The
+    /// result goes through the usual relative checks, so `..`, symlink
+    /// escapes and private output paths stay rejected.
+    fn workspace_path<'a>(&self, requested: &'a str) -> Result<Cow<'a, str>, ToolError> {
+        let denied = || ToolError::PathDenied(requested.to_owned());
+        let path = requested.strip_prefix('@').unwrap_or(requested);
+        let absolute = if path == "~" || path.starts_with("~/") {
+            let home = std::env::var_os("HOME")
+                .filter(|home| Path::new(home).is_absolute())
+                .ok_or_else(denied)?;
+            Path::new(&home).join(path[1..].trim_start_matches('/'))
+        } else if Path::new(path).is_absolute() {
+            PathBuf::from(path)
+        } else {
+            return Ok(Cow::Borrowed(path));
+        };
+        if path.contains(['\0', '\r', '\n'])
+            || absolute
+                .components()
+                .any(|component| component == Component::ParentDir)
+        {
+            return Err(denied());
+        }
+        let relative = match absolute.strip_prefix(&self.workspace_root) {
+            Ok(relative) => relative.to_path_buf(),
+            Err(_) => {
+                // Canonicalize the deepest existing ancestor; components
+                // below it do not exist yet and cannot be symlinks.
+                let existing = absolute
+                    .ancestors()
+                    .find(|ancestor| ancestor.exists())
+                    .ok_or_else(denied)?;
+                let canonical = existing.canonicalize().map_err(|_| denied())?;
+                let base = canonical
+                    .strip_prefix(&self.workspace_root)
+                    .map_err(|_| denied())?;
+                let rest = absolute.strip_prefix(existing).map_err(|_| denied())?;
+                base.join(rest)
+            }
+        };
+        let relative = relative.to_str().ok_or_else(denied)?;
+        Ok(Cow::Owned(if relative.is_empty() {
+            ".".to_owned()
+        } else {
+            relative.to_owned()
+        }))
     }
 
     /// Resolve a model-independent user attachment inside the fixed workspace.
@@ -973,14 +1031,15 @@ impl ToolContext {
     }
 
     fn resolve_for_write(&self, requested: &str) -> Result<PathBuf, ToolError> {
-        self.check_path_gate(requested, true)?;
+        let requested = &*self.workspace_path(requested)?;
+        self.check_relative_path_gate(requested, true)?;
         validate_relative_path(requested)?;
         if private_output_path(Path::new(requested)) {
             return Err(ToolError::PathDenied(requested.into()));
         }
         let candidate = self.workspace_root.join(requested);
         if candidate.exists() {
-            self.check_path_gate(requested, false)?;
+            self.check_relative_path_gate(requested, false)?;
             let canonical = candidate
                 .canonicalize()
                 .map_err(|error| map_path_io(&candidate, error))?;
@@ -1012,7 +1071,8 @@ impl ToolContext {
     }
 
     fn resolve_existing(&self, requested: &str) -> Result<ResolvedPath, ToolError> {
-        self.check_path_gate(requested, false)?;
+        let requested = &*self.workspace_path(requested)?;
+        self.check_relative_path_gate(requested, false)?;
         validate_relative_path(requested)?;
         if private_output_path(Path::new(requested)) {
             return Err(ToolError::PathDenied(requested.into()));

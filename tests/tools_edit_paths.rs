@@ -7,7 +7,9 @@ use tempfile::tempdir;
 use zenpi::{
     core::{Agent, TurnInputRequest, TurnRole},
     session::SessionStore,
-    tools::{self, SideEffectPolicy, ToolCall, ToolContext, ToolRegistry, ToolResult},
+    tools::{
+        self, SideEffectPolicy, ToolCall, ToolContext, ToolErrorCode, ToolRegistry, ToolResult,
+    },
 };
 
 fn writing_agent(root: &std::path::Path, backend: ScriptedBackend) -> Agent {
@@ -211,4 +213,100 @@ fn edit_rejects_matches_that_are_ambiguous_after_normalization() {
     let message = error_message(edit(dir.path(), "ambiguous.txt", "missing", "y"));
     assert!(message.contains("found 0"), "{message}");
     assert_eq!(fs::read_to_string(&path).unwrap(), original);
+}
+
+fn path_text(path: &std::path::Path) -> String {
+    path.to_str().unwrap().to_owned()
+}
+
+fn error_code(result: ToolResult) -> ToolErrorCode {
+    match result {
+        ToolResult::Error { error, .. } => error.code,
+        ToolResult::Success { output, .. } => panic!("unexpected success: {output}"),
+    }
+}
+
+// ZE-206: absolute paths inside the workspace (spelled canonically or via a
+// symlinked prefix such as macOS /var -> /private/var) and `@` paths work.
+#[test]
+fn absolute_and_at_prefixed_workspace_paths_read_and_write() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    let canonical = root.canonicalize().unwrap();
+    for (index, base) in [root.to_path_buf(), canonical.clone()].iter().enumerate() {
+        let file = base.join(format!("nested/abs-{index}.txt"));
+        let written = execute(
+            root,
+            "write_file",
+            json!({"path": path_text(&file), "content": "absolute\n"}),
+        );
+        assert!(written.is_success(), "{written:?}");
+        assert_eq!(
+            fs::read_to_string(canonical.join(format!("nested/abs-{index}.txt"))).unwrap(),
+            "absolute\n"
+        );
+        let read = execute(root, "read_file", json!({"path": path_text(&file)}));
+        let ToolResult::Success { output, .. } = read else {
+            panic!("absolute read failed: {read:?}");
+        };
+        assert_eq!(output["path"], format!("nested/abs-{index}.txt"));
+        assert!(
+            edit(root, &path_text(&file), "absolute", "edited").is_success(),
+            "absolute edit"
+        );
+    }
+    let read = execute(root, "read_file", json!({"path": "@nested/abs-0.txt"}));
+    assert!(read.is_success(), "{read:?}");
+    let listed = execute(root, "list_directory", json!({"path": path_text(root)}));
+    assert!(listed.is_success(), "{listed:?}");
+}
+
+// ZE-206: paths outside the workspace stay rejected, including `..` in an
+// absolute path and symlinks that escape.
+#[cfg(unix)]
+#[test]
+fn absolute_paths_outside_the_workspace_and_symlink_escapes_are_rejected() {
+    let dir = tempdir().unwrap();
+    let outside = tempdir().unwrap();
+    let root = dir.path();
+    fs::write(outside.path().join("secret.txt"), "secret").unwrap();
+    std::os::unix::fs::symlink(outside.path(), root.join("escape")).unwrap();
+    std::os::unix::fs::symlink(outside.path().join("secret.txt"), root.join("link.txt")).unwrap();
+
+    let read = |path: String| error_code(execute(root, "read_file", json!({"path": path})));
+    assert_eq!(read("/etc/passwd".into()), ToolErrorCode::PathDenied);
+    assert_eq!(
+        read(path_text(&outside.path().join("secret.txt"))),
+        ToolErrorCode::PathDenied
+    );
+    assert_eq!(
+        read(format!("{}/../outside.txt", path_text(root))),
+        ToolErrorCode::PathDenied
+    );
+    for escaping in [
+        root.join("escape/secret.txt"),
+        root.join("link.txt"),
+        root.canonicalize().unwrap().join("escape/secret.txt"),
+    ] {
+        assert_eq!(read(path_text(&escaping)), ToolErrorCode::PathDenied);
+    }
+    assert_eq!(read("escape/secret.txt".into()), ToolErrorCode::PathDenied);
+
+    let write = execute(
+        root,
+        "write_file",
+        json!({"path": path_text(&root.join("escape/new.txt")), "content": "x"}),
+    );
+    assert_eq!(error_code(write), ToolErrorCode::PathDenied);
+    let write = execute(
+        root,
+        "write_file",
+        json!({"path": "/etc/zenpi-should-not-exist.txt", "content": "x"}),
+    );
+    assert_eq!(error_code(write), ToolErrorCode::PathDenied);
+    assert!(!outside.path().join("new.txt").exists());
+    assert_eq!(
+        fs::read_to_string(outside.path().join("secret.txt")).unwrap(),
+        "secret"
+    );
 }
