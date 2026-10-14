@@ -5,9 +5,9 @@
 
 ```yaml
 source: Docs/Zenpi_Execution_Blueprint_v2.md
-source_sha256: 579880a55b44643f720bca87fd8c18868e5330e68c3a434817487e682285f953
+source_sha256: ff3a62ff72a6fe786d835476232b73f49090e708a6f195986cd59c3494836e89
 blueprint_version: 4.0.0
-generated_at: 2026-10-14T20:18:25Z
+generated_at: 2026-10-14T20:27:14Z
 ```
 
 ## Dependency-order view
@@ -101,7 +101,7 @@ gantt
     ZE-308 DAG 存储降本（实测后按奥卡姆裁剪，不拆文件）：<br>• 原实现每个等待者每 :done, ZE_308, after ZE_260, 1d
     ZE-309 TUI 渲染成本：按消息缓存已渲染的行，只让正在流式输出的那条失效 项目 che :done, ZE_309, after ZE_106, 1d
     section A4
-    ZE-400 进程内 golden 任务套件（使用真实工具、临时工作区）。覆盖以下场景：<br :ZE_400, after ZE_202 ZE_203 ZE_205 ZE_210 ZE_213 ZE_221 ZE_227 ZE_232, 1d
+    ZE-400 进程内 golden 任务套件（使用真实工具、临时工作区）。覆盖以下场景：<br :active, ZE_400, after ZE_202 ZE_203 ZE_205 ZE_210 ZE_213 ZE_221 ZE_227 ZE_232, 1d
     ZE-401 二进制级 headless 任务：针对 ZE-104 的假服务器启动  zenp :ZE_401, after ZE_400 ZE_236 ZE_240 ZE_242 ZE_303, 1d
     ZE-402 TUI 任务快照，覆盖以下用例：<br>• text→tool→text <br :ZE_402, after ZE_250 ZE_251 ZE_252 ZE_254 ZE_255, 1d
     ZE-403 2000 agent 压测  tools/load_agents.py ：<br :ZE_403, after ZE_236 ZE_300 ZE_301 ZE_302 ZE_303 ZE_304 ZE_305 ZE_401, 1d
@@ -144,7 +144,7 @@ gantt
 
 ## Monitoring index
 
-Counts: open 26 · self-tested 0 · accepted 87 · total 113
+Counts: open 25 · self-tested 1 · accepted 87 · total 113
 
 | ID | Layer | State | Ready | Depends | Claim | Integration | Est. LOC | Title |
 |---|---|---|---|---|---|---|---:|---|
@@ -226,7 +226,7 @@ Counts: open 26 · self-tested 0 · accepted 87 · total 113
 | ZE-307 | A3 | accepted | no | — | ZE-307@blueprint-4.0.0 | accepted | 0 | 凭据元数据缓存：领取前先用计数器核实问题确实存在。实测（release，2000 次）：API key 每次解析 0.22 ms、OAuth 0.40 ms，每次 provider 请求只解析一次；2000 agent 每几秒一次请求合计约 0.1 核，问题不成立，按 YAGNI 不加缓存，也不改账户锁 |
 | ZE-308 | A3 | accepted | no | ZE-260 | ZE-308@blueprint-4.0.0 | accepted | 280 | DAG 存储降本（实测后按奥卡姆裁剪，不拆文件）：<br>• 原实现每个等待者每 250 ms 都持全局锁重写整个 store 并 fsync，2000 个等待者即每秒约 8000 次串行 fsync；<br>• 没有变化的更新（空 claim）不再写盘；<br>• `wait_for_message` 先看 store 的 (len, mtime)，变了才做无锁快照读，确有待收消息才加锁 claim，轮询间隔 500 ms；<br>• 心跳仍在 store 内（只让等待者多一次只读重读，不触发写）；原子写（rename + 目录 fsync）不变；DAG 状态永远不会改动蓝图的勾选；<br>layer `A3` \| Depends: ZE-260 \| Owned paths: `src/dag.rs`, `tests/dag.rs`, `tests/dag_idle_cost.rs` \| Validators: `cargo test --locked --all-features --test dag --test dag_idle_cost`：64 个节点各收发 20 条无丢失无重复；未 ack 的消息重投；2000 个空等待者 < 0.25 核且 store 的 mtime 不变；写到一半崩溃后仍可解析 \| Estimated LOC: 280 |
 | ZE-309 | A3 | accepted | no | ZE-106 | ZE-309@blueprint-4.0.0 | accepted | 180 | TUI 渲染成本：按消息缓存已渲染的行，只让正在流式输出的那条失效；项目 checkpoint 不再包含 transcript（目前有改动时每 250 ms 序列化一遍全部 transcript）；删除 250 ms 和 20 ms 的无条件重绘，但事件循环的超时仍要包含粘贴突发的截止时间（对应 codex `paste_burst_learn`） |
-| ZE-400 | A4 | open | yes | ZE-202, ZE-203, ZE-205, ZE-210, ZE-213, ZE-221, ZE-227, ZE-232 | — | — | 800 | 进程内 golden 任务套件（使用真实工具、临时工作区）。覆盖以下场景：<br>• 读文件后回答；<br>• 新建文件；<br>• 编辑文件并校验 diff；<br>• bash 成功，且输出进入下一次请求；<br>• bash 失败后模型修复；<br>• 同一轮发起 3 个并行工具；<br>• 需要审批的写入被拒绝，文件不落盘；同一写入获批后落盘；<br>• 在 provider 调用中取消、在工具执行中取消，日志保持一致；<br>• 轮中被杀后恢复，修复未完成的调用；<br>• 迭代上限或 doom-loop 上限止损；<br>• provider 出错后重试；<br>• 因长度截断的轮次不执行其中的工具调用；<br>• 会话中途切换模型后继续工作；<br>layer `A4` \| Depends: ZE-202, ZE-203, ZE-205, ZE-210, ZE-213, ZE-221, ZE-227, ZE-232 \| Owned paths: `tests/tasks.rs` \| Validators: `cargo test --locked --test tasks`，每个任务都断言最终文件、日志记录和请求数 \| Estimated LOC: 800 |
+| ZE-400 | A4 | self-tested | yes | ZE-202, ZE-203, ZE-205, ZE-210, ZE-213, ZE-221, ZE-227, ZE-232 | ZE-400@blueprint-4.0.0 | handoff | 800 | 进程内 golden 任务套件（使用真实工具、临时工作区）。覆盖以下场景：<br>• 读文件后回答；<br>• 新建文件；<br>• 编辑文件并校验 diff；<br>• bash 成功，且输出进入下一次请求；<br>• bash 失败后模型修复；<br>• 同一轮发起 3 个并行工具；<br>• 需要审批的写入被拒绝，文件不落盘；同一写入获批后落盘；<br>• 在 provider 调用中取消、在工具执行中取消，日志保持一致；<br>• 轮中被杀后恢复，修复未完成的调用；<br>• 迭代上限或 doom-loop 上限止损；<br>• provider 出错后重试；<br>• 因长度截断的轮次不执行其中的工具调用；<br>• 会话中途切换模型后继续工作；<br>layer `A4` \| Depends: ZE-202, ZE-203, ZE-205, ZE-210, ZE-213, ZE-221, ZE-227, ZE-232 \| Owned paths: `tests/tasks.rs`, `tests/support/scripted.rs`, `src/core.rs`（修复：项目 owner 打开 session 时补答悬空调用） \| Validators: `cargo test --locked --test tasks`，每个任务都断言最终文件、日志记录和请求数 \| Estimated LOC: 800 |
 | ZE-401 | A4 | open | no | ZE-400, ZE-236, ZE-240, ZE-242, ZE-303 | — | — | 380 | 二进制级 headless 任务：针对 ZE-104 的假服务器启动 `zenpi --mode headless`，覆盖新建文件、bash、审批被拒、取消、杀进程后恢复、`-c` 续接 |
 | ZE-402 | A4 | open | yes | ZE-250, ZE-251, ZE-252, ZE-254, ZE-255 | — | — | 380 | TUI 任务快照，覆盖以下用例：<br>• text→tool→text；<br>• 跨标签页审批；<br>• 忙、闲、有草稿三种状态下分别按 Esc 和 Ctrl-C；<br>• 浮层打开时按 Esc 不会中断任务；<br>• 粘贴内容里夹带 `\n/exit`、`\n!rm` 时什么也不提交；<br>• 按键 Release 事件不产生任何动作；<br>• 粘贴折叠后再提交；<br>• 斜杠命令走真实 loop 完成往返；<br>layer `A4` \| Depends: ZE-250, ZE-251, ZE-252, ZE-254, ZE-255 \| Owned paths: `tests/tui_task.rs` \| Validators: `cargo test --locked --test tui_task` \| Estimated LOC: 380 |
 | ZE-403 | A4 | open | no | ZE-236, ZE-300, ZE-301, ZE-302, ZE-303, ZE-304, ZE-305, ZE-401 | — | — | 340 | 2000 agent 压测 `tools/load_agents.py`：<br>• harness 用单个 `selectors`（kqueue）事件循环读取所有 stdout 管道（对应 redis ae）；<br>• 启动前先算 fd 预算（harness ≥ 3N+64，provider ≥ N+64）并上调软限制，不够则直接失败；<br>• 一个脚本化 provider 服务器，N 个 `--no-session` 或独立 session 的 headless 进程，每个任务含一次 `write_file` 和一次 `bash echo`；<br>• 报告 RSS、CPU、唤醒次数、线程数、fd、fsync 次数与延迟、磁盘写速率，以及内核限制；<br>layer `A4` \| Depends: ZE-236, ZE-300, ZE-301, ZE-302, ZE-303, ZE-304, ZE-305, ZE-401 \| Owned paths: `tools/load_agents.py` \| Validators: `G-LOAD(2000)` 在 16 核机器上满足 §2.2 的全部阈值，报告存入 `Docs/quality/` \| Estimated LOC: 340 |

@@ -1139,6 +1139,9 @@ impl Agent {
             ..ApprovalPolicy::default()
         });
         agent.auto_approve = auto_approve;
+        // Like the CLI start-up: close interrupted operations and answer
+        // dangling tool calls, so a strict provider accepts the history.
+        agent.acknowledge_recovery()?;
         Ok(agent)
     }
 

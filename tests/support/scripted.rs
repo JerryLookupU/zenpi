@@ -34,8 +34,12 @@ pub enum Reply {
     /// A tool call in a turn the output token limit cut short
     /// (`StopReason::Length`; finish_reason=length, max_tokens, incomplete).
     TruncatedCall(ToolCall),
+    /// Several tool calls in one response (in-process only).
+    Calls(Vec<ToolCall>),
     /// Transport failure in-process; HTTP 400 on the wire.
     Fail(String),
+    /// Retryable overload: HTTP 503 on the wire (the backend retries it).
+    Overloaded,
     /// Block until the caller cancels (in-process only).
     Stall,
 }
@@ -173,7 +177,18 @@ impl Backend for ScriptedBackend {
                     ..Completion::default()
                 }
             }
+            Reply::Calls(calls) => {
+                for call in &calls {
+                    sink(ProviderEvent::ToolCallDone { call: call.clone() })?;
+                }
+                Completion {
+                    tool_calls: calls,
+                    stop_reason: StopReason::ToolUse,
+                    ..Completion::default()
+                }
+            }
             Reply::Fail(message) => return Err(BackendError::Transport(message)),
+            Reply::Overloaded => return Err(BackendError::Transport("overloaded".into())),
             Reply::Stall => {
                 self.0.stalled.store(true, Ordering::SeqCst);
                 let deadline = Instant::now() + Duration::from_secs(10);
@@ -286,7 +301,13 @@ fn serve(mut stream: TcpStream, wire: OpenAiWireApi, script: &Script) {
             "application/json",
             json!({"error":{"message":message}}).to_string(),
         ),
+        Reply::Overloaded => (
+            "503 Service Unavailable",
+            "application/json",
+            json!({"error":{"message":"overloaded"}}).to_string(),
+        ),
         Reply::Stall => panic!("Reply::Stall is in-process only"),
+        Reply::Calls(_) => panic!("Reply::Calls is in-process only"),
         reply => {
             let model = body["model"].as_str().unwrap_or("scripted-model");
             ("200 OK", "text/event-stream", sse(wire, model, &reply))
