@@ -1070,6 +1070,9 @@ struct PendingSteer {
     owner: Arc<Mutex<Agent>>,
     project: ProjectContext,
     id: Option<String>,
+    /// Wire command that admitted the steer (`steer`, or a `prompt` sent
+    /// with `mode: "steer"`), echoed on every response for this request.
+    command: &'static str,
     version: u16,
     text: String,
     expected_turn_id: Option<String>,
@@ -3782,6 +3785,30 @@ pub fn resume_learn(agent: &Agent, id: &str) -> Result<serde_json::Value, String
     resume_learn_view(Some(agent), id).map_err(|error| error.message)
 }
 
+/// The oldest prompt/steer job of `project` (the one currently owning the
+/// turn) and its published turn ID, if the worker has submitted it yet.
+fn active_turn_job(
+    jobs: &HashMap<crate::runtime::JobId, AsyncWork>,
+    project: &ProjectContext,
+) -> Result<Option<(crate::runtime::JobId, Option<String>)>, HeadlessError> {
+    let Some((job_id, work)) = jobs
+        .iter()
+        .filter(|(_, work)| {
+            work.project.project_id == project.project_id
+                && (work.command == "prompt" || work.command == "steer")
+        })
+        .min_by_key(|(job_id, _)| job_id.get())
+    else {
+        return Ok(None);
+    };
+    let turn_id = work
+        .turn_id
+        .lock()
+        .map_err(|_| event_mailbox_headless_error())?
+        .clone();
+    Ok(Some((*job_id, turn_id)))
+}
+
 fn request_in_flight(
     id: Option<&str>,
     request_to_job: &HashMap<String, crate::runtime::JobId>,
@@ -3811,7 +3838,7 @@ fn cancel_pending_steers_for_job<W: Write>(
                 output,
                 StdioResponse::error_with_code(
                     pending.id,
-                    "steer",
+                    pending.command,
                     "request_cancelled",
                     "deferred steer was cancelled before reissue",
                 ),
@@ -3847,7 +3874,7 @@ fn cancel_pending_steer_by_id<W: Write>(
         output,
         StdioResponse::error_with_code(
             pending.id,
-            "steer",
+            pending.command,
             "request_cancelled",
             "deferred steer was cancelled before reissue",
         ),
@@ -6157,6 +6184,73 @@ where
                 )?;
                 return Ok(());
             }
+            // Decide `mode` and `expected_turn_id` at admission against the
+            // host's own view of this project's turn work. Deferring the
+            // check to `Agent::submit` would queue a `start_if_idle` behind
+            // the busy turn and then start it once idle, which is exactly
+            // what the caller asked not to happen.
+            let active = active_turn_job(jobs, project)?;
+            let busy = active.is_some()
+                || pending_steers
+                    .iter()
+                    .any(|pending| pending.project.project_id == project.project_id);
+            if mode == crate::protocol::TurnMode::StartIfIdle && busy {
+                write_retryable_response(
+                    output,
+                    StdioResponse::error_with_code(
+                        id,
+                        name,
+                        "not_idle",
+                        "start_if_idle was refused because a turn is active",
+                    )
+                    .for_version(request_version),
+                    replay,
+                )?;
+                return Ok(());
+            }
+            if let (Some(expected), Some((_, Some(active_turn_id)))) =
+                (expected_turn_id.as_deref(), active.as_ref())
+                && expected != active_turn_id
+            {
+                write_retryable_response(
+                    output,
+                    StdioResponse::error_with_code(
+                        id,
+                        name,
+                        "expected_turn_mismatch",
+                        "expected turn does not match the active request",
+                    )
+                    .for_version(request_version),
+                    replay,
+                )?;
+                return Ok(());
+            }
+            if mode == crate::protocol::TurnMode::Steer
+                && attachments.is_empty()
+                && let Some((job_id, active_turn_id)) = active
+            {
+                // An explicit steer while a turn runs takes the same
+                // cancel-and-reissue path as the `steer` command instead of
+                // queueing behind the turn it was meant to redirect.
+                enqueue_pending_steer(
+                    pending_steers,
+                    PendingSteer {
+                        owner: Arc::clone(shared),
+                        project: project.clone(),
+                        id,
+                        command: "prompt",
+                        version: request_version,
+                        text,
+                        expected_turn_id,
+                        target_job: job_id,
+                        cancel_sent: false,
+                        superseded_turn_id: active_turn_id,
+                    },
+                    output,
+                    replay,
+                )?;
+                return Ok(());
+            }
             let request = TurnInputRequest {
                 message: text,
                 expected_turn_id,
@@ -6210,23 +6304,7 @@ where
                 )?;
                 return Ok(());
             }
-            let active = if let Some((job_id, work)) = jobs
-                .iter()
-                .filter(|(_, work)| {
-                    work.project.project_id == project.project_id
-                        && (work.command == "prompt" || work.command == "steer")
-                })
-                .min_by_key(|(job_id, _)| job_id.get())
-            {
-                let active_turn_id = work
-                    .turn_id
-                    .lock()
-                    .map_err(|_| event_mailbox_headless_error())?
-                    .clone();
-                Some((*job_id, active_turn_id))
-            } else {
-                None
-            };
+            let active = active_turn_job(jobs, project)?;
             if let Some((job_id, active_turn_id)) = active {
                 if expected_turn_id.as_deref().is_some_and(|expected| {
                     active_turn_id
@@ -6255,6 +6333,7 @@ where
                         owner: Arc::clone(shared),
                         project: project.clone(),
                         id,
+                        command: "steer",
                         version: request_version,
                         text,
                         expected_turn_id,
@@ -6726,7 +6805,7 @@ where
                 output,
                 StdioResponse::error_with_code(
                     pending.id,
-                    "steer",
+                    pending.command,
                     "runtime_closed",
                     "steer was discarded while shutting down",
                 ),
@@ -6756,7 +6835,7 @@ where
                     output,
                     StdioResponse::error_with_code(
                         pending.id,
-                        "steer",
+                        pending.command,
                         "expected_turn_mismatch",
                         "expected turn does not match the active request",
                     ),
@@ -6790,7 +6869,7 @@ where
                             output,
                             StdioResponse::error_with_code(
                                 pending.id,
-                                "steer",
+                                pending.command,
                                 "runtime_closed",
                                 "runtime closed before steer cancellation was admitted",
                             ),
@@ -6813,7 +6892,7 @@ where
                         AsyncWork {
                             project: pending.project.clone(),
                             id: pending.id.clone(),
-                            command: "steer",
+                            command: pending.command,
                             version: pending.version,
                             events,
                             turn_id: started_turn_id,
@@ -6834,7 +6913,7 @@ where
                         output,
                         StdioResponse::error_with_code(
                             pending.id,
-                            "steer",
+                            pending.command,
                             "runtime_closed",
                             "runtime closed before steer reissue was admitted",
                         ),
@@ -6862,7 +6941,7 @@ where
                         AsyncWork {
                             project: pending.project.clone(),
                             id: pending.id.clone(),
-                            command: "steer",
+                            command: pending.command,
                             version: pending.version,
                             events,
                             turn_id: started_turn_id,
@@ -6880,7 +6959,7 @@ where
                         output,
                         StdioResponse::error_with_code(
                             pending.id,
-                            "steer",
+                            pending.command,
                             "runtime_closed",
                             "runtime closed before steer was admitted",
                         ),

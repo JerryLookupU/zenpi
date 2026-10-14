@@ -2639,3 +2639,135 @@ fn headless_connection_selection_requires_and_checks_the_revision() {
     assert!(records.iter().any(|record| record["id"] == "q"));
     assert_eq!(agent.selection_revision(), 0);
 }
+
+/// Holds the first provider call open until the test releases it, so the
+/// host is provably busy while follow-up prompts are admitted.
+struct GatedPromptBackend {
+    calls: AtomicUsize,
+    started: mpsc::SyncSender<()>,
+    release: Mutex<mpsc::Receiver<()>>,
+}
+
+impl Backend for GatedPromptBackend {
+    crate::support::controlled_local_backend!();
+    fn complete(&self, _: CompletionRequest<'_>) -> Result<Completion, BackendError> {
+        Ok(Completion::text("unused"))
+    }
+
+    fn complete_with_control(
+        &self,
+        _: CompletionRequest<'_>,
+        cancelled: &dyn Fn() -> bool,
+        _: &mut dyn FnMut(ProviderEvent) -> Result<(), BackendError>,
+    ) -> Result<Completion, BackendError> {
+        if self.calls.fetch_add(1, Ordering::AcqRel) == 0 {
+            let _ = self.started.send(());
+            let release = self.release.lock().unwrap();
+            loop {
+                if cancelled() {
+                    return Err(BackendError::Cancelled);
+                }
+                if release.recv_timeout(Duration::from_millis(5)).is_ok() {
+                    break;
+                }
+            }
+        }
+        Ok(Completion::text("gated answer"))
+    }
+
+    fn name(&self) -> &str {
+        "gated-prompt-fixture"
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn async_start_if_idle_is_rejected_at_admission_while_a_slow_prompt_runs() {
+    let (started_tx, started_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::channel();
+    let backend = GatedPromptBackend {
+        calls: AtomicUsize::new(0),
+        started: started_tx,
+        release: Mutex::new(release_rx),
+    };
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("start-if-idle.jsonl");
+    let agent = Agent::new(SessionStore::open(&path).unwrap(), Box::new(backend));
+    let (mut writer, reader) = std::os::unix::net::UnixStream::pair().unwrap();
+    let output = SharedWriter::default();
+    let captured = output.clone();
+    let host =
+        thread::spawn(move || zenpi::headless::run_async_streams(agent, reader, output).unwrap());
+    writeln!(
+        writer,
+        "{}",
+        serde_json::json!({"schema_version":2,"type":"prompt","id":"slow","text":"take a while"})
+    )
+    .unwrap();
+    started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    writeln!(
+        writer,
+        "{}",
+        serde_json::json!({"schema_version":2,"type":"prompt","id":"idle-only","text":"only if idle","mode":"start_if_idle"})
+    )
+    .unwrap();
+    writeln!(
+        writer,
+        "{}",
+        serde_json::json!({"schema_version":2,"type":"prompt","id":"stale","text":"stale turn","expected_turn_id":"turn-that-is-not-active"})
+    )
+    .unwrap();
+    // Both refusals must arrive while the first provider call is still held
+    // open: admission, not eventual execution, decides them.
+    wait_for_output(&captured, "\"id\":\"stale\"");
+    wait_for_output(&captured, "\"id\":\"idle-only\"");
+    let records = json_lines(&captured.0.lock().unwrap());
+    assert!(
+        !records
+            .iter()
+            .any(|record| record["id"] == "slow" && record["type"] == "response"),
+        "slow prompt finished before the refusals were checked: {records:?}"
+    );
+    for (id, code) in [
+        ("idle-only", "not_idle"),
+        ("stale", "expected_turn_mismatch"),
+    ] {
+        let responses: Vec<_> = records
+            .iter()
+            .filter(|record| record["id"] == id && record["type"] == "response")
+            .collect();
+        assert_eq!(responses.len(), 1, "{id}: {records:?}");
+        assert_eq!(responses[0]["success"], false);
+        assert_eq!(responses[0]["code"], code);
+        assert!(
+            !records
+                .iter()
+                .any(|record| record["id"] == id && record["type"] == "request_queued"),
+            "{id} was queued instead of refused"
+        );
+    }
+    release_tx.send(()).unwrap();
+    wait_for_output(&captured, "gated answer");
+    writeln!(
+        writer,
+        "{}",
+        serde_json::json!({"schema_version":2,"type":"shutdown","id":"stop"})
+    )
+    .unwrap();
+    drop(writer);
+    host.join().unwrap();
+    let records = json_lines(&captured.0.lock().unwrap());
+    let slow = records
+        .iter()
+        .find(|record| record["id"] == "slow" && record["type"] == "response")
+        .expect("slow prompt terminal response");
+    assert_eq!(slow["success"], true);
+    let session = SessionStore::open(&path).unwrap();
+    assert!(
+        session
+            .turns()
+            .iter()
+            .all(|turn| turn.content != "only if idle" && turn.content != "stale turn"),
+        "a refused prompt reached the journal"
+    );
+}
