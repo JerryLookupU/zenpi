@@ -6,9 +6,9 @@ use std::{
 use zenpi::{
     core::Agent,
     project_workspace::ProjectOwnerPool,
-    remote::{worker::WorkerOwner, worktree_runner::WorktreeRunner},
     runtime::{JobOutcome, RuntimeConfig, RuntimeEvent},
     session::SessionStore,
+    worktree::{worker::WorkerOwner, worktree_runner::WorktreeRunner},
 };
 
 fn pool(root: &Path, quota: u16) -> (ProjectOwnerPool, String, String) {

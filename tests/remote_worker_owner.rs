@@ -65,7 +65,7 @@ fn worker_slots_have_independent_journals_controls_and_restart_identity() {
     assert_eq!(first.control().input_port.session_id().as_str(), first_id);
     assert_eq!(second.control().project, project);
     let runner = BackgroundRunner::spawn_with_concurrency(
-        |(worker, text): (zenpi::remote::worker::WorkerOwner, String), token| {
+        |(worker, text): (zenpi::worktree::worker::WorkerOwner, String), token| {
             worker
                 .agent()
                 .lock()
@@ -454,7 +454,7 @@ fn sixty_four_prepared_owners_are_bounded_across_all_subtabs() {
         pool.worker_owner(&project, &tab, 0).is_ok(),
         "existing slot does not consume another owner"
     );
-    let runner = zenpi::remote::worktree_runner::WorktreeRunner::spawn(
+    let runner = zenpi::worktree::worktree_runner::WorktreeRunner::spawn(
         &mut pool,
         &project,
         &tab,

@@ -14,11 +14,11 @@ use super::{
     command::{CancelAdmissions, PromptProgress, SteerAdmissions},
     host_adapter::HostAdapter,
     protocol::{Envelope, ErrorCode, ExecutionState, Message, Operation},
-    subtab::SubtabExecution,
 };
 use crate::runtime::{
     BackgroundRunner, CancellationToken, JobOutcome, RuntimeConfig, RuntimeEvent,
 };
+use crate::worktree::subtab::SubtabExecution;
 use crate::{
     core::Agent,
     project_workspace::{MAX_PROJECT_TABS, ProjectOwnerPool},
@@ -209,7 +209,7 @@ impl HeadlessHost {
             let mut next_job = 0u64;
             let mut steer = SteerAdmissions::default();
             let mut cancel = CancelAdmissions;
-            let mut worktrees = super::worktree_host::WorktreeHost::default();
+            let mut worktrees = crate::worktree::worktree_host::WorktreeHost::default();
             while !stopping.load(Ordering::Acquire) {
                 worktrees.poll(&mut pool);
                 let mut completed = Vec::new();
@@ -292,7 +292,9 @@ impl HeadlessHost {
                             active.contains_key(project) || worktrees.busy(project),
                         ),
                         Some(Operation::Prompt)
-                            if super::worktree_host::WorktreeHost::is_worker_prompt(&request) =>
+                            if crate::worktree::worktree_host::WorktreeHost::is_worker_prompt(
+                                &request,
+                            ) =>
                         {
                             worktrees.dispatch_prompt(
                                 &mut pool,

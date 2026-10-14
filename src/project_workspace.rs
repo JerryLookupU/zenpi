@@ -314,7 +314,7 @@ pub(crate) struct NewSessionPlan {
     fingerprint: String,
     version: u16,
     remote_workspace: RemoteWorkspaceState,
-    subtabs: std::collections::BTreeMap<String, crate::remote::subtab::SubtabState>,
+    subtabs: std::collections::BTreeMap<String, crate::worktree::subtab::SubtabState>,
 }
 
 #[derive(Debug)]
@@ -494,8 +494,8 @@ pub struct ProjectOwnerPool {
     remote_workspace: RemoteWorkspaceState,
     remote_owner: String,
     pending_remote_receipt: Option<WorkspaceReceipt>,
-    subtabs: std::collections::BTreeMap<String, crate::remote::subtab::SubtabState>,
-    worker_owners: std::collections::BTreeMap<String, crate::remote::worker::WorkerOwner>,
+    subtabs: std::collections::BTreeMap<String, crate::worktree::subtab::SubtabState>,
+    worker_owners: std::collections::BTreeMap<String, crate::worktree::worker::WorkerOwner>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -822,8 +822,8 @@ struct WorkspaceReceipt {
 #[serde(deny_unknown_fields)]
 struct QuotaIntent {
     request: crate::remote::protocol::Envelope,
-    before: crate::remote::subtab::SubtabState,
-    candidate: crate::remote::subtab::SubtabState,
+    before: crate::worktree::subtab::SubtabState,
+    candidate: crate::worktree::subtab::SubtabState,
 }
 impl QuotaIntent {
     fn validate(&self, receipt: &WorkspaceReceipt, base: &Path) -> Result<(), String> {
@@ -899,8 +899,8 @@ impl QuotaIntent {
 #[serde(deny_unknown_fields)]
 struct WorktreeIntent {
     request: crate::remote::protocol::Envelope,
-    before: crate::remote::subtab::SubtabState,
-    candidate: crate::remote::subtab::SubtabState,
+    before: crate::worktree::subtab::SubtabState,
+    candidate: crate::worktree::subtab::SubtabState,
     path: PathBuf,
     branch: Option<String>,
 }
@@ -972,7 +972,8 @@ impl WorktreeIntent {
                     .iter()
                     .find(|tab| tab.id == id)
                     .ok_or("unknown removed tab")?;
-                if tab.kind != crate::remote::subtab::SubtabKind::Worktree || tab.root != self.path
+                if tab.kind != crate::worktree::subtab::SubtabKind::Worktree
+                    || tab.root != self.path
                 {
                     return Err("Git removal intent target disagrees with tab".into());
                 }
@@ -1380,7 +1381,7 @@ impl ProjectOwnerPool {
             #[serde(default)]
             remote_workspace: Option<serde_json::Map<String, serde_json::Value>>,
             #[serde(default)]
-            subtabs: std::collections::BTreeMap<String, crate::remote::subtab::SubtabState>,
+            subtabs: std::collections::BTreeMap<String, crate::worktree::subtab::SubtabState>,
         }
         let mut saved: Saved = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
         if saved.schema_version != 1 {
@@ -1457,7 +1458,7 @@ impl ProjectOwnerPool {
     pub fn subtab_state(
         &self,
         project: &str,
-    ) -> Result<crate::remote::subtab::SubtabState, String> {
+    ) -> Result<crate::worktree::subtab::SubtabState, String> {
         let tab = self
             .workspace
             .tabs()
@@ -1468,7 +1469,7 @@ impl ProjectOwnerPool {
             .get(project)
             .cloned()
             .map(Ok)
-            .unwrap_or_else(|| crate::remote::subtab::SubtabState::main(project, tab.cwd()))
+            .unwrap_or_else(|| crate::worktree::subtab::SubtabState::main(project, tab.cwd()))
     }
     pub fn has_subtab_state(&self, project: &str) -> bool {
         self.subtabs.contains_key(project)
@@ -1476,7 +1477,7 @@ impl ProjectOwnerPool {
     pub fn subtab_execution(
         &self,
         project: &str,
-    ) -> Result<crate::remote::subtab::SubtabExecution, String> {
+    ) -> Result<crate::worktree::subtab::SubtabExecution, String> {
         let state = self.subtab_state(project)?;
         let tab = state
             .tabs
@@ -1491,7 +1492,7 @@ impl ProjectOwnerPool {
             .ok_or("unknown project")?
             .cwd()
             .to_owned();
-        Ok(crate::remote::subtab::SubtabExecution { tab, project_root })
+        Ok(crate::worktree::subtab::SubtabExecution { tab, project_root })
     }
 
     /// Check the whole ownership range before preparing any new journals.
@@ -1510,13 +1511,13 @@ impl ProjectOwnerPool {
             .ok_or("unknown worker project")?
             .session_id;
         let keys = (start..end)
-            .map(|slot| crate::remote::worker::key(project, session, subtab, slot))
+            .map(|slot| crate::worktree::worker::key(project, session, subtab, slot))
             .collect::<Result<Vec<_>, _>>()?;
         let missing = keys
             .iter()
             .filter(|key| !self.worker_owners.contains_key(*key))
             .count();
-        Ok(self.worker_owners.len() + missing <= crate::remote::worker::MAX_WORKER_OWNERS)
+        Ok(self.worker_owners.len() + missing <= crate::worktree::worker::MAX_WORKER_OWNERS)
     }
 
     /// Prepare an independent slot from host-owned subtab state, not a client path.
@@ -1525,7 +1526,7 @@ impl ProjectOwnerPool {
         project: &str,
         subtab: &str,
         slot: u16,
-    ) -> Result<crate::remote::worker::WorkerOwner, String> {
+    ) -> Result<crate::worktree::worker::WorkerOwner, String> {
         if !self.has_workspace_checkpoint() {
             return Err("worker requires a durable owner checkpoint".into());
         }
@@ -1544,11 +1545,11 @@ impl ProjectOwnerPool {
             .context(project)
             .ok_or("unknown worker project")?
             .session_id;
-        let key = crate::remote::worker::key(project, session, subtab, slot)?;
+        let key = crate::worktree::worker::key(project, session, subtab, slot)?;
         if let Some(owner) = self.worker_owners.get(&key) {
             return Ok(owner.clone());
         }
-        if self.worker_owners.len() >= crate::remote::worker::MAX_WORKER_OWNERS {
+        if self.worker_owners.len() >= crate::worktree::worker::MAX_WORKER_OWNERS {
             return Err("worker owner capacity exhausted".into());
         }
         let master = self.owner(project).ok_or("missing worker master")?;
@@ -1562,7 +1563,7 @@ impl ProjectOwnerPool {
         {
             return Err("worker master is busy".into());
         }
-        let owner = crate::remote::worker::WorkerOwner::prepare(
+        let owner = crate::worktree::worker::WorkerOwner::prepare(
             project,
             session,
             self.sessions
@@ -1589,8 +1590,8 @@ impl ProjectOwnerPool {
         capacity: u16,
     ) -> Result<
         Vec<(
-            crate::remote::worker::WorkerOwner,
-            crate::remote::worker::WorkerClaim,
+            crate::worktree::worker::WorkerOwner,
+            crate::worktree::worker::WorkerClaim,
         )>,
         String,
     > {
@@ -1652,7 +1653,7 @@ impl ProjectOwnerPool {
             .try_lock()
             .map_err(|_| "quota growth master is busy")?;
         if guard.session().session_id() != session
-            || !crate::remote::worker::WorkerOwner::idle(&guard)
+            || !crate::worktree::worker::WorkerOwner::idle(&guard)
         {
             return Err("quota growth master is busy or changed".into());
         }
@@ -1663,18 +1664,18 @@ impl ProjectOwnerPool {
             .transpose()?;
         if arch_guard
             .as_ref()
-            .is_some_and(|agent| !crate::remote::worker::WorkerOwner::idle(agent))
+            .is_some_and(|agent| !crate::worktree::worker::WorkerOwner::idle(agent))
         {
             return Err("quota growth arch is busy".into());
         }
         let keys: Vec<_> = (capacity..target.concurrency)
-            .map(|slot| crate::remote::worker::key(project, session, subtab, slot))
+            .map(|slot| crate::worktree::worker::key(project, session, subtab, slot))
             .collect::<Result<_, _>>()?;
         let missing = keys
             .iter()
             .filter(|key| !self.worker_owners.contains_key(*key))
             .count();
-        if self.worker_owners.len() + missing > crate::remote::worker::MAX_WORKER_OWNERS {
+        if self.worker_owners.len() + missing > crate::worktree::worker::MAX_WORKER_OWNERS {
             return Err("quota growth owner capacity exhausted".into());
         }
         // Publish handles only after every new writer and runtime claim succeeds.
@@ -1683,7 +1684,7 @@ impl ProjectOwnerPool {
         for (slot, key) in (capacity..target.concurrency).zip(&keys) {
             let worker = match self.worker_owners.get(key) {
                 Some(worker) => worker.clone(),
-                None => crate::remote::worker::WorkerOwner::prepare(
+                None => crate::worktree::worker::WorkerOwner::prepare(
                     project,
                     session,
                     self.sessions
@@ -1706,7 +1707,7 @@ impl ProjectOwnerPool {
     }
 
     /// Worker controls remain reachable without taking an execution lock.
-    pub fn worker_handles(&self, project: &str) -> Vec<crate::remote::worker::WorkerOwner> {
+    pub fn worker_handles(&self, project: &str) -> Vec<crate::worktree::worker::WorkerOwner> {
         self.worker_owners
             .values()
             .filter(|owner| owner.control().project == project)
@@ -1724,7 +1725,7 @@ impl ProjectOwnerPool {
                 .agent()
                 .try_lock()
                 .map_err(|_| "project worker is busy")?;
-            if worker.runtime_owned() || !crate::remote::worker::WorkerOwner::idle(&guard) {
+            if worker.runtime_owned() || !crate::worktree::worker::WorkerOwner::idle(&guard) {
                 return Err("project worker is busy".into());
             }
             guards.push(guard);
@@ -1740,7 +1741,7 @@ impl ProjectOwnerPool {
     fn retired_workers(
         &self,
         project: &str,
-        candidate: &crate::remote::subtab::SubtabState,
+        candidate: &crate::worktree::subtab::SubtabState,
     ) -> Vec<String> {
         let Some(context) = self.context(project) else {
             return Vec::new();
@@ -1754,7 +1755,7 @@ impl ProjectOwnerPool {
                             && tab.root == owner.execution().tab.root
                             && tab.kind == owner.execution().tab.kind
                             && (0..tab.concurrency).any(|slot| {
-                                crate::remote::worker::key(
+                                crate::worktree::worker::key(
                                     project,
                                     &context.session_id,
                                     &tab.id,
@@ -1773,7 +1774,7 @@ impl ProjectOwnerPool {
         &mut self,
         project: &str,
         expected_revision: u64,
-        candidate: crate::remote::subtab::SubtabState,
+        candidate: crate::worktree::subtab::SubtabState,
     ) -> Result<(), String> {
         let before = self.subtab_state(project)?;
         if before.revision != expected_revision {
@@ -1803,7 +1804,7 @@ impl ProjectOwnerPool {
                 .agent()
                 .try_lock()
                 .map_err(|_| "subtab worker is busy")?;
-            if worker.runtime_owned() || !crate::remote::worker::WorkerOwner::idle(&guard) {
+            if worker.runtime_owned() || !crate::worktree::worker::WorkerOwner::idle(&guard) {
                 return Err("subtab worker is busy".into());
             }
             guards.push(guard);
@@ -1837,7 +1838,7 @@ impl ProjectOwnerPool {
     pub fn migrate_legacy_subtabs(
         &mut self,
         project: &str,
-        legacy: &[crate::remote::subtab::LegacySubtab],
+        legacy: &[crate::worktree::subtab::LegacySubtab],
         active_index: usize,
     ) -> Result<(), String> {
         if self.subtabs.contains_key(project) {
@@ -1849,15 +1850,19 @@ impl ProjectOwnerPool {
             .iter()
             .find(|tab| tab.id().as_str() == project)
             .ok_or("unknown project")?;
-        let mut candidate =
-            crate::remote::subtab::SubtabState::migrate(project, tab.cwd(), legacy, active_index)?;
+        let mut candidate = crate::worktree::subtab::SubtabState::migrate(
+            project,
+            tab.cwd(),
+            legacy,
+            active_index,
+        )?;
         candidate.revision = 1;
         self.commit_subtabs(project, 0, candidate)
     }
     pub(crate) fn commit_remote_subtabs(
         &mut self,
         project: &str,
-        candidate: crate::remote::subtab::SubtabState,
+        candidate: crate::worktree::subtab::SubtabState,
         device: &str,
         request: &str,
         fingerprint: &str,
@@ -1872,7 +1877,7 @@ impl ProjectOwnerPool {
         fingerprint: &str,
         scope: (&str, &str, &str, u64),
         configured: u16,
-    ) -> Result<crate::remote::subtab::SubtabState, String> {
+    ) -> Result<crate::worktree::subtab::SubtabState, String> {
         let receipt = self
             .remote_workspace
             .receipts
@@ -1925,12 +1930,12 @@ impl ProjectOwnerPool {
         fingerprint: &str,
         scope: (&str, &str, &str, u64),
         configured: u16,
-        workers: &[crate::remote::worker::WorkerOwner],
+        workers: &[crate::worktree::worker::WorkerOwner],
     ) -> Result<serde_json::Value, String> {
         let candidate = self.quota_candidate(device, request, fingerprint, scope, configured)?;
         let owner = self.owner(scope.0).ok_or("missing quota master")?;
         let guard = owner.try_lock().map_err(|_| "quota master is busy")?;
-        if !crate::remote::worker::WorkerOwner::idle(&guard) {
+        if !crate::worktree::worker::WorkerOwner::idle(&guard) {
             return Err("quota master is busy".into());
         }
         let arch = self.existing_arch_owner(scope.0);
@@ -1940,7 +1945,7 @@ impl ProjectOwnerPool {
             .transpose()?;
         if arch_guard
             .as_ref()
-            .is_some_and(|agent| !crate::remote::worker::WorkerOwner::idle(agent))
+            .is_some_and(|agent| !crate::worktree::worker::WorkerOwner::idle(agent))
         {
             return Err("quota arch is busy".into());
         }
@@ -1957,11 +1962,11 @@ impl ProjectOwnerPool {
     fn commit_remote_subtabs_inner(
         &mut self,
         project: &str,
-        candidate: crate::remote::subtab::SubtabState,
+        candidate: crate::worktree::subtab::SubtabState,
         device: &str,
         request: &str,
         fingerprint: &str,
-        runtime: Option<(&str, &str, &[crate::remote::worker::WorkerOwner])>,
+        runtime: Option<(&str, &str, &[crate::worktree::worker::WorkerOwner])>,
     ) -> Result<serde_json::Value, String> {
         let before = self.subtab_state(project)?;
         let tab = self
@@ -2008,7 +2013,7 @@ impl ProjectOwnerPool {
                 .agent()
                 .try_lock()
                 .map_err(|_| "subtab worker is busy")?;
-            if worker.runtime_owned() || !crate::remote::worker::WorkerOwner::idle(&guard) {
+            if worker.runtime_owned() || !crate::worktree::worker::WorkerOwner::idle(&guard) {
                 return Err("subtab worker is busy".into());
             }
             guards.push((worker, guard));
@@ -2125,7 +2130,7 @@ impl ProjectOwnerPool {
         device: &str,
         request: &crate::remote::protocol::Envelope,
         fingerprint: &str,
-        candidate: &crate::remote::subtab::SubtabState,
+        candidate: &crate::worktree::subtab::SubtabState,
     ) -> Result<(), String> {
         let id = request.id.as_deref().ok_or("missing quota request ID")?;
         let project = request
@@ -2258,7 +2263,7 @@ impl ProjectOwnerPool {
         intent.validate(&receipt, base)?;
         let master = self.owner(project).ok_or("quota master is missing")?;
         let guard = master.try_lock().map_err(|_| "quota master is busy")?;
-        if !crate::remote::worker::WorkerOwner::idle(&guard) {
+        if !crate::worktree::worker::WorkerOwner::idle(&guard) {
             return Err("quota master is busy".into());
         }
         let arch = self.existing_arch_owner(project);
@@ -2268,7 +2273,7 @@ impl ProjectOwnerPool {
             .transpose()?;
         if arch_guard
             .as_ref()
-            .is_some_and(|agent| !crate::remote::worker::WorkerOwner::idle(agent))
+            .is_some_and(|agent| !crate::worktree::worker::WorkerOwner::idle(agent))
         {
             return Err("quota arch owner is busy".into());
         }
@@ -2295,10 +2300,11 @@ impl ProjectOwnerPool {
             .join(".zenpi/workers");
         let mut leases = Vec::new();
         for slot in 0..crate::runtime::MAX_CONCURRENCY {
-            let key = crate::remote::worker::key(project, session, subtab, slot)?;
+            let key = crate::worktree::worker::key(project, session, subtab, slot)?;
             if !self.worker_owners.contains_key(&key)
-                && let Some(lease) =
-                    crate::remote::worker::existing_lease(&directory.join(format!("{key}.lease")))?
+                && let Some(lease) = crate::worktree::worker::existing_lease(
+                    &directory.join(format!("{key}.lease")),
+                )?
             {
                 leases.push(lease);
             }
@@ -2319,7 +2325,7 @@ impl ProjectOwnerPool {
         device: &str,
         request: &crate::remote::protocol::Envelope,
         fingerprint: &str,
-        candidate: &crate::remote::subtab::SubtabState,
+        candidate: &crate::worktree::subtab::SubtabState,
         path: &Path,
         branch: Option<&str>,
     ) -> Result<(), String> {
@@ -3290,7 +3296,7 @@ impl ProjectOwnerPool {
                 .agent()
                 .try_lock()
                 .map_err(|_| "project worker is busy")?;
-            if worker.runtime_owned() || !crate::remote::worker::WorkerOwner::idle(&agent) {
+            if worker.runtime_owned() || !crate::worktree::worker::WorkerOwner::idle(&agent) {
                 return Err("project worker is busy".into());
             }
             worker_guards.push(agent);
@@ -3480,7 +3486,7 @@ fn core_checkpoint(
     workspace: &impl Serialize,
     sessions: &std::collections::BTreeMap<String, PathBuf>,
     revision: u64,
-    subtabs: &std::collections::BTreeMap<String, crate::remote::subtab::SubtabState>,
+    subtabs: &std::collections::BTreeMap<String, crate::worktree::subtab::SubtabState>,
 ) -> Result<Vec<u8>, String> {
     serde_json::to_vec(
         &serde_json::json!({"schema_version":1, "workspace":workspace,
@@ -4069,7 +4075,7 @@ mod quota_intent_tests {
     ) -> (
         ProjectOwnerPool,
         Envelope,
-        crate::remote::subtab::SubtabState,
+        crate::worktree::subtab::SubtabState,
         String,
     ) {
         let owner = crate::core::Agent::with_echo(
@@ -4252,7 +4258,7 @@ mod quota_intent_tests {
                 .is_err()
         );
         drop(lock);
-        let runner = crate::remote::worktree_runner::WorktreeRunner::spawn(
+        let runner = crate::worktree::worktree_runner::WorktreeRunner::spawn(
             &mut pool,
             project,
             &before.active_id,
@@ -4427,7 +4433,7 @@ mod quota_intent_tests {
         let (entered, starts) = mpsc::channel();
         let released = Arc::new((Mutex::new(vec![false; 4]), std::sync::Condvar::new()));
         let gates = released.clone();
-        let mut runner = crate::remote::worktree_runner::WorktreeRunner::spawn(
+        let mut runner = crate::worktree::worktree_runner::WorktreeRunner::spawn(
             &mut pool,
             project,
             &before.active_id,
@@ -4574,7 +4580,7 @@ mod quota_intent_tests {
         let device = "a".repeat(64);
         let project = request.project_id.as_deref().unwrap();
         let before = pool.subtab_state(project).unwrap();
-        let mut runner = crate::remote::worktree_runner::WorktreeRunner::spawn(
+        let mut runner = crate::worktree::worktree_runner::WorktreeRunner::spawn(
             &mut pool,
             project,
             &before.active_id,
@@ -4584,7 +4590,7 @@ mod quota_intent_tests {
         .unwrap();
         pool.reserve_remote_quota(&device, &request, &digest, &candidate)
             .unwrap();
-        let key = crate::remote::worker::key(
+        let key = crate::worktree::worker::key(
             project,
             pool.active_context().session_id.as_str(),
             &before.active_id,
@@ -4659,7 +4665,7 @@ mod quota_intent_tests {
             before.rename(&before.active_id, "newer").unwrap(),
         )
         .unwrap();
-        let mut runner = crate::remote::worktree_runner::WorktreeRunner::spawn(
+        let mut runner = crate::worktree::worktree_runner::WorktreeRunner::spawn(
             &mut pool,
             project,
             &before.active_id,
@@ -4704,7 +4710,7 @@ mod quota_intent_tests {
         let (release, gate) = mpsc::channel();
         let gate = Mutex::new(gate);
         let (finished, ends) = mpsc::channel();
-        let mut runner = crate::remote::worktree_runner::WorktreeRunner::spawn(
+        let mut runner = crate::worktree::worktree_runner::WorktreeRunner::spawn(
             &mut pool,
             project,
             &before.active_id,
@@ -4836,7 +4842,7 @@ mod quota_intent_tests {
         let (started, starts) = mpsc::channel();
         let release = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let gates = release.clone();
-        let mut runner = crate::remote::worktree_runner::WorktreeRunner::spawn(
+        let mut runner = crate::worktree::worktree_runner::WorktreeRunner::spawn(
             &mut pool,
             project,
             &before.active_id,
@@ -4982,7 +4988,7 @@ mod quota_intent_tests {
         let device = "a".repeat(64);
         let project = request.project_id.as_deref().unwrap();
         let before = pool.subtab_state(project).unwrap();
-        let mut runner = crate::remote::worktree_runner::WorktreeRunner::spawn(
+        let mut runner = crate::worktree::worktree_runner::WorktreeRunner::spawn(
             &mut pool,
             project,
             &before.active_id,
@@ -5043,7 +5049,7 @@ mod quota_intent_tests {
         let project = request.project_id.as_deref().unwrap();
         let before = pool.subtab_state(project).unwrap();
         let (started, starts) = mpsc::channel();
-        let mut runner = crate::remote::worktree_runner::WorktreeRunner::spawn(
+        let mut runner = crate::worktree::worktree_runner::WorktreeRunner::spawn(
             &mut pool,
             project,
             &before.active_id,
@@ -5089,7 +5095,7 @@ mod quota_intent_tests {
         let device = "a".repeat(64);
         let project = request.project_id.as_deref().unwrap();
         let before = pool.subtab_state(project).unwrap();
-        let mut runner = crate::remote::worktree_runner::WorktreeRunner::spawn(
+        let mut runner = crate::worktree::worktree_runner::WorktreeRunner::spawn(
             &mut pool,
             project,
             &before.active_id,
@@ -5104,7 +5110,7 @@ mod quota_intent_tests {
             match change {
                 "quota" => changed.tabs[0].concurrency = 2,
                 "root" => changed.tabs[0].root = root.join("different"),
-                "kind" => changed.tabs[0].kind = crate::remote::subtab::SubtabKind::InPlace,
+                "kind" => changed.tabs[0].kind = crate::worktree::subtab::SubtabKind::InPlace,
                 "regression" => changed.revision = captured - 1,
                 _ => changed.tabs.clear(),
             }

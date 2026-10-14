@@ -1,10 +1,10 @@
 //! Host-owned layer-2 identities. Display names and vector indices are not identities.
 
-use super::{
+use crate::project_workspace::ProjectOwnerPool;
+use crate::remote::{
     auth::{AuthenticatedDevice, DeviceRegistry},
     protocol::{Envelope, ErrorCode, Message, Operation},
 };
-use crate::project_workspace::ProjectOwnerPool;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 

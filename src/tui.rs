@@ -14427,7 +14427,7 @@ pub fn dispatch_slash_command(
 /// session and tool root. Preparing another project never locks a running one.
 pub struct ProjectRuntimeHost {
     pool: crate::project_workspace::ProjectOwnerPool,
-    worktrees: crate::remote::worktree_host::WorktreeHost,
+    worktrees: crate::worktree::worktree_host::WorktreeHost,
 }
 impl ProjectRuntimeHost {
     pub fn new(
@@ -14450,7 +14450,7 @@ impl ProjectRuntimeHost {
         drop(owner);
         let mut host = Self {
             pool: crate::project_workspace::ProjectOwnerPool::new(Arc::clone(&agent))?,
-            worktrees: crate::remote::worktree_host::WorktreeHost::default(),
+            worktrees: crate::worktree::worktree_host::WorktreeHost::default(),
         };
         // ZS1-180: propagate the pool's auto-approval mode into the view so
         // project switches keep Never instead of restoring metadata.
@@ -14585,14 +14585,14 @@ impl ProjectRuntimeHost {
                 });
                 let legacy = legacy
                     .into_iter()
-                    .map(|tab| crate::remote::subtab::LegacySubtab {
+                    .map(|tab| crate::worktree::subtab::LegacySubtab {
                         name: tab.name,
                         root: tab.root,
                         concurrency: tab.concurrency,
                         kind: match tab.kind {
-                            SubTabKind::Main => crate::remote::subtab::SubtabKind::Main,
-                            SubTabKind::InPlace => crate::remote::subtab::SubtabKind::InPlace,
-                            SubTabKind::Worktree => crate::remote::subtab::SubtabKind::Worktree,
+                            SubTabKind::Main => crate::worktree::subtab::SubtabKind::Main,
+                            SubTabKind::InPlace => crate::worktree::subtab::SubtabKind::InPlace,
+                            SubTabKind::Worktree => crate::worktree::subtab::SubtabKind::Worktree,
                         },
                     })
                     .collect::<Vec<_>>();
@@ -14625,9 +14625,9 @@ impl ProjectRuntimeHost {
                     root: tab.root.display().to_string(),
                     concurrency: tab.concurrency,
                     kind: match tab.kind {
-                        crate::remote::subtab::SubtabKind::Main => SubTabKind::Main,
-                        crate::remote::subtab::SubtabKind::InPlace => SubTabKind::InPlace,
-                        crate::remote::subtab::SubtabKind::Worktree => SubTabKind::Worktree,
+                        crate::worktree::subtab::SubtabKind::Main => SubTabKind::Main,
+                        crate::worktree::subtab::SubtabKind::InPlace => SubTabKind::InPlace,
+                        crate::worktree::subtab::SubtabKind::Worktree => SubTabKind::Worktree,
                     },
                 })
                 .collect(),
@@ -14644,20 +14644,20 @@ impl ProjectRuntimeHost {
             };
             let legacy = tabs
                 .iter()
-                .map(|tab| crate::remote::subtab::LegacySubtab {
+                .map(|tab| crate::worktree::subtab::LegacySubtab {
                     name: tab.name.clone(),
                     root: tab.root.clone(),
                     concurrency: tab.concurrency,
                     kind: match tab.kind {
-                        SubTabKind::Main => crate::remote::subtab::SubtabKind::Main,
-                        SubTabKind::InPlace => crate::remote::subtab::SubtabKind::InPlace,
-                        SubTabKind::Worktree => crate::remote::subtab::SubtabKind::Worktree,
+                        SubTabKind::Main => crate::worktree::subtab::SubtabKind::Main,
+                        SubTabKind::InPlace => crate::worktree::subtab::SubtabKind::InPlace,
+                        SubTabKind::Worktree => crate::worktree::subtab::SubtabKind::Worktree,
                     },
                 })
                 .collect::<Vec<_>>();
             let before = self.pool.subtab_state(id)?;
             let result = (|| {
-                let mut candidate = crate::remote::subtab::SubtabState::migrate(
+                let mut candidate = crate::worktree::subtab::SubtabState::migrate(
                     id,
                     tab.cwd(),
                     &legacy,
@@ -14683,7 +14683,7 @@ impl ProjectRuntimeHost {
     pub fn host_subtab_state(
         &self,
         project: &str,
-    ) -> Result<crate::remote::subtab::SubtabState, String> {
+    ) -> Result<crate::worktree::subtab::SubtabState, String> {
         self.pool.subtab_state(project)
     }
     pub fn active(&self, state: &TuiState) -> Arc<Mutex<crate::core::Agent>> {
@@ -14708,7 +14708,7 @@ impl ProjectRuntimeHost {
         &self,
         state: &TuiState,
     ) -> Result<String, crate::remote::protocol::ErrorCode> {
-        use crate::remote::{protocol::ErrorCode, subtab::SubtabKind};
+        use crate::{remote::protocol::ErrorCode, worktree::subtab::SubtabKind};
         let tabs = self
             .pool
             .subtab_state(state.active_project())
@@ -15064,7 +15064,7 @@ impl ProjectRuntimeHost {
         {
             return response;
         }
-        if crate::remote::worktree_host::WorktreeHost::is_worker_prompt(&request) {
+        if crate::worktree::worktree_host::WorktreeHost::is_worker_prompt(&request) {
             return self.worktrees.dispatch_prompt(
                 &mut self.pool,
                 registry,
@@ -16274,7 +16274,7 @@ struct TuiRequest {
     remote_prompt: bool,
     remote_identity: Option<(crate::remote::protocol::Envelope, String)>,
     local_preview_project: Option<String>,
-    execution: Option<Result<crate::remote::subtab::SubtabExecution, String>>,
+    execution: Option<Result<crate::worktree::subtab::SubtabExecution, String>>,
     provider_events: Arc<Mutex<TuiProviderEventBuffer>>,
 }
 
@@ -18494,7 +18494,8 @@ fn run_tui_loop(
                             || active_job.is_some()
                             || !pending_inputs.inputs.is_empty()
                             || admitted.contains(&project);
-                        if crate::remote::worktree_host::WorktreeHost::is_worker_prompt(&request) {
+                        if crate::worktree::worktree_host::WorktreeHost::is_worker_prompt(&request)
+                        {
                             let mut worker_admitted = admitted.clone();
                             if busy {
                                 worker_admitted.insert(project.clone());

@@ -6,8 +6,8 @@ use std::{
 use zenpi::{
     core::Agent,
     project_workspace::ProjectOwnerPool,
-    remote::subtab::{LegacySubtab, SubtabKind, SubtabState},
     session::SessionStore,
+    worktree::subtab::{LegacySubtab, SubtabKind, SubtabState},
 };
 
 // Owner preparation deliberately validates config, even with EchoBackend.
@@ -440,7 +440,7 @@ fn subtab_resource_limits_and_revision_exhaustion_do_not_mutate_the_candidate() 
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
     let mut old = legacy(&root);
-    for index in old.len()..zenpi::remote::subtab::MAX_SUBTABS {
+    for index in old.len()..zenpi::worktree::subtab::MAX_SUBTABS {
         old.push(LegacySubtab {
             name: format!("tab-{index}"),
             root: root.join(format!("planned-{index}")).display().to_string(),

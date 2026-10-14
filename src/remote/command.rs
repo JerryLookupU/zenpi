@@ -548,7 +548,7 @@ pub fn dispatch_prompt(
     submit: impl FnOnce(
         Arc<Mutex<Agent>>,
         String,
-        super::subtab::SubtabExecution,
+        crate::worktree::subtab::SubtabExecution,
     ) -> Result<String, ErrorCode>,
 ) -> Envelope {
     let mut response =

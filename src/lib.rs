@@ -51,6 +51,7 @@ pub mod tool_runtime;
 pub mod tools;
 pub mod tui;
 pub mod view_model;
+pub mod worktree;
 
 #[cfg(unix)]
 mod external_editor;

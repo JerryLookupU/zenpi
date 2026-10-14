@@ -4509,7 +4509,7 @@ fn remote_prompt_identity_fences_other_operations_restart_and_missing_journal() 
         let code = match operation {
             Operation::WorkspaceSelect => mutate(&mut host, &registry, &phone, &cross).unwrap_err(),
             Operation::SubtabSelect => {
-                zenpi::remote::subtab::mutate(&mut host, &registry, &phone, &cross).unwrap_err()
+                zenpi::worktree::subtab::mutate(&mut host, &registry, &phone, &cross).unwrap_err()
             }
             Operation::Cancel => CancelAdmissions
                 .dispatch(&mut host, &registry, &phone, &cross, None, || panic!())
@@ -5316,7 +5316,8 @@ fn remote_cancel_checkpoint_conflict_refuses_side_effect_and_legacy_receipts_are
 
 #[test]
 fn remote_git_worktree_create_close_dirty_refusal_and_restart_deduplication() {
-    use zenpi::remote::{host_adapter::HostAdapter, protocol::ExecutionState, subtab};
+    use zenpi::remote::{host_adapter::HostAdapter, protocol::ExecutionState};
+    use zenpi::worktree::subtab;
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
     let git = |args: &[&str]| {
@@ -5586,7 +5587,8 @@ fn post_git_checkpoint_conflict_preserves_unknown_intent_without_reexecution() {
 #[cfg(unix)]
 fn operator_reconciles_observed_create_and_remove_without_git_replay() {
     use std::os::unix::fs::PermissionsExt;
-    use zenpi::remote::{host_adapter::HostAdapter, protocol::ExecutionState, subtab};
+    use zenpi::remote::{host_adapter::HostAdapter, protocol::ExecutionState};
+    use zenpi::worktree::subtab;
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
     let git = |args: &[&str]| {
@@ -5819,7 +5821,7 @@ fn operator_reconciles_observed_create_and_remove_without_git_replay() {
 
 #[test]
 fn remote_directory_tabs_are_contained_non_destructive_and_exact_retry_safe() {
-    use zenpi::remote::subtab::mutate;
+    use zenpi::worktree::subtab::mutate;
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
     let inside = root.join("inside");
@@ -5933,10 +5935,8 @@ fn remote_directory_tabs_are_contained_non_destructive_and_exact_retry_safe() {
 
 #[test]
 fn subtab_remote_control_is_acl_revision_fenced_durable_and_reconciles_desktop() {
-    use zenpi::remote::{
-        host_adapter::HostAdapter,
-        subtab::{LegacySubtab, SubtabKind},
-    };
+    use zenpi::remote::host_adapter::HostAdapter;
+    use zenpi::worktree::subtab::{LegacySubtab, SubtabKind};
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
     let mut host = pool(&root);
@@ -5988,18 +5988,18 @@ fn subtab_remote_control_is_acl_revision_fenced_durable_and_reconciles_desktop()
         json!({"subtab_id":target,"subtab_revision":state.revision,"name":"renamed"}),
     );
     assert_eq!(
-        zenpi::remote::subtab::mutate(&mut host, &registry, &read_only, &rename),
+        zenpi::worktree::subtab::mutate(&mut host, &registry, &read_only, &rename),
         Err(ErrorCode::Unauthorized)
     );
     assert_eq!(
-        zenpi::remote::subtab::mutate(&mut host, &registry, &foreign, &rename),
+        zenpi::worktree::subtab::mutate(&mut host, &registry, &foreign, &rename),
         Err(ErrorCode::Unauthorized)
     );
-    let result = zenpi::remote::subtab::mutate(&mut host, &registry, &phone, &rename).unwrap();
+    let result = zenpi::worktree::subtab::mutate(&mut host, &registry, &phone, &rename).unwrap();
     assert_eq!(host.subtab_state(&project).unwrap().tabs[2].name, "renamed");
     let revision = host.workspace_revision();
     assert_eq!(
-        zenpi::remote::subtab::mutate(&mut host, &registry, &phone, &rename).unwrap(),
+        zenpi::worktree::subtab::mutate(&mut host, &registry, &phone, &rename).unwrap(),
         result
     );
     assert_eq!(host.workspace_revision(), revision);
@@ -6008,7 +6008,7 @@ fn subtab_remote_control_is_acl_revision_fenced_durable_and_reconciles_desktop()
         arguments["name"] = json!("different");
     }
     assert_eq!(
-        zenpi::remote::subtab::mutate(&mut host, &registry, &phone, &conflict),
+        zenpi::worktree::subtab::mutate(&mut host, &registry, &phone, &conflict),
         Err(ErrorCode::RequestIdConflict)
     );
     let state = host.subtab_state(&project).unwrap();
@@ -6020,7 +6020,7 @@ fn subtab_remote_control_is_acl_revision_fenced_durable_and_reconciles_desktop()
         json!({"subtab_id":target,"subtab_revision":state.revision-1}),
     );
     assert_eq!(
-        zenpi::remote::subtab::mutate(&mut host, &registry, &phone, &stale),
+        zenpi::worktree::subtab::mutate(&mut host, &registry, &phone, &stale),
         Err(ErrorCode::RevisionConflict)
     );
     let select = request(
@@ -6053,7 +6053,7 @@ fn subtab_remote_control_is_acl_revision_fenced_durable_and_reconciles_desktop()
             ErrorCode::InvalidRequest
         };
         assert_eq!(
-            zenpi::remote::subtab::mutate(&mut host, &registry, &phone, &invalid),
+            zenpi::worktree::subtab::mutate(&mut host, &registry, &phone, &invalid),
             Err(expected)
         );
         assert_eq!(host.subtab_state(&project).unwrap(), state);
@@ -6061,14 +6061,14 @@ fn subtab_remote_control_is_acl_revision_fenced_durable_and_reconciles_desktop()
     let arch = host.arch_agent(&project).unwrap();
     let arch_guard = arch.lock().unwrap();
     assert_eq!(
-        zenpi::remote::subtab::mutate(&mut host, &registry, &phone, &select),
+        zenpi::worktree::subtab::mutate(&mut host, &registry, &phone, &select),
         Err(ErrorCode::Busy)
     );
     drop(arch_guard);
     let owner = host.active();
     let held = owner.lock().unwrap();
     assert_eq!(
-        zenpi::remote::subtab::mutate(&mut host, &registry, &phone, &select),
+        zenpi::worktree::subtab::mutate(&mut host, &registry, &phone, &select),
         Err(ErrorCode::Busy)
     );
     drop(held);
@@ -6089,14 +6089,14 @@ fn subtab_remote_control_is_acl_revision_fenced_durable_and_reconciles_desktop()
         "move",
         json!({"subtab_id":target,"subtab_revision":state.revision,"before_id":state.tabs[1].id}),
     );
-    zenpi::remote::subtab::mutate(&mut host, &registry, &phone, &move_request).unwrap();
+    zenpi::worktree::subtab::mutate(&mut host, &registry, &phone, &move_request).unwrap();
     let committed = host.subtab_state(&project).unwrap();
     assert_eq!(committed.tabs[1].id, target);
     drop(host);
     let mut host = pool(&root);
     assert_eq!(host.subtab_state(&project).unwrap(), committed);
     assert_eq!(
-        zenpi::remote::subtab::mutate(&mut host, &registry, &phone, &rename).unwrap(),
+        zenpi::worktree::subtab::mutate(&mut host, &registry, &phone, &rename).unwrap(),
         result
     );
     let list = Envelope {
@@ -6110,17 +6110,17 @@ fn subtab_remote_control_is_acl_revision_fenced_durable_and_reconciles_desktop()
             },
         )
     };
-    let visible = zenpi::remote::subtab::listing(&host, &registry, &read_only, &list).unwrap();
+    let visible = zenpi::worktree::subtab::listing(&host, &registry, &read_only, &list).unwrap();
     assert_eq!(visible["active_subtab_id"], target);
     assert_eq!(visible["subtab_control"], false);
     assert!(!visible.to_string().contains(&root.display().to_string()));
     assert_eq!(
-        zenpi::remote::subtab::listing(&host, &registry, &foreign, &list),
+        zenpi::worktree::subtab::listing(&host, &registry, &foreign, &list),
         Err(ErrorCode::Unauthorized)
     );
     registry.revoke(phone.id()).unwrap();
     assert_eq!(
-        zenpi::remote::subtab::mutate(&mut host, &registry, &phone, &rename),
+        zenpi::worktree::subtab::mutate(&mut host, &registry, &phone, &rename),
         Err(ErrorCode::Unauthorized)
     );
 }
@@ -6157,18 +6157,18 @@ fn remote_subtab_write_refuses_busy_worker_before_checkpoint_and_retries_exactly
     let before = std::fs::read(&path).unwrap();
     let guard = worker.agent().lock().unwrap();
     assert_eq!(
-        zenpi::remote::subtab::mutate(&mut host, &registry, &phone, &rename),
+        zenpi::worktree::subtab::mutate(&mut host, &registry, &phone, &rename),
         Err(ErrorCode::Busy)
     );
     assert_eq!(std::fs::read(&path).unwrap(), before);
     assert_eq!(host.subtab_state(&project).unwrap(), state);
     drop(guard);
-    let result = zenpi::remote::subtab::mutate(&mut host, &registry, &phone, &rename).unwrap();
+    let result = zenpi::worktree::subtab::mutate(&mut host, &registry, &phone, &rename).unwrap();
     let after = std::fs::read(&path).unwrap();
     let guard = worker.agent().lock().unwrap();
     // A durable exact receipt is still queryable while execution is busy.
     assert_eq!(
-        zenpi::remote::subtab::mutate(&mut host, &registry, &phone, &rename).unwrap(),
+        zenpi::worktree::subtab::mutate(&mut host, &registry, &phone, &rename).unwrap(),
         result
     );
     assert_eq!(std::fs::read(&path).unwrap(), after);
@@ -6178,10 +6178,9 @@ fn remote_subtab_write_refuses_busy_worker_before_checkpoint_and_retries_exactly
 #[test]
 fn worker_admission_is_durable_device_scoped_and_exact_retries_never_run_again() {
     use zenpi::{
-        remote::{
-            protocol::ExecutionState, worker_admission::dispatch, worktree_runner::WorktreeRunner,
-        },
+        remote::protocol::ExecutionState,
         runtime::{JobOutcome, RuntimeConfig, RuntimeEvent},
+        worktree::{worker_admission::dispatch, worktree_runner::WorktreeRunner},
     };
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
@@ -6286,8 +6285,8 @@ fn worker_admission_is_durable_device_scoped_and_exact_retries_never_run_again()
 #[test]
 fn worker_admission_refusals_leave_checkpoint_and_worker_history_unchanged() {
     use zenpi::{
-        remote::{worker_admission::dispatch, worktree_runner::WorktreeRunner},
         runtime::RuntimeConfig,
+        worktree::{worker_admission::dispatch, worktree_runner::WorktreeRunner},
     };
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
@@ -6389,10 +6388,9 @@ fn worker_admission_refusals_leave_checkpoint_and_worker_history_unchanged() {
 #[test]
 fn worker_checkpoint_only_reservation_after_crash_is_unknown_and_never_resubmitted() {
     use zenpi::{
-        remote::{
-            protocol::ExecutionState, worker_admission::dispatch, worktree_runner::WorktreeRunner,
-        },
+        remote::protocol::ExecutionState,
         runtime::{RuntimeConfig, RuntimeEvent},
+        worktree::{worker_admission::dispatch, worktree_runner::WorktreeRunner},
     };
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
@@ -6484,10 +6482,9 @@ fn worker_checkpoint_only_reservation_after_crash_is_unknown_and_never_resubmitt
 #[test]
 fn worker_journal_import_restores_cross_owner_request_binding_before_new_submission() {
     use zenpi::{
-        remote::{
-            protocol::ExecutionState, worker_admission::dispatch, worktree_runner::WorktreeRunner,
-        },
+        remote::protocol::ExecutionState,
         runtime::{RuntimeConfig, RuntimeEvent},
+        worktree::{worker_admission::dispatch, worktree_runner::WorktreeRunner},
     };
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
@@ -6562,13 +6559,13 @@ fn worker_journal_import_restores_cross_owner_request_binding_before_new_submiss
 #[test]
 fn tracked_worker_completion_survives_master_contention_and_restart_without_duplicate_append() {
     use zenpi::{
-        remote::{
-            protocol::ExecutionState,
+        remote::protocol::ExecutionState,
+        runtime::{RuntimeConfig, RuntimeEvent},
+        worktree::{
             worker_admission::dispatch_tracked,
             worker_progress::{WorkerProgress, listing},
             worktree_runner::WorktreeRunner,
         },
-        runtime::{RuntimeConfig, RuntimeEvent},
     };
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
@@ -6654,11 +6651,11 @@ fn tracked_worker_completion_survives_master_contention_and_restart_without_dupl
 #[test]
 fn worker_progress_append_failure_is_unknown_and_never_blindly_retried() {
     use zenpi::{
-        remote::{
+        runtime::{RuntimeConfig, RuntimeEvent},
+        worktree::{
             worker_admission::dispatch_tracked, worker_progress::WorkerProgress,
             worktree_runner::WorktreeRunner,
         },
-        runtime::{RuntimeConfig, RuntimeEvent},
     };
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
@@ -6724,12 +6721,12 @@ fn worker_progress_append_failure_is_unknown_and_never_blindly_retried() {
 #[test]
 fn worker_completed_output_survives_restart_redacted_without_rewriting_private_worker_journal() {
     use zenpi::{
-        remote::{
+        runtime::{RuntimeConfig, RuntimeEvent},
+        worktree::{
             worker_admission::dispatch_tracked,
             worker_progress::{WorkerProgress, listing},
             worktree_runner::WorktreeRunner,
         },
-        runtime::{RuntimeConfig, RuntimeEvent},
     };
     for body in ["public answer\nAPI_KEY=PRIVATE_COMPLETED_SECRET\n-----BEGIN PRIVATE KEY-----\nPRIVATE_BODY\n-----END PRIVATE KEY-----\nend".to_owned(), "\u{754c}".repeat(2000)] {
         let temp = tempfile::tempdir().unwrap();
@@ -6774,13 +6771,13 @@ fn worker_completed_output_survives_restart_redacted_without_rewriting_private_w
 #[test]
 fn tracked_worker_queue_rejection_is_durable_failure_not_permanent_accepted() {
     use zenpi::{
-        remote::{
-            protocol::ExecutionState,
+        remote::protocol::ExecutionState,
+        runtime::{RuntimeConfig, RuntimeEvent},
+        worktree::{
             worker_admission::dispatch_tracked,
             worker_progress::{WorkerProgress, listing},
             worktree_runner::WorktreeRunner,
         },
-        runtime::{RuntimeConfig, RuntimeEvent},
     };
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
@@ -6878,11 +6875,12 @@ fn tracked_worker_queue_rejection_is_durable_failure_not_permanent_accepted() {
 #[test]
 fn worker_cancellation_is_device_scoped_exact_retry_safe_and_does_not_stop_other_slots() {
     use zenpi::{
-        remote::{
-            protocol::ExecutionState, worker_admission::dispatch_tracked,
-            worker_progress::WorkerProgress, worktree_runner::WorktreeRunner,
-        },
+        remote::protocol::ExecutionState,
         runtime::{RuntimeConfig, RuntimeEvent},
+        worktree::{
+            worker_admission::dispatch_tracked, worker_progress::WorkerProgress,
+            worktree_runner::WorktreeRunner,
+        },
     };
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
@@ -7096,11 +7094,12 @@ fn worker_cancellation_is_device_scoped_exact_retry_safe_and_does_not_stop_other
 #[test]
 fn old_worker_tracker_cannot_cancel_a_new_runner_even_when_its_job_ids_restart() {
     use zenpi::{
-        remote::{
-            protocol::ExecutionState, worker_admission::dispatch_tracked,
-            worker_progress::WorkerProgress, worktree_runner::WorktreeRunner,
-        },
+        remote::protocol::ExecutionState,
         runtime::RuntimeConfig,
+        worktree::{
+            worker_admission::dispatch_tracked, worker_progress::WorkerProgress,
+            worktree_runner::WorktreeRunner,
+        },
     };
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
@@ -7170,11 +7169,12 @@ fn old_worker_tracker_cannot_cancel_a_new_runner_even_when_its_job_ids_restart()
 #[test]
 fn two_devices_using_the_same_worker_request_string_cancel_only_their_own_job() {
     use zenpi::{
-        remote::{
-            protocol::ExecutionState, worker_admission::dispatch_tracked,
-            worker_progress::WorkerProgress, worktree_runner::WorktreeRunner,
-        },
+        remote::protocol::ExecutionState,
         runtime::{RuntimeConfig, RuntimeEvent},
+        worktree::{
+            worker_admission::dispatch_tracked, worker_progress::WorkerProgress,
+            worktree_runner::WorktreeRunner,
+        },
     };
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
@@ -8421,10 +8421,9 @@ fn desktop_worker_route_executes_independent_turn_and_retries_across_headless_re
 #[test]
 fn remote_concurrency_is_durable_cas_fenced_and_drives_real_worker_quota() {
     use zenpi::{
-        remote::{
-            host_adapter::HostAdapter, protocol::ExecutionState, worktree_runner::WorktreeRunner,
-        },
+        remote::{host_adapter::HostAdapter, protocol::ExecutionState},
         runtime::{RuntimeConfig, RuntimeEvent},
+        worktree::worktree_runner::WorktreeRunner,
     };
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();

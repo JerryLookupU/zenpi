@@ -6978,7 +6978,7 @@ impl Agent {
 pub struct ProcessResult {
     pub submission: TurnSubmission,
     pub assistant: Option<Turn>,
-    pub(crate) worker_history_evidence: Option<crate::remote::worker::HistoryEvidence>,
+    pub(crate) worker_history_evidence: Option<crate::worktree::worker::HistoryEvidence>,
 }
 
 fn admit_provider_send(
