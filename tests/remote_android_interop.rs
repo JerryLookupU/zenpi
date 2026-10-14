@@ -25,7 +25,7 @@ fn request(id: &str, project: &str, session: &str, payload: Message) -> Envelope
 }
 
 #[test]
-#[ignore = "requires freshly compiled Android JVM classes; run by source checker"]
+#[ignore = "needs Android JVM classes; run tools/build_android_interop_classes.sh --run"]
 fn android_p256_pair_and_challenge_proofs_are_verified_by_rust() {
     use zenpi::remote::{
         auth::verify_pairing_proof,
@@ -283,7 +283,7 @@ fn android_p256_pair_and_challenge_proofs_are_verified_by_rust() {
 }
 
 #[test]
-#[ignore = "requires freshly compiled Android JVM classes; run by source checker"]
+#[ignore = "needs Android JVM classes; run tools/build_android_interop_classes.sh --run"]
 fn android_generated_rename_roundtrips_through_the_current_host() {
     let classpath = std::env::var("ZENPI_ANDROID_INTEROP_CLASSPATH").unwrap();
     let java = std::env::var("ZENPI_ANDROID_INTEROP_JAVA").unwrap();

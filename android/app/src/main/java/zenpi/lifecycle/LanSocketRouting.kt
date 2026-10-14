@@ -4,9 +4,14 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.RouteInfo
+import android.os.Build
 import java.io.IOException
 import java.net.InetAddress
 import java.net.Socket
+
+/** RouteInfo#getType is API 33+; before that the public route list carries no type, so treat it as unicast. */
+internal val RouteInfo.typeCompat: Int
+    get() = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) type else RouteInfo.RTN_UNICAST
 
 internal data class LanRoutePath(val destination: String?, val gateway: String?, val networkInterface: String?)
 internal data class LanAddressState(val address: String?, val prefixLength: Int, val flags: Int, val scope: Int)
@@ -100,7 +105,7 @@ class LanSocketRouting(context: Context) {
                             entry.flags, entry.scope) }.toSet()) }
                     properties?.routes.orEmpty().filter {
                         !it.isDefaultRoute && it.matches(address)
-                    }.map { LanRoute(network.networkHandle, it.destination.prefixLength, it.type == RouteInfo.RTN_UNICAST,
+                    }.map { LanRoute(network.networkHandle, it.destination.prefixLength, it.typeCompat == RouteInfo.RTN_UNICAST,
                         LanRoutePath(it.destination.address.hostAddress, it.gateway?.hostAddress, it.`interface`), link) }
                 }
             }

@@ -131,7 +131,7 @@ fn views(
 }
 
 #[test]
-#[ignore = "requires current Kotlin JVM classes; executed by Android source checker"]
+#[ignore = "needs Android JVM classes; run tools/build_android_interop_classes.sh --run"]
 fn android_primary_workspace_commands_update_real_desktop_and_restart_receipts() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();

@@ -148,3 +148,50 @@ jobs:
           name: stage1-host-${{ github.run_id }}-${{ github.run_attempt }}
           path: Docs/quality/stage1/ZS1-117
           if-no-files-found: warn
+
+  android:
+    name: Android unit tests, lint, and Rust interop (G-ANDROID)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+          cache-dependency-path: |
+            android/**/*.gradle.kts
+            android/gradle/wrapper/gradle-wrapper.properties
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: "platforms;android-35 build-tools;35.0.0 platform-tools"
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      # verifyRoborazziDebug joins this step once ZE-519 adds Roborazzi.
+      - name: Run Android JVM unit tests and lint
+        working-directory: android
+        run: ./gradlew --console=plain :app:testDebugUnitTest lint
+
+      - name: Run Rust/Kotlin interop tests (remote_android_*_interop)
+        run: tools/build_android_interop_classes.sh --run
+
+      - name: Upload Android test and lint reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-reports-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            android/app/build/reports
+            android/app/build/test-results
+          if-no-files-found: warn

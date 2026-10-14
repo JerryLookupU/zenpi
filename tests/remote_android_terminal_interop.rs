@@ -57,7 +57,7 @@ fn pump_until(shell: &mut PtyShell, ready: impl Fn(&PtyShell) -> bool) {
 }
 
 #[test]
-#[ignore = "requires freshly compiled Kotlin classes; run by Android source checker"]
+#[ignore = "needs Android JVM classes; run tools/build_android_interop_classes.sh --run"]
 fn android_terminal_input_resize_and_history_use_real_owned_pty_once() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();

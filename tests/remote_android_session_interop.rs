@@ -79,7 +79,7 @@ fn views(
 }
 
 #[test]
-#[ignore = "requires freshly compiled Kotlin classes; run by Android source checker"]
+#[ignore = "needs Android JVM classes; run tools/build_android_interop_classes.sh --run"]
 fn android_session_new_resume_and_restart_receipts_replace_real_owner() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
