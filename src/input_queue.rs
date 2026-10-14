@@ -5,7 +5,9 @@
 //! launches work. Hosts must build model context from `inputs_for_turn` as well
 //! as ordinary turns; the applied event is the durable input commit, so a crash
 //! between applying and requesting a provider never loses or reapplies an ID.
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -53,7 +55,12 @@ pub struct QueuedInput {
     pub submitted_sha256: String,
 }
 
-#[derive(Debug, Clone, Copy)]
+/// Capacity applies only to *live* (received, not yet applied or cancelled)
+/// inputs. Terminal inputs stay in the projection because they back
+/// idempotent duplicate detection, `inputs_for_turn`, listing and projection
+/// repair, but they never consume record or byte capacity, so a long-running
+/// session cannot exhaust the queue through history alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct InputQueueLimits {
     pub max_pending: usize,
     pub max_records: usize,
@@ -157,10 +164,41 @@ pub struct InputQueue {
     session_id: String,
     limits: InputQueueLimits,
     inputs: BTreeMap<String, QueuedInput>,
+    /// Receipt order of every input (sequence -> id).
+    by_sequence: BTreeMap<u64, String>,
+    /// Live (received) inputs in receipt order (sequence -> id).
+    live: BTreeMap<u64, String>,
+    /// Retained bytes (`id + text`) of live inputs only.
+    live_bytes: usize,
     applied_turns: BTreeSet<String>,
     next_sequence: u64,
     steer_mode: QueueMode,
     follow_up_mode: QueueMode,
+}
+
+/// Folded projection of a journal prefix, so repeated `recover` calls on the
+/// same session only fold queue events appended since the last call.
+///
+/// The cache is keyed by journal path, session ID and limits, and is only used
+/// when the store still contains the exact event value that ended the cached
+/// prefix at the same index; otherwise recovery falls back to a full replay.
+/// Folding is deterministic, so the result is identical to a full replay.
+#[derive(Debug, Clone)]
+struct CachedFold {
+    events_seen: usize,
+    last_event: Option<serde_json::Value>,
+    /// Index and value of the last folded queue event, if any.
+    last_queue_event: Option<(usize, serde_json::Value)>,
+    queue: InputQueue,
+}
+
+type FoldKey = (PathBuf, String, InputQueueLimits);
+
+const FOLD_CACHE_ENTRIES: usize = 32;
+
+fn fold_cache() -> &'static Mutex<HashMap<FoldKey, CachedFold>> {
+    static CACHE: OnceLock<Mutex<HashMap<FoldKey, CachedFold>>> = OnceLock::new();
+    CACHE.get_or_init(Default::default)
 }
 
 impl InputQueue {
@@ -178,22 +216,73 @@ impl InputQueue {
                 "limits outside bounded queue envelope".into(),
             ));
         }
-        let mut queue = Self {
-            session_id: session.summary().session_id,
-            limits,
-            inputs: BTreeMap::new(),
-            applied_turns: BTreeSet::new(),
-            next_sequence: 0,
-            steer_mode: QueueMode::default(),
-            follow_up_mode: QueueMode::default(),
+        let session_id = session.summary().session_id;
+        let events = session.events();
+        let key: FoldKey = (session.path().to_path_buf(), session_id.clone(), limits);
+        let cached = fold_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&key)
+            .filter(|c| {
+                c.events_seen <= events.len()
+                    && match &c.last_event {
+                        Some(last) => c.events_seen > 0 && &events[c.events_seen - 1] == last,
+                        None => c.events_seen == 0,
+                    }
+                    && match &c.last_queue_event {
+                        Some((index, value)) => {
+                            *index < c.events_seen
+                                && &events[*index] == value
+                                && value["sequence"].as_u64().and_then(|n| n.checked_add(1))
+                                    == Some(c.queue.next_sequence)
+                        }
+                        None => c.queue.next_sequence == 0,
+                    }
+            })
+            .cloned();
+        let (start, mut last_queue_event, mut queue) = match cached {
+            Some(c) => (c.events_seen, c.last_queue_event, c.queue),
+            None => (
+                0,
+                None,
+                Self {
+                    session_id,
+                    limits,
+                    inputs: BTreeMap::new(),
+                    by_sequence: BTreeMap::new(),
+                    live: BTreeMap::new(),
+                    live_bytes: 0,
+                    applied_turns: BTreeSet::new(),
+                    next_sequence: 0,
+                    steer_mode: QueueMode::default(),
+                    follow_up_mode: QueueMode::default(),
+                },
+            ),
         };
-        for value in session
-            .events()
+        for (index, value) in events
             .iter()
-            .filter(|v| v["type"] == "input_queue")
+            .enumerate()
+            .skip(start)
+            .filter(|(_, v)| v["type"] == "input_queue")
         {
             let event: QueueEvent = serde_json::from_value(value.clone())?;
             queue.replay(event)?;
+            last_queue_event = Some((index, value.clone()));
+        }
+        if start != events.len() {
+            let mut cache = fold_cache().lock().unwrap_or_else(|e| e.into_inner());
+            if cache.len() >= FOLD_CACHE_ENTRIES && !cache.contains_key(&key) {
+                cache.clear();
+            }
+            cache.insert(
+                key,
+                CachedFold {
+                    events_seen: events.len(),
+                    last_event: events.last().cloned(),
+                    last_queue_event,
+                    queue: queue.clone(),
+                },
+            );
         }
         Ok(queue)
     }
@@ -203,15 +292,16 @@ impl InputQueue {
     }
 
     pub fn has_pending(&self) -> bool {
-        self.inputs
-            .values()
-            .any(|i| i.status == InputStatus::Received)
+        !self.live.is_empty()
     }
 
+    /// Live (received) inputs in receipt order.
     pub fn pending_received(&self) -> impl Iterator<Item = &QueuedInput> {
-        self.inputs
-            .values()
-            .filter(|i| i.status == InputStatus::Received)
+        self.live.values().map(|id| &self.inputs[id])
+    }
+
+    fn live_of_kind(&self, kind: InputKind) -> impl Iterator<Item = &QueuedInput> {
+        self.pending_received().filter(move |i| i.kind == kind)
     }
 
     pub fn modes(&self) -> (QueueMode, QueueMode) {
@@ -367,10 +457,7 @@ impl InputQueue {
         if self.applied_turns.contains(boundary.model_turn_id()) {
             return Ok(Vec::new());
         }
-        let has_steer = self
-            .inputs
-            .values()
-            .any(|i| i.status == InputStatus::Received && i.kind == InputKind::Steer);
+        let has_steer = self.live_of_kind(InputKind::Steer).next().is_some();
         let kind = if has_steer {
             InputKind::Steer
         } else if boundary.is_would_stop() {
@@ -384,9 +471,7 @@ impl InputQueue {
             self.follow_up_mode
         };
         let ids: Vec<String> = self
-            .ordered()
-            .into_iter()
-            .filter(|i| i.kind == kind && i.status == InputStatus::Received)
+            .live_of_kind(kind)
             .take(if mode == QueueMode::All {
                 self.limits.max_pending
             } else {
@@ -453,9 +538,10 @@ impl InputQueue {
     }
 
     fn ordered(&self) -> Vec<&QueuedInput> {
-        let mut inputs: Vec<_> = self.inputs.values().collect();
-        inputs.sort_by_key(|input| input.sequence);
-        inputs
+        self.by_sequence
+            .values()
+            .map(|id| &self.inputs[id])
+            .collect()
     }
 
     fn ensure_writer(&self, session: &SessionStore) -> Result<(), InputQueueError> {
@@ -492,16 +578,24 @@ impl InputQueue {
             sequence: self.next_sequence,
             change,
         };
-        // Bounded candidate projection keeps invalid transitions and failed
-        // fsync/append from altering the visible state. SessionStore is the sole writer.
-        let mut next = self.clone();
-        next.replay(event.clone())?;
-        session.append_event(serde_json::to_value(event)?)?;
-        *self = next;
+        // Validate the whole transition before the append and mutate only after
+        // it is durable, so invalid transitions and failed fsync/append never
+        // alter the visible state. SessionStore is the sole writer. Validation
+        // is side-effect free, so no O(history) candidate clone is needed.
+        self.check(&event)?;
+        session.append_event(serde_json::to_value(&event)?)?;
+        self.apply(event);
         Ok(())
     }
 
     fn replay(&mut self, event: QueueEvent) -> Result<(), InputQueueError> {
+        self.check(&event)?;
+        self.apply(event);
+        Ok(())
+    }
+
+    /// Side-effect-free validation of one transition against the current state.
+    fn check(&self, event: &QueueEvent) -> Result<(), InputQueueError> {
         if event.event_type != "input_queue"
             || event.schema_version != 1
             || event.session_id != self.session_id
@@ -511,11 +605,10 @@ impl InputQueue {
                 "schema/session/sequence mismatch".into(),
             ));
         }
-        let next = self
-            .next_sequence
+        self.next_sequence
             .checked_add(1)
             .ok_or(InputQueueError::Capacity)?;
-        match event.change {
+        match &event.change {
             Change::Enqueued { input } => {
                 InputQueueAction::Enqueue {
                     input_id: input.id.clone(),
@@ -536,17 +629,13 @@ impl InputQueue {
                 {
                     return Err(InputQueueError::Recovery("invalid received input".into()));
                 }
-                if self.inputs.len() >= self.limits.max_records
-                    || self
-                        .inputs
-                        .values()
-                        .filter(|i| i.status == InputStatus::Received)
-                        .count()
-                        >= self.limits.max_pending
+                // Only live inputs count; terminal history never exhausts capacity.
+                if self.live.len() >= self.limits.max_records
+                    || self.live.len() >= self.limits.max_pending
                 {
                     return Err(InputQueueError::Capacity);
                 }
-                self.inputs.insert(input.id.clone(), input);
+                self.check_bytes(self.live_bytes + input.text.len() + input.id.len())?;
             }
             Change::Edited {
                 id,
@@ -555,30 +644,108 @@ impl InputQueue {
             } => {
                 InputQueueAction::Edit {
                     input_id: id.clone(),
-                    expected_revision,
+                    expected_revision: *expected_revision,
                     text: text.clone(),
                 }
                 .validate()
                 .map_err(|e| InputQueueError::Recovery(e.to_string()))?;
-                let input = self.inputs.get_mut(&id).ok_or(InputQueueError::NotFound)?;
+                let input = self.inputs.get(id).ok_or(InputQueueError::NotFound)?;
                 if input.status != InputStatus::Received {
                     return Err(InputQueueError::Terminal);
                 }
-                if input.revision != expected_revision {
+                if input.revision != *expected_revision {
                     return Err(InputQueueError::StaleRevision);
                 }
-                input.revision = input
+                input
                     .revision
                     .checked_add(1)
                     .ok_or(InputQueueError::Capacity)?;
-                input.text = text;
+                self.check_bytes(self.live_bytes - input.text.len() + text.len())?;
             }
             Change::Cancelled { id } => {
-                let input = self.inputs.get_mut(&id).ok_or(InputQueueError::NotFound)?;
+                let input = self.inputs.get(id).ok_or(InputQueueError::NotFound)?;
                 if input.status != InputStatus::Received {
                     return Err(InputQueueError::Terminal);
                 }
-                input.status = InputStatus::Cancelled;
+            }
+            Change::Configured { .. } => {}
+            Change::Applied {
+                model_turn_id,
+                parent_id,
+                ids,
+                kind,
+                would_stop,
+            } => {
+                if let Some(parent) = parent_id {
+                    crate::protocol::validate_queue_id(parent)
+                        .map_err(|e| InputQueueError::Recovery(e.to_string()))?;
+                }
+                if *kind == InputKind::FollowUp
+                    && (!would_stop || self.live_of_kind(InputKind::Steer).next().is_some())
+                {
+                    return Err(InputQueueError::Recovery(
+                        "follow-up applied outside stop boundary or before steering".into(),
+                    ));
+                }
+                crate::protocol::validate_queue_id(model_turn_id)
+                    .map_err(|e| InputQueueError::Recovery(e.to_string()))?;
+                if ids.is_empty() || self.applied_turns.contains(model_turn_id) {
+                    return Err(InputQueueError::Recovery(
+                        "empty/repeated applied model turn".into(),
+                    ));
+                }
+                let mode = if *kind == InputKind::Steer {
+                    self.steer_mode
+                } else {
+                    self.follow_up_mode
+                };
+                let expected = self
+                    .live_of_kind(*kind)
+                    .take(if mode == QueueMode::All {
+                        self.limits.max_pending
+                    } else {
+                        1
+                    })
+                    .map(|i| i.id.as_str());
+                if !ids.iter().map(String::as_str).eq(expected) {
+                    return Err(InputQueueError::Recovery(
+                        "applied IDs violate lane/order/mode".into(),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn check_bytes(&self, live_bytes: usize) -> Result<(), InputQueueError> {
+        if live_bytes > self.limits.max_retained_bytes {
+            return Err(InputQueueError::Capacity);
+        }
+        Ok(())
+    }
+
+    /// Apply a transition already accepted by `check`; infallible by contract.
+    fn apply(&mut self, event: QueueEvent) {
+        match event.change {
+            Change::Enqueued { input } => {
+                self.live_bytes += input.text.len() + input.id.len();
+                self.live.insert(input.sequence, input.id.clone());
+                self.by_sequence.insert(input.sequence, input.id.clone());
+                self.inputs.insert(input.id.clone(), input);
+            }
+            Change::Edited { id, text, .. } => {
+                if let Some(input) = self.inputs.get_mut(&id) {
+                    self.live_bytes = self.live_bytes - input.text.len() + text.len();
+                    input.revision += 1;
+                    input.text = text;
+                }
+            }
+            Change::Cancelled { id } => {
+                if let Some(input) = self.inputs.get_mut(&id) {
+                    input.status = InputStatus::Cancelled;
+                    self.live.remove(&input.sequence);
+                    self.live_bytes -= input.text.len() + input.id.len();
+                }
             }
             Change::Configured { kind, mode } => {
                 if kind == InputKind::Steer {
@@ -591,70 +758,21 @@ impl InputQueue {
                 model_turn_id,
                 parent_id,
                 ids,
-                kind,
-                would_stop,
+                ..
             } => {
-                if let Some(parent) = &parent_id {
-                    crate::protocol::validate_queue_id(parent)
-                        .map_err(|e| InputQueueError::Recovery(e.to_string()))?;
-                }
-                if kind == InputKind::FollowUp
-                    && (!would_stop
-                        || self.inputs.values().any(|i| {
-                            i.kind == InputKind::Steer && i.status == InputStatus::Received
-                        }))
-                {
-                    return Err(InputQueueError::Recovery(
-                        "follow-up applied outside stop boundary or before steering".into(),
-                    ));
-                }
-                crate::protocol::validate_queue_id(&model_turn_id)
-                    .map_err(|e| InputQueueError::Recovery(e.to_string()))?;
-                if ids.is_empty() || !self.applied_turns.insert(model_turn_id.clone()) {
-                    return Err(InputQueueError::Recovery(
-                        "empty/repeated applied model turn".into(),
-                    ));
-                }
-                let mode = if kind == InputKind::Steer {
-                    self.steer_mode
-                } else {
-                    self.follow_up_mode
-                };
-                let expected: Vec<_> = self
-                    .ordered()
-                    .into_iter()
-                    .filter(|i| i.kind == kind && i.status == InputStatus::Received)
-                    .take(if mode == QueueMode::All {
-                        self.limits.max_pending
-                    } else {
-                        1
-                    })
-                    .map(|i| i.id.clone())
-                    .collect();
-                if ids != expected {
-                    return Err(InputQueueError::Recovery(
-                        "applied IDs violate lane/order/mode".into(),
-                    ));
-                }
                 for id in ids {
-                    let input = self.inputs.get_mut(&id).ok_or(InputQueueError::NotFound)?;
-                    input.status = InputStatus::Applied;
-                    input.applied_turn_id = Some(model_turn_id.clone());
-                    input.applied_parent_id = parent_id.clone();
+                    if let Some(input) = self.inputs.get_mut(&id) {
+                        input.status = InputStatus::Applied;
+                        input.applied_turn_id = Some(model_turn_id.clone());
+                        input.applied_parent_id = parent_id.clone();
+                        self.live.remove(&input.sequence);
+                        self.live_bytes -= input.text.len() + input.id.len();
+                    }
                 }
+                self.applied_turns.insert(model_turn_id);
             }
         }
-        if self
-            .inputs
-            .values()
-            .map(|i| i.text.len() + i.id.len())
-            .sum::<usize>()
-            > self.limits.max_retained_bytes
-        {
-            return Err(InputQueueError::Capacity);
-        }
-        self.next_sequence = next;
-        Ok(())
+        self.next_sequence += 1;
     }
 }
 

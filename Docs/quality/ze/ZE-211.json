@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-211",
+  "claim_id": "ZE-211@blueprint-4.0.0",
+  "from": "worker",
+  "to": "master",
+  "summary": "Input queue capacity (max_records, max_pending, max_retained_bytes) now counts only live (received) inputs via incrementally maintained live index and live_bytes; terminal inputs no longer consume capacity but stay in the projection for idempotency, inputs_for_turn, List and projection repair. Replay split into side-effect-free check() + infallible apply(), so persist no longer clones the whole projection per mutation and Applied/steer checks are O(live) instead of O(history log history). recover() uses a bounded process-wide fold cache keyed by (journal path, session id, limits) and only folds events appended since the cached prefix; the cache is used only if the store still holds the identical last event and last queue event at the cached indices, otherwise it falls back to a full replay.",
+  "changed_files": [
+    "src/input_queue.rs",
+    "tests/stage1_input_queue.rs",
+    "Docs/quality/ze/ZE-211.json"
+  ],
+  "diff_stat": "src/input_queue.rs | 298 ++++---; tests/stage1_input_queue.rs | 181 +++; 2 code files changed, 387 insertions(+), 92 deletions(-)",
+  "commands_run": [
+    "cargo fmt --all",
+    "cargo test --locked --test stage1_input_queue --test stage1_input_host",
+    "cargo clippy --locked --all-targets -- -D warnings 2>&1 | grep input_queue",
+    "cargo clippy --locked --test stage1_input_queue",
+    "cargo test --locked --test stage1_reasoning_owner --test session_new --test remote_headless_commands --test headless_input_shutdown --test stage1_host --test stage1_semantic_compaction --test headless_project_workspace --test stage1_branch_owner --test remote_parity --test stage1_session_tree"
+  ],
+  "validation_result": {
+    "stage1_input_queue": "19 passed, 0 failed, 1 ignored (includes new queue_accepts_more_than_4096_lifetime_inputs, ~43s, fsync-bound)",
+    "stage1_input_host": "23 passed, 0 failed, 2 ignored",
+    "clippy_input_queue_grep": "empty",
+    "other_queue_consumers": "all green",
+    "passed": true
+  },
+  "notes": "No src/core.rs change. Behavior change: saturation_preserves_previous_queue_and_journal previously asserted lifetime record exhaustion; updated to assert live-only capacity and that terminal IDs stay reserved (duplicate enqueue is idempotent). Terminal inputs are not compacted out of memory because they back duplicate-ID idempotency, inputs_for_turn, List and repair_projections; SessionStore already keeps every event in memory, so memory remains O(history) as before. recover() still clones the cached projection (memory copy, no JSON parse/replay). repair_projections still iterates all applied inputs per boundary (out of scope). pending_received() now yields receipt (sequence) order instead of ID order. Fold cache risk: a journal at the same path replaced with a different prefix but identical last event and last queue event at the same indices would reuse stale state; considered practically unreachable.",
+  "created_at": "2026-10-14T11:38:49Z",
+  "digest": "250e3157df386c6f9b61099b27213b526e8c6c234e05345b93cc1463ac530af2"
+}
