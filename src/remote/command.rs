@@ -73,6 +73,11 @@ struct PendingSteer {
 #[derive(Default)]
 pub struct SteerAdmissions(Vec<PendingSteer>);
 impl SteerAdmissions {
+    /// No steering ticket awaits its durable record.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     /// Observe the existing session writer without blocking the desktop owner thread.
     pub fn poll(&mut self, pool: &mut ProjectOwnerPool) {
         self.0.retain_mut(|pending| {

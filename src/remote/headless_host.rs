@@ -187,6 +187,11 @@ fn persist_shutdown_progress(mut pending: Vec<ShutdownProgress>, deadline: Insta
     }
 }
 
+/// Mailbox wait when nothing runs; `shutdown` is observed within it.
+const IDLE_WAIT: Duration = Duration::from_millis(500);
+/// Progress poll while a prompt, worker or steer is in flight.
+const BUSY_POLL: Duration = Duration::from_millis(10);
+
 pub struct HeadlessHost {
     stop: Arc<AtomicBool>,
     join: Option<JoinHandle<()>>,
@@ -226,7 +231,14 @@ impl HeadlessHost {
                     }
                 }
                 steer.poll(&mut pool);
-                mailbox.drain_with(|registry, device, request| {
+                // Sleep on the request mailbox; running prompts, workers and
+                // pending steers still need their short progress poll.
+                let wait = if active.is_empty() && worktrees.idle() && steer.is_empty() {
+                    IDLE_WAIT
+                } else {
+                    BUSY_POLL
+                };
+                mailbox.drain_with_wait(wait, |registry, device, request| {
                     let operation = match &request.payload {
                         Message::Request { operation, .. } => Some(*operation),
                         _ => None,
@@ -408,7 +420,6 @@ impl HeadlessHost {
                         }
                     }
                 });
-                std::thread::sleep(Duration::from_millis(10));
             }
             for lane in active.values() {
                 let job = &lane.job;

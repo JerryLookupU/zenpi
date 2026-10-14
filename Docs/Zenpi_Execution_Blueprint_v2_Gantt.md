@@ -5,9 +5,9 @@
 
 ```yaml
 source: Docs/Zenpi_Execution_Blueprint_v2.md
-source_sha256: 1795b5bf6480529e412f12c6b8cd28e1cdc930849e40ba6303ebb3a2cdd60de8
+source_sha256: cd1489dc39500b0537b8665b8ab50f438626198504448e837ea15b8d5c85de53
 blueprint_version: 4.0.0
-generated_at: 2026-10-14T19:57:34Z
+generated_at: 2026-10-14T20:04:59Z
 ```
 
 ## Dependency-order view
@@ -114,7 +114,7 @@ gantt
     section B2
     ZE-510 把远程状态（回执、ack、intent）从  project-workspace :ZE_510, after ZE_502, 1d
     ZE-511 把 worktree、worker、subtab 子系统从  src/remot :ZE_511, after ZE_510, 1d
-    ZE-512 删除  HeadlessHost  独立的 prompt runner 和 10 :ZE_512, after ZE_243 ZE_502, 1d
+    ZE-512 远程宿主去轮询（实测后按奥卡姆裁剪）：owner 线程不再每 10 ms 无条件 :active, ZE_512, after ZE_243 ZE_502, 1d
     ZE-513 常驻的  zenpi host serve ：<br>• 监听器的生命周期与邀请 :active, ZE_513, after ZE_502, 1d
     ZE-514 配对后即可使用：<br>• 桌面确认后，授予所挂载项目的 Control 和 A :ZE_514, after ZE_513, 1d
     ZE-515 基于密钥的身份与二维码 v2：<br>•  host_id = sha256(S :ZE_515, after ZE_514, 1d
@@ -144,7 +144,7 @@ gantt
 
 ## Monitoring index
 
-Counts: open 28 · self-tested 2 · accepted 83 · total 113
+Counts: open 27 · self-tested 3 · accepted 83 · total 113
 
 | ID | Layer | State | Ready | Depends | Claim | Integration | Est. LOC | Title |
 |---|---|---|---|---|---|---|---:|---|
@@ -237,7 +237,7 @@ Counts: open 28 · self-tested 2 · accepted 83 · total 113
 | ZE-502 | B1 | accepted | no | ZE-500 | ZE-502@blueprint-4.0.0 | accepted | 50 | 接受已有的核心成果：<br>• 主机侧：线协议（frame、envelope v1、严格 JSON）、TLS 1.3 监听与 ALPN、二维码邀请与证书 pin 配对、设备注册表与撤销、owner 路由、事件 cursor、回放与订阅；<br>• Android 侧：`pairing/`、`security/`、`transport/`、`state/`；<br>• 运行原有的测试和 fuzz 语料，结果写进 handoff；<br>layer `B1` \| Depends: ZE-500 \| Owned paths: `src/remote/{frame,protocol,strict_json,listener,lan,pairing,auth,command,host_adapter,events,subscription,transcript,live_text,wakeup}.rs`, `android/app/src/main/java/zenpi/{pairing,security,transport,state}/` \| Validators: G-REMOTE（含 `remote_protocol`、`remote_pairing`、`remote_auth`、`remote_events`、`remote_subscription_tls`、`remote_parity`）；G-ANDROID 的 JVM 部分全部通过 \| Estimated LOC: 50 |
 | ZE-510 | B2 | open | yes | ZE-502 | — | — | 400 | 把远程状态（回执、ack、intent）从 `project-workspace.json` 移到独立的 `remote-state.json`，保证不带 feature 的构建也能读取由 remote 构建写出的 checkpoint |
 | ZE-511 | B2 | open | no | ZE-510 | — | — | 600 | 把 worktree、worker、subtab 子系统从 `src/remote/` 移到 `src/worktree/`。这部分 TUI 也在用，行为不变，按 §7 冻结；目的是解除对 remote feature 开关的阻塞 |
-| ZE-512 | B2 | open | yes | ZE-243, ZE-502 | — | — | 1200 | 删除 `HeadlessHost` 独立的 prompt runner 和 10 ms 轮询，远程宿主改为复用 headless 异步 host 的准入、取消和 steer 逻辑，保证同一个概念只有一个 owner |
+| ZE-512 | B2 | self-tested | yes | ZE-243, ZE-502 | ZE-512@blueprint-4.0.0 | handoff | 1200 | 远程宿主去轮询（实测后按奥卡姆裁剪）：owner 线程不再每 10 ms 无条件 sleep，空闲时阻塞在请求邮箱上（500 ms 兜底，用于 shutdown），只有 prompt、worker 或 steer 在途时才 10 ms 推进；空闲 `host serve` 168 → 86 次上下文切换/s（剩余为监听器 10 ms accept 轮询，归 ZE-541）。未把 `HeadlessHost` 的 prompt runner 合并进 headless 异步 host：两者已共用 `ProjectOwnerPool` 与 runtime，合并约 1200 LOC 的重构收益只剩"概念单一"，按 YAGNI 不做 |
 | ZE-513 | B2 | self-tested | yes | ZE-502 | ZE-513@blueprint-4.0.0 | handoff | 250 | 常驻的 `zenpi host serve`：<br>• 监听器的生命周期与邀请解耦；<br>• 固定端口写进 identity 旁的 `identity.port`（不改 identity.json 的严格 schema）；<br>• 默认绑定选中的网卡，而不是 0.0.0.0；<br>• 保留挂载在桌面 TUI 上的模式；<br>layer `B2` \| Depends: ZE-502 \| Owned paths: `src/host_pair.rs`, `src/remote/listener.rs`, `src/core.rs`, `tests/remote_host_e2e.rs` \| Validators: `cargo test --locked --all-features --test remote_host_e2e -- --ignored production_serve`：配对 → 邀请过期 → 已配对设备仍可重连；重启后端口不变（10 分钟缩为邀请过期 + 1 s：监听器与邀请无关，等待更久不改变结论） \| Estimated LOC: 250 |
 | ZE-514 | B2 | open | no | ZE-513 | — | — | 600 | 配对后即可使用：<br>• 桌面确认后，授予所挂载项目的 Control 和 Approval；<br>• 保留 `--list-devices` 和 `--revoke-device`，删除 4 个 grant CLI；<br>• 删除可以由二维码推出的 6 位安全码；<br>• Pair 和 Authenticate 的响应如实报告 `control_available`；<br>layer `B2` \| Depends: ZE-513 \| Owned paths: `src/remote/auth.rs`, `src/remote/pairing.rs`, `src/host_pair.rs`, `android/.../pairing/`, `tests/remote_auth.rs`, `tests/remote_device_grants.rs` \| Validators: 新配对的设备能直接发 prompt；被撤销或重放的 token 会被拒绝；撤销在下一帧生效 \| Estimated LOC: 600 |
 | ZE-515 | B2 | open | no | ZE-514 | — | — | 700 | 基于密钥的身份与二维码 v2：<br>• `host_id = sha256(SPKI)`，证书轮换后 pin 仍然有效；<br>• 二维码 v2 带上与 token 绑定的有序地址提示（`lan`、`tailnet`），v1 仍可解析；<br>• Android 端已保存的主机自动迁移；<br>layer `B2` \| Depends: ZE-514 \| Owned paths: `src/remote/pairing.rs`, `src/remote/auth.rs`, `android/.../pairing/`, `android/.../transport/PairingClient.kt`, `android/.../security/PairedHostStore.kt` \| Validators: v1 和 v2 邀请都按严格模式解析；证书轮换后仍能连接；已存主机的迁移测试 \| Estimated LOC: 700 |

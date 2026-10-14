@@ -36,10 +36,27 @@ impl HostReadMailbox {
     /// Claim before dispatch so an expired queued write cannot execute later.
     pub fn drain_with(
         &self,
+        dispatch: impl FnMut(&DeviceRegistry, &AuthenticatedDevice, Envelope) -> Envelope,
+    ) {
+        self.drain_with_wait(Duration::ZERO, dispatch);
+    }
+
+    /// Like [`Self::drain_with`], but first blocks up to `wait` for a request,
+    /// so an idle owner thread sleeps instead of polling.
+    pub fn drain_with_wait(
+        &self,
+        wait: Duration,
         mut dispatch: impl FnMut(&DeviceRegistry, &AuthenticatedDevice, Envelope) -> Envelope,
     ) {
+        let mut first = if wait.is_zero() {
+            None
+        } else {
+            self.0.recv_timeout(wait).ok()
+        };
         for _ in 0..8 {
-            let Ok(read) = self.0.try_recv() else { break };
+            let Some(read) = first.take().or_else(|| self.0.try_recv().ok()) else {
+                break;
+            };
             if Instant::now() < read.deadline
                 && read
                     .state

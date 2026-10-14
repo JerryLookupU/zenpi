@@ -3834,6 +3834,11 @@ impl WorktreeHost {
             if arguments.get("subtab_id").is_some() || arguments.get("subtab_revision").is_some())
     }
 
+    /// No worker lane needs polling.
+    pub fn idle(&self) -> bool {
+        self.lanes.is_empty()
+    }
+
     pub fn busy(&self, project: &str) -> bool {
         self.lanes.keys().any(|(id, _)| id == project)
     }
