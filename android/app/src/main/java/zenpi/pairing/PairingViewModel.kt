@@ -18,78 +18,395 @@ import zenpi.transport.HostProjection
 import zenpi.transport.WorkspaceCommand
 
 enum class PairingPhase { OFFLINE, CONFIRMING, CONNECTING, ACCEPTED, CONNECTED, ERROR }
-data class PairingState(
+/** Pairing, device registration and link lifecycle. */
+data class ConnectionState(
     val phase: PairingPhase = PairingPhase.OFFLINE,
     val invite: PairingInvite? = null,
     val error: String? = null,
     val registered: Boolean = false,
-    val selectedProjectUnavailable: Boolean = false,
     val host: PairedHost? = null,
-    val projection: HostProjection? = null,
-    val pendingWorkspace: WorkspaceCommand? = null,
     val pendingRevoke: String? = null,
-    val workspaceFailureCode: String? = null,
-    val diff: zenpi.transport.RemoteDiff? = null,
-    val diffPrevious: List<zenpi.transport.RemoteDiff> = emptyList(),
-    val diffLoading: Boolean = false,
-    val diffError: String? = null,
-    val diffOpen: Boolean = false,
-    val terminalOpen: Boolean = false,
-    val terminalPage: zenpi.transport.TerminalPage? = null,
-    val terminalPrevious: List<zenpi.transport.TerminalPage> = emptyList(),
-    val terminalLoading: Boolean = false,
-    val terminalError: String? = null,
-    val transcriptTurn: String? = null,
-    val transcriptWorker: Boolean = false,
-    val transcriptHistoryTurn: zenpi.transport.RemoteTurn? = null,
-    val transcriptToolCall: zenpi.transport.RemoteToolCall? = null,
-    val workerHistoryRequest: String? = null,
-    internal val workerReadScope: WorkerReadScope? = null,
-    val workerStatusesOpen: Boolean = false,
-    val workerStatusesPage: zenpi.transport.WorkerStatusPage? = null,
-    val workerStatusesPrevious: List<zenpi.transport.WorkerStatusPage> = emptyList(),
-    val workerStatusesLoading: Boolean = false,
-    val workerStatusesError: String? = null,
-    val workerHistoryPage: zenpi.transport.WorkerHistoryPage? = null,
-    val workerHistoryPrevious: List<zenpi.transport.WorkerHistoryPage> = emptyList(),
-    val workerHistoryLoading: Boolean = false,
-    val workerHistoryError: String? = null,
-    val transcriptPage: zenpi.transport.TranscriptPage? = null,
-    val transcriptPreviousPages: List<zenpi.transport.TranscriptPage> = emptyList(),
-    val transcriptLoading: Boolean = false,
-    val transcriptError: String? = null,
-    val filesOpen: Boolean = false,
-    val files: zenpi.transport.WorkspaceFiles? = null,
-    val filesPrevious: List<zenpi.transport.WorkspaceFiles> = emptyList(),
-    val filesLoading: Boolean = false,
-    val filesError: String? = null,
-    val resourcesOpen: Boolean = false,
-    val resources: zenpi.transport.ResourceCatalog? = null,
-    val resourcesPrevious: List<zenpi.transport.ResourceCatalog> = emptyList(),
-    val resourcesLoading: Boolean = false,
-    val resourcesError: String? = null,
-    val modelOpen: Boolean = false,
-    val sessionsOpen: Boolean = false,
-    val sessions: zenpi.transport.SessionCatalog? = null,
-    val sessionsPrevious: List<zenpi.transport.SessionCatalog> = emptyList(),
-    val sessionsLoading: Boolean = false,
-    val sessionsError: String? = null,
-    val sessionsQuery: String? = null,
-    val sessionHistoryOpen: Boolean = false,
-    val sessionHistory: zenpi.transport.SessionHistoryPage? = null,
-    val sessionHistoryPrevious: List<zenpi.transport.SessionHistoryPage> = emptyList(),
-    val sessionHistoryLoading: Boolean = false,
-    val sessionHistoryError: String? = null,
-    val modelStatus: zenpi.transport.RemoteModelStatus? = null,
-    val modelPrevious: List<zenpi.transport.RemoteModelStatus> = emptyList(),
-    val modelLoading: Boolean = false,
-    val modelError: String? = null,
     val scanError: String? = null,
     val resetting: Boolean = false,
     val resetRequired: Boolean = false,
     val scanInProgress: Boolean = false,
+)
+
+/** Projects, tabs, the live conversation projection (approvals, prompts, terminal) and pending workspace writes. */
+data class WorkspaceState(
+    val selectedProjectUnavailable: Boolean = false,
+    val projection: HostProjection? = null,
+    val pendingWorkspace: WorkspaceCommand? = null,
+    val failureCode: String? = null,
+)
+
+/** Diff review dialog. */
+data class DiffState(
+    val diff: zenpi.transport.RemoteDiff? = null,
+    val previous: List<zenpi.transport.RemoteDiff> = emptyList(),
+    val loading: Boolean = false,
+    val error: String? = null,
+    val open: Boolean = false,
+)
+
+/** Paged desktop terminal history. */
+data class TerminalHistoryState(
+    val open: Boolean = false,
+    val page: zenpi.transport.TerminalPage? = null,
+    val previous: List<zenpi.transport.TerminalPage> = emptyList(),
+    val loading: Boolean = false,
+    val error: String? = null,
+)
+
+/** Full message / tool-argument reader. */
+data class TranscriptState(
+    val turn: String? = null,
+    val worker: Boolean = false,
+    val historyTurn: zenpi.transport.RemoteTurn? = null,
+    val toolCall: zenpi.transport.RemoteToolCall? = null,
+    val page: zenpi.transport.TranscriptPage? = null,
+    val previousPages: List<zenpi.transport.TranscriptPage> = emptyList(),
+    val loading: Boolean = false,
+    val error: String? = null,
+)
+
+/** Worktree task history reader. */
+data class WorkerHistoryState(
+    val request: String? = null,
+    internal val readScope: WorkerReadScope? = null,
+    val page: zenpi.transport.WorkerHistoryPage? = null,
+    val previous: List<zenpi.transport.WorkerHistoryPage> = emptyList(),
+    val loading: Boolean = false,
+    val error: String? = null,
+)
+
+/** Worktree task list dialog. */
+data class WorkerStatusesState(
+    val open: Boolean = false,
+    val page: zenpi.transport.WorkerStatusPage? = null,
+    val previous: List<zenpi.transport.WorkerStatusPage> = emptyList(),
+    val loading: Boolean = false,
+    val error: String? = null,
+)
+
+/** Host file browser. */
+data class FilesState(
+    val open: Boolean = false,
+    val files: zenpi.transport.WorkspaceFiles? = null,
+    val previous: List<zenpi.transport.WorkspaceFiles> = emptyList(),
+    val loading: Boolean = false,
+    val error: String? = null,
+)
+
+/** Host resource (slash command) catalog. */
+data class ResourcesState(
+    val open: Boolean = false,
+    val catalog: zenpi.transport.ResourceCatalog? = null,
+    val previous: List<zenpi.transport.ResourceCatalog> = emptyList(),
+    val loading: Boolean = false,
+    val error: String? = null,
+)
+
+/** Host model / reasoning inspector. */
+data class ModelState(
+    val open: Boolean = false,
+    val status: zenpi.transport.RemoteModelStatus? = null,
+    val previous: List<zenpi.transport.RemoteModelStatus> = emptyList(),
+    val loading: Boolean = false,
+    val error: String? = null,
+)
+
+/** Session catalog / search dialog. */
+data class SessionsState(
+    val open: Boolean = false,
+    val catalog: zenpi.transport.SessionCatalog? = null,
+    val previous: List<zenpi.transport.SessionCatalog> = emptyList(),
+    val loading: Boolean = false,
+    val error: String? = null,
+    val query: String? = null,
+)
+
+/** Paged conversation history dialog. */
+data class SessionHistoryState(
+    val open: Boolean = false,
+    val page: zenpi.transport.SessionHistoryPage? = null,
+    val previous: List<zenpi.transport.SessionHistoryPage> = emptyList(),
+    val loading: Boolean = false,
+    val error: String? = null,
+)
+
+/**
+ * Immutable screen state, composed of independent sub-states. The flat accessors,
+ * the flat constructor and [copy] keep the historical single-record API so policies
+ * and tests read and write fields exactly as before; equality is structural over the
+ * sub-states, i.e. identical to the former data class. Flat fields are stored rather
+ * than computed so callers keep smart casts on them.
+ */
+class PairingState(
+    val connection: ConnectionState,
+    val workspace: WorkspaceState,
+    val diffView: DiffState,
+    val terminalHistory: TerminalHistoryState,
+    val transcript: TranscriptState,
+    val workerHistory: WorkerHistoryState,
+    val workerStatuses: WorkerStatusesState,
+    val fileBrowser: FilesState,
+    val resourceCatalog: ResourcesState,
+    val model: ModelState,
+    val sessionCatalog: SessionsState,
+    val conversationHistory: SessionHistoryState,
 ) {
+    constructor(
+        phase: PairingPhase = PairingPhase.OFFLINE,
+        invite: PairingInvite? = null,
+        error: String? = null,
+        registered: Boolean = false,
+        host: PairedHost? = null,
+        pendingRevoke: String? = null,
+        scanError: String? = null,
+        resetting: Boolean = false,
+        resetRequired: Boolean = false,
+        scanInProgress: Boolean = false,
+        selectedProjectUnavailable: Boolean = false,
+        projection: HostProjection? = null,
+        pendingWorkspace: WorkspaceCommand? = null,
+        workspaceFailureCode: String? = null,
+        diff: zenpi.transport.RemoteDiff? = null,
+        diffPrevious: List<zenpi.transport.RemoteDiff> = emptyList(),
+        diffLoading: Boolean = false,
+        diffError: String? = null,
+        diffOpen: Boolean = false,
+        terminalOpen: Boolean = false,
+        terminalPage: zenpi.transport.TerminalPage? = null,
+        terminalPrevious: List<zenpi.transport.TerminalPage> = emptyList(),
+        terminalLoading: Boolean = false,
+        terminalError: String? = null,
+        transcriptTurn: String? = null,
+        transcriptWorker: Boolean = false,
+        transcriptHistoryTurn: zenpi.transport.RemoteTurn? = null,
+        transcriptToolCall: zenpi.transport.RemoteToolCall? = null,
+        transcriptPage: zenpi.transport.TranscriptPage? = null,
+        transcriptPreviousPages: List<zenpi.transport.TranscriptPage> = emptyList(),
+        transcriptLoading: Boolean = false,
+        transcriptError: String? = null,
+        workerHistoryRequest: String? = null,
+        workerReadScope: WorkerReadScope? = null,
+        workerHistoryPage: zenpi.transport.WorkerHistoryPage? = null,
+        workerHistoryPrevious: List<zenpi.transport.WorkerHistoryPage> = emptyList(),
+        workerHistoryLoading: Boolean = false,
+        workerHistoryError: String? = null,
+        workerStatusesOpen: Boolean = false,
+        workerStatusesPage: zenpi.transport.WorkerStatusPage? = null,
+        workerStatusesPrevious: List<zenpi.transport.WorkerStatusPage> = emptyList(),
+        workerStatusesLoading: Boolean = false,
+        workerStatusesError: String? = null,
+        filesOpen: Boolean = false,
+        files: zenpi.transport.WorkspaceFiles? = null,
+        filesPrevious: List<zenpi.transport.WorkspaceFiles> = emptyList(),
+        filesLoading: Boolean = false,
+        filesError: String? = null,
+        resourcesOpen: Boolean = false,
+        resources: zenpi.transport.ResourceCatalog? = null,
+        resourcesPrevious: List<zenpi.transport.ResourceCatalog> = emptyList(),
+        resourcesLoading: Boolean = false,
+        resourcesError: String? = null,
+        modelOpen: Boolean = false,
+        modelStatus: zenpi.transport.RemoteModelStatus? = null,
+        modelPrevious: List<zenpi.transport.RemoteModelStatus> = emptyList(),
+        modelLoading: Boolean = false,
+        modelError: String? = null,
+        sessionsOpen: Boolean = false,
+        sessions: zenpi.transport.SessionCatalog? = null,
+        sessionsPrevious: List<zenpi.transport.SessionCatalog> = emptyList(),
+        sessionsLoading: Boolean = false,
+        sessionsError: String? = null,
+        sessionsQuery: String? = null,
+        sessionHistoryOpen: Boolean = false,
+        sessionHistory: zenpi.transport.SessionHistoryPage? = null,
+        sessionHistoryPrevious: List<zenpi.transport.SessionHistoryPage> = emptyList(),
+        sessionHistoryLoading: Boolean = false,
+        sessionHistoryError: String? = null,
+    ) : this(
+        ConnectionState(phase, invite, error, registered, host, pendingRevoke, scanError, resetting, resetRequired, scanInProgress),
+        WorkspaceState(selectedProjectUnavailable, projection, pendingWorkspace, workspaceFailureCode),
+        DiffState(diff, diffPrevious, diffLoading, diffError, diffOpen),
+        TerminalHistoryState(terminalOpen, terminalPage, terminalPrevious, terminalLoading, terminalError),
+        TranscriptState(transcriptTurn, transcriptWorker, transcriptHistoryTurn, transcriptToolCall, transcriptPage, transcriptPreviousPages, transcriptLoading, transcriptError),
+        WorkerHistoryState(workerHistoryRequest, workerReadScope, workerHistoryPage, workerHistoryPrevious, workerHistoryLoading, workerHistoryError),
+        WorkerStatusesState(workerStatusesOpen, workerStatusesPage, workerStatusesPrevious, workerStatusesLoading, workerStatusesError),
+        FilesState(filesOpen, files, filesPrevious, filesLoading, filesError),
+        ResourcesState(resourcesOpen, resources, resourcesPrevious, resourcesLoading, resourcesError),
+        ModelState(modelOpen, modelStatus, modelPrevious, modelLoading, modelError),
+        SessionsState(sessionsOpen, sessions, sessionsPrevious, sessionsLoading, sessionsError, sessionsQuery),
+        SessionHistoryState(sessionHistoryOpen, sessionHistory, sessionHistoryPrevious, sessionHistoryLoading, sessionHistoryError),
+    )
+
+    val phase: PairingPhase = connection.phase
+    val invite: PairingInvite? = connection.invite
+    val error: String? = connection.error
+    val registered: Boolean = connection.registered
+    val host: PairedHost? = connection.host
+    val pendingRevoke: String? = connection.pendingRevoke
+    val scanError: String? = connection.scanError
+    val resetting: Boolean = connection.resetting
+    val resetRequired: Boolean = connection.resetRequired
+    val scanInProgress: Boolean = connection.scanInProgress
+    val selectedProjectUnavailable: Boolean = workspace.selectedProjectUnavailable
+    val projection: HostProjection? = workspace.projection
+    val pendingWorkspace: WorkspaceCommand? = workspace.pendingWorkspace
+    val workspaceFailureCode: String? = workspace.failureCode
+    val diff: zenpi.transport.RemoteDiff? = diffView.diff
+    val diffPrevious: List<zenpi.transport.RemoteDiff> = diffView.previous
+    val diffLoading: Boolean = diffView.loading
+    val diffError: String? = diffView.error
+    val diffOpen: Boolean = diffView.open
+    val terminalOpen: Boolean = terminalHistory.open
+    val terminalPage: zenpi.transport.TerminalPage? = terminalHistory.page
+    val terminalPrevious: List<zenpi.transport.TerminalPage> = terminalHistory.previous
+    val terminalLoading: Boolean = terminalHistory.loading
+    val terminalError: String? = terminalHistory.error
+    val transcriptTurn: String? = transcript.turn
+    val transcriptWorker: Boolean = transcript.worker
+    val transcriptHistoryTurn: zenpi.transport.RemoteTurn? = transcript.historyTurn
+    val transcriptToolCall: zenpi.transport.RemoteToolCall? = transcript.toolCall
+    val transcriptPage: zenpi.transport.TranscriptPage? = transcript.page
+    val transcriptPreviousPages: List<zenpi.transport.TranscriptPage> = transcript.previousPages
+    val transcriptLoading: Boolean = transcript.loading
+    val transcriptError: String? = transcript.error
+    val workerHistoryRequest: String? = workerHistory.request
+    internal val workerReadScope: WorkerReadScope? = workerHistory.readScope
+    val workerHistoryPage: zenpi.transport.WorkerHistoryPage? = workerHistory.page
+    val workerHistoryPrevious: List<zenpi.transport.WorkerHistoryPage> = workerHistory.previous
+    val workerHistoryLoading: Boolean = workerHistory.loading
+    val workerHistoryError: String? = workerHistory.error
+    val workerStatusesOpen: Boolean = workerStatuses.open
+    val workerStatusesPage: zenpi.transport.WorkerStatusPage? = workerStatuses.page
+    val workerStatusesPrevious: List<zenpi.transport.WorkerStatusPage> = workerStatuses.previous
+    val workerStatusesLoading: Boolean = workerStatuses.loading
+    val workerStatusesError: String? = workerStatuses.error
+    val filesOpen: Boolean = fileBrowser.open
+    val files: zenpi.transport.WorkspaceFiles? = fileBrowser.files
+    val filesPrevious: List<zenpi.transport.WorkspaceFiles> = fileBrowser.previous
+    val filesLoading: Boolean = fileBrowser.loading
+    val filesError: String? = fileBrowser.error
+    val resourcesOpen: Boolean = resourceCatalog.open
+    val resources: zenpi.transport.ResourceCatalog? = resourceCatalog.catalog
+    val resourcesPrevious: List<zenpi.transport.ResourceCatalog> = resourceCatalog.previous
+    val resourcesLoading: Boolean = resourceCatalog.loading
+    val resourcesError: String? = resourceCatalog.error
+    val modelOpen: Boolean = model.open
+    val modelStatus: zenpi.transport.RemoteModelStatus? = model.status
+    val modelPrevious: List<zenpi.transport.RemoteModelStatus> = model.previous
+    val modelLoading: Boolean = model.loading
+    val modelError: String? = model.error
+    val sessionsOpen: Boolean = sessionCatalog.open
+    val sessions: zenpi.transport.SessionCatalog? = sessionCatalog.catalog
+    val sessionsPrevious: List<zenpi.transport.SessionCatalog> = sessionCatalog.previous
+    val sessionsLoading: Boolean = sessionCatalog.loading
+    val sessionsError: String? = sessionCatalog.error
+    val sessionsQuery: String? = sessionCatalog.query
+    val sessionHistoryOpen: Boolean = conversationHistory.open
+    val sessionHistory: zenpi.transport.SessionHistoryPage? = conversationHistory.page
+    val sessionHistoryPrevious: List<zenpi.transport.SessionHistoryPage> = conversationHistory.previous
+    val sessionHistoryLoading: Boolean = conversationHistory.loading
+    val sessionHistoryError: String? = conversationHistory.error
+
     val canScan: Boolean get() = !scanInProgress && !resetting && !resetRequired && phase != PairingPhase.CONNECTING && pendingWorkspace == null && pendingRevoke == null
+
+    /** Field-level copy; unchanged sub-states keep their identity so Compose can skip them. */
+    fun copy(
+        phase: PairingPhase = this.phase,
+        invite: PairingInvite? = this.invite,
+        error: String? = this.error,
+        registered: Boolean = this.registered,
+        host: PairedHost? = this.host,
+        pendingRevoke: String? = this.pendingRevoke,
+        scanError: String? = this.scanError,
+        resetting: Boolean = this.resetting,
+        resetRequired: Boolean = this.resetRequired,
+        scanInProgress: Boolean = this.scanInProgress,
+        selectedProjectUnavailable: Boolean = this.selectedProjectUnavailable,
+        projection: HostProjection? = this.projection,
+        pendingWorkspace: WorkspaceCommand? = this.pendingWorkspace,
+        workspaceFailureCode: String? = this.workspaceFailureCode,
+        diff: zenpi.transport.RemoteDiff? = this.diff,
+        diffPrevious: List<zenpi.transport.RemoteDiff> = this.diffPrevious,
+        diffLoading: Boolean = this.diffLoading,
+        diffError: String? = this.diffError,
+        diffOpen: Boolean = this.diffOpen,
+        terminalOpen: Boolean = this.terminalOpen,
+        terminalPage: zenpi.transport.TerminalPage? = this.terminalPage,
+        terminalPrevious: List<zenpi.transport.TerminalPage> = this.terminalPrevious,
+        terminalLoading: Boolean = this.terminalLoading,
+        terminalError: String? = this.terminalError,
+        transcriptTurn: String? = this.transcriptTurn,
+        transcriptWorker: Boolean = this.transcriptWorker,
+        transcriptHistoryTurn: zenpi.transport.RemoteTurn? = this.transcriptHistoryTurn,
+        transcriptToolCall: zenpi.transport.RemoteToolCall? = this.transcriptToolCall,
+        transcriptPage: zenpi.transport.TranscriptPage? = this.transcriptPage,
+        transcriptPreviousPages: List<zenpi.transport.TranscriptPage> = this.transcriptPreviousPages,
+        transcriptLoading: Boolean = this.transcriptLoading,
+        transcriptError: String? = this.transcriptError,
+        workerHistoryRequest: String? = this.workerHistoryRequest,
+        workerReadScope: WorkerReadScope? = this.workerReadScope,
+        workerHistoryPage: zenpi.transport.WorkerHistoryPage? = this.workerHistoryPage,
+        workerHistoryPrevious: List<zenpi.transport.WorkerHistoryPage> = this.workerHistoryPrevious,
+        workerHistoryLoading: Boolean = this.workerHistoryLoading,
+        workerHistoryError: String? = this.workerHistoryError,
+        workerStatusesOpen: Boolean = this.workerStatusesOpen,
+        workerStatusesPage: zenpi.transport.WorkerStatusPage? = this.workerStatusesPage,
+        workerStatusesPrevious: List<zenpi.transport.WorkerStatusPage> = this.workerStatusesPrevious,
+        workerStatusesLoading: Boolean = this.workerStatusesLoading,
+        workerStatusesError: String? = this.workerStatusesError,
+        filesOpen: Boolean = this.filesOpen,
+        files: zenpi.transport.WorkspaceFiles? = this.files,
+        filesPrevious: List<zenpi.transport.WorkspaceFiles> = this.filesPrevious,
+        filesLoading: Boolean = this.filesLoading,
+        filesError: String? = this.filesError,
+        resourcesOpen: Boolean = this.resourcesOpen,
+        resources: zenpi.transport.ResourceCatalog? = this.resources,
+        resourcesPrevious: List<zenpi.transport.ResourceCatalog> = this.resourcesPrevious,
+        resourcesLoading: Boolean = this.resourcesLoading,
+        resourcesError: String? = this.resourcesError,
+        modelOpen: Boolean = this.modelOpen,
+        modelStatus: zenpi.transport.RemoteModelStatus? = this.modelStatus,
+        modelPrevious: List<zenpi.transport.RemoteModelStatus> = this.modelPrevious,
+        modelLoading: Boolean = this.modelLoading,
+        modelError: String? = this.modelError,
+        sessionsOpen: Boolean = this.sessionsOpen,
+        sessions: zenpi.transport.SessionCatalog? = this.sessions,
+        sessionsPrevious: List<zenpi.transport.SessionCatalog> = this.sessionsPrevious,
+        sessionsLoading: Boolean = this.sessionsLoading,
+        sessionsError: String? = this.sessionsError,
+        sessionsQuery: String? = this.sessionsQuery,
+        sessionHistoryOpen: Boolean = this.sessionHistoryOpen,
+        sessionHistory: zenpi.transport.SessionHistoryPage? = this.sessionHistory,
+        sessionHistoryPrevious: List<zenpi.transport.SessionHistoryPage> = this.sessionHistoryPrevious,
+        sessionHistoryLoading: Boolean = this.sessionHistoryLoading,
+        sessionHistoryError: String? = this.sessionHistoryError,
+    ): PairingState = PairingState(
+        ConnectionState(phase, invite, error, registered, host, pendingRevoke, scanError, resetting, resetRequired, scanInProgress).reuse(connection),
+        WorkspaceState(selectedProjectUnavailable, projection, pendingWorkspace, workspaceFailureCode).reuse(workspace),
+        DiffState(diff, diffPrevious, diffLoading, diffError, diffOpen).reuse(diffView),
+        TerminalHistoryState(terminalOpen, terminalPage, terminalPrevious, terminalLoading, terminalError).reuse(terminalHistory),
+        TranscriptState(transcriptTurn, transcriptWorker, transcriptHistoryTurn, transcriptToolCall, transcriptPage, transcriptPreviousPages, transcriptLoading, transcriptError).reuse(transcript),
+        WorkerHistoryState(workerHistoryRequest, workerReadScope, workerHistoryPage, workerHistoryPrevious, workerHistoryLoading, workerHistoryError).reuse(workerHistory),
+        WorkerStatusesState(workerStatusesOpen, workerStatusesPage, workerStatusesPrevious, workerStatusesLoading, workerStatusesError).reuse(workerStatuses),
+        FilesState(filesOpen, files, filesPrevious, filesLoading, filesError).reuse(fileBrowser),
+        ResourcesState(resourcesOpen, resources, resourcesPrevious, resourcesLoading, resourcesError).reuse(resourceCatalog),
+        ModelState(modelOpen, modelStatus, modelPrevious, modelLoading, modelError).reuse(model),
+        SessionsState(sessionsOpen, sessions, sessionsPrevious, sessionsLoading, sessionsError, sessionsQuery).reuse(sessionCatalog),
+        SessionHistoryState(sessionHistoryOpen, sessionHistory, sessionHistoryPrevious, sessionHistoryLoading, sessionHistoryError).reuse(conversationHistory),
+    )
+
+    private fun parts(): List<Any> = listOf(connection, workspace, diffView, terminalHistory, transcript, workerHistory, workerStatuses, fileBrowser, resourceCatalog, model, sessionCatalog, conversationHistory)
+    override fun equals(other: Any?): Boolean = this === other || other is PairingState && parts() == other.parts()
+    override fun hashCode(): Int = parts().hashCode()
+    override fun toString(): String = "PairingState(" + parts().joinToString() + ")"
+
+    private companion object {
+        fun <T : Any> T.reuse(previous: T): T = if (this == previous) previous else this
+    }
 }
 
 class PairingViewModel @JvmOverloads constructor(application: Application, private val hostStore: PairedHostStore = PairedHostStore(application),

@@ -1,5 +1,6 @@
 package zenpi
 
+import zenpi.ui.PairingScreen
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.*

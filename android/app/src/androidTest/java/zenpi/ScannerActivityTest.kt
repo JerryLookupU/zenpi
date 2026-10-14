@@ -1,5 +1,6 @@
 package zenpi
 
+import zenpi.ui.PairingScreen
 import android.Manifest
 import android.content.pm.PackageManager
 import android.view.accessibility.AccessibilityNodeInfo
