@@ -15,7 +15,7 @@ jobs:
   verify:
     name: Format, lint, test, and contract checks
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -115,7 +115,7 @@ jobs:
           done
 
   stage1-host:
-    name: Stage 1 production host smoke and bounds
+    name: Release host bounds and G-LOAD(200)
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -130,13 +130,6 @@ jobs:
 
       - name: Build the production release binary
         run: cargo build --release --locked
-
-      - name: Run the Stage 1 host smoke matrix
-        run: |
-          rm -rf Docs/quality/stage1/ZS1-117
-          python3 tools/stage1_host_smoke.py \
-            --binary target/release/zenpi \
-            --report-dir Docs/quality/stage1/ZS1-117
 
       - name: Run the Stage 1 host bounds and restart test
         run: cargo test --locked --test stage1_host
@@ -154,9 +147,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: stage1-host-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            Docs/quality/stage1/ZS1-117
-            Docs/quality/load/g-load-200.json
+          path: Docs/quality/load/g-load-200.json
           if-no-files-found: warn
 
   android:

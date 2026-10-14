@@ -421,7 +421,7 @@ fn send_http_with_control(
             AuthError::Transport
         }
     };
-    let mut response = transport::send_bytes(builder, body, &cancelled).map_err(&map_error)?;
+    let mut response = transport::send_bytes(builder, body, &cancelled).map_err(map_error)?;
     let status = response.status().as_u16();
     let body =
         transport::read_bytes(response.body_mut(), MAX_RESPONSE, &cancelled).map_err(map_error)?;

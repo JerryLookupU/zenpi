@@ -1238,7 +1238,8 @@ mod secure_fs {
                 let uid = unsafe { libc::geteuid() };
                 let trusted_owner = metadata.uid() == uid || metadata.uid() == 0;
                 let trusted_sticky =
-                    metadata.uid() == 0 && metadata.mode() & u32::from(libc::S_ISVTX) != 0;
+                    // S_ISVTX (sticky bit); libc types it u16 on Apple and u32 on Linux.
+                    metadata.uid() == 0 && metadata.mode() & 0o1000 != 0;
                 if !metadata.is_dir()
                     || !trusted_owner
                     || (metadata.mode() & 0o022 != 0 && !trusted_sticky)

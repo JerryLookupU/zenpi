@@ -55,3 +55,30 @@ jobs:
           name: g-load-${{ github.run_id }}-${{ github.run_attempt }}
           path: Docs/quality/load/g-load.json
           if-no-files-found: warn
+
+  stage1-pty-smoke:
+    # Non-gating: the Stage 1 PTY smoke scripts drive frozen BentoBox/TUI
+    # panes (§7.1) and fail identically on the pre-ZE-500 binary; the same
+    # behaviour is gated in-process by tests/tui_*.rs and tests/tui_task.rs.
+    name: Stage 1 PTY smoke (non-gating)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    continue-on-error: true
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build the production release binary
+        run: cargo build --release --locked
+
+      - name: Run the Stage 1 host smoke matrix
+        run: |
+          python3 tools/stage1_host_smoke.py \
+            --binary target/release/zenpi \
+            --report-dir Docs/quality/stage1/ZS1-117

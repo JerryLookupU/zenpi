@@ -914,14 +914,12 @@ os._exit(0)
     impl Drop for FixturePids {
         fn drop(&mut self) {
             // Only IDs written by this test's own children in its private directory.
-            for name in ["escaped.pid"] {
-                if let Ok(text) = fs::read_to_string(self.0.join(name))
-                    && let Ok(pid) = text.parse::<i32>()
-                    && pid > 1
-                {
-                    // SAFETY: these are the fixture's recorded process IDs; no broad process scan.
-                    unsafe { libc::kill(pid, libc::SIGKILL) };
-                }
+            if let Ok(text) = fs::read_to_string(self.0.join("escaped.pid"))
+                && let Ok(pid) = text.parse::<i32>()
+                && pid > 1
+            {
+                // SAFETY: the fixture's recorded process ID; no broad process scan.
+                unsafe { libc::kill(pid, libc::SIGKILL) };
             }
         }
     }

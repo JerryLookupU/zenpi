@@ -924,15 +924,24 @@ impl ToolContext {
     fn admit_builtin(&self, name: &str, arguments: &Map<String, Value>) -> Result<(), ToolError> {
         let effect = builtin_effect(name).ok_or_else(|| ToolError::UnknownTool(name.into()))?;
         self.check_call_gate(name, effect, arguments)?;
-        if let Some(gate) = self.blueprint_gate.as_deref()
-            && gate
-                .actions
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
-                    (count < gate.policy.max_actions).then_some(count.saturating_add(1))
-                })
-                .is_err()
-        {
-            return Err(gate.deny("action_budget_exhausted"));
+        if let Some(gate) = self.blueprint_gate.as_deref() {
+            // Claim one action within the budget (a compare-exchange loop:
+            // `fetch_update` is deprecated and `try_update` is above MSRV).
+            let mut count = gate.actions.load(Ordering::SeqCst);
+            loop {
+                if count >= gate.policy.max_actions {
+                    return Err(gate.deny("action_budget_exhausted"));
+                }
+                match gate.actions.compare_exchange(
+                    count,
+                    count.saturating_add(1),
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                ) {
+                    Ok(_) => break,
+                    Err(actual) => count = actual,
+                }
+            }
         }
         Ok(())
     }
