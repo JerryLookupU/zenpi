@@ -14,7 +14,8 @@ class OwnerCallbackTest {
         override fun dispatch(context: CoroutineContext, block: Runnable) {
             pending.add(block); check(ready.trySend(Unit).isSuccess)
         }
-        suspend fun next() { withTimeout(2_000) { ready.receive() }; requireNotNull(pending.poll()).run() }
+        // Generous: a slow CI runner may take seconds to start an IO thread.
+        suspend fun next() { withTimeout(10_000) { ready.receive() }; requireNotNull(pending.poll()).run() }
     }
     @Test fun ioCallerPublishesOnlyOnOwnerThreadAfterQueuedLocalEdit() = runBlocking {
         val owner = OwnerQueue()
@@ -49,7 +50,7 @@ class OwnerCallbackTest {
         val owner = OwnerQueue()
         var commits = 0
         val job = async(Dispatchers.IO) { ownerCallback(owner, { true }) { commits++ } }
-        withTimeout(2_000) { owner.ready.receive() }
+        withTimeout(10_000) { owner.ready.receive() }
         job.cancel()
         // Queue signal was consumed above; dispatch's runnable remains queued.
         owner.ready.trySend(Unit)

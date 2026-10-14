@@ -698,9 +698,9 @@ fn release_artifact_startup_size_and_rss_stay_within_lightweight_budget() {
         return;
     }
     let size = fs::metadata(&release).unwrap().len();
-    // Mach-O builds measure 6.3 MiB; ELF/glibc builds carry larger relocation
-    // and unwind tables (10.1 MB on the CI runner). Tighten after ZE-520.
-    let budget = if cfg!(target_os = "linux") { 12 } else { 8 } * 1024 * 1024;
+    // Mach-O builds measure ~5.7 MB; ELF/glibc builds carry larger relocation
+    // and unwind tables (8.85 MB on the CI runner after ZE-520).
+    let budget = if cfg!(target_os = "linux") { 10 } else { 8 } * 1024 * 1024;
     assert!(
         size <= budget,
         "release binary is {size} bytes, above the {budget} byte budget"
