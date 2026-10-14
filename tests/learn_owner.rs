@@ -1,4 +1,6 @@
-use std::io::Cursor;
+#[path = "support/sequential_host.rs"]
+mod sequential_host;
+use sequential_host::run_headless_sequential;
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -7,7 +9,6 @@ use zenpi::{
     core::Agent,
     domain_store::{DomainStore, StoreChange, path_for_session},
     domains::Learn,
-    headless::run_headless,
     session::SessionStore,
     slash::{SlashCommand, parse},
     tui::{MessageRole, SlashDispatchAction, TuiState, dispatch_slash_command},
@@ -86,9 +87,9 @@ fn headless_learn_evidence_is_bounded_idempotent_and_restart_safe() {
     .collect::<Vec<_>>()
     .join("\n")
         + "\n";
-    let mut agent = Agent::with_echo(SessionStore::open(&session_path).unwrap());
+    let agent = Agent::with_echo(SessionStore::open(&session_path).unwrap());
     let mut output = Vec::new();
-    run_headless(&mut agent, Cursor::new(input.into_bytes()), &mut output).unwrap();
+    run_headless_sequential(agent, input.into_bytes(), &mut output).unwrap();
     let responses = records(&output);
 
     let first = responses
@@ -156,15 +157,10 @@ fn headless_learn_evidence_is_bounded_idempotent_and_restart_safe() {
 
     // A fresh process can inspect the same durable Learn checkpoint without a
     // provider call, and an invalid path/ID did not append a record.
-    drop(agent);
-    let mut reopened =
-        Agent::with_echo(SessionStore::open_existing_writable(&session_path).unwrap());
+    let reopened = Agent::with_echo(SessionStore::open_existing_writable(&session_path).unwrap());
     let mut restart_output = Vec::new();
-    run_headless(
-        &mut reopened,
-        Cursor::new(
+    run_headless_sequential(reopened,
             b"{\"type\":\"command\",\"id\":\"restart\",\"text\":\"/learn resume learn-1\"}\n{\"type\":\"shutdown\",\"id\":\"stop-2\"}\n".as_slice(),
-        ),
         &mut restart_output,
     )
     .unwrap();
@@ -224,9 +220,9 @@ fn headless_learn_external_manifest_is_checkpoint_bound_and_idempotent() {
         serde_json::json!({"type":"shutdown","id":"stop"}),
     );
     let mut output = Vec::new();
-    run_headless(
-        &mut Agent::with_echo(SessionStore::open(&session_path).unwrap()),
-        Cursor::new(input.into_bytes()),
+    run_headless_sequential(
+        Agent::with_echo(SessionStore::open(&session_path).unwrap()),
+        input,
         &mut output,
     )
     .unwrap();

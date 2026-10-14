@@ -1,3 +1,6 @@
+#[path = "support/sequential_host.rs"]
+mod sequential_host;
+use sequential_host::run_headless_sequential;
 use tempfile::tempdir;
 use zenpi::approval::ApprovalMode;
 use zenpi::core::{Agent, Turn, TurnRole};
@@ -726,14 +729,13 @@ fn approval_slash_commands_mutate_configured_agent_policy() {
     );
 }
 
-fn headless_responses(agent: &mut Agent, frames: &[serde_json::Value]) -> Vec<serde_json::Value> {
+fn headless_responses(agent: Agent, frames: &[serde_json::Value]) -> Vec<serde_json::Value> {
     let input = frames
         .iter()
         .map(|frame| frame.to_string() + "\n")
         .collect::<String>();
     let mut output = Vec::new();
-    zenpi::headless::run_headless(agent, std::io::Cursor::new(input.into_bytes()), &mut output)
-        .unwrap();
+    run_headless_sequential(agent, input, &mut output).unwrap();
     String::from_utf8(output)
         .unwrap()
         .lines()
@@ -752,11 +754,12 @@ fn headless_approval_without_argument_leaves_mode_unchanged_and_yolo_toggles() {
     policy.mode = ApprovalMode::Always;
     agent.set_approval_policy(policy);
     let responses = headless_responses(
-        &mut agent,
+        agent,
         &[
             serde_json::json!({"type":"command","id":"show","text":"/approval"}),
             serde_json::json!({"type":"command","id":"toggle-on","text":"/yolo"}),
             serde_json::json!({"type":"command","id":"toggle-off","text":"/yolo"}),
+            serde_json::json!({"type":"command","id":"final","text":"/approval"}),
             serde_json::json!({"type":"shutdown","id":"shutdown"}),
         ],
     );
@@ -767,10 +770,8 @@ fn headless_approval_without_argument_leaves_mode_unchanged_and_yolo_toggles() {
     assert_eq!(show["data"]["changed"], false);
     assert_eq!(response("toggle-on")["data"]["enabled"], true);
     assert_eq!(response("toggle-off")["data"]["enabled"], false);
-    assert_eq!(
-        agent.approval_policy().unwrap().mode,
-        ApprovalMode::ReadOnly
-    );
+    // Toggling yolo off lands on the interactive (read-only) mode.
+    assert_eq!(response("final")["data"]["mode"], "ask");
 }
 
 /// Minimal Responses-API server that records each request body.
@@ -853,16 +854,17 @@ fn headless_reasoning_command_changes_the_next_provider_request() {
         zenpi::providers::registry::ModelRegistry::default(),
     )
     .unwrap();
-    let mut agent = Agent::new(
+    let agent = Agent::new(
         SessionStore::open(directory.path().join("active.jsonl")).unwrap(),
         Box::new(backend),
     );
     let responses = headless_responses(
-        &mut agent,
+        agent,
         &[
             serde_json::json!({"type":"prompt","id":"before","text":"first"}),
             serde_json::json!({"type":"command","id":"reasoning","text":"/reasoning high"}),
             serde_json::json!({"type":"prompt","id":"after","text":"second"}),
+            serde_json::json!({"type":"command","id":"effort","text":"/reasoning"}),
             serde_json::json!({"type":"shutdown","id":"shutdown"}),
         ],
     );
@@ -875,5 +877,6 @@ fn headless_reasoning_command_changes_the_next_provider_request() {
     server.join().unwrap();
     assert!(before["reasoning"]["effort"].is_null(), "{before}");
     assert_eq!(after["reasoning"]["effort"], "high", "{after}");
-    assert_eq!(agent.reasoning_effort(), Some("high"));
+    let effort = responses.iter().find(|r| r["id"] == "effort").unwrap();
+    assert_eq!(effort["data"]["reasoning_effort"], "high", "{effort}");
 }

@@ -1,4 +1,6 @@
-use std::io::Cursor;
+#[path = "support/sequential_host.rs"]
+mod sequential_host;
+use sequential_host::run_headless_sequential;
 
 use serde_json::Value;
 use tempfile::tempdir;
@@ -8,7 +10,6 @@ use zenpi::{
     domain_execution::{ExecutionReceipt, ExecutionStatus, ExecutionStore, deterministic_cost},
     domain_store::{DomainStore, path_for_session},
     domains::{Blueprint, BlueprintItem, Goal},
-    headless::run_headless,
     session::SessionStore,
     slash::SlashCommand,
     tui::{MessageRole, SlashDispatchAction, TuiState, dispatch_slash_command},
@@ -54,14 +55,14 @@ fn headless_blueprint_run_records_dependency_order_without_faking_goal_completio
     let dir = tempdir().unwrap();
     let session = dir.path().join("session.jsonl");
     seed(&session);
-    let mut agent = Agent::with_echo(SessionStore::open(&session).unwrap());
+    let agent = Agent::with_echo(SessionStore::open(&session).unwrap());
     let input = concat!(
         "{\"type\":\"command\",\"id\":\"first\",\"text\":\"/blueprint run host-plan@1\"}\n",
         "{\"type\":\"command\",\"id\":\"second\",\"text\":\"/blueprint run host-plan@1\"}\n",
         "{\"type\":\"shutdown\",\"id\":\"shutdown\"}\n",
     );
     let mut output = Vec::new();
-    run_headless(&mut agent, Cursor::new(input.as_bytes()), &mut output).unwrap();
+    run_headless_sequential(agent, input.as_bytes(), &mut output).unwrap();
     let values = records(&output);
 
     let first = values.iter().find(|value| value["id"] == "first").unwrap();
@@ -97,7 +98,10 @@ fn headless_blueprint_run_records_dependency_order_without_faking_goal_completio
         zenpi::domains::GoalStatus::Running
     );
     assert!(
-        agent.history().is_empty(),
+        SessionStore::open_existing(&session)
+            .unwrap()
+            .turns()
+            .is_empty(),
         "slash owner must not call the provider"
     );
 }
@@ -165,13 +169,13 @@ fn blueprint_run_does_not_finish_goal_from_an_older_success_when_latest_attempt_
             .unwrap();
     }
 
-    let mut agent = Agent::with_echo(SessionStore::open(&session).unwrap());
+    let agent = Agent::with_echo(SessionStore::open(&session).unwrap());
     let input = concat!(
         "{\"type\":\"command\",\"id\":\"run\",\"text\":\"/blueprint run latest-plan@1\"}\n",
         "{\"type\":\"shutdown\",\"id\":\"shutdown\"}\n",
     );
     let mut output = Vec::new();
-    run_headless(&mut agent, Cursor::new(input.as_bytes()), &mut output).unwrap();
+    run_headless_sequential(agent, input.as_bytes(), &mut output).unwrap();
     let values = records(&output);
     let run = values.iter().find(|value| value["id"] == "run").unwrap();
     assert_eq!(run["success"], true);
@@ -254,14 +258,14 @@ fn headless_handoff_queue_round_trips_immutable_claims_without_receipts() {
     let mut domains = DomainStore::open(path_for_session(&session)).unwrap();
     domains.put_blueprint(blueprint).unwrap();
     domains.put_goal(goal).unwrap();
-    let mut agent = Agent::with_echo(SessionStore::open(&session).unwrap());
+    let agent = Agent::with_echo(SessionStore::open(&session).unwrap());
     let input = concat!(
         "{\"type\":\"command\",\"id\":\"queue\",\"text\":\"/blueprint handoff handoff-plan@1\"}\n",
         "{\"type\":\"command\",\"id\":\"list\",\"text\":\"/blueprint handoffs\"}\n",
         "{\"type\":\"shutdown\",\"id\":\"shutdown\"}\n",
     );
     let mut output = Vec::new();
-    run_headless(&mut agent, Cursor::new(input.as_bytes()), &mut output).unwrap();
+    run_headless_sequential(agent, input.as_bytes(), &mut output).unwrap();
     let values = records(&output);
     let queued = values.iter().find(|value| value["id"] == "queue").unwrap();
     assert_eq!(queued["success"], true);
@@ -277,7 +281,8 @@ fn headless_handoff_queue_round_trips_immutable_claims_without_receipts() {
     assert_eq!(execution.receipts().len(), 1);
     assert_eq!(execution.receipts()[0].status, ExecutionStatus::Running);
     assert!(!execution.receipts()[0].external_work_executed);
-    assert!(agent.session().events().iter().any(|event| {
+    let journal = SessionStore::open_existing(&session).unwrap();
+    assert!(journal.events().iter().any(|event| {
         event["type"] == "blueprint_handoff_claimed"
             && event["claim_digest"] == claim["claim_digest"]
     }));

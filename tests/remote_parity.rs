@@ -1,4 +1,7 @@
+#[path = "support/sequential_host.rs"]
+mod sequential_host;
 mod support;
+use sequential_host::run_headless_sequential;
 
 use serde_json::json;
 use std::{
@@ -285,7 +288,6 @@ fn registered_git_worktree_is_selected_without_replacing_session_owner() {
 fn local_model_commands_cannot_change_configuration_under_durable_phone_follow_up() {
     use zenpi::{
         backend::{OpenAiCompatibleBackend, OpenAiWireApi},
-        headless::run_headless,
         input_queue::InputKind,
         protocol::{InputQueueAction, InputQueueRequest},
         providers::registry::ModelRegistry,
@@ -356,10 +358,12 @@ fn local_model_commands_cannot_change_configuration_under_durable_phone_follow_u
 
     // Exercise the public headless parser and dispatcher, not a second setter.
     let mut wire = Vec::new();
-    run_headless(&mut agent, std::io::Cursor::new(concat!(
+    run_headless_sequential(agent, concat!(
         "{\"type\":\"command\",\"id\":\"local-model\",\"text\":\"/model gpt-5.2-2025-12-11\"}\n",
+        "{\"type\":\"command\",\"id\":\"model-after\",\"text\":\"/model\"}\n",
+        "{\"type\":\"command\",\"id\":\"reasoning-after\",\"text\":\"/reasoning\"}\n",
         "{\"type\":\"shutdown\",\"id\":\"stop\"}\n",
-    )), &mut wire).unwrap();
+    ), &mut wire).unwrap();
     let records: Vec<serde_json::Value> = String::from_utf8(wire)
         .unwrap()
         .lines()
@@ -371,16 +375,27 @@ fn local_model_commands_cannot_change_configuration_under_durable_phone_follow_u
         .unwrap();
     assert_eq!(rejected["success"], false);
     assert_eq!(rejected["code"], "model_error");
-    assert_eq!(agent.model_status().unwrap(), selection);
+    let after = |id: &str| {
+        records
+            .iter()
+            .find(|record| record["id"] == id && record["type"] == "response")
+            .unwrap()["data"]
+            .clone()
+    };
+    assert_eq!(after("model-after")["model"], selection["model"]);
+    assert_eq!(
+        after("reasoning-after")["reasoning_effort"],
+        selection["reasoning_effort"]
+    );
+    let journal = SessionStore::open_existing(&path).unwrap();
     assert!(
-        !agent
-            .session()
+        !journal
             .events()
             .iter()
             .any(|event| event["type"] == "model_selected")
     );
     assert!(
-        zenpi::input_queue::InputQueue::recover(agent.session(), Default::default())
+        zenpi::input_queue::InputQueue::recover(&journal, Default::default())
             .unwrap()
             .has_pending()
     );

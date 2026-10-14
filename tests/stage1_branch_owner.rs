@@ -1,3 +1,6 @@
+#[path = "support/sequential_host.rs"]
+mod sequential_host;
+use sequential_host::run_headless_sequential;
 use serde_json::{Value, json};
 use std::{
     cell::Cell,
@@ -183,7 +186,7 @@ fn typed_jsonl_and_tui_projection_select_same_leaf_without_provider() {
         json!({"schema_version":2,"id":"tree-page","type":"tree","session_id":sid,"tree":{"action":"list","cursor":0,"limit":2}})
     );
     let mut output = vec![];
-    zenpi::headless::run_headless(&mut a, std::io::Cursor::new(input), &mut output).unwrap();
+    run_headless_sequential(a, input, &mut output).unwrap();
     let rows: Vec<Value> = String::from_utf8(output)
         .unwrap()
         .lines()
