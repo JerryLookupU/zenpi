@@ -21,13 +21,30 @@
 use std::{
     collections::VecDeque,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError, TrySendError},
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
+
+/// Process-wide hook run after a runtime event is queued (and by other
+/// host-visible producers such as approvals and input replies), so an
+/// event-driven host can block until something changes instead of polling.
+static EVENT_HOOK: OnceLock<fn()> = OnceLock::new();
+
+/// Install the process-wide event hook once; later calls are ignored.
+pub fn set_event_hook(hook: fn()) {
+    let _ = EVENT_HOOK.set(hook);
+}
+
+/// Wake an event-driven host, if one installed a hook.
+pub fn notify_event_hook() {
+    if let Some(hook) = EVENT_HOOK.get() {
+        hook();
+    }
+}
 
 /// Grace period used by the ordinary shutdown helpers before a
 /// non-cooperative job is detached.
@@ -160,6 +177,8 @@ pub enum SubmitError {
     QueueFull,
     /// The worker has exited or is shutting down.
     Closed,
+    /// The OS refused a job thread; the runtime itself stays usable.
+    SpawnFailed,
 }
 
 impl std::fmt::Display for SubmitError {
@@ -167,6 +186,7 @@ impl std::fmt::Display for SubmitError {
         formatter.write_str(match self {
             Self::QueueFull => "runtime command queue is full",
             Self::Closed => "runtime worker is closed",
+            Self::SpawnFailed => "runtime could not start a job thread",
         })
     }
 }
@@ -213,10 +233,22 @@ pub enum RuntimeEvent<O, E> {
 }
 
 enum Command<I> {
-    Submit { id: JobId, request: I },
-    Cancel { id: JobId },
-    Shutdown { grace: Duration },
-    Concurrency { limit: u16, applied: SyncSender<()> },
+    Submit {
+        id: JobId,
+        request: I,
+    },
+    Cancel {
+        id: JobId,
+    },
+    Shutdown {
+        grace: Duration,
+    },
+    Concurrency {
+        limit: u16,
+        applied: SyncSender<()>,
+    },
+    /// A job thread finished; wakes the blocked worker to reap it.
+    JobDone,
 }
 
 struct Active<O, E> {
@@ -271,6 +303,9 @@ where
     /// channel lets an owner safely join after it already consumed `Closed`
     /// (or after the worker failed before it could emit that event).
     closed: Arc<AtomicBool>,
+    /// Set when the host drops the runner. The worker holds a command sender
+    /// for job wakeups, so channel disconnection alone can no longer stop it.
+    host_gone: Arc<AtomicBool>,
     applied_concurrency: Arc<AtomicU16>,
     _job: Arc<F>,
 }
@@ -314,6 +349,9 @@ where
         let (command_tx, command_rx) = mpsc::sync_channel(config.command_capacity);
         let (event_tx, event_rx) = mpsc::sync_channel(config.event_capacity);
         let closed = Arc::new(AtomicBool::new(false));
+        let host_gone = Arc::new(AtomicBool::new(false));
+        let worker_host_gone = Arc::clone(&host_gone);
+        let wake_tx = command_tx.clone();
         let worker_closed = Arc::clone(&closed);
         let applied_concurrency = Arc::new(AtomicU16::new(concurrency));
         let worker_concurrency = Arc::clone(&applied_concurrency);
@@ -328,6 +366,8 @@ where
                 let _closed_guard = WorkerClosedGuard(worker_closed);
                 worker_loop(
                     command_rx,
+                    wake_tx,
+                    worker_host_gone,
                     event_tx,
                     worker_job,
                     config,
@@ -342,6 +382,7 @@ where
             next_id: AtomicU64::new(1),
             join: Some(join),
             closed,
+            host_gone,
             applied_concurrency,
             _job: job,
         })
@@ -516,7 +557,8 @@ where
         // Drop cannot block because the caller may hold resources required by
         // its job closure. Production owners use `shutdown_and_join`; this
         // fallback still requests cancellation rather than silently leaking
-        // more work.
+        // more work. The flag covers a full command channel.
+        self.host_gone.store(true, Ordering::Release);
         let _ = self.command_tx.try_send(Command::Shutdown {
             grace: Duration::ZERO,
         });
@@ -524,8 +566,11 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn worker_loop<I, O, E, F>(
     command_rx: Receiver<Command<I>>,
+    wake_tx: SyncSender<Command<I>>,
+    host_gone: Arc<AtomicBool>,
     event_tx: SyncSender<RuntimeEvent<O, E>>,
     job: Arc<F>,
     config: RuntimeConfig,
@@ -594,17 +639,20 @@ fn worker_loop<I, O, E, F>(
                 let Some((id, request)) = pending.pop_front() else {
                     break;
                 };
-                if !start_job(&event_tx, &job, &mut active, id, request) {
+                if !start_job(&event_tx, &wake_tx, &job, &mut active, id, request) {
                     return;
                 }
             }
         }
 
-        let command = if !active.is_empty() {
-            let wait = stopping
-                .map(|state| state.remaining(config.poll_interval))
-                .unwrap_or(config.poll_interval);
-            match command_rx.recv_timeout(wait) {
+        // ZE-300: block instead of polling. A finished job wakes the worker
+        // with `JobDone`; only a shutdown deadline needs a timed wait.
+        let command = if host_gone.load(Ordering::Acquire) && stopping.is_none() {
+            Command::Shutdown {
+                grace: Duration::ZERO,
+            }
+        } else if let Some(state) = stopping.filter(|_| !active.is_empty()) {
+            match command_rx.recv_timeout(state.remaining(config.poll_interval)) {
                 Ok(command) => command,
                 Err(RecvTimeoutError::Timeout) => continue,
                 Err(RecvTimeoutError::Disconnected) => Command::Shutdown {
@@ -627,7 +675,7 @@ fn worker_loop<I, O, E, F>(
                 if !emit(&event_tx, RuntimeEvent::Accepted { id, queued: false }) {
                     return;
                 }
-                if !start_job(&event_tx, &job, &mut active, id, request) {
+                if !start_job(&event_tx, &wake_tx, &job, &mut active, id, request) {
                     return;
                 }
             }
@@ -712,6 +760,7 @@ fn worker_loop<I, O, E, F>(
                     }
                 }
             }
+            Command::JobDone => {}
             Command::Concurrency { limit, applied } => {
                 if stopping.is_none() {
                     concurrency = limit;
@@ -784,6 +833,7 @@ impl Drop for WorkerClosedGuard {
 
 fn start_job<I, O, E, F>(
     event_tx: &SyncSender<RuntimeEvent<O, E>>,
+    wake_tx: &SyncSender<Command<I>>,
     job: &Arc<F>,
     active: &mut Vec<Active<O, E>>,
     id: JobId,
@@ -799,6 +849,7 @@ where
     let child_token = token.clone();
     let (done_tx, done_rx) = mpsc::sync_channel(1);
     let job = Arc::clone(job);
+    let wake_tx = wake_tx.clone();
     let join = match thread::Builder::new()
         .name(format!("zenpi-job-{}", id.get()))
         .spawn(move || {
@@ -810,14 +861,17 @@ where
                 Err(_) => JobExecution::Panicked,
             };
             let _ = done_tx.send(execution);
+            // A full command queue means the worker is about to run anyway.
+            let _ = wake_tx.try_send(Command::JobDone);
         }) {
         Ok(join) => join,
         Err(_) => {
+            // The runtime stays usable; queued work keeps draining.
             return emit(
                 event_tx,
                 RuntimeEvent::Rejected {
                     id,
-                    reason: SubmitError::Closed,
+                    reason: SubmitError::SpawnFailed,
                 },
             );
         }
@@ -832,7 +886,9 @@ where
 }
 
 fn emit<O, E>(event_tx: &SyncSender<RuntimeEvent<O, E>>, event: RuntimeEvent<O, E>) -> bool {
-    event_tx.send(event).is_ok()
+    let sent = event_tx.send(event).is_ok();
+    notify_event_hook();
+    sent
 }
 
 /// Host-observed, revocable permission to consume input before one model turn.

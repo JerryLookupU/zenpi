@@ -16553,7 +16553,10 @@ impl NewSessionControl {
             if !requested {
                 match self.worker.try_shutdown() {
                     Ok(()) => requested = true,
-                    Err(crate::runtime::SubmitError::Closed) => break,
+                    Err(
+                        crate::runtime::SubmitError::Closed
+                        | crate::runtime::SubmitError::SpawnFailed,
+                    ) => break,
                     Err(crate::runtime::SubmitError::QueueFull) => {}
                 }
             }
@@ -18800,7 +18803,10 @@ fn run_tui_loop(
                         state.gantt_refresh_started();
                     }
                     Err(crate::runtime::SubmitError::QueueFull) => {}
-                    Err(crate::runtime::SubmitError::Closed) => {
+                    Err(
+                        crate::runtime::SubmitError::Closed
+                        | crate::runtime::SubmitError::SpawnFailed,
+                    ) => {
                         gantt_refresh_pending = false;
                         state.gantt_refresh_failed("Gantt worker closed");
                     }
@@ -18904,7 +18910,10 @@ fn run_tui_loop(
                         scheduler.request();
                     }
                     Err(crate::runtime::SubmitError::QueueFull) => {}
-                    Err(crate::runtime::SubmitError::Closed) => {
+                    Err(
+                        crate::runtime::SubmitError::Closed
+                        | crate::runtime::SubmitError::SpawnFailed,
+                    ) => {
                         state.resource_refresh_failed("resource worker closed");
                         last_resource_refresh = now;
                         scheduler.request();

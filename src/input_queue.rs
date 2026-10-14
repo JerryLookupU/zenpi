@@ -890,6 +890,7 @@ impl InputPort {
         }
         for pending in state.pending.drain(..) {
             let _ = pending.reply.send(Err("input turn scope expired".into()));
+            crate::runtime::notify_event_hook();
         }
         state.turn_id = turn_id.map(str::to_owned);
         state.preparing = false;
@@ -912,6 +913,7 @@ impl InputPort {
             Err(error) => {
                 for item in pending {
                     let _ = item.reply.send(Err(error.to_string()));
+                    crate::runtime::notify_event_hook();
                 }
                 return Err(error);
             }
@@ -924,6 +926,7 @@ impl InputPort {
                 let _ = item
                     .reply
                     .send(Err("input ticket cancelled or turn scope expired".into()));
+                crate::runtime::notify_event_hook();
                 continue;
             }
             let result = queue.execute_request(session, item.request);
@@ -939,6 +942,7 @@ impl InputPort {
                     .map(Clone::clone)
                     .map_err(ToString::to_string),
             );
+            crate::runtime::notify_event_hook();
             if fatal {
                 result?;
             }

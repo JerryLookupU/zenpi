@@ -536,7 +536,7 @@ fn shutdown_observer_drains_terminal_events_after_worker_already_closed() {
     // Do not consume Closed: exercise cleanup's final buffered-event drain.
     loop {
         match runner.try_cancel(id) {
-            Err(SubmitError::Closed) => break,
+            Err(SubmitError::Closed | SubmitError::SpawnFailed) => break,
             Ok(()) | Err(SubmitError::QueueFull) => {
                 assert!(Instant::now() < until);
                 thread::sleep(Duration::from_millis(1));

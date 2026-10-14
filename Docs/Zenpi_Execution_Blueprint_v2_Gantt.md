@@ -5,9 +5,9 @@
 
 ```yaml
 source: Docs/Zenpi_Execution_Blueprint_v2.md
-source_sha256: 6a5fdf64ce98b26a30c9acada5e0cf82047fa5db5b3907244ebf2cf6c03face7
+source_sha256: 3b609bc2cd0ef6d46a818711576cdc0637eeeb8b6943b895509959b9ec961060
 blueprint_version: 4.0.0
-generated_at: 2026-10-14T16:47:42Z
+generated_at: 2026-10-14T17:01:09Z
 ```
 
 ## Dependency-order view
@@ -90,7 +90,7 @@ gantt
     ZE-255 panic 时恢复终端： TerminalGuard  enter  安装一个串 :done, ZE_255, 0, 1d
     ZE-260 DAG 正确性：<br>• worker 默认用  current_exe() :done, ZE_260, 0, 1d
     section A3
-    ZE-300 headless 去轮询（对应 redis ae：睡到下一个真实截止时间）：<b :ZE_300, after ZE_243, 1d
+    ZE-300 headless 去轮询（对应 redis ae：睡到下一个真实截止时间）：<b :active, ZE_300, after ZE_243, 1d
     ZE-301 传输层：进程内共享一个  ureq  Agent （keep-alive 连接池 :ZE_301, after ZE_105, 1d
     ZE-302 工具、搜索、扩展的读取改用  poll(2)  阻塞等待：单个线程同时监听两个 :ZE_302, after ZE_201 ZE_207, 1d
     ZE-303 reconnect WAL 收敛（对应 redis aof：只对确认点做持久化， :ZE_303, after ZE_243, 1d
@@ -144,7 +144,7 @@ gantt
 
 ## Monitoring index
 
-Counts: open 52 · self-tested 0 · accepted 61 · total 113
+Counts: open 51 · self-tested 1 · accepted 61 · total 113
 
 | ID | Layer | State | Ready | Depends | Claim | Integration | Est. LOC | Title |
 |---|---|---|---|---|---|---|---:|---|
@@ -216,7 +216,7 @@ Counts: open 52 · self-tested 0 · accepted 61 · total 113
 | ZE-254 | A2 | open | yes | ZE-106 | ZE-254@blueprint-4.0.0 | — | 500 | 删除旧的同步 TUI 路径（`run`、`run_interactive`、`run_with_state*`、`agent=None` 分支），把 `stage1_input_host` 的端到端测试迁到 ZE-106 的注入点上 |
 | ZE-255 | A2 | accepted | no | — | ZE-255@blueprint-4.0.0 | accepted | 60 | panic 时恢复终端：`TerminalGuard::enter` 安装一个串接原有 hook 的 panic hook，执行与 `leave()` 相同的恢复步骤 |
 | ZE-260 | A2 | accepted | no | — | ZE-260@blueprint-4.0.0 | accepted | 130 | DAG 正确性：<br>• worker 默认用 `current_exe()`；<br>• 存储满时 `send` 返回错误，不再静默丢弃；<br>• 写入改为临时文件 + fsync + rename 的原子写；<br>• 消息体按字节限制；<br>• 回收子进程；<br>• `dag_spawn` 限制深度 ≤ 3，且扇出不超过父节点租约；<br>layer `A2` \| Depends: — \| Owned paths: `src/dag.rs`, `src/tools.rs`, `tests/dag.rs` \| Validators: `dag_send_full_mailbox_errors`；`dag_spawn_defaults_to_current_exe`；写到一半被截断后存储仍可读；第 4 层 spawn 被拒绝 \| Estimated LOC: 130 |
-| ZE-300 | A3 | open | yes | ZE-243 | — | — | 300 | headless 去轮询（对应 redis ae：睡到下一个真实截止时间）：<br>• stdin、runtime、审批三类唤醒合并为一个阻塞 channel；<br>• `worker_loop` 改用 condvar，job 完成时主动唤醒；<br>• job 线程创建失败时发出类型化的 `SpawnFailed`，并继续消化排队中的任务；<br>• shutdown 之后再 submit 时显式返回 `Rejected`；<br>layer `A3` \| Depends: ZE-243 \| Owned paths: `src/headless.rs`, `src/runtime.rs` \| Validators: 空闲进程 10 s 内 `ru_nvcsw` 增量 ≤ 50；200 个进程都卡在 10 s 的脚本化 provider 上时，总 CPU < 单核的 1%；stdout 读端暂停 5 s 期间，stdin 发出的 cancel 在 250 ms 内送达 job；注入 spawn 失败后，下一个排队任务仍能完成 \| Estimated LOC: 300 |
+| ZE-300 | A3 | self-tested | yes | ZE-243 | ZE-300@blueprint-4.0.0 | handoff | 300 | headless 去轮询（对应 redis ae：睡到下一个真实截止时间）：<br>• stdin、runtime、审批三类唤醒合并为一个阻塞 channel；<br>• `worker_loop` 改用 condvar，job 完成时主动唤醒；<br>• job 线程创建失败时发出类型化的 `SpawnFailed`，并继续消化排队中的任务；<br>• shutdown 之后再 submit 时显式返回 `Rejected`；<br>layer `A3` \| Depends: ZE-243 \| Owned paths: `src/headless.rs`, `src/runtime.rs` \| Validators: 空闲进程 10 s 内 `ru_nvcsw` 增量 ≤ 50；200 个进程都卡在 10 s 的脚本化 provider 上时，总 CPU < 单核的 1%；stdout 读端暂停 5 s 期间，stdin 发出的 cancel 在 250 ms 内送达 job；注入 spawn 失败后，下一个排队任务仍能完成 \| Estimated LOC: 300 |
 | ZE-301 | A3 | open | yes | ZE-105 | — | — | 180 | 传输层：进程内共享一个 `ureq::Agent`（keep-alive 连接池、共享 TLS 配置）；在连接器内通过 `RequestControl` 的 Arc 标志实现取消，删除每个请求的发送线程和 5 ms park 轮询 |
 | ZE-302 | A3 | open | yes | ZE-201, ZE-207 | — | — | 220 | 工具、搜索、扩展的读取改用 `poll(2)` 阻塞等待：单个线程同时监听两个 fd 和子进程，poll 超时取"工具截止时间"与"100 ms 取消检查"中较小的一个；删除 2–5 ms 的 sleep 循环和固定 50 ms 等待；进程组信号只发给尚未被回收的 leader；改动涉及的 `unsafe` 一律加 `// SAFETY:` 注释 |
 | ZE-303 | A3 | open | yes | ZE-243 | — | — | 260 | reconnect WAL 收敛（对应 redis aof：只对确认点做持久化，写失败视为"提交不确定"）：<br>• `Event` 记录不再写入 WAL，改放内存环形缓冲；<br>• 只对 Reserved、Terminal、Ack 三类记录 fsync，且 Terminal 先 fsync 再写 stdout；<br>• 任何一次追加失败后，日志被毒化，之后的追加都返回 `CommitUncertain`；<br>• 打开时用 write、`sync_all`、rename、目录 fsync 的方式压缩；<br>• 截断撕裂的末尾前，先复制为 `.torn`；<br>• 请求 ID 账本与 terminals 一起按 FIFO 修剪；<br>• 干净关闭且没有未知结果时，删除 WAL；<br>layer `A3` \| Depends: ZE-243 \| Owned paths: `src/session.rs`, `src/headless.rs` \| Validators: 每个请求写入 WAL 的字节数 ≤ 终态大小 + 1 KiB；每个请求的 fsync ≤ 3 次；注入短写和 fsync 错误后仍能重新打开；干净 shutdown 后 export/delete 成功；2 万次带 ID 的 `status` 全部成功，被淘汰的 ID 返回 `replay_expired` \| Estimated LOC: 260 |

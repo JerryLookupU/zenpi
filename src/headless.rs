@@ -9,7 +9,7 @@ use std::{
     fs::{self, File},
     io::{self, BufRead, Read, Write},
     path::{Component, Path, PathBuf},
-    sync::{Arc, Mutex, mpsc},
+    sync::{Arc, Condvar, Mutex, mpsc},
     thread,
     time::{Duration, Instant},
 };
@@ -801,6 +801,67 @@ impl DroppedEvents {
     }
 }
 
+/// ZE-300: the async host sleeps until a producer bumps this generation
+/// (stdin line, runtime event, provider/agent event, approval, input reply)
+/// instead of waking every 10 ms. Shared by every host in the process;
+/// a wake meant for another host is only a spurious, harmless loop turn.
+struct HostWake {
+    generation: Mutex<u64>,
+    changed: Condvar,
+}
+
+static HOST_WAKE: HostWake = HostWake {
+    generation: Mutex::new(0),
+    changed: Condvar::new(),
+};
+
+/// Longest idle sleep: the owner heartbeat and signal checks still run.
+const HOST_IDLE_WAIT: Duration = Duration::from_secs(1);
+
+fn wake_host() {
+    let mut generation = HOST_WAKE
+        .generation
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    *generation = generation.wrapping_add(1);
+    HOST_WAKE.changed.notify_all();
+}
+
+fn host_generation() -> u64 {
+    *HOST_WAKE
+        .generation
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+}
+
+/// Sleep until the generation moves past `seen` or `timeout` elapses.
+fn wait_host(seen: u64, timeout: Duration) {
+    let generation = HOST_WAKE
+        .generation
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let _ = HOST_WAKE
+        .changed
+        .wait_timeout_while(generation, timeout, |current| *current == seen);
+}
+
+/// Take the next reader message, sleeping on the host wake when idle.
+fn next_reader_message(
+    line_rx: &mpsc::Receiver<ReaderMessage>,
+    seen: u64,
+) -> Result<ReaderMessage, mpsc::RecvTimeoutError> {
+    match line_rx.try_recv() {
+        Ok(message) => return Ok(message),
+        Err(mpsc::TryRecvError::Disconnected) => return Err(mpsc::RecvTimeoutError::Disconnected),
+        Err(mpsc::TryRecvError::Empty) => {}
+    }
+    wait_host(seen, HOST_IDLE_WAIT);
+    line_rx.try_recv().map_err(|error| match error {
+        mpsc::TryRecvError::Empty => mpsc::RecvTimeoutError::Timeout,
+        mpsc::TryRecvError::Disconnected => mpsc::RecvTimeoutError::Disconnected,
+    })
+}
+
 #[derive(Default)]
 struct AsyncEventBuffer {
     provider: Vec<BufferedEvent<ProviderEvent>>,
@@ -871,6 +932,16 @@ impl AsyncEventBuffer {
     }
 
     fn push_provider(&mut self, event: ProviderEvent) {
+        self.push_provider_inner(event);
+        wake_host();
+    }
+
+    fn push_agent(&mut self, event: AgentEvent) {
+        self.push_agent_inner(event);
+        wake_host();
+    }
+
+    fn push_provider_inner(&mut self, event: ProviderEvent) {
         let order = self.next_order();
         let serialized_bytes = serialized_event_len(&event);
         let next_bytes = self.provider_bytes.checked_add(serialized_bytes);
@@ -888,7 +959,7 @@ impl AsyncEventBuffer {
         }
     }
 
-    fn push_agent(&mut self, event: AgentEvent) {
+    fn push_agent_inner(&mut self, event: AgentEvent) {
         let order = self.next_order();
         let serialized_bytes = serialized_event_len(&event);
         if is_priority_agent_event(&event) {
@@ -3825,6 +3896,10 @@ fn runtime_error_details(reason: crate::runtime::SubmitError) -> (&'static str, 
             "runtime_closed",
             "runtime rejected the request because it is closed",
         ),
+        crate::runtime::SubmitError::SpawnFailed => (
+            "runtime_spawn_failed",
+            "runtime could not start a job thread; retry",
+        ),
     }
 }
 
@@ -4333,6 +4408,7 @@ fn run_async_stdio<R: io::Read + Send + 'static, W: Write>(
         replay
     };
     let mut event_sequence = replay.next_sequence;
+    crate::runtime::set_event_hook(wake_host);
     let (line_tx, line_rx) = mpsc::sync_channel::<ReaderMessage>(32);
     thread::Builder::new()
         .name("zenpi-stdin-reader".into())
@@ -4343,12 +4419,14 @@ fn run_async_stdio<R: io::Read + Send + 'static, W: Write>(
                 match read_frame(&mut reader, &mut frame) {
                     Ok(Frame::Eof) => {
                         let _ = line_tx.send(ReaderMessage::Eof);
+                        wake_host();
                         break;
                     }
                     Ok(Frame::TooLong) => {
                         if line_tx.send(ReaderMessage::TooLong).is_err() {
                             break;
                         }
+                        wake_host();
                     }
                     Ok(Frame::Data) => {
                         let message = match std::str::from_utf8(&frame) {
@@ -4358,9 +4436,11 @@ fn run_async_stdio<R: io::Read + Send + 'static, W: Write>(
                         if line_tx.send(message).is_err() {
                             break;
                         }
+                        wake_host();
                     }
                     Err(error) => {
                         let _ = line_tx.send(ReaderMessage::Error(error));
+                        wake_host();
                         break;
                     }
                 }
@@ -4563,6 +4643,8 @@ fn run_async_stdio<R: io::Read + Send + 'static, W: Write>(
     };
     let loop_result = (|| -> Result<(), HeadlessError> {
         loop {
+            // Read before draining so a wake that lands mid-drain is not lost.
+            let seen_wake = host_generation();
             if termination_requested() && !explicit_shutdown && !shutdown_sent {
                 // SIGTERM is an implicit `shutdown`: stop reading input,
                 // cancel unanswerable approvals, give admitted work the
@@ -4680,7 +4762,11 @@ fn run_async_stdio<R: io::Read + Send + 'static, W: Write>(
                     && ((jobs.is_empty() && pending_steers.is_empty()) || grace_elapsed)
                 {
                     match runner.try_shutdown() {
-                        Ok(()) | Err(crate::runtime::SubmitError::Closed) => {
+                        Ok(())
+                        | Err(
+                            crate::runtime::SubmitError::Closed
+                            | crate::runtime::SubmitError::SpawnFailed,
+                        ) => {
                             shutdown_sent = true;
                         }
                         Err(crate::runtime::SubmitError::QueueFull) => {
@@ -4715,7 +4801,7 @@ fn run_async_stdio<R: io::Read + Send + 'static, W: Write>(
                 }
                 continue;
             }
-            match line_rx.recv_timeout(Duration::from_millis(10)) {
+            match next_reader_message(&line_rx, seen_wake) {
                 Ok(ReaderMessage::Line(line)) => {
                     process_async_line(
                         line,
@@ -5105,6 +5191,10 @@ fn handle_runtime_event<W: Write>(
                 crate::runtime::SubmitError::Closed => (
                     "runtime_closed",
                     "runtime rejected the request while shutting down",
+                ),
+                crate::runtime::SubmitError::SpawnFailed => (
+                    "runtime_spawn_failed",
+                    "runtime could not start a job thread; retry",
                 ),
             };
             replay.emission_project = Some(meta.project.clone());
@@ -6744,7 +6834,10 @@ where
                         enqueue_pending_steer(pending_steers, pending, output, replay)?;
                         continue;
                     }
-                    Err(crate::runtime::SubmitError::Closed) => {
+                    Err(
+                        crate::runtime::SubmitError::Closed
+                        | crate::runtime::SubmitError::SpawnFailed,
+                    ) => {
                         write_cached_versioned_response(
                             output,
                             StdioResponse::error_with_code(
@@ -6788,7 +6881,9 @@ where
                     // full for the replacement request.
                     enqueue_pending_steer(pending_steers, pending, output, replay)?;
                 }
-                Err(crate::runtime::SubmitError::Closed) => {
+                Err(
+                    crate::runtime::SubmitError::Closed | crate::runtime::SubmitError::SpawnFailed,
+                ) => {
                     write_cached_versioned_response(
                         output,
                         StdioResponse::error_with_code(
@@ -6834,7 +6929,9 @@ where
                 Err(crate::runtime::SubmitError::QueueFull) => {
                     enqueue_pending_steer(pending_steers, pending, output, replay)?;
                 }
-                Err(crate::runtime::SubmitError::Closed) => {
+                Err(
+                    crate::runtime::SubmitError::Closed | crate::runtime::SubmitError::SpawnFailed,
+                ) => {
                     write_cached_versioned_response(
                         output,
                         StdioResponse::error_with_code(

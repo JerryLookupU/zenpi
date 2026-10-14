@@ -361,6 +361,7 @@ impl ApprovalCoordinator {
         crate::remote::wakeup::notify(session);
     }
     fn notify_session(&self) {
+        crate::runtime::notify_event_hook();
         let scope = self
             .notification_session
             .lock()
