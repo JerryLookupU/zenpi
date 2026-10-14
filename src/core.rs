@@ -6245,10 +6245,12 @@ impl Agent {
         let outcome = match &result {
             crate::tools::ToolResult::Success { .. } => ToolInvocationOutcome::Succeeded,
             crate::tools::ToolResult::Error { error, .. } => match error.code {
-                ToolErrorCode::Io
-                | ToolErrorCode::Internal
-                | ToolErrorCode::CommandTimeout
-                | ToolErrorCode::Cancelled
+                // A timed-out command's process group is killed and reaped, and
+                // a command I/O failure still cleans up its child: the outcome is
+                // known, so the model gets an ordinary error and the turn goes on.
+                ToolErrorCode::CommandTimeout => ToolInvocationOutcome::Failed,
+                ToolErrorCode::Io if call.name == "run_command" => ToolInvocationOutcome::Failed,
+                ToolErrorCode::Io | ToolErrorCode::Internal | ToolErrorCode::Cancelled
                     if side_effect != Some(ToolSideEffect::ReadOnly) =>
                 {
                     ToolInvocationOutcome::UnknownOutcome

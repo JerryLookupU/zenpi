@@ -241,7 +241,7 @@ fn system_file(
 /// Usage line for a builtin tool, stating its limits and how to continue.
 fn builtin_snippet(name: &str) -> Option<String> {
     use crate::tools::{
-        DEFAULT_COMMAND_TIMEOUT_MS, MAX_COMMAND_OUTPUT_BYTES, MAX_LIST_ENTRIES, MAX_READ_BYTES,
+        MAX_COMMAND_OUTPUT_BYTES, MAX_COMMAND_TIMEOUT_MS, MAX_LIST_ENTRIES, MAX_READ_BYTES,
         MAX_SEARCH_MATCHES, MAX_WRITE_BYTES,
     };
     let kib = |bytes: usize| bytes / 1024;
@@ -267,8 +267,8 @@ fn builtin_snippet(name: &str) -> Option<String> {
         ),
         "edit_file" => "Replace exactly one occurrence of old with new. Include enough surrounding text to make old unique; read the file first.".to_owned(),
         "run_command" => format!(
-            "Run a shell command in the workspace. timeout_ms defaults to {} s (max 120 s). Each stream keeps at most {} KiB; when output is cut the result says \"[stdout truncated] Full stdout: read_tool_output artifact_id=... call_id=...\", so page the rest with read_tool_output and offset instead of re-running.",
-            DEFAULT_COMMAND_TIMEOUT_MS / 1000,
+            "Run a shell command in the workspace. stdout and stderr are returned together with the exit code; a non-zero exit is an error that still includes the output. timeout_ms is optional with no default (max {} h). You see the last 2000 lines / 50 KiB; each stream keeps its last {} KiB, and when earlier output was dropped the result says \"[stdout truncated: earlier output omitted] Full stdout: read_tool_output artifact_id=... call_id=...\", so page the full output with read_tool_output and offset instead of re-running.",
+            MAX_COMMAND_TIMEOUT_MS / 3_600_000,
             kib(MAX_COMMAND_OUTPUT_BYTES)
         ),
         "websearch" => "Search the web for current information; cite the returned URLs.".to_owned(),

@@ -271,7 +271,8 @@ fn tool_guide_states_limits_and_continuation_hints() {
     let output = line("read_tool_output");
     assert!(output.contains("offset += length"));
     let command = line("run_command");
-    assert!(command.contains("120 s") && command.contains("read_tool_output"));
+    assert!(command.contains("no default") && command.contains("read_tool_output"));
+    assert!(command.contains("last 2000 lines"));
     assert!(command.contains("offset"));
     assert!(line("search_text").contains("max_matches"));
     assert!(line("find").contains("cap 256"));

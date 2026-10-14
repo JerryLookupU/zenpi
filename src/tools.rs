@@ -55,7 +55,8 @@ pub const MAX_WRITE_BYTES: usize = 512 * 1024;
 pub const MAX_DIFF_BYTES: usize = 64 * 1024;
 pub const MAX_COMMAND_BYTES: usize = 16 * 1024;
 pub const MAX_COMMAND_OUTPUT_BYTES: usize = 256 * 1024;
-pub const DEFAULT_COMMAND_TIMEOUT_MS: u64 = 30_000;
+/// Upper bound for an explicit model-requested `timeout_ms` (24 h); there is no default.
+pub const MAX_COMMAND_TIMEOUT_MS: u64 = 86_400_000;
 
 const DEFAULT_READ_BYTES: usize = 256 * 1024;
 const DEFAULT_LIST_ENTRIES: usize = 64;
@@ -1781,16 +1782,22 @@ fn run_command_model_text(
 ) -> Option<String> {
     let stdout = output.get("stdout")?.as_str()?;
     let stderr = output.get("stderr")?.as_str()?;
-    let mut text = String::new();
+    let mut combined = String::new();
     for stream in [stdout, stderr] {
         if stream.is_empty() {
             continue;
         }
-        text.push_str(stream);
+        combined.push_str(stream);
         if !stream.ends_with('\n') {
-            text.push('\n');
+            combined.push('\n');
         }
     }
+    let (tail, cut) = model_command_tail(&combined);
+    let mut text = String::new();
+    if cut {
+        text.push_str("[Showing the last part of the output]\n");
+    }
+    text.push_str(tail);
     if !text.is_empty() {
         text.push('\n');
     }
@@ -1829,7 +1836,7 @@ fn run_command_model_text(
         if !output_flag(output, key) {
             continue;
         }
-        text.push_str(&format!("\n[{label} truncated]"));
+        text.push_str(&format!("\n[{label} truncated: earlier output omitted]"));
         if let Some(artifact) = artifacts.iter().find(|artifact| artifact.stream == stream) {
             text.push_str(&format!(" Full {label}: {}", artifact_hint(artifact)));
         }
@@ -2719,10 +2726,12 @@ impl RunCommandTool {
             return Err(ToolError::CommandTimeout(outcome.timeout_ms));
         }
         if outcome.exit_code != Some(0) {
-            return Err(ToolError::CommandFailed(format!(
-                "exit={:?}; signal={:?}; stderr={}",
-                outcome.exit_code, outcome.signal, outcome.stderr
-            )));
+            // pi semantics: a failing command is an error result that still
+            // carries its output tail and exit code; output is never dropped.
+            let value = Self::encode_outcome(context, outcome)?;
+            let text = run_command_model_text(&value, None)
+                .unwrap_or_else(|| "Command failed without output".into());
+            return Err(ToolError::CommandFailed(text));
         }
         Self::encode_outcome(context, outcome)
     }
@@ -2770,16 +2779,25 @@ impl RunCommandTool {
             return Err(ToolError::InvalidArguments("command contains NUL".into()));
         }
         let gate = context.checked_gate()?;
-        let default_timeout = gate.map_or(DEFAULT_COMMAND_TIMEOUT_MS, |gate| {
-            gate.policy.max_command_timeout_ms
-        });
-        let timeout_ms = bounded_usize(
-            arguments,
-            "timeout_ms",
-            default_timeout as usize,
-            1,
-            120_000,
-        )? as u64;
+        // pi semantics: timeout is optional with no default. Worker gates keep
+        // their policy ceiling as the default and maximum.
+        let timeout_ms = match gate {
+            Some(gate) => Some(bounded_usize(
+                arguments,
+                "timeout_ms",
+                gate.policy.max_command_timeout_ms as usize,
+                1,
+                gate.policy.max_command_timeout_ms as usize,
+            )? as u64),
+            None if arguments.contains_key("timeout_ms") => Some(bounded_usize(
+                arguments,
+                "timeout_ms",
+                1,
+                1,
+                MAX_COMMAND_TIMEOUT_MS as usize,
+            )? as u64),
+            None => None,
+        };
         let output_cap = gate.map_or(MAX_COMMAND_OUTPUT_BYTES, |gate| {
             gate.policy.max_command_output_bytes
         });
@@ -2799,7 +2817,7 @@ impl RunCommandTool {
                 stderr_truncated: false,
                 timed_out: false,
                 cancelled: true,
-                timeout_ms,
+                timeout_ms: timeout_ms.unwrap_or(0),
                 child_reaped: true,
                 process_group_terminated: false,
                 policy_evidence: context.policy_evidence(),
@@ -2869,7 +2887,7 @@ impl RunCommandTool {
         let stderr_thread = std::thread::spawn(move || {
             read_limited_stream(stderr, output_cap, &stderr_stop, stderr_capture)
         });
-        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        let deadline = timeout_ms.map(|ms| Instant::now() + Duration::from_millis(ms));
         let mut was_cancelled = false;
         let mut timed_out = false;
         let status = loop {
@@ -2882,7 +2900,7 @@ impl RunCommandTool {
                 Ok(None) => {}
                 Err(error) => break Err(ToolError::Io(error)),
             }
-            if Instant::now() >= deadline {
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                 timed_out = true;
                 break Ok(None);
             }
@@ -2937,13 +2955,13 @@ impl RunCommandTool {
             origin: context.origin(),
             exit_code: status.and_then(|status| status.code()),
             signal: status.and_then(|status| status.signal()),
-            stdout: truncate_utf8(&String::from_utf8_lossy(&stdout), output_cap),
-            stderr: truncate_utf8(&String::from_utf8_lossy(&stderr), output_cap),
+            stdout: tail_utf8(&String::from_utf8_lossy(&stdout), output_cap).to_owned(),
+            stderr: tail_utf8(&String::from_utf8_lossy(&stderr), output_cap).to_owned(),
             stdout_truncated,
             stderr_truncated,
             timed_out,
             cancelled: was_cancelled,
-            timeout_ms,
+            timeout_ms: timeout_ms.unwrap_or(0),
             child_reaped: true,
             process_group_terminated: true,
             policy_evidence: context.policy_evidence(),
@@ -3425,7 +3443,7 @@ impl Tool for RunCommandTool {
                 "type": "object",
                 "properties": {
                     "command": { "type": "string", "maxLength": MAX_COMMAND_BYTES },
-                    "timeout_ms": { "type": "integer", "minimum": 1, "maximum": 120000 }
+                    "timeout_ms": { "type": "integer", "minimum": 1, "maximum": 86400000 }
                 },
                 "required": ["command"],
                 "additionalProperties": false
@@ -3505,6 +3523,30 @@ fn atomic_write_text(path: &Path, bytes: &[u8]) -> Result<(), ToolError> {
     Ok(())
 }
 
+/// Keep the last `max` bytes of `text`, starting on a character boundary.
+fn tail_utf8(text: &str, max: usize) -> &str {
+    if text.len() <= max {
+        return text;
+    }
+    let mut start = text.len() - max;
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    &text[start..]
+}
+
+/// pi's model-facing command output budget: the last 2000 lines / 50 KB.
+const MODEL_COMMAND_OUTPUT_LINES: usize = 2000;
+const MODEL_COMMAND_OUTPUT_BYTES: usize = 50 * 1024;
+
+fn model_command_tail(text: &str) -> (&str, bool) {
+    let mut cut = tail_utf8(text, MODEL_COMMAND_OUTPUT_BYTES);
+    if let Some((index, _)) = cut.rmatch_indices('\n').nth(MODEL_COMMAND_OUTPUT_LINES) {
+        cut = &cut[index + 1..];
+    }
+    (cut, cut.len() < text.len())
+}
+
 fn truncate_utf8(text: &str, max: usize) -> String {
     if text.len() <= max {
         return text.to_owned();
@@ -3582,13 +3624,18 @@ fn read_limited_stream<R: Read>(
             // records the failure and marks its terminal artifact incomplete.
             let _ = writer.append(&buffer[..count]);
         }
-        let remaining = max.saturating_sub(bytes.len());
-        if remaining > 0 {
-            bytes.extend_from_slice(&buffer[..count.min(remaining)]);
-        }
-        if count > remaining {
+        // Keep the tail, where errors usually are; trim in amortized batches.
+        bytes.extend_from_slice(&buffer[..count]);
+        if bytes.len() > max.saturating_mul(2).max(16 * 1024) {
+            let excess = bytes.len() - max;
+            bytes.drain(..excess);
             truncated = true;
         }
+    }
+    if bytes.len() > max {
+        let excess = bytes.len() - max;
+        bytes.drain(..excess);
+        truncated = true;
     }
     Ok(LimitedStream {
         bytes,
