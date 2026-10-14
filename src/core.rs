@@ -6993,6 +6993,13 @@ pub struct CliOptions {
     /// `-s NAME|ID`: resolve a cached session by operator name or session id
     /// instead of opening a literal path (ZS1-178).
     pub session_ref: Option<String>,
+    /// `--session PATH` or `ZENPI_SESSION` named the journal explicitly.
+    /// Otherwise each launch starts a fresh per-run session (ZE-236).
+    pub session_explicit: bool,
+    /// `-c/--continue`: reopen the newest session recorded for this cwd.
+    pub continue_last: bool,
+    /// `--no-session`: an ephemeral journal removed when the process exits.
+    pub no_session: bool,
     /// `--auto`: auto-allow every approval in every zone (ZS1-180). The
     /// policy is `Never`, so side effects still respect the tool policy and
     /// blueprint gates and remain auditable.
@@ -7063,6 +7070,10 @@ impl Default for CliOptions {
             mode: RunMode::Tui,
             session: SessionStore::default_path(),
             session_ref: None,
+            session_explicit: std::env::var("ZENPI_SESSION")
+                .is_ok_and(|value| !value.trim().is_empty()),
+            continue_last: false,
+            no_session: false,
             auto: false,
             max_tool_iterations: 1000,
             tools: None,
@@ -7772,6 +7783,19 @@ where
                     return Err(ZenpiError::arguments("--session path is empty"));
                 }
                 options.session = PathBuf::from(value);
+                options.session_explicit = true;
+            }
+            "-c" | "--continue" => {
+                if inline.is_some() {
+                    return Err(ZenpiError::arguments("--continue does not take a value"));
+                }
+                options.continue_last = true;
+            }
+            "--no-session" => {
+                if inline.is_some() {
+                    return Err(ZenpiError::arguments("--no-session does not take a value"));
+                }
+                options.no_session = true;
             }
             "--max-tool-iterations" => {
                 let value = inline
@@ -8053,7 +8077,7 @@ fn print_help() {
         "zenpi host pair [--bind IP:PORT] [--advertise IP] [--identity PATH] [--duration-seconds 1..300] [--plain] [--workspace PATH --session PATH [--desktop | --list-projects]] [--list-devices [--json] | --revoke-device ID | --grant-device-read ID --project ID ... | --grant-device-control ID --project ID ... | --grant-device-approval ID --project ID ... | --grant-device-control-approval ID --project ID ...]"
     );
     println!(
-        "zenpi [--mode tui|headless] [--session PATH | -s NAME|ID] [--auto] [--eof-drain-secs N] [--max-tool-iterations N] [--tools a,b] [--backend openai|anthropic|google] [--profile NAME] [--model NAME]"
+        "zenpi [--mode tui|headless] [--session PATH | -s NAME|ID | -c | --no-session] [--auto] [--eof-drain-secs N] [--max-tool-iterations N] [--tools a,b] [--backend openai|anthropic|google] [--profile NAME] [--model NAME]"
     );
     println!("zenpi config import-codex [--profile NAME]");
     println!("zenpi config doctor [--profile NAME] [--json]");
@@ -8468,10 +8492,42 @@ fn session_locked(error: &ZenpiError) -> bool {
     )
 }
 
+/// Removes the `--no-session` journal directory when the host returns.
+struct EphemeralSessionDir(Option<PathBuf>);
+
+impl EphemeralSessionDir {
+    fn path(&self) -> &Path {
+        self.0.as_deref().unwrap_or(Path::new("."))
+    }
+}
+
+impl Drop for EphemeralSessionDir {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            let _ = std::fs::remove_dir_all(path);
+        }
+    }
+}
+
+fn tempfile_dir_for_no_session(enabled: bool) -> Result<EphemeralSessionDir, ZenpiError> {
+    if !enabled {
+        return Ok(EphemeralSessionDir(None));
+    }
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or_default();
+    let dir = env::temp_dir().join(format!("zenpi-ephemeral-{}-{nanos}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    Ok(EphemeralSessionDir(Some(dir)))
+}
+
 fn run_host(options: CliOptions) -> Result<(), ZenpiError> {
     // ZE-214: `--tools a,b` scopes every owner this process prepares.
     crate::tools::set_builtin_allowlist(options.tools.clone());
     let backend = make_backend(&options)?;
+    // `--no-session` journals live in a private temp dir removed on exit.
+    let ephemeral = tempfile_dir_for_no_session(options.no_session)?;
     // `-s NAME|ID` resolves against the cached zenpi sessions; `--session PATH`
     // keeps its literal path semantics.
     let session_path = match options.session_ref.as_deref() {
@@ -8485,7 +8541,25 @@ fn run_host(options: CliOptions) -> Result<(), ZenpiError> {
                 },
             )?
         }
-        None => options.session.clone(),
+        None if options.session_explicit => options.session.clone(),
+        None if options.no_session => ephemeral.path().join("session.jsonl"),
+        None => {
+            // ZE-236 (pi semantics): a fresh session per launch, kept per cwd;
+            // `-c` reopens the newest one recorded for this cwd.
+            let paths = crate::config::ConfigPaths::discover()?;
+            let cwd = env::current_dir()?;
+            let continued = options
+                .continue_last
+                .then(|| crate::session::latest_session_for_cwd(&paths.sessions, &cwd))
+                .flatten();
+            match continued {
+                Some(path) => path,
+                None => {
+                    std::fs::create_dir_all(&paths.sessions)?;
+                    crate::session::new_session_path(&paths.sessions)
+                }
+            }
+        }
     };
     let session = SessionStore::open(&session_path)?;
     let mut agent = Agent::new(session, backend);

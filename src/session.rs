@@ -3050,6 +3050,64 @@ pub fn session_catalog_with_skipped(
     Ok((entries, skipped))
 }
 
+/// A fresh per-launch journal path (pi: one session file per run). Files stay
+/// flat in `sessions_dir` so the catalog, `-s` and `-c` all discover them.
+pub fn new_session_path(sessions_dir: &Path) -> PathBuf {
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis())
+        .unwrap_or_default();
+    sessions_dir.join(format!("{now_ms}-{}.jsonl", std::process::id()))
+}
+
+/// The newest journal in `sessions_dir` whose header `cwd` is `cwd`. Only the
+/// first line of each file is read, so this stays cheap with many sessions.
+pub fn latest_session_for_cwd(sessions_dir: &Path, cwd: &Path) -> Option<PathBuf> {
+    let wanted = cwd.canonicalize().unwrap_or_else(|_| cwd.to_owned());
+    let mut best: Option<(SystemTime, PathBuf)> = None;
+    for entry in fs::read_dir(sessions_dir)
+        .ok()?
+        .flatten()
+        .take(MAX_GC_CANDIDATES)
+    {
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("jsonl")
+            || path.file_name().and_then(|name| name.to_str())
+                == Some(crate::domain_store::DOMAIN_STORE_FILE_NAME)
+        {
+            continue;
+        }
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+        let Ok(file) = File::open(&path) else {
+            continue;
+        };
+        let mut first = String::new();
+        if io::BufRead::read_line(&mut io::BufReader::new(file.take(64 * 1024)), &mut first)
+            .is_err()
+        {
+            continue;
+        }
+        let Ok(header) = serde_json::from_str::<SessionHeader>(first.trim_end()) else {
+            continue;
+        };
+        let header_cwd = PathBuf::from(&header.cwd);
+        let header_cwd = header_cwd.canonicalize().unwrap_or(header_cwd);
+        if header_cwd != wanted {
+            continue;
+        }
+        let modified = metadata.modified().unwrap_or(UNIX_EPOCH);
+        if best.as_ref().is_none_or(|(time, _)| modified > *time) {
+            best = Some((modified, path));
+        }
+    }
+    best.map(|(_, path)| path)
+}
+
 pub fn resume_last_session(directory: impl AsRef<Path>) -> Result<SessionStore, SessionError> {
     let latest = session_catalog(directory, false)?
         .into_iter()
