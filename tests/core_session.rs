@@ -742,6 +742,7 @@ fn backend_retryability_is_typed() {
         BackendError::HttpStatus {
             status: 429,
             retry_after_ms: None,
+            body: None,
         }
         .is_retryable()
     );
@@ -749,6 +750,7 @@ fn backend_retryability_is_typed() {
         BackendError::HttpStatus {
             status: 503,
             retry_after_ms: None,
+            body: None,
         }
         .is_retryable()
     );
@@ -756,6 +758,7 @@ fn backend_retryability_is_typed() {
         !BackendError::HttpStatus {
             status: 400,
             retry_after_ms: None,
+            body: None,
         }
         .is_retryable()
     );

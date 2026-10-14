@@ -854,11 +854,12 @@ fn process_responses_line(
             ));
         }
         Some("response.failed") | Some("error") => {
-            let message = extract_responses_error(&event);
+            let error = BackendError::provider_error("Responses", &extract_responses_error(&event));
             let _ = sink(ProviderEvent::Failed {
-                message: message.clone(),
+                message: error.to_string(),
+                retryable: error.is_retryable(),
             });
-            return Err(BackendError::InvalidResponse(message));
+            return Err(error);
         }
         _ => {}
     }
@@ -971,13 +972,7 @@ fn extract_responses_error(event: &Value) -> String {
             .and_then(|response| response.get("error"))
     });
     match error {
-        Some(Value::String(message)) => message.to_owned(),
-        Some(Value::Object(error)) => error
-            .get("message")
-            .and_then(Value::as_str)
-            .or_else(|| error.get("code").and_then(Value::as_str))
-            .unwrap_or("Responses stream failed")
-            .to_owned(),
+        Some(error @ (Value::String(_) | Value::Object(_))) => super::error_value_text(error),
         _ => "Responses stream failed".to_owned(),
     }
 }

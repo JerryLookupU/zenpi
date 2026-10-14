@@ -447,7 +447,10 @@ impl Fold {
         v: Value,
         sink: &mut dyn FnMut(ProviderEvent) -> Result<(), BackendError>,
     ) -> Result<(), BackendError> {
-        if !v.is_object() || v.get("error").is_some() {
+        if let Some(error) = v.get("error") {
+            return Err(super::provider_error("Gemini", error));
+        }
+        if !v.is_object() {
             return Err(invalid("Gemini provider error or invalid response"));
         }
         if v.get("promptFeedback")

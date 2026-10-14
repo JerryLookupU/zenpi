@@ -356,8 +356,10 @@ fn completed_call(
 }
 
 fn validate_json(payload: &Value) -> Result<Vec<ToolCall>, BackendError> {
-    if payload.get("error").is_some()
-        || payload.get("status").is_some_and(|v| v != "completed")
+    if let Some(error) = payload.get("error") {
+        return Err(super::provider_error("Chat", error));
+    }
+    if payload.get("status").is_some_and(|v| v != "completed")
         || payload
             .get("incomplete_details")
             .is_some_and(|v| !v.is_null())
@@ -447,8 +449,8 @@ impl Stream {
         }
         let value: Value = serde_json::from_slice(data)
             .map_err(|e| invalid(format!("invalid Chat SSE JSON: {e}")))?;
-        if value.get("error").is_some() {
-            return Err(invalid("Chat provider returned an error event"));
+        if let Some(error) = value.get("error") {
+            return Err(super::provider_error("Chat", error));
         }
         bind(
             &mut self.completion.response_id,

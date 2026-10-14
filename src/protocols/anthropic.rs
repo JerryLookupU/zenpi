@@ -568,7 +568,7 @@ impl Fold {
             return Err(invalid("Anthropic data after message_stop"));
         }
         if kind == "error" {
-            return Err(invalid("Anthropic error event"));
+            return Err(super::provider_error("Anthropic", &v["error"]));
         }
         if kind == "message_start" {
             if self.id.is_some() {

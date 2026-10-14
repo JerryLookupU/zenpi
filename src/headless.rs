@@ -4420,11 +4420,13 @@ fn provider_event_block(event: &crate::backend::ProviderEvent) -> Option<serde_j
             message: text.clone(),
             retryable: false,
         },
-        crate::backend::ProviderEvent::Failed { message } => crate::view_model::ViewBlock::Error {
-            code: Some("provider_failed".into()),
-            message: message.clone(),
-            retryable: true,
-        },
+        crate::backend::ProviderEvent::Failed { message, retryable } => {
+            crate::view_model::ViewBlock::Error {
+                code: Some("provider_failed".into()),
+                message: message.clone(),
+                retryable: *retryable,
+            }
+        }
         crate::backend::ProviderEvent::ToolCallDone { call } => {
             crate::view_model::ViewBlock::ToolStatus {
                 call_id: call.id.clone(),
@@ -9724,6 +9726,18 @@ mod replay_session_tests {
 #[cfg(test)]
 mod async_event_buffer_tests {
     use super::*;
+
+    #[test]
+    fn provider_failed_block_reports_the_error_retryability() {
+        for retryable in [false, true] {
+            let block = provider_event_block(&ProviderEvent::Failed {
+                message: "context_length_exceeded".into(),
+                retryable,
+            })
+            .unwrap();
+            assert_eq!(block["retryable"], retryable, "{block}");
+        }
+    }
 
     fn agent_events(drained: MailboxDrain) -> (Vec<AgentEvent>, DroppedEvents) {
         let events = drained

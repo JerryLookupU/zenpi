@@ -154,7 +154,7 @@ fn normalize(event: &ProviderEvent) -> String {
         ProviderEvent::Completed { response_id, model } => {
             format!("completed {response_id:?} {model:?}")
         }
-        ProviderEvent::Failed { message } => format!("failed {message}"),
+        ProviderEvent::Failed { message, retryable } => format!("failed {message} {retryable}"),
     }
 }
 
@@ -174,7 +174,16 @@ fn tools() -> Vec<ToolDefinition> {
 
 /// Serves `tests/fixtures/sse/<wire>/<name>` once and drives the real backend.
 fn replay(wire: Wire, name: &str) -> Replay {
-    let body = fixture(wire, name);
+    serve(
+        wire,
+        "200 OK",
+        "text/event-stream; charset=utf-8",
+        fixture(wire, name),
+    )
+}
+
+/// Serves one HTTP response with `status` and drives the real backend.
+fn serve(wire: Wire, status: &'static str, content_type: &'static str, body: Vec<u8>) -> Replay {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let endpoint = match wire {
@@ -214,7 +223,10 @@ fn replay(wire: Wire, name: &str) -> Replay {
         };
         stream.set_nonblocking(false).unwrap();
         drain_request(&mut stream);
-        let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=utf-8\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n";
+        let head = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
         // A strict parser may reject the stream and hang up before the
         // writer finishes; the replay outcome is asserted on the client side.
         let _ = stream.write_all(head.as_bytes());
@@ -703,4 +715,146 @@ fn gemini_total_above_component_sum_is_currently_an_error() {
         ],
     );
     assert!(r.error().contains("inconsistent/decreasing Gemini usage"));
+}
+
+// ------------------------------------------------- ZE-220 error bodies
+
+/// Real overflow bodies per wire, as the providers return them.
+fn overflow_body(wire: Wire) -> &'static str {
+    match wire {
+        Wire::Chat | Wire::Responses => {
+            r#"{"error":{"message":"This model's maximum context length is 128000 tokens. However, your messages resulted in 130512 tokens.","type":"invalid_request_error","param":"messages","code":"context_length_exceeded"}}"#
+        }
+        Wire::Anthropic => {
+            r#"{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 212345 tokens > 200000 maximum"}}"#
+        }
+        Wire::Gemini => {
+            r#"{"error":{"code":400,"message":"The input token count (1210000) exceeds the maximum number of tokens allowed (1048576).","status":"INVALID_ARGUMENT"}}"#
+        }
+    }
+}
+
+#[test]
+fn http_overflow_bodies_classify_as_context_overflow_on_every_wire() {
+    for wire in [Wire::Chat, Wire::Responses, Wire::Anthropic, Wire::Gemini] {
+        for status in ["400 Bad Request", "413 Payload Too Large"] {
+            let r = serve(
+                wire,
+                status,
+                "application/json",
+                overflow_body(wire).as_bytes().to_vec(),
+            );
+            assert!(r.trace.is_empty(), "{:?}", r.trace);
+            match &r.result {
+                Err(error @ BackendError::ContextOverflow { message }) => {
+                    assert!(!error.is_retryable());
+                    assert_eq!(error.code(), "context_overflow");
+                    assert_eq!(message, overflow_body(wire));
+                }
+                other => panic!("{} {status}: {other:?}", wire.dir()),
+            }
+        }
+    }
+}
+
+#[test]
+fn http_error_body_is_kept_bounded_and_unclassified_errors_stay_http_status() {
+    let long = format!(
+        r#"{{"error":{{"message":"bad tool schema {}"}}}}"#,
+        "x".repeat(10_000)
+    );
+    let r = serve(
+        Wire::Chat,
+        "400 Bad Request",
+        "application/json",
+        long.into_bytes(),
+    );
+    match &r.result {
+        Err(
+            error @ BackendError::HttpStatus {
+                status: 400,
+                body: Some(body),
+                ..
+            },
+        ) => {
+            assert!(!error.is_retryable());
+            assert_eq!(body.len(), zenpi::backend::MAX_ERROR_BODY_BYTES);
+            assert!(body.starts_with(r#"{"error":{"message":"bad tool schema xxx"#));
+            assert!(error.to_string().contains("bad tool schema"));
+        }
+        other => panic!("{other:?}"),
+    }
+    // An empty 413 is the payload limit itself.
+    let r = serve(
+        Wire::Anthropic,
+        "413 Payload Too Large",
+        "text/plain",
+        Vec::new(),
+    );
+    assert!(
+        matches!(r.result, Err(BackendError::ContextOverflow { .. })),
+        "{:?}",
+        r.result
+    );
+}
+
+#[test]
+fn stream_error_events_keep_text_and_classify_overflow() {
+    let cases = [
+        (
+            Wire::Chat,
+            "data: {\"error\":{\"message\":\"maximum context length is 8192 tokens\",\"code\":\"context_length_exceeded\"}}\n\n",
+        ),
+        (
+            Wire::Anthropic,
+            "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"prompt is too long: 9 tokens > 8 maximum\"}}\n\n",
+        ),
+        (
+            Wire::Gemini,
+            "data: {\"error\":{\"code\":400,\"message\":\"The input token count (9) exceeds the maximum number of tokens allowed (8).\",\"status\":\"INVALID_ARGUMENT\"}}\n\n",
+        ),
+        (
+            Wire::Responses,
+            "data: {\"type\":\"response.failed\",\"response\":{\"id\":\"r1\",\"status\":\"failed\",\"error\":{\"code\":\"context_length_exceeded\",\"message\":\"Your input exceeds the context window of this model.\"}}}\n\n",
+        ),
+    ];
+    for (wire, body) in cases {
+        let r = serve(
+            wire,
+            "200 OK",
+            "text/event-stream",
+            body.as_bytes().to_vec(),
+        );
+        match &r.result {
+            Err(error @ BackendError::ContextOverflow { message }) => {
+                assert!(!error.is_retryable());
+                assert!(!message.is_empty());
+            }
+            other => panic!("{}: {other:?}", wire.dir()),
+        }
+    }
+    // A non-overflow stream error keeps the provider's text.
+    let r = serve(
+        Wire::Anthropic,
+        "200 OK",
+        "text/event-stream",
+        b"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n".to_vec(),
+    );
+    assert!(
+        r.error().contains("overloaded_error: Overloaded"),
+        "{}",
+        r.error()
+    );
+    let r = serve(
+        Wire::Responses,
+        "200 OK",
+        "text/event-stream",
+        b"data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"server_error\",\"message\":\"boom\"}}}\n\n".to_vec(),
+    );
+    assert_eq!(
+        r.trace,
+        [
+            "failed backend returned an invalid response: Responses provider error: server_error: boom false"
+        ]
+    );
 }
