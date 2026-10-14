@@ -55,6 +55,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 |digest| URL_SAFE_NO_PAD.encode(digest.as_ref()),
             ),
             expires_at: now + 300,
+            hints: vec![zenpi::remote::pairing::AddressHint::lan(address.parse()?)],
         };
         let lines = zenpi::host_pair::qr_lines(&invite)?;
         let scale = 4;

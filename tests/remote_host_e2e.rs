@@ -1105,8 +1105,26 @@ fn production_serve_outlives_the_invite_and_keeps_its_port_across_restart() {
     let listing = authenticated_workspace_list(&invite, &identity, &key, &device_id);
     assert!(listing["projects"].as_array().is_some());
     drop(child);
-    let (_child, restarted) = serve();
+    let (child, restarted) = serve();
     assert_eq!(restarted.address.port(), invite.address.port());
     let listing = authenticated_workspace_list(&restarted, &identity, &key, &device_id);
     assert!(listing["projects"].as_array().is_some());
+    // ZE-515: a new certificate for the same key keeps the pinned host id, so the
+    // paired device reconnects without re-pairing.
+    drop(child);
+    let rotated = identity.rotate_certificate().unwrap();
+    let mut record: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&identity_path).unwrap()).unwrap();
+    record["certificate"] = URL_SAFE_NO_PAD.encode(rotated.certificate()).into();
+    std::fs::write(&identity_path, serde_json::to_vec(&record).unwrap()).unwrap();
+    let (_child, after_rotation) = serve();
+    assert_eq!(after_rotation.fingerprint, invite.fingerprint);
+    assert_eq!(
+        HostIdentity::load_or_create(&identity_path)
+            .unwrap()
+            .certificate(),
+        rotated.certificate()
+    );
+    let listing = authenticated_workspace_list(&after_rotation, &rotated, &key, &device_id);
+    assert_eq!(listing["projects"][0]["prompt_control"], true);
 }

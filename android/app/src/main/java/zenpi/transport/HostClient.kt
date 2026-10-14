@@ -602,6 +602,22 @@ internal object TranscriptRestorePolicy {
 
 /** Bounded authenticated snapshot or durable transcript replay, never mutation retry. */
 class HostClient(private val bindSocket: (Socket, String) -> Unit = { _, _ -> }) {
+    /** One pinned TLS handshake that only learns the host's key id; no frame is sent. */
+    suspend fun hostId(host: PairedHost): String = withContext(Dispatchers.IO) {
+        Socket().use { raw ->
+            bindSocket(raw, host.host)
+            raw.connect(InetSocketAddress(host.host, host.port), 5000)
+            val trust = PinnedTrustManager(host.fingerprint)
+            val context = SSLContext.getInstance("TLSv1.3")
+            context.init(null, arrayOf(trust), SecureRandom())
+            (context.socketFactory.createSocket(raw, "zenpi.local", host.port, true) as SSLSocket).use { socket ->
+                socket.enabledProtocols = arrayOf("TLSv1.3"); socket.soTimeout = 5000
+                socket.sslParameters = socket.sslParameters.apply { applicationProtocols = arrayOf("zenpi/1") }
+                socket.startHandshake()
+                requireNotNull(trust.verified) { "Host certificate unverified" }.hostId
+            }
+        }
+    }
     suspend fun modelStatus(host: PairedHost, identity: DeviceIdentity, projection: HostProjection, previous: RemoteModelStatus? = null, offset: Int = 0): RemoteModelStatus {
         var result: RemoteModelStatus? = null
         inspect(host, projection.selectedId, identity, previous = projection, modelRequest = ModelStatusCodec.request(projection,previous,offset),
@@ -717,7 +733,8 @@ class HostClient(private val bindSocket: (Socket, String) -> Unit = { _, _ -> })
                         raw.connect(InetSocketAddress(host.host, host.port), 5000)
                         current()
                         val context = SSLContext.getInstance("TLSv1.3")
-                        context.init(null, arrayOf(PinnedTrustManager(host.fingerprint)), SecureRandom())
+                        val trust = PinnedTrustManager(host.fingerprint)
+                        context.init(null, arrayOf(trust), SecureRandom())
                         val socket = context.socketFactory.createSocket(raw, "zenpi.local", host.port, true) as SSLSocket
                         active.transfer(raw, socket)
                         socket.use {
@@ -734,7 +751,9 @@ class HostClient(private val bindSocket: (Socket, String) -> Unit = { _, _ -> })
                             }))
                             HandshakePrelude.welcome(socket.inputStream)
                             current()
-                            val nonce = HandshakePrelude.challenge(socket.inputStream, host.fingerprint)
+                            // Proofs bind the name the host itself uses; it must name the verified key.
+                            val (hostName, nonce) = HandshakePrelude.challenge(socket.inputStream,
+                                requireNotNull(trust.verified) { "Host certificate unverified" }.names)
                             current()
                             var received: List<JsonObject> = emptyList()
                             var subscriptionPage: (suspend (List<JsonObject>, JsonObject) -> Unit)? = null
@@ -779,7 +798,7 @@ class HostClient(private val bindSocket: (Socket, String) -> Unit = { _, _ -> })
                                     addProperty("type", "revoke_status"); addProperty("device_id", deviceId)
                                     addProperty("request_id", revokeStatusId)
                                     addProperty("signature", AuthenticationProof.sign(deviceId, { identity.deviceId }, { ensureActive() }) {
-                                        identity.signRevokeStatus(host.fingerprint, nonce, revokeStatusId, queryId)
+                                        identity.signRevokeStatus(hostName, nonce, revokeStatusId, queryId)
                                     })
                                 }).apply { addProperty("id", queryId) })
                                 if (result.keySet() != setOf("device_id", "request_id", "committed") || FrameCodec.string(result, "device_id") != deviceId
@@ -791,7 +810,7 @@ class HostClient(private val bindSocket: (Socket, String) -> Unit = { _, _ -> })
                             val authenticated = exchange(envelope(JsonObject().apply {
                                 addProperty("type", "authenticate"); addProperty("device_id", deviceId)
                                 addProperty("signature", AuthenticationProof.sign(deviceId, { identity.deviceId }, { ensureActive() }) {
-                                    identity.signChallenge(host.fingerprint, nonce)
+                                    identity.signChallenge(hostName, nonce)
                                 })
                             }))
                             val deviceRevision = AuthenticationReceipt.validate(authenticated, deviceId)

@@ -2,6 +2,7 @@ package zenpi
 
 import org.junit.Assert.*
 import org.junit.Test
+import zenpi.pairing.AddressHint
 import zenpi.pairing.PairingInvite
 import java.util.Base64
 
@@ -16,6 +17,22 @@ class PairingInviteTest {
         assertEquals(fingerprint, invite.fingerprint)
         assertFalse(invite.toString().contains(token))
         assertEquals("fd00::1234", PairingInvite.parse(uri.replace("192.168.50.55%3A7777", "%5Bfd00%3A%3A1234%5D%3A7777"), 1000) { 0 }.host)
+    }
+    @Test fun v2CarriesHostIdAndOrderedHintsWhileV1StillParses() {
+        val v1 = PairingInvite.parse(uri, 1000) { 0 }
+        assertEquals(1, v1.version); assertEquals(listOf(AddressHint("lan", "192.168.50.55", 7777)), v1.hints)
+        val v2 = PairingInvite.parse("zenpi://pair?v=2&host_id=$fingerprint&hints=lan%3A192.168.50.55%3A7777%2Ctailnet%3A%5Bfd7a%3A115c%3Aa1e0%3A%3A1%5D%3A7777&token=$token&expires=1060", 1000) { 0 }
+        assertEquals(2, v2.version); assertEquals(fingerprint, v2.fingerprint)
+        assertEquals(listOf(AddressHint("lan", "192.168.50.55", 7777), AddressHint("tailnet", "fd7a:115c:a1e0::1", 7777)), v2.hints)
+        assertEquals("192.168.50.55:7777", v2.address); assertEquals("[fd7a:115c:a1e0::1]:7777", v2.hints[1].address)
+        for (bad in listOf(
+            "zenpi://pair?v=2&host_id=$fingerprint&hints=lan%3A192.168.50.55%3A7777&fingerprint=$fingerprint&token=$token&expires=1060",
+            "zenpi://pair?v=2&address=192.168.50.55%3A7777&fingerprint=$fingerprint&token=$token&expires=1060",
+            "zenpi://pair?v=1&host_id=$fingerprint&hints=lan%3A192.168.50.55%3A7777&token=$token&expires=1060",
+            "zenpi://pair?v=2&host_id=$fingerprint&hints=lan%3A192.168.50.55%3A7777%2C&token=$token&expires=1060",
+            "zenpi://pair?v=2&host_id=$fingerprint&hints=192.168.50.55%3A7777&token=$token&expires=1060",
+            "zenpi://pair?v=2&host_id=$fingerprint&hints=TAILNET%3A100.64.0.1%3A7777&token=$token&expires=1060"))
+            refused(bad)
     }
     @Test fun rejectsDuplicatesOriginsMalformedAndExpiry() {
         for (value in listOf(uri + "&v=1", uri + "&api_key=secret", uri + "#x", uri.replace("zenpi://pair", "https://pair"),

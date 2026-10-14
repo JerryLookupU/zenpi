@@ -366,13 +366,7 @@ pub fn run(options: HostPairOptions) -> Result<(), ZenpiError> {
     }
     let identity = HostIdentity::load_or_create(&options.identity)
         .map_err(|error| ZenpiError::Message(error.to_string()))?;
-    let registry = Arc::new(
-        DeviceRegistry::new(
-            options.identity.with_extension("devices.json"),
-            identity.fingerprint(),
-        )
-        .map_err(|error| ZenpiError::Message(error.to_string()))?,
-    );
+    let registry = open_registry(&options, &identity)?;
     if let Some(id) = options.revoke_device.as_deref() {
         registry
             .revoke(id)
@@ -555,6 +549,22 @@ Normal TUI/headless runs do not start a listener. Help creates no files or socke
 Use --help or -h alone after host pair to display this help."
 }
 
+/// The registry beside `--identity`, re-bound from a v1 certificate pin to the host id.
+fn open_registry(
+    options: &HostPairOptions,
+    identity: &HostIdentity,
+) -> Result<Arc<DeviceRegistry>, ZenpiError> {
+    let registry = DeviceRegistry::new(
+        options.identity.with_extension("devices.json"),
+        identity.fingerprint(),
+    )
+    .map_err(|error| ZenpiError::Message(error.to_string()))?;
+    registry
+        .migrate_legacy_host(&identity.legacy_fingerprint())
+        .map_err(|error| ZenpiError::Message(error.to_string()))?;
+    Ok(Arc::new(registry))
+}
+
 const PAIR_GRANTS_CONTROL: &str = "Pairing grants control of the mounted project.";
 
 /// The project a `--workspace` mounts; pairing grants exactly this project.
@@ -676,13 +686,7 @@ impl PairingHost {
         }
         let identity = HostIdentity::load_or_create(&options.identity)
             .map_err(|error| ZenpiError::Message(error.to_string()))?;
-        let registry = Arc::new(
-            DeviceRegistry::new(
-                options.identity.with_extension("devices.json"),
-                identity.fingerprint(),
-            )
-            .map_err(|error| ZenpiError::Message(error.to_string()))?,
-        );
+        let registry = open_registry(options, &identity)?;
         Self::start_with_registry(options, identity, registry, Some(adapter))
     }
 
@@ -931,7 +935,7 @@ impl PairingHost {
     pub fn refresh(&mut self, ttl: Duration) -> Result<(), ZenpiError> {
         self.invite = self
             .issuer
-            .issue(self.invite.address, ttl)
+            .issue_hints(self.invite.hints.clone(), ttl)
             .map_err(|error| ZenpiError::Message(error.to_string()))?;
         Ok(())
     }
@@ -1066,7 +1070,7 @@ fn pairing_tui(
                 KeyCode::Esc | KeyCode::Char('q') => break,
                 KeyCode::Char('r') => {
                     invite = issuer
-                        .issue(invite.address, ttl)
+                        .issue_hints(invite.hints.clone(), ttl)
                         .map_err(|error| ZenpiError::Message(error.to_string()))?;
                     deadline = Instant::now() + ttl;
                 }

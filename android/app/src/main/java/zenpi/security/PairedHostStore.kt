@@ -19,7 +19,11 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
-data class PairedHost(val host: String, val port: Int, val fingerprint: String, val deviceId: String)
+/**
+ * [fingerprint] pins the host: its key id `sha256(SPKI)`, or for a host saved before
+ * ZE-515 ([legacyPin]) the certificate hash, migrated to the key id on next connect.
+ */
+data class PairedHost(val host: String, val port: Int, val fingerprint: String, val deviceId: String, val legacyPin: Boolean = false)
 data class SavedHostState(val host: PairedHost, val projection: HostProjection?, val pendingWorkspace: WorkspaceCommand? = null, val pendingRevoke: String? = null)
 data class ResumeSnapshot internal constructor(val state: SavedHostState, internal val stamp: String)
 
@@ -48,6 +52,15 @@ class PairedHostStore(context: Context, namespace: String = "v1") {
         val next = RePairPolicy.state(read(), host)
         write(host, next.projection?.let(ProjectionCacheCodec::encode), null, checkActive = checkActive)
         next
+    }
+    /** Re-pin a v1-saved host to its key id, keeping display, cursors and pending requests. */
+    fun migratePin(host: PairedHost, hostId: String, checkActive: () -> Unit = {}): PairedHost = synchronized(storageLock) {
+        checkActive()
+        require(host.legacyPin && hostId.matches(Regex("[0-9a-f]{64}")))
+        val saved = requireHost(host)
+        val migrated = host.copy(fingerprint = hostId, legacyPin = false)
+        write(migrated, saved.projection?.let(ProjectionCacheCodec::encode), saved.pendingWorkspace, saved.pendingRevoke, checkActive)
+        migrated
     }
     fun saveProjection(host: PairedHost, projection: HostProjection, checkActive: () -> Unit = {}) = synchronized(storageLock) {
         checkActive()
@@ -104,6 +117,7 @@ class PairedHostStore(context: Context, namespace: String = "v1") {
                 addProperty("type", "response"); add("result", JsonObject().apply {
                     addProperty("host", host.host); addProperty("port", host.port)
                     addProperty("fingerprint", host.fingerprint); addProperty("device_id", host.deviceId)
+                    if (!host.legacyPin) addProperty("pin", "host_id")
                     projection?.let { add("projection", it) }
                     pending?.let { add("pending_workspace", WorkspaceCommand.restore(it.envelope).envelope) }
                     pendingRevoke?.let { addProperty("pending_revoke", it) }
@@ -172,11 +186,14 @@ class PairedHostStore(context: Context, namespace: String = "v1") {
             throw WireException("Invalid encrypted host metadata payload")
         val result = payload["result"]?.asJsonObject ?: throw WireException("Missing encrypted host metadata result")
         check(result.keySet().containsAll(setOf("host", "port", "fingerprint", "device_id"))
-            && result.keySet().all { it in setOf("host", "port", "fingerprint", "device_id", "projection", "pending_workspace", "pending_revoke") })
+            && result.keySet().all { it in setOf("host", "port", "fingerprint", "device_id", "pin", "projection", "pending_workspace", "pending_revoke") })
+        // Records written before ZE-515 carry no pin kind: they pin the certificate hash.
+        val legacyPin = !result.has("pin")
+        check(legacyPin || FrameCodec.string(result, "pin") == "host_id")
         val portValue = result["port"]
         check(portValue.isJsonPrimitive && portValue.asJsonPrimitive.isNumber && portValue.toString().matches(Regex("[1-9][0-9]{0,4}")))
         val port = portValue.asInt
-        val host = PairedHost(FrameCodec.string(result, "host"), port, FrameCodec.string(result, "fingerprint"), FrameCodec.string(result, "device_id"))
+        val host = PairedHost(FrameCodec.string(result, "host"), port, FrameCodec.string(result, "fingerprint"), FrameCodec.string(result, "device_id"), legacyPin)
         check(port in 1..65535 && validLiteralHost(host.host) && host.fingerprint.matches(Regex("[0-9a-f]{64}")) && host.deviceId.matches(Regex("[0-9a-f]{64}")))
         val pendingRevoke = if (result.has("pending_revoke")) FrameCodec.string(result, "pending_revoke").also {
             check(java.util.UUID.fromString(it).toString() == it && !result.has("pending_workspace"))

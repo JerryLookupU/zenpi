@@ -1564,8 +1564,14 @@ do not translate transient lock contention into device revocation.
 
 `zenpi host pair` alone starts the listener; normal TUI/headless invocation does
 not. TLS is restricted to 1.3, with ALPN `zenpi/1`. The host has a persistent
-self-signed ECDSA certificate whose complete DER SHA-256 is the v1 pin. Clients
-must compare that pin before sending the one-time token; ordinary public-CA
+self-signed ECDSA certificate. Since ZE-515 the host identity is its key:
+`host_id = sha256(SubjectPublicKeyInfo DER)`, so a new certificate for the same key
+(`HostIdentity::rotate_certificate`) keeps every pin, the device registry and all
+proofs valid. The v1 pin, SHA-256 of the complete certificate DER, is still
+honoured by clients for hosts saved before ZE-515; a registry bound to that v1 pin
+is re-bound to the host id of the same key on the next host start
+(`DeviceRegistry::migrate_legacy_host`), any other mismatch fails closed. Clients
+must compare the pin before sending the one-time token; ordinary public-CA
 validation is not a substitute for the QR pin. Host identity is stored in one
 bounded, private, owner-checked file, published atomically without overwriting
 an existing identity. Invalid/public/symlink/hard-linked identity files fail
@@ -1574,7 +1580,13 @@ regular file with exactly one link before parsing, so a FIFO/device cannot
 stall pairing startup or become identity authority. Rejected files are not
 replaced or repaired automatically.
 
-QR URI: `zenpi://pair?v=1&address=<literal IP:port>&fingerprint=<sha256>&token=<base64url>&expires=<unix seconds>`.
+QR URI v2 (issued since ZE-515): `zenpi://pair?v=2&host_id=<sha256 SPKI>&hints=<kind:IP:port>[,<kind:IP:port>...]&token=<base64url>&expires=<unix seconds>`.
+`hints` is an ordered list of 1..4 distinct literal addresses, `kind` is `lan` or
+`tailnet`; the first hint is the primary address. Hints are issued, refreshed and
+retired together with the one-use token (a refresh replaces both) and are routing
+advice only: identity is always the pinned key.
+QR URI v1 (still parsed strictly): `zenpi://pair?v=1&address=<literal IP:port>&fingerprint=<sha256 certificate DER>&token=<base64url>&expires=<unix seconds>`.
+Each version accepts exactly its own field set; mixing v1 and v2 fields is refused.
 
 Shared invitation fixtures bind raw URI, validation clock, normalized address
 across Rust and Android. Scheme/authority must use
@@ -2867,9 +2879,12 @@ deadline; that remains a device/network acceptance gate.
 
 PinnedTrustManager validates the configured fingerprint as exactly 64 lowercase
 hex characters at construction and decodes it once. Server trust requires one
-certificate, valid at the current device time, and constant-time comparison of
-SHA-256 over its DER bytes with the QR/saved pin. It does not substitute a
-public-key-only digest or system CA trust. Client certificate trust is not
+certificate, valid at the current device time, and a constant-time match of the
+QR/saved pin against SHA-256 of its SubjectPublicKeyInfo (the host id) or, for v1
+pins, of its DER bytes. It records both names of the verified certificate; the
+challenge must name the host by one of them and proofs sign that name. Hosts saved
+with a v1 pin are re-pinned to the host id after one pinned TLS handshake on the
+next foreground refresh (`PairedHostStore.migratePin`). No system CA trust. Client certificate trust is not
 provided by this manager. PairingClient and HostClient keep using its normal
 constructor with current time; the internal clock hook is for deterministic
 validity tests only.

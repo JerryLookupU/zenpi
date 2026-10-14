@@ -366,15 +366,21 @@ impl DeviceRegistry {
         Ok(RegistryLock(file))
     }
     fn load(&self) -> Result<RegistryData, AuthError> {
+        let Some(data) = self.read()? else {
+            return Ok(RegistryData {
+                version: 1,
+                host_fingerprint: self.fingerprint.clone(),
+                devices: vec![],
+            });
+        };
+        self.validate(&data)?;
+        Ok(data)
+    }
+    /// Parsed, size-bounded registry bytes; `validate` decides whether they belong here.
+    fn read(&self) -> Result<Option<RegistryData>, AuthError> {
         let file = match private_open(&self.path, false) {
             Ok(file) => file,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                return Ok(RegistryData {
-                    version: 1,
-                    host_fingerprint: self.fingerprint.clone(),
-                    devices: vec![],
-                });
-            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error.into()),
         };
         if file.metadata()?.len() > MAX_REGISTRY_BYTES {
@@ -385,8 +391,11 @@ impl DeviceRegistry {
         if bytes.len() as u64 > MAX_REGISTRY_BYTES {
             return Err(AuthError::InvalidRegistry);
         }
-        let data: RegistryData =
-            serde_json::from_slice(&bytes).map_err(|_| AuthError::InvalidRegistry)?;
+        serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|_| AuthError::InvalidRegistry)
+    }
+    fn validate(&self, data: &RegistryData) -> Result<(), AuthError> {
         if data.version != 1
             || data.host_fingerprint != self.fingerprint
             || data.devices.len() > MAX_DEVICES
@@ -419,7 +428,22 @@ impl DeviceRegistry {
                 return Err(AuthError::InvalidRegistry);
             }
         }
-        Ok(data)
+        Ok(())
+    }
+    /// ZE-515: a registry bound to the v1 certificate pin is re-bound to the host id
+    /// (`sha256(SPKI)`) of the same key, keeping every device and grant. Any other
+    /// mismatch still fails closed.
+    pub fn migrate_legacy_host(&self, legacy: &str) -> Result<(), AuthError> {
+        let _lock = self.lock()?;
+        let Some(mut data) = self.read()? else {
+            return Ok(());
+        };
+        if data.host_fingerprint == self.fingerprint || data.host_fingerprint != legacy {
+            return Ok(());
+        }
+        data.host_fingerprint = self.fingerprint.clone();
+        self.validate(&data)?;
+        self.save(&data)
     }
     fn save(&self, data: &RegistryData) -> Result<(), AuthError> {
         let bytes = serde_json::to_vec(data).map_err(|_| AuthError::InvalidRegistry)?;

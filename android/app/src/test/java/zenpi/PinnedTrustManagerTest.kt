@@ -31,16 +31,36 @@ class PinnedTrustManagerTest {
         assertTrue(trust(value).acceptedIssuers.isEmpty())
     }
     @Test fun everyChangedFingerprintByteRefusesRealCertificate() {
-        val value = cert(); val fingerprint = pin(value.encoded)
-        for (index in fingerprint.indices) {
+        val value = cert()
+        for (fingerprint in listOf(pin(value.encoded), pin(value.publicKey.encoded))) for (index in fingerprint.indices) {
             val wrong = fingerprint.toCharArray().apply { this[index] = if (this[index] == '0') '1' else '0' }.concatToString()
             assertTrue(runCatching { trust(value, fingerprint = wrong).checkServerTrusted(arrayOf(value), "EC") }.exceptionOrNull() is CertificateException)
         }
     }
-    @Test fun keyOnlyPinCannotReplaceCertificateDerPin() {
-        val value = cert()
-        assertNotEquals(pin(value.encoded), pin(value.publicKey.encoded))
-        assertTrue(runCatching { trust(value, fingerprint = pin(value.publicKey.encoded)).checkServerTrusted(arrayOf(value), "EC") }.isFailure)
+    @Test fun hostIdPinIsTheKeyAndSurvivesCertificateRotation() {
+        // Rust HostIdentity fixture: two certificates for one key (fixture-only key).
+        val fixture = com.google.gson.JsonParser.parseString(requireNotNull(javaClass.classLoader?.getResourceAsStream("host-key-rotation.json"))
+            .bufferedReader().readText()).asJsonObject
+        val hostId = fixture["host_id"].asString
+        val certificates = fixture["certificates"].asJsonArray.map { encoded ->
+            CertificateFactory.getInstance("X.509").generateCertificate(ByteArrayInputStream(Base64.getDecoder().decode(encoded.asString))) as X509Certificate
+        }
+        assertNotEquals(certificates[0].encoded.toList(), certificates[1].encoded.toList())
+        for ((index, value) in certificates.withIndex()) {
+            assertEquals(hostId, pin(value.publicKey.encoded))
+            assertEquals(fixture["legacy_pins"].asJsonArray[index].asString, pin(value.encoded))
+            val manager = trust(value, fingerprint = hostId)
+            manager.checkServerTrusted(arrayOf(value), "EC")
+            assertEquals(hostId, manager.verified?.hostId)
+            assertEquals(setOf(hostId, pin(value.encoded)), manager.verified?.names)
+        }
+        // A v1 certificate pin verifies only its own certificate, which is why saved hosts migrate.
+        val legacy = trust(certificates[0], fingerprint = pin(certificates[0].encoded))
+        legacy.checkServerTrusted(arrayOf(certificates[0]), "EC")
+        assertEquals(hostId, legacy.verified?.hostId)
+        val rotated = trust(certificates[1], fingerprint = pin(certificates[0].encoded))
+        assertTrue(runCatching { rotated.checkServerTrusted(arrayOf(certificates[1]), "EC") }.exceptionOrNull() is CertificateException)
+        assertNull(rotated.verified)
     }
     @Test fun missingExtraOrEmptyCertificateChainIsNotTrusted() {
         val value = cert(); val manager = trust(value)

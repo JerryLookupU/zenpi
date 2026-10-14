@@ -40,10 +40,13 @@ internal object HandshakePrelude {
         if (payload["selected_version"].toString() != "1") throw HostNegotiationException()
     }
 
-    fun challenge(input: InputStream, fingerprint: String): String {
+    fun challenge(input: InputStream, fingerprint: String): String = challenge(input, setOf(fingerprint)).second
+
+    /** Returns the host name the challenge used (one of [accepted]) and its nonce. */
+    fun challenge(input: InputStream, accepted: Set<String>): Pair<String, String> {
         val payload = read(input, "challenge", setOf("type", "nonce", "host_fingerprint"))
-        if (FrameCodec.string(payload, "host_fingerprint") != fingerprint)
-            throw HostNegotiationException()
-        return FrameCodec.string(payload, "nonce")
+        val host = FrameCodec.string(payload, "host_fingerprint")
+        if (host !in accepted) throw HostNegotiationException()
+        return host to FrameCodec.string(payload, "nonce")
     }
 }

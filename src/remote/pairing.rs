@@ -46,16 +46,48 @@ struct IdentityRecord {
 pub struct HostIdentity {
     certificate: Vec<u8>,
     private_key: Vec<u8>,
+    host_id: String,
+}
+
+/// `host_id = sha256(SPKI)`: the identity is the key, so pins survive a new certificate.
+fn host_id(private_key: &[u8]) -> Result<String, PairingError> {
+    let key = rustls::crypto::ring::default_provider()
+        .key_provider
+        .load_private_key(PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
+            private_key.to_vec(),
+        )))
+        .map_err(|_| PairingError::Identity)?;
+    let spki = key.public_key().ok_or(PairingError::Identity)?;
+    Ok(format!("{:x}", Sha256::digest(spki.as_ref())))
 }
 
 impl HostIdentity {
+    fn from_parts(certificate: Vec<u8>, private_key: Vec<u8>) -> Result<Self, PairingError> {
+        let host_id = host_id(&private_key)?;
+        let identity = Self {
+            certificate,
+            private_key,
+            host_id,
+        };
+        // rustls refuses a certificate whose SPKI does not match the private key.
+        identity.server_config()?;
+        Ok(identity)
+    }
+
     pub fn generate() -> Result<Self, PairingError> {
         let key = rcgen::generate_simple_self_signed(vec!["zenpi.local".into()])
             .map_err(|_| PairingError::Identity)?;
-        Ok(Self {
-            certificate: key.cert.der().to_vec(),
-            private_key: key.signing_key.serialize_der(),
-        })
+        Self::from_parts(key.cert.der().to_vec(), key.signing_key.serialize_der())
+    }
+
+    /// A fresh self-signed certificate for the same key; `host_id` is unchanged.
+    pub fn rotate_certificate(&self) -> Result<Self, PairingError> {
+        let key = rcgen::KeyPair::try_from(self.private_key.as_slice())
+            .map_err(|_| PairingError::Identity)?;
+        let certificate = rcgen::CertificateParams::new(vec!["zenpi.local".into()])
+            .and_then(|params| params.self_signed(&key))
+            .map_err(|_| PairingError::Identity)?;
+        Self::from_parts(certificate.der().to_vec(), self.private_key.clone())
     }
 
     /// An atomic create publishes one private identity file, never a half key/cert pair.
@@ -132,24 +164,27 @@ impl HostIdentity {
         if record.version != 1 {
             return Err(PairingError::Identity);
         }
-        let identity = Self {
-            certificate: URL_SAFE_NO_PAD
+        Self::from_parts(
+            URL_SAFE_NO_PAD
                 .decode(record.certificate)
                 .map_err(|_| PairingError::Identity)?,
-            private_key: URL_SAFE_NO_PAD
+            URL_SAFE_NO_PAD
                 .decode(record.private_key)
                 .map_err(|_| PairingError::Identity)?,
-        };
-        identity.server_config()?;
-        Ok(identity)
+        )
     }
 
     pub fn certificate(&self) -> &[u8] {
         &self.certificate
     }
 
-    /// v1 pins SHA-256 of the complete persisted certificate DER.
+    /// The host id, `sha256(SPKI)`: what QR v2, challenges, proofs and the registry bind.
     pub fn fingerprint(&self) -> String {
+        self.host_id.clone()
+    }
+
+    /// The v1 pin, SHA-256 of the certificate DER; only used to migrate old state.
+    pub fn legacy_fingerprint(&self) -> String {
         format!("{:x}", Sha256::digest(&self.certificate))
     }
 
@@ -176,20 +211,73 @@ impl Drop for HostIdentity {
     }
 }
 
+/// How a hint reaches the host: the local network or the user's own overlay (T1).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HintKind {
+    Lan,
+    Tailnet,
+}
+
+/// One dialable address. Hints are routing advice only; identity is the pinned key.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AddressHint {
+    pub kind: HintKind,
+    pub address: SocketAddr,
+}
+
+impl AddressHint {
+    pub fn lan(address: SocketAddr) -> Self {
+        Self {
+            kind: HintKind::Lan,
+            address,
+        }
+    }
+
+    fn to_query(self) -> String {
+        let kind = match self.kind {
+            HintKind::Lan => "lan",
+            HintKind::Tailnet => "tailnet",
+        };
+        format!("{kind}:{}", self.address)
+    }
+
+    fn from_query(value: &str) -> Result<Self, PairingError> {
+        let (kind, address) = value.split_once(':').ok_or(PairingError::InvalidInvite)?;
+        let kind = match kind {
+            "lan" => HintKind::Lan,
+            "tailnet" => HintKind::Tailnet,
+            _ => return Err(PairingError::InvalidInvite),
+        };
+        let address = address.parse().map_err(|_| PairingError::InvalidInvite)?;
+        Ok(Self { kind, address })
+    }
+}
+
+pub const MAX_ADDRESS_HINTS: usize = 4;
+
+/// v1: one address and the certificate pin. v2: `host_id` plus ordered address hints,
+/// issued, refreshed and consumed together with the one-use token.
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct PairingInvite {
     pub schema_version: u16,
+    /// The first hint; kept for v1 and for single-address callers.
     pub address: SocketAddr,
+    /// v2: host id `sha256(SPKI)`; v1: `sha256(certificate DER)`.
     pub fingerprint: String,
     pub token: String,
     pub expires_at: u64,
+    /// Ordered dial hints; `hints[0].address == address`. v1 has exactly one LAN hint.
+    pub hints: Vec<AddressHint>,
 }
 
 impl std::fmt::Debug for PairingInvite {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PairingInvite")
-            .field("address", &self.address)
+            .field("schema_version", &self.schema_version)
+            .field("hints", &self.hints)
             .field("fingerprint", &self.fingerprint)
             .field("token", &"<redacted>")
             .field("expires_at", &self.expires_at)
@@ -219,7 +307,20 @@ pub(crate) fn valid_address(address: SocketAddr) -> bool {
 
 impl PairingInvite {
     pub fn validate_at(&self, now: u64) -> Result<(), PairingError> {
-        if self.schema_version != 1
+        let hints_valid = !self.hints.is_empty()
+            && self.hints.len() <= MAX_ADDRESS_HINTS
+            && self.hints[0].address == self.address
+            && self.hints.iter().all(|hint| valid_address(hint.address))
+            && self.hints.iter().enumerate().all(|(index, hint)| {
+                !self.hints[..index]
+                    .iter()
+                    .any(|earlier| earlier.address == hint.address)
+            })
+            && (self.schema_version == 2
+                || self.schema_version == 1
+                    && self.hints.len() == 1
+                    && self.hints[0].kind == HintKind::Lan);
+        if !hints_valid
             || !valid_address(self.address)
             || self.fingerprint.len() != 64
             || !self
@@ -245,12 +346,27 @@ impl PairingInvite {
     pub(crate) fn to_uri_at(&self, now: u64) -> Result<String, PairingError> {
         self.validate_at(now)?;
         let mut uri = Url::parse("zenpi://pair").map_err(|_| PairingError::InvalidInvite)?;
-        uri.query_pairs_mut()
-            .append_pair("v", "1")
-            .append_pair("address", &self.address.to_string())
-            .append_pair("fingerprint", &self.fingerprint)
-            .append_pair("token", &self.token)
-            .append_pair("expires", &self.expires_at.to_string());
+        if self.schema_version == 1 {
+            uri.query_pairs_mut()
+                .append_pair("v", "1")
+                .append_pair("address", &self.address.to_string())
+                .append_pair("fingerprint", &self.fingerprint)
+                .append_pair("token", &self.token)
+                .append_pair("expires", &self.expires_at.to_string());
+        } else {
+            let hints = self
+                .hints
+                .iter()
+                .map(|hint| hint.to_query())
+                .collect::<Vec<_>>()
+                .join(",");
+            uri.query_pairs_mut()
+                .append_pair("v", "2")
+                .append_pair("host_id", &self.fingerprint)
+                .append_pair("hints", &hints)
+                .append_pair("token", &self.token)
+                .append_pair("expires", &self.expires_at.to_string());
+        }
         Ok(uri.into())
     }
 
@@ -276,7 +392,7 @@ impl PairingInvite {
         for (key, value) in uri.query_pairs() {
             if !matches!(
                 key.as_ref(),
-                "v" | "address" | "fingerprint" | "token" | "expires"
+                "v" | "address" | "fingerprint" | "host_id" | "hints" | "token" | "expires"
             ) || values
                 .insert(key.into_owned(), value.into_owned())
                 .is_some()
@@ -285,8 +401,25 @@ impl PairingInvite {
             }
         }
         let field = |name: &str| values.get(name).ok_or(PairingError::InvalidInvite);
-        if field("v")? != "1"
-            || field("expires")?.is_empty()
+        // Each version has exactly its own field set; nothing is optional.
+        let (pin, hints) = match field("v")?.as_str() {
+            "1" if values.len() == 5 => {
+                let address = field("address")?
+                    .parse()
+                    .map_err(|_| PairingError::InvalidInvite)?;
+                (field("fingerprint")?, vec![AddressHint::lan(address)])
+            }
+            "2" if values.len() == 5 => (
+                field("host_id")?,
+                field("hints")?
+                    .split(',')
+                    .map(AddressHint::from_query)
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+            _ => return Err(PairingError::InvalidInvite),
+        };
+        let address = hints.first().ok_or(PairingError::InvalidInvite)?.address;
+        if field("expires")?.is_empty()
             || field("expires")?.len() > 19
             || !field("expires")?.bytes().all(|byte| byte.is_ascii_digit())
         {
@@ -296,14 +429,13 @@ impl PairingInvite {
             schema_version: field("v")?
                 .parse()
                 .map_err(|_| PairingError::InvalidInvite)?,
-            address: field("address")?
-                .parse()
-                .map_err(|_| PairingError::InvalidInvite)?,
-            fingerprint: field("fingerprint")?.clone(),
+            address,
+            fingerprint: pin.clone(),
             token: field("token")?.clone(),
             expires_at: field("expires")?
                 .parse()
                 .map_err(|_| PairingError::InvalidInvite)?,
+            hints,
         };
         invite.validate_at(now)?;
         Ok(invite)
@@ -330,20 +462,32 @@ impl InviteIssuer {
         }
     }
 
+    /// A v2 invite whose only hint is `address` on the LAN.
     pub fn issue(&self, address: SocketAddr, ttl: Duration) -> Result<PairingInvite, PairingError> {
+        self.issue_hints(vec![AddressHint::lan(address)], ttl)
+    }
+
+    /// A v2 invite with ordered dial hints, bound to this one-use token.
+    pub fn issue_hints(
+        &self,
+        hints: Vec<AddressHint>,
+        ttl: Duration,
+    ) -> Result<PairingInvite, PairingError> {
+        let address = hints.first().ok_or(PairingError::InvalidInvite)?.address;
         if ttl.is_zero() || ttl > MAX_INVITE_TTL || ttl.subsec_nanos() != 0 {
             return Err(PairingError::InvalidInvite);
         }
         let mut token = [0; 32];
         getrandom::getrandom(&mut token).map_err(|_| PairingError::Unavailable)?;
         let invite = PairingInvite {
-            schema_version: 1,
+            schema_version: 2,
             address,
             fingerprint: self.fingerprint.clone(),
             token: URL_SAFE_NO_PAD.encode(token),
             expires_at: unix_seconds()?
                 .checked_add(ttl.as_secs())
                 .ok_or(PairingError::Unavailable)?,
+            hints,
         };
         invite.validate_at(unix_seconds()?)?;
         *self.active.lock().map_err(|_| PairingError::Unavailable)? = Some(ActiveInvite {
@@ -410,6 +554,7 @@ mod admission_clock_tests {
             fingerprint: "a".repeat(64),
             token: URL_SAFE_NO_PAD.encode([0u8; 32]),
             expires_at: 1060,
+            hints: vec![AddressHint::lan("192.168.50.55:7777".parse().unwrap())],
         };
         (
             Some(ActiveInvite {
