@@ -5073,14 +5073,45 @@ impl Agent {
                 let preparing = self.input_port.preparation();
                 let mut prepared =
                     self.prepare_semantic_provider_context(turn_budget, is_cancelled)?;
+                // ZE-233 (templates): every template turn on this branch is sent
+                // expanded, so later turns and restarts see the same text.
+                // Expansions are re-rendered from the current snapshot (never
+                // journaled); a changed source is flagged instead of guessed.
+                let current = self.resource_snapshot();
+                // Provenance lives on the journaled turn; context preparation may
+                // rebuild turn values, so look it up by id.
+                let provenance: BTreeMap<String, Value> = self
+                    .session
+                    .turns()
+                    .iter()
+                    .filter_map(|turn| {
+                        let resource = &turn.metadata.as_ref()?["resource"];
+                        (resource["kind"] == "template")
+                            .then(|| (turn.id.clone(), resource.clone()))
+                    })
+                    .collect();
                 for turn in &mut prepared.turns {
-                    if turn
-                        .metadata
-                        .as_ref()
-                        .is_some_and(|m| m["resource"]["kind"] == "template")
-                        && let Some(rendered) = self.active_resource_inputs.get(&turn.id)
-                    {
-                        turn.content = rendered.clone();
+                    let Some(resource) = provenance.get(&turn.id) else {
+                        continue;
+                    };
+                    if let Some(rendered) = self.active_resource_inputs.get(&turn.id) {
+                        set_turn_text(turn, rendered.clone());
+                        continue;
+                    }
+                    match self.prepare_resource_input(&current, &turn.content, &is_cancelled) {
+                        Ok((Some(fresh), Some(rendered)))
+                            if fresh["source_hash"] == resource["source_hash"] =>
+                        {
+                            set_turn_text(turn, rendered);
+                        }
+                        Err(AgentError::Backend(BackendError::Cancelled)) => {
+                            return Err(BackendError::Cancelled.into());
+                        }
+                        _ => {
+                            turn.content.push_str(
+                                "\n[resource changed or unavailable since this turn; its earlier expansion is not shown]",
+                            );
+                        }
                     }
                 }
                 if let Some(input) = &extension_input
@@ -8490,6 +8521,22 @@ fn session_locked(error: &ZenpiError) -> bool {
         ZenpiError::Session(crate::session::SessionError::Locked)
             | ZenpiError::Agent(AgentError::Session(crate::session::SessionError::Locked))
     )
+}
+
+/// Replace a turn's text everywhere the encoders read it: the plain content and
+/// the text part of its ordered stored content (which is protocol authority).
+fn set_turn_text(turn: &mut Turn, text: String) {
+    if let Some(parts) = turn
+        .metadata
+        .as_mut()
+        .and_then(|metadata| metadata.get_mut(content::STORED_CONTENT_FIELD))
+        .and_then(|stored| stored.get_mut("parts"))
+        .and_then(Value::as_array_mut)
+        && let Some(part) = parts.iter_mut().find(|part| part["type"] == "text")
+    {
+        part["text"] = Value::String(text.clone());
+    }
+    turn.content = text;
 }
 
 /// Removes the `--no-session` journal directory when the host returns.

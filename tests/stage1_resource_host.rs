@@ -432,6 +432,8 @@ fn production_jsonl_skill_template_reload_and_unknown_slash_reach_real_http_back
     assert!(!captured[0].to_string().contains("MANUAL_BODY"));
     assert!(captured[0].to_string().contains("TEMPLATE_OLD: literal $1"));
     assert!(captured[1].to_string().contains("SECRET_SKILL_BODY_OLD"));
+    // ZE-233: the earlier template turn is resent expanded, not as raw `/tpl`.
+    assert!(captured[1].to_string().contains("TEMPLATE_OLD: literal $1"));
     assert!(captured[2].to_string().contains("TEMPLATE_NEW: old"));
     assert!(captured[3].to_string().contains("TEMPLATE_NEW: new"));
     assert!(!root.path().join("never-created").exists());
