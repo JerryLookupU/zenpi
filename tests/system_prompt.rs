@@ -266,7 +266,7 @@ fn tool_guide_states_limits_and_continuation_hints() {
             .to_owned()
     };
     let read = line("read_file");
-    assert!(read.contains("max_bytes") && read.contains("512 KiB") && read.contains("Truncated"));
+    assert!(read.contains("max_bytes") && read.contains("512 KiB") && read.contains("Showing lines"));
     assert!(read.contains("offset"));
     let output = line("read_tool_output");
     assert!(output.contains("offset += length"));

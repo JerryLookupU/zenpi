@@ -39,6 +39,8 @@ pub const MAX_TOOL_ID_BYTES: usize = 128;
 // Leave room for the path/flags wrapper in the one-megabyte serialized result
 // envelope, so every value accepted by the input schema can be returned.
 pub const MAX_READ_BYTES: usize = 512 * 1024;
+/// pi's read page: at most 2000 lines and 50 KiB unless `max_bytes` says otherwise.
+pub const MAX_READ_LINES: usize = 2000;
 // 128 entries leaves room for long, nested relative paths in the serialized
 // result envelope while keeping every schema-accepted call bounded.
 pub const MAX_LIST_ENTRIES: usize = 128;
@@ -58,7 +60,7 @@ pub const MAX_COMMAND_OUTPUT_BYTES: usize = 256 * 1024;
 /// Upper bound for an explicit model-requested `timeout_ms` (24 h); there is no default.
 pub const MAX_COMMAND_TIMEOUT_MS: u64 = 86_400_000;
 
-const DEFAULT_READ_BYTES: usize = 256 * 1024;
+const DEFAULT_READ_BYTES: usize = 50 * 1024;
 const DEFAULT_LIST_ENTRIES: usize = 64;
 const DEFAULT_SEARCH_MATCHES: usize = 100;
 const DIFF_CONTEXT_LINES: usize = 3;
@@ -1769,11 +1771,87 @@ fn read_file_model_text(output: &Value) -> Option<String> {
     if !text.is_empty() && !text.ends_with('\n') {
         text.push('\n');
     }
-    text.push_str(&format!(
-        "\n[Truncated at {} bytes. Use max_bytes (up to {MAX_READ_BYTES}) to read more]",
-        content.len()
-    ));
+    let number = |key: &str| output.get(key).and_then(Value::as_u64).unwrap_or(0);
+    match output.get("next_offset").and_then(Value::as_u64) {
+        Some(next) => text.push_str(&format!(
+            "\n[Showing lines {}-{} of {}. Use offset={next} to continue]",
+            number("start_line"),
+            number("end_line"),
+            number("total_lines")
+        )),
+        None => text.push_str(&format!(
+            "\n[Line {} was cut at {} bytes; use run_command to inspect it]",
+            number("end_line"),
+            content.len()
+        )),
+    }
     Some(text)
+}
+
+struct LinePage {
+    content: String,
+    truncated: bool,
+    start_line: usize,
+    end_line: usize,
+    total_lines: usize,
+    next_offset: Option<usize>,
+}
+
+/// Read lines `offset..offset+limit` (1-based) within `max_bytes`, counting the
+/// file's total lines. Lines are never split except a single over-long line,
+/// which is cut on a character boundary.
+fn read_line_page<R: io::BufRead>(
+    mut reader: R,
+    offset: usize,
+    limit: usize,
+    max_bytes: usize,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<LinePage, ToolError> {
+    let mut content = String::new();
+    let mut line = Vec::new();
+    let mut total = 0usize;
+    let mut end = offset.saturating_sub(1);
+    let mut full = false;
+    let mut cut_line = false;
+    loop {
+        line.clear();
+        if reader.read_until(b'\n', &mut line)? == 0 {
+            break;
+        }
+        total += 1;
+        if total % 4096 == 0 && cancelled() {
+            return Err(ToolError::Cancelled);
+        }
+        if total < offset || full {
+            continue;
+        }
+        let text = std::str::from_utf8(&line).map_err(|_| ToolError::InvalidUtf8(String::new()))?;
+        if total - offset >= limit || content.len() + text.len() > max_bytes {
+            full = true;
+            if content.is_empty() {
+                // One line larger than the page: return its head, cut cleanly.
+                let mut cut = max_bytes.min(text.len());
+                while !text.is_char_boundary(cut) {
+                    cut -= 1;
+                }
+                content.push_str(&text[..cut]);
+                end = total;
+                cut_line = true;
+            }
+            continue;
+        }
+        content.push_str(text);
+        end = total;
+    }
+    let truncated = full || cut_line;
+    Ok(LinePage {
+        content,
+        truncated,
+        start_line: offset.min(total.max(1)),
+        end_line: end,
+        total_lines: total,
+        next_offset: (truncated && end < total).then_some(end + 1),
+    })
 }
 
 fn run_command_model_text(
@@ -2009,11 +2087,13 @@ impl Tool for ReadFileTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "read_file".into(),
-            description: "Read a UTF-8 text file inside the workspace with a byte limit.".into(),
+            description: "Read a UTF-8 text file inside the workspace by lines. Returns at most `limit` lines (default 2000) and 50 KiB per call; continue with `offset` (1-based line) as the result says.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string" },
+                    "offset": { "type": "integer", "minimum": 1 },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": MAX_READ_LINES },
                     "max_bytes": { "type": "integer", "minimum": 1, "maximum": MAX_READ_BYTES }
                 },
                 "required": ["path"],
@@ -2041,8 +2121,10 @@ impl Tool for ReadFileTool {
             return Err(ToolError::Cancelled);
         }
         context.admit_builtin("read_file", arguments)?;
-        reject_unknown(arguments, &["path", "max_bytes"])?;
+        reject_unknown(arguments, &["path", "offset", "limit", "max_bytes"])?;
         let requested = required_string(arguments, "path", 4_096)?;
+        let offset = bounded_usize(arguments, "offset", 1, 1, usize::MAX)?;
+        let limit = bounded_usize(arguments, "limit", MAX_READ_LINES, 1, MAX_READ_LINES)?;
         let max_bytes = bounded_usize(
             arguments,
             "max_bytes",
@@ -2056,21 +2138,29 @@ impl Tool for ReadFileTool {
         if !metadata.is_file() {
             return Err(ToolError::NotAFile(requested.to_owned()));
         }
-        let mut bytes = Vec::with_capacity(max_bytes.min(metadata.len() as usize));
         let file = File::open(&path.canonical)?;
         if crate::tool_output::private_output_inode(&file)? {
             return Err(ToolError::PathDenied(requested.into()));
         }
-        file.take(max_bytes.saturating_add(1) as u64)
-            .read_to_end(&mut bytes)?;
-        let truncated = bytes.len() > max_bytes;
-        bytes.truncate(max_bytes);
-        let content =
-            String::from_utf8(bytes).map_err(|_| ToolError::InvalidUtf8(requested.to_owned()))?;
+        let page = read_line_page(
+            io::BufReader::new(file),
+            offset,
+            limit,
+            max_bytes,
+            cancelled,
+        )
+        .map_err(|error| match error {
+            ToolError::InvalidUtf8(_) => ToolError::InvalidUtf8(requested.to_owned()),
+            error => error,
+        })?;
         Ok(json!({
             "path": relative_display(&path.relative),
-            "content": content,
-            "truncated": truncated
+            "content": page.content,
+            "truncated": page.truncated,
+            "start_line": page.start_line,
+            "end_line": page.end_line,
+            "total_lines": page.total_lines,
+            "next_offset": page.next_offset
         }))
     }
 }

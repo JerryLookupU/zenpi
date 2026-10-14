@@ -313,7 +313,7 @@ fn builtin_tools_render_compact_text() {
             "read_file",
             json!({"path": "src/a.txt", "max_bytes": 5})
         ),
-        "alpha\n\n[Truncated at 5 bytes. Use max_bytes (up to 524288) to read more]"
+        "alpha\n\n[Showing lines 1-1 of 3. Use offset=2 to continue]"
     );
     assert_eq!(
         run(

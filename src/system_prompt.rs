@@ -242,12 +242,12 @@ fn system_file(
 fn builtin_snippet(name: &str) -> Option<String> {
     use crate::tools::{
         MAX_COMMAND_OUTPUT_BYTES, MAX_COMMAND_TIMEOUT_MS, MAX_LIST_ENTRIES, MAX_READ_BYTES,
-        MAX_SEARCH_MATCHES, MAX_WRITE_BYTES,
+        MAX_READ_LINES, MAX_SEARCH_MATCHES, MAX_WRITE_BYTES,
     };
     let kib = |bytes: usize| bytes / 1024;
     Some(match name {
         "read_file" => format!(
-            "Read a UTF-8 workspace file. Returns at most max_bytes (default 256 KiB, cap {} KiB); a cut result ends with \"[Truncated at N bytes ...]\". There is no offset parameter: to continue past the cap, read a later line range with run_command (e.g. sed -n '2000,2400p' FILE) or locate the part you need with search_text.",
+            "Read a UTF-8 workspace file by lines: offset (1-based line) and limit (default and cap {MAX_READ_LINES} lines), at most 50 KiB per call (max_bytes up to {} KiB). A partial result ends with \"[Showing lines a-b of N. Use offset=K to continue]\"; call again with that offset to keep reading.",
             kib(MAX_READ_BYTES)
         ),
         "read_tool_output" => format!(

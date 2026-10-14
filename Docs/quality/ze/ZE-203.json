@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-203",
+  "claim_id": "ZE-203@blueprint-4.0.0",
+  "from": "master",
+  "to": "master",
+  "summary": "read_file pages by lines like pi: offset (1-based) and limit (default/cap 2000 lines), 50 KiB per page (max_bytes up to 512 KiB still honoured), whole-file total_lines and next_offset, never splits a character (an over-long single line is cut on a char boundary); the 512 KiB whole-file ceiling is gone. Model text ends with [Showing lines a-b of N. Use offset=K to continue]; system prompt updated.",
+  "changed_files": [
+    "src/tools.rs",
+    "src/system_prompt.rs",
+    "tests/read_file_paging.rs",
+    "tests/tool_result_text.rs",
+    "tests/system_prompt.rs",
+    "Docs/quality/ze/ZE-203.json"
+  ],
+  "diff_stat": "4 files changed, 110 insertions(+), 20 deletions(-)",
+  "commands_run": [
+    "cargo test --locked --test read_file_paging",
+    "cargo test --locked --no-fail-fast --test tools --test tool_result_text --test system_prompt --test tools_edit_paths --test stage1_tool_output --test core_session --test stage1_skill_md",
+    "cargo fmt --all -- --check",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo clippy --locked --all-targets --all-features -- -D warnings"
+  ],
+  "validation_result": {
+    "cjk_2mb": "paged completely (>40 pages, each <=50 KiB) and reassembled byte-identical; no InvalidUtf8",
+    "offset_limit": "lines 3-4 of 10, next_offset 5; tail page has no next_offset",
+    "overlong_line": "cut on a char boundary",
+    "updated_assertions": "tool_result_text and system_prompt now expect the line hint",
+    "clippy": "0/0"
+  },
+  "notes": "",
+  "created_at": "2026-10-14T15:42:42Z",
+  "digest": "18f38567636ee6f16e688917f6c15c1925d2fdd6fd18f695cdbabfddef403b39"
+}
