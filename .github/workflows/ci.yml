@@ -141,12 +141,22 @@ jobs:
       - name: Run the Stage 1 host bounds and restart test
         run: cargo test --locked --test stage1_host
 
+      # G-TASK runs inside the verify job's full test matrix (tests/tasks.rs,
+      # tests/tasks_headless.rs, tests/tui_task.rs). G-LOAD(200) needs the
+      # release binary built above.
+      - name: Run G-LOAD(200)
+        run: |
+          mkdir -p Docs/quality/load
+          python3 tools/load_agents.py --agents 200 --report Docs/quality/load/g-load-200.json
+
       - name: Upload Stage 1 host evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: stage1-host-${{ github.run_id }}-${{ github.run_attempt }}
-          path: Docs/quality/stage1/ZS1-117
+          path: |
+            Docs/quality/stage1/ZS1-117
+            Docs/quality/load/g-load-200.json
           if-no-files-found: warn
 
   android:

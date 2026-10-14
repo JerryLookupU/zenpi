@@ -6,8 +6,8 @@ one asyncio provider speaking Chat Completions SSE with a fixed latency, and a
 single `selectors` loop reading every agent's stdout (redis-ae style). Each
 task is three provider rounds: `write_file`, `bash echo`, final answer.
 
-Per-process numbers come from macOS `proc_pidinfo` (no root needed): RSS,
-CPU time, context switches, threads and open fds. Thresholds are the §2.1
+Per-process numbers come from macOS `proc_pidinfo` or Linux `/proc` (no root
+needed): RSS, CPU time, context switches, threads and open fds. Thresholds are the §2.1
 budget of Docs/Zenpi_Execution_Blueprint_v2.md; the JSON report records each
 check and the kernel limits that bounded the run.
 """
@@ -146,9 +146,33 @@ if LIBPROC is not None:
     TIMEBASE = _tb.numer / _tb.denom
 
 
+CLOCK_TICKS = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
+
+
+def linux_stats(pid: int) -> dict | None:
+    """The same numbers from /proc on Linux (CI runners)."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        status = dict(
+            line.split(":", 1) for line in Path(f"/proc/{pid}/status").read_text().splitlines() if ":" in line
+        )
+        fds = len(os.listdir(f"/proc/{pid}/fd"))
+    except (OSError, IndexError, ValueError):
+        return None
+    switches = sum(int(status.get(key, "0").strip()) for key in ("voluntary_ctxt_switches", "nonvoluntary_ctxt_switches"))
+    return {
+        "rss": int(status.get("VmRSS", "0 kB").split()[0]) * 1024,
+        # utime and stime are fields 14 and 15; `stat` starts at field 3.
+        "cpu_s": (int(stat[11]) + int(stat[12])) / CLOCK_TICKS,
+        "csw": switches,
+        "threads": int(status.get("Threads", "0").strip()),
+        "fds": fds,
+    }
+
+
 def proc_stats(pid: int) -> dict | None:
     if LIBPROC is None:
-        return None
+        return linux_stats(pid) if Path("/proc").is_dir() else None
     info = TaskInfo()
     if LIBPROC.proc_pidinfo(pid, PROC_PIDTASKINFO, 0, ctypes.byref(info), ctypes.sizeof(info)) <= 0:
         return None

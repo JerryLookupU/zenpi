@@ -1,0 +1,57 @@
+name: zenpi G-LOAD
+
+# G-LOAD(2000) is nightly or manual: it needs a large runner. The §2.1 budget
+# assumes 16 cores; pass `runner` (e.g. a 16-core larger-runner label) when
+# dispatching by hand. The scheduled run uses the default runner as a trend.
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      agents:
+        description: Concurrent headless agents
+        default: "2000"
+      runner:
+        description: Runner label
+        default: ubuntu-latest
+
+permissions:
+  contents: read
+
+jobs:
+  g-load:
+    name: G-LOAD(${{ inputs.agents || '2000' }})
+    runs-on: ${{ inputs.runner || 'ubuntu-latest' }}
+    timeout-minutes: 60
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build the production release binary
+        run: cargo build --release --locked
+
+      - name: Raise process and file limits
+        run: |
+          sudo sysctl -w fs.file-max=1048576
+          ulimit -n 1048576 || true
+
+      - name: Run G-LOAD
+        run: |
+          mkdir -p Docs/quality/load
+          ulimit -n 1048576 || true
+          python3 tools/load_agents.py --agents "${{ inputs.agents || '2000' }}" \
+            --report Docs/quality/load/g-load.json
+
+      - name: Upload the G-LOAD report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: g-load-${{ github.run_id }}-${{ github.run_attempt }}
+          path: Docs/quality/load/g-load.json
+          if-no-files-found: warn
