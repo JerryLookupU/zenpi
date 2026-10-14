@@ -195,6 +195,7 @@ fn search_is_literal_case_configurable_and_bounded() {
             "search_text",
             json!({
                 "query": "needle.*",
+                "literal": true,
                 "case_sensitive": false,
                 "max_matches": 2
             }),
