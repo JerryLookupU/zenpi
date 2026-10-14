@@ -13,7 +13,7 @@
     "tests/system_prompt.rs",
     "Docs/quality/ze/ZE-203.json"
   ],
-  "diff_stat": "4 files changed, 110 insertions(+), 20 deletions(-)",
+  "diff_stat": "2 files changed, 4 insertions(+), 2 deletions(-)",
   "commands_run": [
     "cargo test --locked --test read_file_paging",
     "cargo test --locked --no-fail-fast --test tools --test tool_result_text --test system_prompt --test tools_edit_paths --test stage1_tool_output --test core_session --test stage1_skill_md",
@@ -26,9 +26,10 @@
     "offset_limit": "lines 3-4 of 10, next_offset 5; tail page has no next_offset",
     "overlong_line": "cut on a char boundary",
     "updated_assertions": "tool_result_text and system_prompt now expect the line hint",
-    "clippy": "0/0"
+    "clippy": "0/0 after fixing manual_is_multiple_of found post-commit",
+    "fmt": "clean"
   },
-  "notes": "",
-  "created_at": "2026-10-14T15:42:42Z",
-  "digest": "18f38567636ee6f16e688917f6c15c1925d2fdd6fd18f695cdbabfddef403b39"
+  "notes": "First commit ea747d5 slipped through with a clippy lint and a fmt diff; fixed in the follow-up commit.",
+  "created_at": "2026-10-14T15:44:28Z",
+  "digest": "98789d2289d97034872d57a632eb856d22ad69ed3683d87bf3154a4983cac82d"
 }

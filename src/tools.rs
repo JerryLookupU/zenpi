@@ -1819,7 +1819,7 @@ fn read_line_page<R: io::BufRead>(
             break;
         }
         total += 1;
-        if total % 4096 == 0 && cancelled() {
+        if total.is_multiple_of(4096) && cancelled() {
             return Err(ToolError::Cancelled);
         }
         if total < offset || full {
