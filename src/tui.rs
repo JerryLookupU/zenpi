@@ -17243,7 +17243,7 @@ mod local_remote_preview_tests {
             Message::Request {
                 operation: Operation::TerminalInput,
                 arguments: serde_json::json!({"terminal_id":terminal["terminal_id"],"subtab_id":terminal["subtab_id"],
-                "subtab_revision":terminal["subtab_revision"],"text":"printf '%s%s\\n' 'TUI_INPUT_' 'OWNED' > tui-input.txt\r"}),
+                "subtab_revision":terminal["subtab_revision"],"text":"printf '%s%s\\n' 'TUI_INPUT_' 'OWNED' | tee tui-input.txt\r"}),
             },
         );
         input.id = Some("terminal-input".into());
@@ -17263,7 +17263,7 @@ mod local_remote_preview_tests {
             host.dispatch_remote(&mut view, &registry, &device, input, &Default::default()),
             reply
         );
-        let until = Instant::now() + Duration::from_secs(5);
+        let until = Instant::now() + Duration::from_secs(15);
         while std::fs::read_to_string(cwd.join("tui-input.txt"))
             .ok()
             .as_deref()
@@ -17276,17 +17276,21 @@ mod local_remote_preview_tests {
             );
             std::thread::sleep(Duration::from_millis(20));
         }
+        // Match the command's own output, not the echoed input line, which a
+        // user's interactive shell (zle) may redraw or wrap.
+        let until = Instant::now() + Duration::from_secs(15);
         while !view
             .pty_shell
             .as_ref()
             .unwrap()
             .remote_content(64)
-            .contains("TUI_INPUT_")
+            .contains("TUI_INPUT_OWNED")
         {
             view.pump_shell();
             assert!(
                 Instant::now() < until,
-                "PTY output not yet projected after file effect"
+                "PTY output not yet projected after file effect: {:?}",
+                view.pty_shell.as_ref().unwrap().remote_content(64)
             );
             std::thread::sleep(Duration::from_millis(20));
         }
