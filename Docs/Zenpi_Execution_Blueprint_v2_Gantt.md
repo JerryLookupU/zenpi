@@ -5,9 +5,9 @@
 
 ```yaml
 source: Docs/Zenpi_Execution_Blueprint_v2.md
-source_sha256: 692b096a71cc2b0202da50a9f6f4a8cd9ac0ce37e7510c0065f3dda106c1c617
+source_sha256: 7a7fc9d7adda2b1643dfa7cea0debdf6c622b7a3a3926f11a0be142ff96b8035
 blueprint_version: 4.0.0
-generated_at: 2026-10-14T23:20:32Z
+generated_at: 2026-10-14T23:24:16Z
 ```
 
 ## Dependency-order view

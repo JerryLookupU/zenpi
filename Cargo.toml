@@ -67,5 +67,6 @@ codegen-units = 1
 panic = "abort"
 
 # ZS1-131: fixed terminal reader reset; upstream 0.29.0 and features preserved.
+# Keep until upstream crossterm fixes issues #1126 and #1142 (v2 blueprint §7.1).
 [patch.crates-io]
 crossterm = { path = "vendor/crossterm" }

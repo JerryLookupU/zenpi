@@ -1,7 +1,7 @@
 # Android 与 Rust 桌面局域网联动指南
 
 状态：开发预览，2026-10-05。本文按当前源码中的命令和界面编写，不是
-发布或真机验收证明。完整范围以 [Stage 2 蓝图](stage2_android2unix_blueprint.md)
+发布或真机验收证明。完整范围以 [v2 蓝图](Zenpi_Execution_Blueprint_v2.md)
 为准；尚未完成的功能和验证见本文末尾。
 
 ## 1. 准备环境

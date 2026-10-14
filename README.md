@@ -69,11 +69,10 @@ leaves nobody able to answer a side-effect approval, that approval is denied
 rather than hanging or silently executing.
 
 Session startup reads have a hard 256 MiB journal-byte cap: an oversized
-existing journal is rejected before parsing or permission changes, while a
-valid journal at or below the cap is still loaded eagerly. For Responses SSE
-only, the owned provider polls a stalled response-body read at a bounded
-100 ms interval; Chat/non-streaming requests and DNS/connect/send/header
-phases remain bounded by ordinary timeouts and have no external abort handle.
+existing journal is rejected before parsing or permission changes. Each
+backend keeps one pooled HTTP agent (keep-alive), and cancellation reaches
+DNS, connect, TLS, response headers and body reads within one 250 ms poll
+slice.
 
 The Responses API is the primary wire protocol (`/responses` and
 `/v1/responses`) and is consumed as SSE, including text deltas, completion
@@ -81,24 +80,21 @@ usage, and Codex gateways that insert NUL padding. Chat Completions remains an
 explicit compatibility adapter. `--backend echo` exists only in builds made
 with `--features dev-fixtures`; normal release binaries cannot use the mock.
 
-This checkout contains the v1 provider/session/runtime baseline and a set of
-bounded v2 candidates. A green compile is not a claim that a Claude
-Code/Codex-equivalent product is complete. The current baseline evidence is
-the release/install/user-smoke flow and the focused tests; those checks cover
-the baseline and selected slices, not every v2 interaction or close hook.
-multiline editing, Markdown rendering, file diff previews, tool lifecycle
-folding, slash-command/domain models, and responsive layout primitives still
-need the end-to-end acceptance work described by their v2 rows. BentoBox tabs,
-durable first-class domain dispatch, PTY panes, and socket-level
-cancellation are explicitly partial, planned, or deferred rather than hidden
-behind a completion claim. The frozen v1 receipt remains in
-[`Docs/Zenpi_Execution_Blueprint.md`](Docs/Zenpi_Execution_Blueprint.md); the
-versioned audit and re-plan is
-[`Docs/Zenpi_Execution_Blueprint_v2.md`](Docs/Zenpi_Execution_Blueprint_v2.md).
-Installation currently requires Rust 1.88 or newer and a local clone.
-The installed smoke uses local OpenAI-compatible loopback fixtures for provider
-assertions; it proves production-binary wiring, not live OpenAI/Codex service
-availability.
+**Status.** The single authority is
+[`Docs/Zenpi_Execution_Blueprint_v2.md`](Docs/Zenpi_Execution_Blueprint_v2.md);
+only its `[x]` items are claimed, and its §7.1 lists the frozen modules
+(BentoBox panes, multi-project/worktree tabs, the PTY shell pane, b3ehive
+orchestration domains) that are kept as-is. The quality gate is G-RUST (fmt,
+clippy `-D warnings` for default and `--all-features`) plus the task suites
+(`tests/tasks.rs`, `tests/tasks_headless.rs`, `tests/tui_task.rs`).
+`python3 tools/load_agents.py --agents 2000` runs 2000 concurrent headless
+agents against a scripted provider; the measured report is
+`Docs/quality/load/g-load-2000.json` (idle RSS p99 5.8 MiB, all-waiting CPU
+0.22 cores, per-round overhead p99 50 ms on one 20-core Mac). Android pairing
+(`zenpi host pair|serve`) needs a build with `--features remote`; the default
+binary leaves the remote host out. Installation requires Rust 1.88 or newer
+and a local clone. Superseded v1, Stage 1 and Stage 2 records live in
+`Docs/archive/`.
 
 Session and extension lifecycle commands are available outside either runtime
 mode:
@@ -209,13 +205,11 @@ aggregate Rust source inventory is reported for visibility, not used as a
 project-wide cap; generated files, vendored dependencies, documentation, and
 build output are not item estimates.
 
-The frozen v1 execution receipt is [`Docs/Zenpi_Execution_Blueprint.md`](Docs/Zenpi_Execution_Blueprint.md).
-The current product review and next execution contract is the non-authoritative
-versioned draft [`Docs/Zenpi_Execution_Blueprint_v2.md`](Docs/Zenpi_Execution_Blueprint_v2.md)
-(`2.0.0`; the Cargo crate remains `0.1.0`).
-The frozen local policy is [`Docs/Zenpi_Execution_Spec.md`](Docs/Zenpi_Execution_Spec.md),
-and its read-only monitoring projection is
-[`Docs/Zenpi_Execution_Gantt.md`](Docs/Zenpi_Execution_Gantt.md).
+The authoritative checklist is
+[`Docs/Zenpi_Execution_Blueprint_v2.md`](Docs/Zenpi_Execution_Blueprint_v2.md)
+with its Gantt projection
+[`Docs/Zenpi_Execution_Blueprint_v2_Gantt.md`](Docs/Zenpi_Execution_Blueprint_v2_Gantt.md);
+the workflow policy is [`Docs/Zenpi_Execution_Spec.md`](Docs/Zenpi_Execution_Spec.md).
 
 ## 中文
 
@@ -229,9 +223,8 @@ handoff 记录。headless 可以通过一条管道启动、持久化可恢复会
 agent 之间传递有边界的 handoff；TUI 使用合并渲染和终端缓冲区差分，减少
 窗口调整及快速流式更新时的重复绘制。
 生产 owned/async 路径把 provider 工作放在后台，TUI/headless 在流式响应期间
-可继续处理输入和协作式取消。Responses SSE 的 body read 会以有界 100ms
-间隔轮询取消并关闭停滞 body；Chat/非流式请求以及 DNS/connect/send/header
-阶段仍只有普通 timeout，没有外部 abort handle。
+可继续处理输入和协作式取消。每个 backend 复用一个带连接池的 HTTP agent；
+取消在 250 ms 的轮询间隔内覆盖 DNS、connect、TLS、响应头和 body 读取。
 
 生产默认 backend 是配置的 OpenAI-compatible provider，不再静默使用
 `echo`。首次使用先执行 `zenpi config import-codex --profile codex`，它从
@@ -251,16 +244,11 @@ headless 客户端必须等收到 `approval_request` 后再发送 `approve`。�
 会话启动读取有 256 MiB 的 journal 字节硬上限：超限的已有 journal 会在解析或
 修改权限前拒绝；不超过上限的有效 journal 仍会整体载入内存。
 
-当前仓库包含 v1 的 provider/session/runtime 基线，以及正在审核的 v2 候选实现。
-“编译通过”不等于已经达到 Claude Code/Codex 级别的完整可用体验。生产
-provider 路径（本地 OpenAI-compatible loopback fixture）、Codex 配置导入、Responses SSE、
-附件、工具、审批、session、skills/extensions 等已有可执行测试；多行编辑、Markdown/diff 渲染、工具状态折叠、
-slash/domain 模型和响应式布局也有边界实现，但 BentoBox 多 tab、blueprint/
-goal/learn 的持久化调度、浏览器/PTY pane，以及 socket 级取消仍须按 v2
-验收矩阵补齐。它们不会因为 v1 的 `CF-*` 勾选而被伪称完成。
-v1 冻结收据在 `Docs/Zenpi_Execution_Blueprint.md`，版本化自查和下一轮
-契约在 `Docs/Zenpi_Execution_Blueprint_v2.md`。
-该草案版本为 `2.0.0`；Cargo crate 的发布版本仍是 `0.1.0`，两者分别表示产品契约与包版本。
+唯一权威是 `Docs/Zenpi_Execution_Blueprint_v2.md`：只有其中 `[x]` 的条目算已完成，
+§7.1 列出保持现状的冻结模块（BentoBox 多面板、多项目/worktree 标签、PTY shell 面板、
+b3ehive 编排域）。质量门是 G-RUST 加任务测试；`tools/load_agents.py --agents 2000`
+的实测报告在 `Docs/quality/load/g-load-2000.json`。Android 配对需要 `--features remote`
+构建。v1、Stage 1、Stage 2 的旧记录已移到 `Docs/archive/`。
 会话可用 `zenpi session list|inspect|fork|export|import|gc` 管理；扩展可用
 `zenpi extension install|list|disable|enable|upgrade|remove` 管理。headless v2
 的 `prompt.attachments` 可引用工作区内的图片或文件，二进制内容不会写入日志。
@@ -312,21 +300,15 @@ TUI はフレームをまとめ、端末バッファ差分を使うため、リ�
 `echo` は `dev-fixtures` feature のテスト build だけで有効です。通常の release
 では使用できず、provider がない場合は session 作成前に失敗します。
 provider の quota/rate/usage-limit エラーも mock 応答に置き換えません。
-Responses SSE の body 読み取りだけは有界 100ms 間隔で取消を確認して停滞した
-body を閉じます。Chat/非ストリーミング要求と DNS/connect/send/header 段階は
-通常の timeout のみで、外部 abort handle はありません。
+各 backend は接続プール付きの HTTP agent を 1 つ共有し、取消は 250 ms 間隔で
+DNS、connect、TLS、レスポンスヘッダー、body 読み取りのすべてに届きます。
 
-このリポジトリには v1 の provider/session/runtime 基盤と、レビュー中の v2
-候補実装があります。ただし、コンパイル成功は Claude Code/Codex 相当の
-完全な利用体験を意味しません。本番 provider 経路（ローカルの
-OpenAI-compatible loopback fixture）、Codex 設定インポート、Responses SSE、
-添付、tool、approval、session、skills/extensions には実行可能なテストがあり、
-複数行入力、Markdown/diff 表示、tool 状態の折りたたみ、slash/domain モデル、
-responsive layout にも境界実装があります。一方、BentoBox の複数 tab、
-blueprint/goal/learn の永続 dispatch、PTY pane、socket 単位の取消は
-v2 の受け入れ行として partial/planned/deferred です。v1 の `CF-*` の印だけで
-完成とは扱いません。凍結した v1 の記録は `Docs/Zenpi_Execution_Blueprint.md`、
-版付き（`2.0.0`）の監査と次の契約は `Docs/Zenpi_Execution_Blueprint_v2.md` にあります。Cargo crate の公開版は `0.1.0` のままです。
+唯一の権威は `Docs/Zenpi_Execution_Blueprint_v2.md` で、`[x]` の項目だけを完了とします。
+§7.1 は現状維持の凍結モジュール（BentoBox の複数ペイン、複数プロジェクト/worktree タブ、
+PTY shell ペイン、b3ehive の編成ドメイン）を列挙します。品質ゲートは G-RUST とタスク
+テストで、`tools/load_agents.py --agents 2000` の実測は `Docs/quality/load/g-load-2000.json`
+にあります。Android のペアリングには `--features remote` ビルドが必要です。v1、Stage 1、
+Stage 2 の旧記録は `Docs/archive/` に移しました。
 Session は `zenpi session list|inspect|fork|export|import|gc`、extension は
 `zenpi extension install|list|disable|enable|upgrade|remove` で管理できます。
 headless v2 の `prompt.attachments` は workspace 内の画像・ファイルを参照し、
@@ -356,30 +338,16 @@ REPOSITORY-RELATIVE-REF` は有界 hash receipt だけを保存し、`/learn res
 インストール smoke の provider/tool 検証はローカルの OpenAI-compatible loopback fixture を使うため、
 オンラインの OpenAI/Codex サービス可用性を意味しません。
 
-## Stage 1 (pi-mono gap execution) delivery
+## Stage 1 (pi-mono gap execution) record
 
-Stage 1 is tracked by the single authoritative checklist
-[`Docs/stage_1_v3_pi_mono_blueprint.md`](Docs/stage_1_v3_pi_mono_blueprint.md), with the
-active requirement selector at
-[`Docs/execution/active_requirement.json`](Docs/execution/active_requirement.json) and the
-final integration record at
+Stage 1 is closed and superseded by the v2 blueprint. Its checklist is archived at
+[`Docs/archive/stage1/stage_1_v3_pi_mono_blueprint.md`](Docs/archive/stage1/stage_1_v3_pi_mono_blueprint.md)
+and its integration record at
 [`Docs/quality/stage1/acceptance.md`](Docs/quality/stage1/acceptance.md).
 
-The 121-item checklist is closed except for the final `ZS1-199` integration row, whose
-dependencies are all accepted. Structural closure, source/target/reference fingerprint
-re-checking, `cargo fmt --check`, `cargo check --locked`, `cargo test --locked --lib`
-(164 passed) and the `G-STAGE` checker's own test suite (46 passed) were re-run for the
-acceptance record. Hashes found only in historical learn reports are superseded by the
-blueprint's "源冻结重签声明" (machine-switch re-freeze) fingerprint table; the remaining
-operator follow-ups (re-freeze of two drifted target rows, dual-tree manifest
-regeneration, full release/PTY smoke on the complete frozen revision) are recorded in the
-acceptance file.
-
-Stage 1 由唯一权威清单 `Docs/stage_1_v3_pi_mono_blueprint.md` 跟踪，活动 requirement
-selector 为 `Docs/execution/active_requirement.json`，最终集成验收记录为
-`Docs/quality/stage1/acceptance.md`。除最终 `ZS1-199` 集成行外，121 项清单全部闭合；
-验收复跑了结构闭包、源/目标/参考指纹核对以及可用的本地门禁。历史 learn 报告中的旧
-哈希由蓝图"源冻结重签声明"表格取代；其余需 operator 处理的事项已在验收文件中列明。
+Stage 1 已关闭并由 v2 蓝图取代；清单归档在
+`Docs/archive/stage1/stage_1_v3_pi_mono_blueprint.md`，集成验收记录在
+`Docs/quality/stage1/acceptance.md`。
 
 ## License
 

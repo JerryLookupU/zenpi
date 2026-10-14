@@ -21,9 +21,9 @@ from typing import Any, Iterable
 
 
 ROOT = Path(__file__).resolve().parents[1]
-BLUEPRINT_REL = Path("Docs/Zenpi_Execution_Blueprint.md")
+BLUEPRINT_REL = Path("Docs/archive/v1/Zenpi_Execution_Blueprint.md")
 SPEC_REL = Path("Docs/Zenpi_Execution_Spec.md")
-GANTT_REL = Path("Docs/Zenpi_Execution_Gantt.md")
+GANTT_REL = Path("Docs/archive/v1/Zenpi_Execution_Gantt.md")
 STATUS_TO_STATE = {" ": "unclaimed", "_": "self_tested", "x": "master_accepted"}
 HEX_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 EXCLUDED_RUST_DIRECTORIES = {"target", "vendor", "vendored"}
@@ -281,7 +281,9 @@ def _required_header(header: dict[str, Any], root: Path) -> None:
             "loc_basis": "per-item forecast of implementation/test code LOC attributable to the row (Rust/Python/Shell); docs/config/generated artifacts count 0; declared forecast has a strict upper bound of 5000 (exclusive); aggregate repository LOC is informational",
         }
     )
-    unknown = sorted(set(header) - set(required) - {"repository_root", "completion_policy"})
+    # superseded_* mark the archived v1 record (ZE-100, ZE-406).
+    optional = {"repository_root", "completion_policy", "superseded_at", "superseded_by"}
+    unknown = sorted(set(header) - set(required) - optional)
     if unknown:
         raise BlueprintError(f"unexpected yaml header keys: {', '.join(unknown)}")
     for key, value in required.items():

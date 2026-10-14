@@ -19,7 +19,7 @@ authoritative: true
 authority_switch_item: ZE-100
 authority_switched_at: 2026-10-14
 selector: Docs/execution/active_requirement.json
-supersedes: Docs/Zenpi_Execution_Blueprint.md, Docs/stage_1_v3_pi_mono_blueprint.md, Docs/stage2_android2unix_blueprint.md
+supersedes: Docs/archive/v1/Zenpi_Execution_Blueprint.md, Docs/archive/stage1/stage_1_v3_pi_mono_blueprint.md, Docs/archive/stage2/stage2_android2unix_blueprint.md
 stable_id_pattern: '^ZE-[0-9]{3}$'
 legacy_id_namespaces: V2, ZP, ZS1, S2
 status_values: '[ ]|[_]|[x]'

@@ -152,7 +152,9 @@ jobs:
       - name: Run G-LOAD(200)
         run: |
           mkdir -p Docs/quality/load
-          python3 tools/load_agents.py --agents 200 --report Docs/quality/load/g-load-200.json
+          # §2.1 assumes 16 cores; the 4-core runner spreads the same 200
+          # tasks over 4 s (the default ramp is N/200 s) to keep per-core load comparable.
+          python3 tools/load_agents.py --agents 200 --ramp 4 --report Docs/quality/load/g-load-200.json
 
       - name: Upload Stage 1 host evidence
         if: ${{ always() }}

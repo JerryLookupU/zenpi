@@ -219,7 +219,7 @@ fn guide_uses_current_cli_actions_and_resolves_local_document_links() {
         assert!(zenpi::core::parse_args(args).is_ok());
     }
     for document in [
-        "stage2_android2unix_blueprint.md",
+        "Zenpi_Execution_Blueprint_v2.md",
         "stage2_android2unix_android.md",
         "stage2_android2unix_protocol.md",
     ] {
