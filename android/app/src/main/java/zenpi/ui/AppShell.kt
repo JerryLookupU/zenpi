@@ -119,25 +119,34 @@ fun AppShell(state: PairingState, actions: PairingActions, inlineSwitcher: Boole
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val drawerScope = rememberCoroutineScope()
     val switcher = !inlineSwitcher && state.projection != null
+    val navigation = @Composable {
+        if (switcher) SwitcherButton(SwitcherInbox.pendingApprovals(state.projection)) { drawerScope.launch { drawer.open() } }
+    }
+    val conversation = state.projection?.takeIf { it.projects.isNotEmpty() }
     val screen = @Composable {
-        Scaffold(contentWindowInsets = WindowInsets.safeDrawing,
-            topBar = { TopAppBar(title = { Text("Zenpi") }, windowInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal),
-                navigationIcon = { if (switcher) SwitcherButton(SwitcherInbox.pendingApprovals(state.projection)) { drawerScope.launch { drawer.open() } } }) }) { padding ->
-            Column(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding).imePadding().verticalScroll(rememberScrollState()).padding(20.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        if (conversation != null) {
+            // The composer edits the message draft, or the steering draft while a run is active.
+            val prompt = if (ComposerMode.active(conversation) != null) steer else message
+            ConversationScreen(scope, conversation, prompt, actions, navigation,
+                onOpenSwitcher = { if (switcher) drawerScope.launch { drawer.open() } }) {
                 ConnectionHeader(state, remaining, actions)
-                state.projection?.let { projection ->
-                    if (projection.projects.isEmpty()) Text("No projects authorized")
-                    else {
-                        if (inlineSwitcher) SwitcherDrawer(scope, projection, workspaceUi, subtabUi, actions)
-                        WorkspaceSection(scope, projection, workspaceUi, subtabUi, message, steer, workerPrompt, actions)
-                    }
-                }
+                if (inlineSwitcher) SwitcherDrawer(scope, conversation, workspaceUi, subtabUi, actions)
+                WorkspaceSection(scope, conversation, workspaceUi, workerPrompt, actions)
                 state.invite?.let { InviteSection(state, clock, remaining, actions) }
                 DeviceSection(state, actions, revokeDialog, forgetDialog)
             }
-            if (revokeDialog.value) DeviceDialogs.Revoke(state, revokeDialog, actions)
+        } else Scaffold(contentWindowInsets = WindowInsets.safeDrawing,
+            topBar = { TopAppBar(title = { Text("Zenpi") }, windowInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal),
+                navigationIcon = navigation) }) { padding ->
+            Column(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding).imePadding().verticalScroll(rememberScrollState()).padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                ConnectionHeader(state, remaining, actions)
+                if (state.projection != null) Text("No projects authorized")
+                state.invite?.let { InviteSection(state, clock, remaining, actions) }
+                DeviceSection(state, actions, revokeDialog, forgetDialog)
+            }
         }
+        if (revokeDialog.value) DeviceDialogs.Revoke(state, revokeDialog, actions)
     }
     if (inlineSwitcher) screen()
     else ModalNavigationDrawer(drawerState = drawer, gesturesEnabled = switcher, drawerContent = {

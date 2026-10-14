@@ -32,13 +32,15 @@ object Fixtures {
         projection = HostProjection(listOf(
             RemoteProject("zenpi", "zenpi", "s-zenpi", workspaceControl = true, promptControl = true, approvalControl = true,
                 pendingApprovals = listOf(approval), sessionName = "Fix the flaky test",
-                promptStatuses = listOf(RemotePromptStatus("request-1", "zenpi", "s-zenpi", "running"))),
+                promptStatuses = listOf(RemotePromptStatus("request-1", "zenpi", "s-zenpi", "running",
+                    streamText = "Found it: `reconnect()` drops the cursor when"))),
             RemoteProject("docs", "docs", "s-docs", workspaceControl = true,
                 promptStatuses = listOf(RemotePromptStatus("request-2", "docs", "s-docs", "running"))),
             RemoteProject("infra", "infra", "s-infra", workspaceControl = true)),
             "zenpi", "s-zenpi", "running", listOf(
                 RemoteTurn("turn-1", "user", "fix the flaky test"),
-                RemoteTurn("turn-2", "assistant", "The race is in the reconnect path; reading the tests first.",
+                RemoteTurn("turn-2", "assistant", "The race is in the `reconnect` path. Plan:\n- read `src/tui.rs`\n- run the test\n" +
+                    "```rust\nlet cursor = subscription.resume(cursor)?; // keep the cursor across reconnects\n```",
                     toolCalls = listOf(RemoteToolCall("call-1", "bash", "{\"command\":\"cargo test reconnect\"}", false)))),
             "4", false, "9", workspaceOwner = "f".repeat(64), workspaceRevision = "3",
             subtabs = RemoteSubtabs("zenpi", "2", main, listOf(RemoteSubtab(main, "main", "main", 1),
