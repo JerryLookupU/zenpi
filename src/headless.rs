@@ -5671,6 +5671,7 @@ where
             }
 
             if crate::slash::resource_input_candidate(&input)
+                || crate::slash::resource_control(&input).is_some()
                 || input.trim() == "/compact"
                 || crate::slash::external_evidence_control(&input)
             {
@@ -7406,6 +7407,21 @@ pub fn respond_to_slash_approval(
     }))
 }
 
+/// User-facing `/approval` spelling for a configured policy mode. Modes that
+/// `/approval` cannot select are reported by their policy name.
+pub fn approval_mode_label(mode: crate::approval::ApprovalMode) -> String {
+    use crate::approval::ApprovalMode as M;
+    match mode {
+        M::ReadOnly => "ask".into(),
+        M::Always => "always".into(),
+        M::Never => "never".into(),
+        other => serde_json::to_value(other)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .unwrap_or_else(|| format!("{other:?}")),
+    }
+}
+
 /// Execute the transport-independent portion of a slash command.  Commands
 /// that inspect mutable agent state require a lock; view/runtime acknowledgements
 /// deliberately do not, so they remain usable while a provider turn is busy.
@@ -7428,6 +7444,8 @@ fn execute_headless_slash(
                 });
             };
             let mut policy = agent.configured_approval_policy().unwrap_or_default();
+            // No argument toggles the current posture, as `/help yolo` says.
+            let enabled = enabled.unwrap_or(policy.mode != crate::approval::ApprovalMode::Never);
             policy.mode = if enabled {
                 crate::approval::ApprovalMode::Never
             } else {
@@ -7439,8 +7457,10 @@ fn execute_headless_slash(
             ))
         }
         SlashCommand::Approval { mode } => {
-            let mode = mode.to_ascii_lowercase();
-            if !matches!(mode.as_str(), "ask" | "always" | "never") {
+            let mode = mode.map(|mode| mode.to_ascii_lowercase());
+            if let Some(mode) = &mode
+                && !matches!(mode.as_str(), "ask" | "always" | "never")
+            {
                 return Err(SlashDispatchError {
                     code: "invalid_approval_mode",
                     message: "approval mode must be ask, always, or never".into(),
@@ -7453,6 +7473,15 @@ fn execute_headless_slash(
                 });
             };
             let mut policy = agent.configured_approval_policy().unwrap_or_default();
+            let Some(mode) = mode else {
+                // Display only: an omitted mode never changes the policy.
+                return Ok(SlashExecution::Response(json!({
+                    "command": "approval",
+                    "mode": approval_mode_label(policy.mode),
+                    "policy_mode": policy.mode,
+                    "changed": false,
+                })));
+            };
             policy.mode = match mode.as_str() {
                 "ask" => crate::approval::ApprovalMode::ReadOnly,
                 "always" => crate::approval::ApprovalMode::Always,
@@ -7460,8 +7489,35 @@ fn execute_headless_slash(
             };
             agent.set_approval_policy(policy);
             Ok(SlashExecution::Response(
-                json!({ "command": "approval", "mode": mode }),
+                json!({ "command": "approval", "mode": mode, "changed": true }),
             ))
+        }
+        SlashCommand::Reasoning { level } => {
+            let Some(agent) = agent else {
+                return Err(SlashDispatchError {
+                    code: "agent_busy",
+                    message: "reasoning command cannot run while the agent is busy".into(),
+                });
+            };
+            if let Some(level) = level {
+                agent
+                    .set_reasoning_effort((level != "default").then_some(level))
+                    .map_err(|error| SlashDispatchError {
+                        code: "reasoning_error",
+                        message: error.to_string(),
+                    })?;
+            }
+            let choices = agent
+                .reasoning_choices()
+                .map_err(|error| SlashDispatchError {
+                    code: "reasoning_error",
+                    message: error.to_string(),
+                })?;
+            Ok(SlashExecution::Response(json!({
+                "command": "reasoning",
+                "reasoning_effort": agent.reasoning_effort(),
+                "choices": choices,
+            })))
         }
         SlashCommand::Help { topic } => {
             let text = crate::slash::help(topic.as_deref()).ok_or_else(|| SlashDispatchError {
@@ -8515,9 +8571,9 @@ fn handle_command<W: Write>(
             )?;
         }
         Command::Slash { input }
-            if crate::slash::resource_input_candidate(&input)
-                && (crate::slash::resource_control(&input).is_some()
-                    || matches!(
+            if crate::slash::resource_control(&input).is_some()
+                || (crate::slash::resource_input_candidate(&input)
+                    && matches!(
                         crate::slash_actions::route_input_for_agent(agent, &input),
                         Ok(crate::slash::InputRoute::Prompt(_))
                     )) =>

@@ -784,7 +784,9 @@ fn yolo_records_the_choice_where_rebinding_reads_it() {
     let mut agent = configured_agent(workspace.path());
     let project = state.active_project().to_owned();
     dispatch_slash_command(
-        SlashCommand::Yolo { enabled: true },
+        SlashCommand::Yolo {
+            enabled: Some(true),
+        },
         &mut state,
         Some(&mut agent),
     );
@@ -796,7 +798,9 @@ fn yolo_records_the_choice_where_rebinding_reads_it() {
     );
     assert!(state.auto_approve());
     dispatch_slash_command(
-        SlashCommand::Yolo { enabled: false },
+        SlashCommand::Yolo {
+            enabled: Some(false),
+        },
         &mut state,
         Some(&mut agent),
     );

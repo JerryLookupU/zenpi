@@ -7152,7 +7152,7 @@ impl TuiState {
             );
         }
         let input = &masked;
-        for command in ["/attach ", "/diff ", "/review ", "/reload "] {
+        for command in ["/attach ", "/diff ", "/reload "] {
             if let Some(path) = input.strip_prefix(command) {
                 if !self.paste.folds.is_empty() {
                     return None;
@@ -7251,6 +7251,7 @@ impl TuiState {
                 | "layout"
                 | "pane"
                 | "resources"
+                | "resource"
                 | "skills"
                 | "templates"
                 | "reload"
@@ -7258,7 +7259,6 @@ impl TuiState {
                 | "scheduled"
                 | "compact"
                 | "diff"
-                | "review"
         )
     }
 
@@ -7380,17 +7380,6 @@ impl TuiState {
                 .iter()
                 .flat_map(|spec| std::iter::once(spec.name).chain(spec.aliases.iter().copied()))
                 .map(|name| format!("/{name}"))
-                .chain(
-                    [
-                        "/skills",
-                        "/templates",
-                        "/reload",
-                        "/reasoning",
-                        "/scheduled",
-                        "/input",
-                    ]
-                    .map(str::to_owned),
-                )
                 .chain(self.command_resources.iter().map(|r| r.command.clone()))
                 .filter(|name| name.to_ascii_lowercase().starts_with(&prefix))
                 .take(2048)
@@ -7469,7 +7458,6 @@ impl TuiState {
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
-            "/review" => Vec::new(),
             "/project" => {
                 let mut values = vec![
                     "list".to_string(),
@@ -12722,19 +12710,40 @@ pub fn dispatch_reasoning_input(
     agent: Option<&mut crate::core::Agent>,
     input: &str,
 ) -> bool {
-    let mut args = input.split_whitespace();
-    if args.next() != Some("/reasoning") {
-        return false;
+    match slash::parse(input) {
+        Ok(Some(SlashCommand::Reasoning { level })) => {
+            if !apply_reasoning(state, agent, level) {
+                state.set_rejected_input(input);
+            }
+            true
+        }
+        Err(
+            error @ slash::SlashError::UnexpectedArgument {
+                command: "reasoning",
+            },
+        ) => {
+            state.push_message(MessageRole::Error, error.to_string());
+            state.set_rejected_input(input);
+            true
+        }
+        _ => false,
     }
-    let effort = args.next();
-    let result = if args.next().is_some() {
-        Err("Usage: /reasoning [default|advertised level]".to_owned())
-    } else if state.busy {
+}
+
+/// Shared `/reasoning` owner operation: a level calls the Agent setter (so
+/// the next provider request carries it); no level opens the picker.
+/// Returns false after reporting an error.
+fn apply_reasoning(
+    state: &mut TuiState,
+    agent: Option<&mut crate::core::Agent>,
+    level: Option<String>,
+) -> bool {
+    let result = if state.busy {
         Err("reasoning selection requires an idle project".to_owned())
     } else if let Some(agent) = agent {
-        if let Some(effort) = effort {
+        if let Some(effort) = level {
             agent
-                .set_reasoning_effort((effort != "default").then(|| effort.to_owned()))
+                .set_reasoning_effort((effort != "default").then_some(effort))
                 .map_err(|e| e.to_string())
                 .map(|()| {
                     state.refresh_transcript_status(agent);
@@ -12765,11 +12774,13 @@ pub fn dispatch_reasoning_input(
     } else {
         Err("reasoning selection requires an idle project".to_owned())
     };
-    if let Err(error) = result {
-        state.push_message(MessageRole::Error, error);
-        state.set_rejected_input(input);
+    match result {
+        Ok(()) => true,
+        Err(error) => {
+            state.push_message(MessageRole::Error, error);
+            false
+        }
     }
-    true
 }
 
 /// Run a slash command submitted from the arch console (ZS1-165), reporting
@@ -13016,6 +13027,11 @@ pub fn dispatch_slash_command(
         }
         SlashCommand::Yolo { enabled } => {
             if let Some(agent) = agent.as_deref_mut() {
+                // No argument toggles the current posture, as `/help yolo` says.
+                let enabled = enabled.unwrap_or(
+                    agent.configured_approval_policy().unwrap_or_default().mode
+                        != crate::approval::ApprovalMode::Never,
+                );
                 let mode = if enabled {
                     crate::approval::ApprovalMode::Never
                 } else {
@@ -13036,7 +13052,25 @@ pub fn dispatch_slash_command(
                 state.push_message(MessageRole::Error, "yolo requires an idle owner");
             }
         }
-        SlashCommand::Approval { mode } => {
+        SlashCommand::Approval { mode: None } => {
+            if let Some(agent) = agent.as_deref_mut() {
+                // Display only: an omitted mode never changes the policy.
+                let mode = agent.configured_approval_policy().unwrap_or_default().mode;
+                state.push_message(
+                    MessageRole::System,
+                    format!(
+                        "approval mode: {}",
+                        crate::headless::approval_mode_label(mode)
+                    ),
+                );
+            } else {
+                state.push_message(MessageRole::Error, "approval requires an idle owner");
+            }
+        }
+        SlashCommand::Reasoning { level } => {
+            apply_reasoning(state, agent.as_deref_mut(), level);
+        }
+        SlashCommand::Approval { mode: Some(mode) } => {
             let mode = mode.to_ascii_lowercase();
             if !matches!(mode.as_str(), "ask" | "always" | "never") {
                 state.push_message(
@@ -13064,10 +13098,8 @@ pub fn dispatch_slash_command(
         }
         SlashCommand::Help { topic } => match if topic.as_deref() == Some("input") {
             Some("Input: Ctrl-G External editor · save and close to return. Enter sends; Ctrl-J/Shift-Enter inserts newline. Left/Right move; Ctrl/Alt-Left/Right move words; Ctrl-W/Ctrl-Backspace deletes previous word; Ctrl-Delete deletes next word; Ctrl-A/E line start/end; Ctrl-K deletes to line end; Ctrl-U deletes to logical line start (at line start, deletes previous newline). Ctrl-Y restores the last nonempty Ctrl-U/K/W or word deletion as plain text; one buffer per project, process-only, at most 256 KiB, never the system clipboard. Repeated yank preserves the buffer; input/checkpoint limits reject atomically. Ctrl-P/N or Alt-Up/Down browse history and return to the saved draft; Ctrl-R searches, Ctrl-R again selects older matches, Enter accepts without sending, Esc restores. Paste inserts literal text, never executes keys; limits reject without replacing the draft. Esc keeps drafted input. /input list views runtime inputs; /input edit ID REVISION TEXT changes an accepted queued input; /input cancel ID withdraws it. Future jobs: /scheduled list, /scheduled edit ID REVISION TEXT, /scheduled cancel ID. Restarted scheduled jobs are interrupted/unconfirmed; inspect the session before /scheduled retry ID.".into())
-        } else if topic.as_deref() == Some("reasoning") {
-            Some("/reasoning [default|advertised level] - select current model reasoning effort; default omits the field. Idle project required.".into())
         } else {
-            slash::help(topic.as_deref()).map(|text| if topic.is_none() { format!("{text}\n/reasoning [default|advertised level]         Select actual model reasoning effort") } else { text })
+            slash::help(topic.as_deref())
         } {
             Some(help) => state.push_message(MessageRole::System, help),
             None => state.push_message(
@@ -19728,7 +19760,13 @@ pub fn run_async_with_remote(
                             scheduler.request();
                             continue 'outer;
                         }
-                        if text.split_whitespace().next() == Some("/reasoning") {
+                        if matches!(
+                            slash::parse(&text),
+                            Ok(Some(SlashCommand::Reasoning { .. }))
+                                | Err(slash::SlashError::UnexpectedArgument {
+                                    command: "reasoning"
+                                })
+                        ) {
                             state.push_message(MessageRole::User, &text);
                             match shared.try_lock() {
                                 Ok(mut agent) => {
@@ -23633,7 +23671,7 @@ mod local_diff_host_tests {
             Ok(value())
         })
         .unwrap();
-        host.start(&mut state, Some("note".into()), "/review note".into());
+        host.start(&mut state, Some("note".into()), "/diff note".into());
         started.recv_timeout(Duration::from_secs(2)).unwrap();
         state.set_input("new B draft");
         let layout_b = state.active_project_workspace().clone();
@@ -23676,8 +23714,8 @@ mod local_diff_host_tests {
         })
         .unwrap();
         host.start(&mut state, None, "/diff".into());
-        host.start(&mut state, None, "/review".into());
-        assert_eq!(state.input(), "/review");
+        host.start(&mut state, None, "/diff".into());
+        assert_eq!(state.input(), "/diff");
         assert!(
             state
                 .messages()
@@ -23690,7 +23728,7 @@ mod local_diff_host_tests {
         release.send(()).unwrap();
         settle(&mut host, &mut state);
         assert!(!state.messages().any(|m| m.text.contains("B_ONLY")));
-        assert_eq!(state.input(), "/review");
+        assert_eq!(state.input(), "/diff");
     }
     #[test]
     fn worker_shutdown_signals_cancel_and_joins_without_detachment() {
