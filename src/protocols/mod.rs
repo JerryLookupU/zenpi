@@ -6,8 +6,9 @@ pub(crate) mod google;
 mod responses;
 
 use crate::backend::{
-    AttachmentKind, BackendError, Completion, CompletionRequest, MAX_RESPONSE_BYTES, OpenAiWireApi,
-    ProviderCapabilities, ProviderEvent, Usage,
+    AttachmentKind, BackendError, Completion, CompletionRequest, MAX_ERROR_BODY_BYTES,
+    MAX_RESPONSE_BYTES, OpenAiWireApi, ProviderCapabilities, ProviderEvent, StopReason, Usage,
+    bounded_error_text,
 };
 use crate::core::TurnRole;
 use crate::providers::registry::ModelDescriptor;
@@ -576,6 +577,57 @@ fn read_bounded_json_body(
         .map_err(|error| BackendError::InvalidResponse(format!("invalid JSON response: {error}")))
 }
 
+/// Reads at most `MAX_ERROR_BODY_BYTES` of a non-success response body.
+/// Transport errors end the read: the status already decides the outcome.
+pub(crate) fn read_error_body(
+    body: &mut ureq::Body,
+    cancelled: &dyn Fn() -> bool,
+) -> Option<String> {
+    use std::io::Read;
+    let mut reader = body.as_reader();
+    let mut bytes = Vec::new();
+    let mut chunk = [0_u8; 1024];
+    while bytes.len() < MAX_ERROR_BODY_BYTES && !cancelled() {
+        match reader.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read) => bytes.extend_from_slice(&chunk[..read]),
+            Err(error) if is_recv_body_poll_timeout(&error) => continue,
+            Err(_) => break,
+        }
+    }
+    bytes.truncate(MAX_ERROR_BODY_BYTES);
+    let text = String::from_utf8_lossy(&bytes);
+    let text = bounded_error_text(&text);
+    (!text.is_empty()).then_some(text)
+}
+
+/// Readable text of a provider `error` value: `code`/`type` plus `message`.
+fn error_value_text(error: &Value) -> String {
+    match error {
+        Value::String(text) => text.clone(),
+        Value::Object(object) => {
+            let field = |key: &str| object.get(key).and_then(Value::as_str);
+            let message = field("message").unwrap_or_default();
+            match field("code")
+                .or_else(|| field("type"))
+                .or_else(|| field("status"))
+            {
+                Some(code) if !message.is_empty() => format!("{code}: {message}"),
+                Some(code) => code.to_owned(),
+                None if !message.is_empty() => message.to_owned(),
+                None => error.to_string(),
+            }
+        }
+        Value::Null => "unknown error".to_owned(),
+        other => other.to_string(),
+    }
+}
+
+/// Typed error for an `error` object reported inside a provider body.
+fn provider_error(wire: &str, error: &Value) -> BackendError {
+    BackendError::provider_error(wire, &error_value_text(error))
+}
+
 fn is_recv_body_poll_timeout(error: &std::io::Error) -> bool {
     error
         .get_ref()
@@ -614,6 +666,19 @@ fn emit_completion_events(
         response_id: completion.response_id.clone(),
         model: completion.model.clone(),
     })
+}
+
+/// Normalized stop reason once a completion's text, calls and refusal are known.
+fn stop_reason(truncated: bool, completion: &Completion) -> StopReason {
+    if truncated {
+        StopReason::Length
+    } else if completion.refusal.is_some() {
+        StopReason::Refusal
+    } else if !completion.tool_calls.is_empty() {
+        StopReason::ToolUse
+    } else {
+        StopReason::Stop
+    }
 }
 
 fn parse_tool_call(id: &str, name: &str, arguments: &str) -> Result<ToolCall, BackendError> {

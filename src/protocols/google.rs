@@ -3,7 +3,7 @@
 use crate::{
     backend::{
         BackendError, Completion, CompletionRequest, MAX_RESPONSE_BYTES, ProviderCapabilities,
-        ProviderEvent, Usage,
+        ProviderEvent, StopReason, Usage,
     },
     core::{Turn, TurnRole},
     tools::ToolCall,
@@ -436,6 +436,8 @@ struct Fold {
     response_id: Option<String>,
     model_version: Option<String>,
     stop: bool,
+    /// finishReason=MAX_TOKENS: the content is kept as a length stop.
+    truncated: bool,
     usage: Option<Usage>,
     cached: u64,
     thoughts: u64,
@@ -447,7 +449,10 @@ impl Fold {
         v: Value,
         sink: &mut dyn FnMut(ProviderEvent) -> Result<(), BackendError>,
     ) -> Result<(), BackendError> {
-        if !v.is_object() || v.get("error").is_some() {
+        if let Some(error) = v.get("error") {
+            return Err(super::provider_error("Gemini", error));
+        }
+        if !v.is_object() {
             return Err(invalid("Gemini provider error or invalid response"));
         }
         if v.get("promptFeedback")
@@ -527,11 +532,15 @@ impl Fold {
                     validate_parts(&self.parts)?;
                 }
                 if let Some(stop) = c.get("finishReason") {
-                    if stop != "STOP" {
-                        return Err(invalid(format!(
-                            "Gemini incomplete/unsupported finish reason: {}",
-                            stop.as_str().unwrap_or("invalid")
-                        )));
+                    match stop.as_str() {
+                        Some("STOP") => {}
+                        Some("MAX_TOKENS") => self.truncated = true,
+                        other => {
+                            return Err(invalid(format!(
+                                "Gemini incomplete/unsupported finish reason: {}",
+                                other.unwrap_or("invalid")
+                            )));
+                        }
                     }
                     self.stop = true;
                 }
@@ -555,9 +564,11 @@ impl Fold {
             let total = input
                 .checked_add(output)
                 .ok_or_else(|| invalid("Gemini usage overflow"))?;
+            // totalTokenCount may also count fields not summed here (e.g.
+            // toolUsePromptTokenCount); it only has to cover the sum.
+            let reported = u.get("totalTokenCount").map(Value::as_u64);
             if cached > input
-                || u.get("totalTokenCount")
-                    .is_some_and(|v| v.as_u64() != Some(total))
+                || reported.is_some_and(|v| v.is_none_or(|v| v < total))
                 || self
                     .usage
                     .is_some_and(|old| input < old.input_tokens || output < old.output_tokens)
@@ -571,7 +582,7 @@ impl Fold {
             self.usage = Some(Usage {
                 input_tokens: input,
                 output_tokens: output,
-                total_tokens: total,
+                total_tokens: reported.flatten().unwrap_or(total),
             });
         }
         Ok(())
@@ -583,23 +594,12 @@ impl Fold {
         caps: ProviderCapabilities,
         sink: &mut dyn FnMut(ProviderEvent) -> Result<(), BackendError>,
     ) -> Result<Completion, BackendError> {
-        if !self.stop || self.parts.is_empty() {
+        if !self.stop || (self.parts.is_empty() && !self.truncated) {
             return Err(invalid("Gemini response missing complete terminal content"));
         }
-        if self.model_version.as_deref().is_none_or(|version| {
-            version != model
-                && !version
-                    .strip_prefix(&format!("{model}-"))
-                    .is_some_and(|suffix| {
-                        !suffix.is_empty()
-                            && suffix.bytes().any(|b| b.is_ascii_digit())
-                            && suffix.bytes().all(|b| b.is_ascii_digit() || b == b'-')
-                    })
-        }) {
-            return Err(invalid(
-                "Gemini response model version does not match requested model",
-            ));
-        }
+        // An alias may resolve to another served version: it is recorded in
+        // the gemini_finish annotation, not rejected. History stays keyed by
+        // the requested model.
         let response_id = self
             .response_id
             .ok_or_else(|| invalid("Gemini responseId missing"))?;
@@ -627,7 +627,8 @@ impl Fold {
         {
             return Err(invalid("Gemini first function call signature missing"));
         }
-        let completion = Completion {
+        let finish_reason = if self.truncated { "MAX_TOKENS" } else { "STOP" };
+        let mut completion = Completion {
             content,
             tool_calls: calls,
             usage: self.usage,
@@ -636,9 +637,11 @@ impl Fold {
             refusal: None,
             annotations: vec![
                 json!({"type":"native_history","wire":WIRE,"provider":provider,"model":model,"response_id":response_id,"parts_sha256":parts_digest(&self.parts)?,"parts":self.parts}),
-                json!({"type":"gemini_finish","finish_reason":"STOP","model_version":self.model_version,"cached_input_tokens":self.cached,"thought_tokens":self.thoughts}),
+                json!({"type":"gemini_finish","finish_reason":finish_reason,"model_version":self.model_version,"cached_input_tokens":self.cached,"thought_tokens":self.thoughts}),
             ],
+            stop_reason: StopReason::Stop,
         };
+        completion.stop_reason = super::stop_reason(self.truncated, &completion);
         if !completion.content.is_empty() {
             sink(ProviderEvent::TextDone {
                 text: completion.content.clone(),

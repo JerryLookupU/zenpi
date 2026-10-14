@@ -3,7 +3,7 @@
 use crate::{
     backend::{
         BackendError, Completion, CompletionRequest, MAX_RESPONSE_BYTES, ProviderCapabilities,
-        ProviderEvent, Usage,
+        ProviderEvent, StopReason, Usage,
     },
     core::{Turn, TurnRole},
     tools::ToolCall,
@@ -231,11 +231,7 @@ fn assistant_blocks(
         if blocks
             .iter()
             .any(|b| matches!(b["type"].as_str(), Some("thinking" | "redacted_thinking")))
-            && if deepseek {
-                a.get("requested_model").unwrap_or(&a["model"]) != model
-            } else {
-                a["model"] != model
-            }
+            && a.get("requested_model").unwrap_or(&a["model"]) != model
         {
             return Err(config("signed Anthropic history belongs to another model"));
         }
@@ -511,6 +507,8 @@ struct Block {
     value: Value,
     partial: String,
     closed: bool,
+    /// Tool input JSON cut short; only valid under a length stop reason.
+    truncated: bool,
 }
 #[derive(Default)]
 struct Fold {
@@ -568,7 +566,7 @@ impl Fold {
             return Err(invalid("Anthropic data after message_stop"));
         }
         if kind == "error" {
-            return Err(invalid("Anthropic error event"));
+            return Err(super::provider_error("Anthropic", &v["error"]));
         }
         if kind == "message_start" {
             if self.id.is_some() {
@@ -582,10 +580,8 @@ impl Fold {
             {
                 return Err(invalid("invalid Anthropic message_start"));
             }
+            // An alias resolves to a dated serving ID; record both.
             let model = identity(m, "model")?;
-            if !self.deepseek && model != expected_model {
-                return Err(invalid("unexpected Anthropic serving model"));
-            }
             self.id = Some(identity(m, "id")?);
             self.model = Some(model);
             self.requested_model = Some(expected_model.to_owned());
@@ -665,8 +661,14 @@ impl Fold {
                     .ok_or_else(|| invalid("event for missing/closed Anthropic block"))?;
                 if kind == "content_block_stop" {
                     if !b.partial.is_empty() {
-                        b.value["input"] = serde_json::from_str(&b.partial)
-                            .map_err(|_| invalid("malformed Anthropic tool input JSON"))?;
+                        match serde_json::from_str::<Value>(&b.partial) {
+                            Ok(input) => b.value["input"] = input,
+                            Err(_) => {
+                                // Rejected at finish unless max_tokens cut it.
+                                b.value["input"] = json!({});
+                                b.truncated = true;
+                            }
+                        }
                     }
                     validate_blocks(std::slice::from_ref(&b.value), self.deepseek)?;
                     b.closed = true;
@@ -678,7 +680,14 @@ impl Fold {
                         (Some("thinking"), "thinking_delta") => ("thinking", "thinking"),
                         (Some("thinking"), "signature_delta") => ("signature", "signature"),
                         (Some("tool_use"), "input_json_delta") => ("input", "partial_json"),
-                        _ => return Err(invalid("Anthropic delta type does not match block")),
+                        (
+                            _,
+                            "text_delta" | "thinking_delta" | "signature_delta"
+                            | "input_json_delta",
+                        ) => return Err(invalid("Anthropic delta type does not match block")),
+                        // Newer delta kinds (e.g. citations) carry nothing this
+                        // adapter keeps; ignoring them keeps the turn alive.
+                        _ => return Ok(()),
                     };
                     let t = string(d, key)?;
                     if field == "input" {
@@ -722,7 +731,12 @@ impl Fold {
                         .ok_or_else(|| invalid("invalid Anthropic stop reason"))?;
                     if !matches!(
                         reason,
-                        "end_turn" | "tool_use" | "stop_sequence" | "refusal"
+                        "end_turn"
+                            | "tool_use"
+                            | "stop_sequence"
+                            | "refusal"
+                            | "max_tokens"
+                            | "model_context_window_exceeded"
                     ) {
                         return Err(invalid(format!(
                             "incomplete/unsupported Anthropic stop reason {reason}"
@@ -740,7 +754,9 @@ impl Fold {
                 }
                 self.done = true;
             }
-            _ => return Err(invalid("unsupported Anthropic stream event")),
+            // Unknown event types are ignored, as the Messages API asks of
+            // clients so new events can ship without breaking them.
+            _ => {}
         }
         Ok(())
     }
@@ -753,6 +769,7 @@ impl Fold {
         if !self.done {
             return Err(invalid("Anthropic stream missing message_stop"));
         }
+        let cut = self.blocks.values().any(|b| b.truncated);
         let mut blocks = self
             .blocks
             .into_values()
@@ -763,7 +780,11 @@ impl Fold {
             .stop
             .as_deref()
             .ok_or_else(|| invalid("missing Anthropic stop reason"))?;
-        if (stop == "tool_use") == tool_calls.is_empty() {
+        let truncated = matches!(stop, "max_tokens" | "model_context_window_exceeded");
+        if cut && !truncated {
+            return Err(invalid("malformed Anthropic tool input JSON"));
+        }
+        if !truncated && (stop == "tool_use") == tool_calls.is_empty() {
             return Err(invalid("Anthropic stop reason does not match tool calls"));
         }
         if (!caps.tools && !tool_calls.is_empty())
@@ -803,11 +824,8 @@ impl Fold {
             output_tokens: self.usage[1],
             total_tokens: total,
         });
-        let mut native_history = json!({"type":"native_history","wire":WIRE,"provider":provider,"model":self.model,"blocks":blocks});
-        if self.deepseek {
-            native_history["requested_model"] = json!(self.requested_model);
-        }
-        let completion = Completion {
+        let native_history = json!({"type":"native_history","wire":WIRE,"provider":provider,"model":self.model,"requested_model":self.requested_model,"blocks":blocks});
+        let mut completion = Completion {
             content,
             tool_calls,
             usage,
@@ -818,7 +836,9 @@ impl Fold {
                 native_history,
                 json!({"type":"anthropic_stop_reason","stop_reason":stop}),
             ],
+            stop_reason: StopReason::Stop,
         };
+        completion.stop_reason = super::stop_reason(truncated, &completion);
         if !completion.content.is_empty() {
             sink(ProviderEvent::TextDone {
                 text: completion.content.clone(),

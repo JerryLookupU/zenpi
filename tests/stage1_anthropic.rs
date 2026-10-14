@@ -173,8 +173,10 @@ fn native_headers_system_tool_schema_effort_and_usage_are_exact() {
     assert!(
         r[0].0
             .to_ascii_lowercase()
-            .contains("authorization: bearer native-fixture-key")
+            .contains("x-api-key: native-fixture-key")
     );
+    // ZE-223: the legacy Anthropic path never sends a Bearer credential.
+    assert!(!r[0].0.to_ascii_lowercase().contains("authorization:"));
     let p = &r[0].1;
     assert_eq!(
         p["system"],
@@ -233,7 +235,9 @@ fn streamed_text_tool_arguments_and_opaque_thinking_are_folded_separately() {
 #[test]
 fn malformed_terminal_and_signature_never_publish_executable_tools() {
     let mut cases = vec![];
-    for reason in ["max_tokens", "pause_turn", "unknown", "end_turn"] {
+    // max_tokens is a length stop that keeps its content (ZE-221,
+    // tests/provider_replay.rs); the core never dispatches its calls.
+    for reason in ["pause_turn", "unknown", "end_turn"] {
         cases.push(events(vec![tool_block()], reason));
     }
     let mut missing = events(vec![tool_block()], "tool_use");
@@ -696,8 +700,9 @@ fn secret_handle_uses_native_headers_and_http_auth_failure_stays_typed() {
         assert!(
             headers
                 .to_ascii_lowercase()
-                .contains("authorization: bearer opaque-native-key")
+                .contains("x-api-key: opaque-native-key")
         );
+        assert!(!headers.to_ascii_lowercase().contains("authorization:"));
         stream
             .write_all(
                 b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",

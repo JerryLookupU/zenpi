@@ -685,6 +685,7 @@ impl Backend for EofApprovalBackend {
                 response_id: None,
                 refusal: None,
                 annotations: Vec::new(),
+                ..Completion::default()
             })
         } else {
             Ok(Completion::text("write denied safely"))

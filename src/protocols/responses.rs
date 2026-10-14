@@ -1,7 +1,7 @@
 //! Responses request encoding and bounded SSE/JSON response decoding.
 use crate::backend::{
     AttachmentKind, BackendError, Completion, CompletionRequest, MAX_RESPONSE_BYTES, ProviderEvent,
-    RequestAttachment, Usage,
+    RequestAttachment, StopReason, Usage,
 };
 use crate::core::{Turn, TurnRole};
 use crate::tools::ToolCall;
@@ -198,9 +198,9 @@ pub(super) fn read_response(
     sink: &mut dyn FnMut(ProviderEvent) -> Result<(), BackendError>,
 ) -> Result<Completion, BackendError> {
     if !streaming {
-        let payload = read_bounded_json_body(body, cancelled)?;
-        validate_responses_terminal(&payload, true)?;
-        let completion = completion_from_responses_json(&payload)?;
+        let mut payload = read_bounded_json_body(body, cancelled)?;
+        let truncated = validate_responses_terminal(&mut payload, true)?;
+        let completion = completion_from_responses_json(&payload, truncated)?;
         emit_completion_events(&completion, sink)?;
         Ok(completion)
     } else {
@@ -224,9 +224,9 @@ pub(super) fn read_response_for_route(
         read_responses_stream(body, true, true, cancelled, sink)
     } else {
         let mut payload = read_bounded_json_body(body, cancelled)?;
-        validate_responses_terminal(&payload, true)?;
+        let truncated = validate_responses_terminal(&mut payload, true)?;
         validate_strict_output(&mut payload)?;
-        let completion = completion_from_responses_json(&payload)?;
+        let completion = completion_from_responses_json(&payload, truncated)?;
         emit_completion_events(&completion, &mut |event| {
             if cancelled() {
                 return Err(BackendError::Cancelled);
@@ -474,6 +474,7 @@ fn read_responses_stream(
     let mut usage = None;
     let mut model = None;
     let mut saw_completed = false;
+    let mut truncated = false;
     let mut tool_calls = Vec::new();
     let mut response_id: Option<String> = None;
     let mut refusal: Option<String> = None;
@@ -518,7 +519,7 @@ fn read_responses_stream(
                 &mut content,
                 &mut usage,
                 &mut model,
-                &mut saw_completed,
+                (&mut saw_completed, &mut truncated),
                 &mut tool_calls,
                 &mut response_id,
                 &mut refusal,
@@ -540,7 +541,7 @@ fn read_responses_stream(
             &mut content,
             &mut usage,
             &mut model,
-            &mut saw_completed,
+            (&mut saw_completed, &mut truncated),
             &mut tool_calls,
             &mut response_id,
             &mut refusal,
@@ -563,7 +564,7 @@ fn read_responses_stream(
     }
     // ZE-210: response.completed with no text is a valid empty answer; the
     // core decides whether an empty answer may end the turn.
-    Ok(Completion {
+    let mut completion = Completion {
         content,
         usage,
         model,
@@ -571,7 +572,10 @@ fn read_responses_stream(
         response_id,
         refusal,
         annotations,
-    })
+        stop_reason: StopReason::Stop,
+    };
+    completion.stop_reason = super::stop_reason(truncated, &completion);
+    Ok(completion)
 }
 
 fn response_frame_line(line: &[u8], frame: &mut Vec<u8>) -> Result<Option<Vec<u8>>, BackendError> {
@@ -618,7 +622,7 @@ fn process_responses_line(
     content: &mut String,
     usage: &mut Option<Usage>,
     model: &mut Option<String>,
-    saw_completed: &mut bool,
+    (saw_completed, truncated): (&mut bool, &mut bool),
     tool_calls: &mut Vec<ToolCall>,
     response_id: &mut Option<String>,
     refusal: &mut Option<String>,
@@ -631,11 +635,11 @@ fn process_responses_line(
     let clean_line =
         line.trim_matches(|character: char| character == '\0' || character.is_ascii_whitespace());
     if clean_line.starts_with('{') && !clean_line.contains("data:") {
-        let payload: Value = serde_json::from_str(clean_line).map_err(|error| {
+        let mut payload: Value = serde_json::from_str(clean_line).map_err(|error| {
             BackendError::InvalidResponse(format!("invalid Responses JSON: {error}"))
         })?;
-        validate_responses_terminal(&payload, strict_terminal)?;
-        let completion = completion_from_responses_json(&payload)?;
+        *truncated = validate_responses_terminal(&mut payload, strict_terminal)?;
+        let completion = completion_from_responses_json(&payload, *truncated)?;
         emit_completion_events(&completion, sink)?;
         *content = completion.content;
         *usage = completion.usage;
@@ -777,10 +781,16 @@ fn process_responses_line(
                 }
             }
         }
-        Some("response.completed") => {
+        Some(kind @ ("response.completed" | "response.incomplete")) => {
             let mut checked = event.get("response").unwrap_or(&event).clone();
+            let incomplete = kind == "response.incomplete";
+            *truncated = validate_responses_terminal(&mut checked, strict_terminal || incomplete)?;
+            if incomplete && !*truncated {
+                return Err(BackendError::InvalidResponse(
+                    "Responses incomplete terminal".into(),
+                ));
+            }
             if strict_stream {
-                validate_responses_terminal(&checked, true)?;
                 validate_strict_output(&mut checked)?;
                 let calls = extract_responses_tool_calls(&checked)?;
                 for call in tool_calls.iter() {
@@ -812,7 +822,6 @@ fn process_responses_line(
                 }
             }
             let response = &checked;
-            validate_responses_terminal(response, strict_terminal)?;
             *saw_completed = true;
             *usage = response.get("usage").and_then(parse_usage);
             *model = response
@@ -848,17 +857,13 @@ fn process_responses_line(
                 })?;
             }
         }
-        Some("response.incomplete") if strict_stream => {
-            return Err(BackendError::InvalidResponse(
-                "Responses incomplete terminal".into(),
-            ));
-        }
         Some("response.failed") | Some("error") => {
-            let message = extract_responses_error(&event);
+            let error = BackendError::provider_error("Responses", &extract_responses_error(&event));
             let _ = sink(ProviderEvent::Failed {
-                message: message.clone(),
+                message: error.to_string(),
+                retryable: error.is_retryable(),
             });
-            return Err(BackendError::InvalidResponse(message));
+            return Err(error);
         }
         _ => {}
     }
@@ -904,16 +909,19 @@ fn validate_checked_call(call: &ToolCall) -> Result<(), BackendError> {
     Ok(())
 }
 
-fn completion_from_responses_json(payload: &Value) -> Result<Completion, BackendError> {
+fn completion_from_responses_json(
+    payload: &Value,
+    truncated: bool,
+) -> Result<Completion, BackendError> {
     let tool_calls = extract_responses_tool_calls(payload)?;
     let content = extract_responses_content(payload).or_else(|error| {
-        if tool_calls.is_empty() {
+        if tool_calls.is_empty() && !truncated {
             Err(error)
         } else {
             Ok(String::new())
         }
     })?;
-    Ok(Completion {
+    let mut completion = Completion {
         content,
         usage: payload.get("usage").and_then(parse_usage),
         model: payload
@@ -924,7 +932,10 @@ fn completion_from_responses_json(payload: &Value) -> Result<Completion, Backend
         response_id: payload.get("id").and_then(Value::as_str).map(str::to_owned),
         refusal: extract_responses_refusal(payload),
         annotations: extract_annotations(payload),
-    })
+        stop_reason: StopReason::Stop,
+    };
+    completion.stop_reason = super::stop_reason(truncated, &completion);
+    Ok(completion)
 }
 
 fn push_unique_tool_call(calls: &mut Vec<ToolCall>, call: ToolCall) {
@@ -971,18 +982,28 @@ fn extract_responses_error(event: &Value) -> String {
             .and_then(|response| response.get("error"))
     });
     match error {
-        Some(Value::String(message)) => message.to_owned(),
-        Some(Value::Object(error)) => error
-            .get("message")
-            .and_then(Value::as_str)
-            .or_else(|| error.get("code").and_then(Value::as_str))
-            .unwrap_or("Responses stream failed")
-            .to_owned(),
+        Some(error @ (Value::String(_) | Value::Object(_))) => super::error_value_text(error),
         _ => "Responses stream failed".to_owned(),
     }
 }
 
-fn validate_responses_terminal(payload: &Value, strict: bool) -> Result<(), BackendError> {
+/// Accepts a completed terminal, or an incomplete one cut by
+/// `max_output_tokens` (returns `true`). A truncated terminal drops function
+/// calls that never completed: they have no arguments to report.
+fn validate_responses_terminal(payload: &mut Value, strict: bool) -> Result<bool, BackendError> {
+    if payload["status"] == "incomplete"
+        && payload["incomplete_details"]["reason"] == "max_output_tokens"
+    {
+        if let Some(output) = payload.get_mut("output").and_then(Value::as_array_mut) {
+            output.retain(|item| {
+                item["type"] != "function_call"
+                    || item
+                        .get("status")
+                        .is_none_or(|status| status == "completed")
+            });
+        }
+        return Ok(true);
+    }
     if payload
         .get("status")
         .is_some_and(|status| status != "completed")
@@ -995,7 +1016,7 @@ fn validate_responses_terminal(payload: &Value, strict: bool) -> Result<(), Back
             "Responses missing or incomplete terminal status".into(),
         ));
     }
-    Ok(())
+    Ok(false)
 }
 
 #[cfg(test)]

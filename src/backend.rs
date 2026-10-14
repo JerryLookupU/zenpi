@@ -441,6 +441,9 @@ pub enum ProviderEvent {
     },
     Failed {
         message: String,
+        /// Whether the failure that produced this event may be retried.
+        #[serde(default)]
+        retryable: bool,
     },
 }
 
@@ -470,6 +473,19 @@ pub struct Usage {
     pub total_tokens: u64,
 }
 
+/// Why the provider ended a completion.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StopReason {
+    #[default]
+    Stop,
+    /// The output token limit cut the answer. Content is kept; tool calls in
+    /// such a completion may be partial and are never dispatched.
+    Length,
+    ToolUse,
+    Refusal,
+}
+
 /// Provider-independent completion result.
 #[derive(Debug, Default, PartialEq)]
 pub struct Completion {
@@ -480,6 +496,7 @@ pub struct Completion {
     pub response_id: Option<String>,
     pub refusal: Option<String>,
     pub annotations: Vec<Value>,
+    pub stop_reason: StopReason,
 }
 
 impl Completion {
@@ -492,6 +509,7 @@ impl Completion {
             response_id: None,
             refusal: None,
             annotations: Vec::new(),
+            stop_reason: StopReason::Stop,
         }
     }
 }
@@ -610,13 +628,19 @@ pub enum BackendError {
     Configuration(String),
     #[error("backend transport: {0}")]
     Transport(String),
-    #[error("backend HTTP status: {status}")]
+    #[error("backend HTTP status: {status}{}", error_suffix(.body.as_deref()))]
     HttpStatus {
         status: u16,
         /// Provider-directed retry delay. The value is bounded while parsing
         /// so an endpoint cannot stall the runtime indefinitely.
         retry_after_ms: Option<u64>,
+        /// Provider error text, at most `MAX_ERROR_BODY_BYTES`.
+        body: Option<String>,
     },
+    /// The request does not fit the model's context window. Retrying the same
+    /// request cannot succeed; the caller has to shrink the context first.
+    #[error("backend context window exceeded{}", error_suffix(Some(.message.as_str())))]
+    ContextOverflow { message: String },
     #[error("backend circuit is open for another {retry_after_ms} ms")]
     CircuitOpen { retry_after_ms: u64 },
     #[error("backend returned an invalid response: {0}")]
@@ -649,6 +673,7 @@ impl BackendError {
                     || (*status >= 500 && *status <= 599)
             }
             Self::Configuration(_)
+            | Self::ContextOverflow { .. }
             | Self::CircuitOpen { .. }
             | Self::InvalidResponse(_)
             | Self::EmptyResponse
@@ -672,6 +697,7 @@ impl BackendError {
             Self::HttpStatus { status: 403, .. } => "provider_permission_denied",
             Self::HttpStatus { status: 429, .. } => "provider_usage_limit",
             Self::HttpStatus { .. } => "backend_http_status",
+            Self::ContextOverflow { .. } => "context_overflow",
             Self::CircuitOpen { .. } => "backend_circuit_open",
             Self::InvalidResponse(_) => "backend_invalid_response",
             Self::EmptyResponse => "backend_empty_response",
@@ -680,6 +706,90 @@ impl BackendError {
             Self::AdmissionDenied(_) => "backend_admission_denied",
             Self::DeadlineExceeded => "backend_deadline_exceeded",
             Self::Authentication { code } => code,
+        }
+    }
+}
+
+/// Upper bound on provider error text kept for diagnostics and classification.
+pub const MAX_ERROR_BODY_BYTES: usize = 4 * 1024;
+
+fn error_suffix(text: Option<&str>) -> String {
+    text.filter(|text| !text.is_empty())
+        .map_or_else(String::new, |text| format!(": {text}"))
+}
+
+/// Bounds provider error text to `MAX_ERROR_BODY_BYTES` on a character
+/// boundary and flattens control characters so it stays one log line.
+pub(crate) fn bounded_error_text(text: &str) -> String {
+    let mut end = text.len().min(MAX_ERROR_BODY_BYTES);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end]
+        .trim()
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect()
+}
+
+/// Known provider wording for a request that exceeds the context window
+/// (OpenAI, Anthropic, Gemini and common compatible servers; after pi's
+/// `utils/overflow.ts`).
+pub(crate) fn is_context_overflow_text(text: &str) -> bool {
+    const MARKERS: [&str; 15] = [
+        "context_length_exceeded",
+        "context length exceeded",
+        "maximum context length",
+        "exceeds the context window",
+        "prompt is too long",
+        "input is too long for requested model",
+        "exceeds the maximum number of tokens",
+        "maximum prompt length is",
+        "reduce the length of the messages",
+        "exceeds the available context size",
+        "greater than the context length",
+        "context window exceeds limit",
+        "exceeded model token limit",
+        "model_context_window_exceeded",
+        "token limit exceeded",
+    ];
+    let text = text.to_ascii_lowercase();
+    MARKERS.iter().any(|marker| text.contains(marker))
+        || (text.contains("input token count") && text.contains("exceeds the maximum"))
+}
+
+impl BackendError {
+    /// Classifies a non-success HTTP response from its bounded body.
+    pub(crate) fn http_status(
+        status: u16,
+        retry_after_ms: Option<u64>,
+        body: Option<String>,
+    ) -> Self {
+        let body = body
+            .map(|body| bounded_error_text(&body))
+            .filter(|body| !body.is_empty());
+        let overflow = (400..500).contains(&status)
+            && (body.as_deref().is_some_and(is_context_overflow_text)
+                || (status == 413 && body.is_none()));
+        if overflow {
+            return Self::ContextOverflow {
+                message: body.unwrap_or_else(|| format!("HTTP {status}")),
+            };
+        }
+        Self::HttpStatus {
+            status,
+            retry_after_ms,
+            body,
+        }
+    }
+
+    /// Classifies an error reported inside a provider stream or JSON body.
+    pub(crate) fn provider_error(wire: &str, text: &str) -> Self {
+        let text = bounded_error_text(text);
+        if is_context_overflow_text(&text) {
+            Self::ContextOverflow { message: text }
+        } else {
+            Self::InvalidResponse(format!("{wire} provider error: {text}"))
         }
     }
 }
@@ -1565,37 +1675,37 @@ impl OpenAiCompatibleBackend {
                     }
                 })
                 .map_err(auth_error)??;
-        } else if let Some(secret) = &self.secret_handle {
-            let digest = self.secret_policy_digest.as_deref().ok_or_else(|| {
-                BackendError::Configuration("secret policy binding missing".into())
-            })?;
-            let header_value = |key: &str| {
-                if self.wire_api == OpenAiWireApi::GoogleGenerativeAi {
-                    key.to_owned()
-                } else {
-                    format!("Bearer {key}")
+        } else {
+            // Legacy (no explicit connection) credentials use each wire's
+            // native header: Anthropic and Gemini do not accept Bearer keys.
+            let (header_name, bearer) = match self.wire_api {
+                OpenAiWireApi::GoogleGenerativeAi => ("x-goog-api-key", false),
+                OpenAiWireApi::AnthropicMessages => ("x-api-key", false),
+                OpenAiWireApi::Responses | OpenAiWireApi::ChatCompletions => {
+                    ("authorization", true)
                 }
             };
-            let header = if secret.is_scoped() {
-                secret.with_scoped_secret(digest, &secret_scope, header_value)
-            } else {
-                secret.with_secret(digest, header_value)
-            }
-            .map_err(secret_error)?;
-            request_builder = request_builder.header(
-                if self.wire_api == OpenAiWireApi::GoogleGenerativeAi {
-                    "x-goog-api-key"
+            let header_value = |key: &str| {
+                if bearer {
+                    format!("Bearer {key}")
                 } else {
-                    "authorization"
-                },
-                header,
-            );
-        } else if let Some(key) = &self.api_key {
-            request_builder = if self.wire_api == OpenAiWireApi::GoogleGenerativeAi {
-                request_builder.header("x-goog-api-key", key)
-            } else {
-                request_builder.header("authorization", format!("Bearer {key}"))
+                    key.to_owned()
+                }
             };
+            if let Some(secret) = &self.secret_handle {
+                let digest = self.secret_policy_digest.as_deref().ok_or_else(|| {
+                    BackendError::Configuration("secret policy binding missing".into())
+                })?;
+                let header = if secret.is_scoped() {
+                    secret.with_scoped_secret(digest, &secret_scope, header_value)
+                } else {
+                    secret.with_secret(digest, header_value)
+                }
+                .map_err(secret_error)?;
+                request_builder = request_builder.header(header_name, header);
+            } else if let Some(key) = &self.api_key {
+                request_builder = request_builder.header(header_name, header_value(key));
+            }
         }
         // Both adapters use short receive slices so host cancellation can be
         // observed while a provider is sending a slow body. The Chat JSON
@@ -1626,14 +1736,14 @@ impl OpenAiCompatibleBackend {
         let mut response = response?;
         let status = response.status().as_u16();
         if status >= 300 {
-            return Err(BackendError::HttpStatus {
-                status,
-                retry_after_ms: response
-                    .headers()
-                    .get("retry-after")
-                    .and_then(|value| value.to_str().ok())
-                    .and_then(parse_retry_after),
-            });
+            let retry_after_ms = response
+                .headers()
+                .get("retry-after")
+                .and_then(|value| value.to_str().ok())
+                .and_then(parse_retry_after);
+            let body = protocols::read_error_body(response.body_mut(), &cancelled);
+            control.check_cancelled()?;
+            return Err(BackendError::http_status(status, retry_after_ms, body));
         }
         control.check_cancelled()?;
         let sse = response
@@ -2188,10 +2298,7 @@ fn validate_route_reasoning(
 
 fn map_ureq_error(error: ureq::Error) -> BackendError {
     match error {
-        ureq::Error::StatusCode(status) => BackendError::HttpStatus {
-            status,
-            retry_after_ms: None,
-        },
+        ureq::Error::StatusCode(status) => BackendError::http_status(status, None, None),
         other => BackendError::Transport(other.to_string()),
     }
 }

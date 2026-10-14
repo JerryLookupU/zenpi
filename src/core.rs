@@ -5319,6 +5319,19 @@ impl Agent {
                     call.arguments = Value::Object(serde_json::Map::new());
                 }
             }
+            // A turn cut by the output token limit may carry partial calls.
+            // None is dispatched; each gets an error result so the model can
+            // retry with a shorter response (pi parity).
+            let mut refused = over_budget.clone();
+            if completion.stop_reason == crate::backend::StopReason::Length {
+                for call in &calls {
+                    refused.entry(call.id.clone()).or_insert_with(|| {
+                        "output token limit reached; this tool call was cut off and was not \
+                         executed. Retry with a shorter response"
+                            .to_owned()
+                    });
+                }
+            }
             let evidence = self.tool_execution_evidence()?;
             let call_metadata = calls
                 .iter()
@@ -5351,7 +5364,7 @@ impl Agent {
             let batch_ids: Vec<_> = calls.iter().map(|call| call.id.clone()).collect();
             gate.begin_tool_batch(&batch_ids)
                 .map_err(|e| AgentError::Recovery(e.to_string()))?;
-            let concurrency = if over_budget.is_empty() {
+            let concurrency = if refused.is_empty() {
                 self.parallel_tool_concurrency(&calls)
             } else {
                 1
@@ -5391,7 +5404,7 @@ impl Agent {
                         "call was not executed because the turn stopped",
                         ToolInvocationOutcome::Cancelled,
                     )
-                } else if let Some(message) = over_budget.get(&call.id) {
+                } else if let Some(message) = refused.get(&call.id) {
                     tool_failure(
                         &call,
                         crate::tools::ToolErrorCode::LimitExceeded,

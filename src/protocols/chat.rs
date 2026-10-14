@@ -14,7 +14,7 @@ use super::{
 };
 use crate::backend::{
     AttachmentKind, BackendError, Completion, CompletionRequest, MAX_RESPONSE_BYTES, ProviderEvent,
-    RequestAttachment,
+    RequestAttachment, StopReason,
 };
 use crate::core::{Turn, TurnRole};
 use crate::tools::ToolCall;
@@ -356,8 +356,10 @@ fn completed_call(
 }
 
 fn validate_json(payload: &Value) -> Result<Vec<ToolCall>, BackendError> {
-    if payload.get("error").is_some()
-        || payload.get("status").is_some_and(|v| v != "completed")
+    if let Some(error) = payload.get("error") {
+        return Err(super::provider_error("Chat", error));
+    }
+    if payload.get("status").is_some_and(|v| v != "completed")
         || payload
             .get("incomplete_details")
             .is_some_and(|v| !v.is_null())
@@ -419,8 +421,9 @@ fn validate_json(payload: &Value) -> Result<Vec<ToolCall>, BackendError> {
         }
     }
     match string_field(choice, "finish_reason")? {
+        // Compatible servers often end complete tool calls with "stop".
         Some("tool_calls") if !calls.is_empty() => {}
-        Some("stop") if calls.is_empty() => {}
+        Some("stop" | "length") => {}
         _ => return Err(invalid("Chat JSON missing or incomplete finish_reason")),
     }
     Ok(calls)
@@ -447,8 +450,8 @@ impl Stream {
         }
         let value: Value = serde_json::from_slice(data)
             .map_err(|e| invalid(format!("invalid Chat SSE JSON: {e}")))?;
-        if value.get("error").is_some() {
-            return Err(invalid("Chat provider returned an error event"));
+        if let Some(error) = value.get("error") {
+            return Err(super::provider_error("Chat", error));
         }
         bind(
             &mut self.completion.response_id,
@@ -473,15 +476,24 @@ impl Stream {
             }
             self.completion.usage = parse_usage(usage);
         }
-        let choices = value
-            .get("choices")
-            .and_then(Value::as_array)
-            .ok_or_else(|| invalid("Chat chunk lacks choices"))?;
+        // A chunk without choices (usage-only or keep-alive) carries no delta.
+        let Some(choices) = value.get("choices").filter(|v| !v.is_null()) else {
+            return Ok(());
+        };
+        let choices = choices
+            .as_array()
+            .ok_or_else(|| invalid("Chat choices must be an array"))?;
         if choices.is_empty() {
             return Ok(());
         }
-        if choices.len() != 1 || choices[0].get("index").and_then(Value::as_u64) != Some(0) {
-            return Err(invalid("Chat must return one choice with index zero"));
+        if choices.len() != 1
+            || choices[0]
+                .get("index")
+                .is_some_and(|v| v.as_u64() != Some(0))
+        {
+            return Err(invalid(
+                "Chat must return one choice with index zero when supplied",
+            ));
         }
         if self.finish_reason.is_some() {
             return Err(invalid("Chat choice after finish_reason"));
@@ -557,8 +569,7 @@ impl Stream {
         }
         if let Some(reason) = string_field(choice, "finish_reason")? {
             match reason {
-                "stop" | "tool_calls" => self.finish_reason = Some(reason.to_owned()),
-                "length" => return Err(invalid("Chat output truncated (finish_reason=length)")),
+                "stop" | "tool_calls" | "length" => self.finish_reason = Some(reason.to_owned()),
                 "content_filter" => {
                     return Err(invalid(
                         "Chat output filtered (finish_reason=content_filter)",
@@ -580,24 +591,37 @@ impl Stream {
             .finish_reason
             .as_deref()
             .ok_or_else(|| invalid("Chat stream ended without finish_reason"))?;
-        if (reason == "tool_calls") == self.calls.is_empty() {
+        let truncated = reason == "length";
+        // "stop" beside complete tool calls is accepted (compatible servers);
+        // "tool_calls" without any call is still malformed.
+        if reason == "tool_calls" && self.calls.is_empty() {
             return Err(invalid("Chat finish_reason does not match tool calls"));
         }
         let mut ids = BTreeSet::new();
         for (_, pending) in self.calls {
+            // A call cut by the output limit is reported (never dispatched);
+            // one cut before its ID or name has nothing to answer.
+            if truncated && (pending.id.is_none() || pending.name.is_none()) {
+                continue;
+            }
             let id = pending
                 .id
                 .ok_or_else(|| invalid("Chat tool call has no ID"))?;
             let name = pending
                 .name
                 .ok_or_else(|| invalid("Chat tool call has no name"))?;
-            self.completion.tool_calls.push(completed_call(
-                &id,
-                &name,
-                &pending.arguments,
-                &mut ids,
-            )?);
+            let arguments = if truncated
+                && !serde_json::from_str::<Value>(&pending.arguments).is_ok_and(|v| v.is_object())
+            {
+                "{}"
+            } else {
+                &pending.arguments
+            };
+            self.completion
+                .tool_calls
+                .push(completed_call(&id, &name, arguments, &mut ids)?);
         }
+        self.completion.stop_reason = super::stop_reason(truncated, &self.completion);
         // ZE-210: a finished stream with no text (or reasoning only) is a
         // valid empty answer; the core decides whether it may end the turn.
         self.completion
@@ -809,7 +833,12 @@ pub(super) fn read_response(
         response_id: payload.get("id").and_then(Value::as_str).map(str::to_owned),
         refusal: extract_chat_refusal(&payload),
         annotations: extract_annotations(&payload),
+        stop_reason: StopReason::Stop,
     };
+    completion.stop_reason = super::stop_reason(
+        payload["choices"][0]["finish_reason"] == "length",
+        &completion,
+    );
     let mut reasoning = Reasoning::default();
     let mut delta = reasoning.fold(&payload["choices"][0]["message"])?;
     reasoning.annotate(provider, model, &mut completion.annotations)?;
