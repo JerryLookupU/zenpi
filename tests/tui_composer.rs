@@ -847,7 +847,8 @@ fn folded_payload_counts_toward_input_and_pretty_checkpoint_budgets() {
     assert_eq!(saved_draft(&s)["paste_folds"], metadata);
     let mut crowded = TuiState::default();
     for _ in 0..15 {
-        crowded.push_message(
+        // The transcript is not checkpointed (ZE-309); the arch console is.
+        crowded.push_arch_message(
             zenpi::tui::MessageRole::System,
             "m".repeat(MAX_MESSAGE_BYTES),
         );
@@ -1081,7 +1082,7 @@ fn yank_input_and_pretty_checkpoint_rejections_preserve_full_buffer_and_draft() 
     assert_eq!(s.input().len(), MAX_MESSAGE_BYTES);
     ctrl(&mut s, 'u');
     for _ in 0..15 {
-        s.push_message(
+        s.push_arch_message(
             zenpi::tui::MessageRole::System,
             "m".repeat(MAX_MESSAGE_BYTES),
         );
@@ -1101,7 +1102,7 @@ fn yank_input_and_pretty_checkpoint_rejections_preserve_full_buffer_and_draft() 
     s.select_project_tab(0);
     ctrl(&mut s, 'y');
     assert_eq!(saved_draft(&s), before);
-    s.clear_messages();
+    s.clear_arch_messages();
     ctrl(&mut s, 'y');
     assert_eq!(s.input(), "x".repeat(MAX_MESSAGE_BYTES));
 }
@@ -1167,7 +1168,7 @@ fn external_edit_noop_cancel_empty_and_capacity_failure_are_atomic() {
     assert!(s.finish_external_edit(token, Ok(String::new())).unwrap());
     assert_eq!(s.input(), "");
     for _ in 0..15 {
-        s.push_message(
+        s.push_arch_message(
             zenpi::tui::MessageRole::System,
             "m".repeat(MAX_MESSAGE_BYTES),
         );

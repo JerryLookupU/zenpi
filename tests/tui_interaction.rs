@@ -417,7 +417,7 @@ fn project_checkpoint_is_independent_from_feature_layouts() {
 }
 
 #[test]
-fn project_checkpoint_restores_isolated_transcript_and_layout() {
+fn project_checkpoint_restores_layout_but_not_the_transcript() {
     let mut state = TuiState::default();
     state.push_message(zenpi::tui::MessageRole::User, "default message");
     assert!(state.open_project_tab("api"));
@@ -436,8 +436,8 @@ fn project_checkpoint_restores_isolated_transcript_and_layout() {
     let mut restored = TuiState::default();
     assert!(restored.restore_project_checkpoint(&checkpoint));
     assert_eq!(restored.active_project(), "api");
-    assert_eq!(restored.message_count(), 1);
-    assert_eq!(restored.messages().next().unwrap().text, "api message");
+    // ZE-309: the session journal owns the transcript; the checkpoint does not.
+    assert_eq!(restored.message_count(), 0);
     assert_eq!(restored.project_metadata("api").unwrap().cwd, "/work/api");
     assert_eq!(
         restored.project_session_cursor("api"),
@@ -448,8 +448,9 @@ fn project_checkpoint_restores_isolated_transcript_and_layout() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|item| { item["name"] == "api" && item["messages"][0]["text"] == "api message" })
+            .all(|item| item.get("messages").is_none())
     );
+    assert!(!checkpoint.to_string().contains("api message"));
 }
 
 #[test]
