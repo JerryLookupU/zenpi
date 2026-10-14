@@ -1,11 +1,12 @@
-use std::io::Cursor;
+#[path = "support/sequential_host.rs"]
+mod sequential_host;
+use sequential_host::run_headless_sequential;
 
 use serde_json::Value;
 use tempfile::tempdir;
 use zenpi::{
     b3::RuntimeIntentKind,
     core::Agent,
-    headless::run_headless,
     session::SessionStore,
     slash::SlashCommand,
     tui::{MessageRole, SlashDispatchAction, TuiState, dispatch_slash_command},
@@ -23,7 +24,7 @@ fn json_lines(bytes: &[u8]) -> Vec<Value> {
 fn headless_compete_and_loop_persist_inert_typed_handoffs() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("runtime.jsonl");
-    let mut agent = Agent::with_echo(SessionStore::open(&path).unwrap());
+    let agent = Agent::with_echo(SessionStore::open(&path).unwrap());
     let input = concat!(
         "{\"type\":\"command\",\"id\":\"c\",\"text\":\"/compete submit --parent GOAL-1 --tokens 1200 audit owners\"}\n",
         "{\"type\":\"command\",\"id\":\"l\",\"text\":\"/loop start --parent GOAL-1 --parent-lease LEASE-1 --nested-run RUN-1 --attempts 2 repair ITEM-2\"}\n",
@@ -31,7 +32,7 @@ fn headless_compete_and_loop_persist_inert_typed_handoffs() {
         "{\"type\":\"shutdown\",\"id\":\"q\"}\n",
     );
     let mut output = Vec::new();
-    run_headless(&mut agent, Cursor::new(input.as_bytes()), &mut output).unwrap();
+    run_headless_sequential(agent, input.as_bytes(), &mut output).unwrap();
     let records = json_lines(&output);
 
     for id in ["c", "l", "s"] {
@@ -45,26 +46,21 @@ fn headless_compete_and_loop_persist_inert_typed_handoffs() {
         records.iter().find(|value| value["id"] == "s").unwrap()["data"]["stored_count"],
         1
     );
+    let session = SessionStore::open_existing(&path).unwrap();
     assert!(
-        agent.history().is_empty(),
+        session.turns().is_empty(),
         "runtime slash input reached provider history"
     );
-    assert_eq!(agent.session().runtime_intents().len(), 2);
+    assert_eq!(session.runtime_intents().len(), 2);
     assert_eq!(
-        agent.session().runtime_intents()[0].kind,
+        session.runtime_intents()[0].kind,
         RuntimeIntentKind::Compete
     );
-    assert_eq!(agent.session().runtime_intents()[0].parent_ref, "GOAL-1");
+    assert_eq!(session.runtime_intents()[0].parent_ref, "GOAL-1");
+    assert_eq!(session.runtime_intents()[0].envelope.limit.tokens, 1200);
+    assert_eq!(session.runtime_intents()[1].kind, RuntimeIntentKind::Loop);
     assert_eq!(
-        agent.session().runtime_intents()[0].envelope.limit.tokens,
-        1200
-    );
-    assert_eq!(
-        agent.session().runtime_intents()[1].kind,
-        RuntimeIntentKind::Loop
-    );
-    assert_eq!(
-        agent.session().runtime_intents()[1]
+        session.runtime_intents()[1]
             .parent_lease
             .as_ref()
             .unwrap()
@@ -73,10 +69,7 @@ fn headless_compete_and_loop_persist_inert_typed_handoffs() {
     );
 
     let reopened = SessionStore::open_existing(&path).unwrap();
-    assert_eq!(
-        reopened.runtime_intents(),
-        agent.session().runtime_intents()
-    );
+    assert_eq!(reopened.runtime_intents(), session.runtime_intents());
     let journal = std::fs::read_to_string(path).unwrap();
     assert!(!journal.contains("operation_started"));
     assert!(!journal.contains("turn\""));
@@ -194,7 +187,7 @@ fn tui_runtime_owner_uses_the_same_durable_adapter() {
 fn invalid_runtime_intent_is_rejected_without_journal_mutation() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("runtime.jsonl");
-    let mut agent = Agent::with_echo(SessionStore::open(&path).unwrap());
+    let agent = Agent::with_echo(SessionStore::open(&path).unwrap());
     let before = std::fs::read_to_string(&path).unwrap();
     let input = concat!(
         "{\"type\":\"command\",\"id\":\"missing\",\"text\":\"/loop start --parent GOAL-1\"}\n",
@@ -203,14 +196,19 @@ fn invalid_runtime_intent_is_rejected_without_journal_mutation() {
         "{\"type\":\"shutdown\",\"id\":\"q\"}\n",
     );
     let mut output = Vec::new();
-    run_headless(&mut agent, Cursor::new(input.as_bytes()), &mut output).unwrap();
+    run_headless_sequential(agent, input.as_bytes(), &mut output).unwrap();
     let records = json_lines(&output);
     for id in ["missing", "secret", "lease"] {
         let response = records.iter().find(|record| record["id"] == id).unwrap();
         assert_eq!(response["success"], false);
         assert_eq!(response["code"], "runtime_intent_error");
     }
-    assert!(agent.session().runtime_intents().is_empty());
+    assert!(
+        SessionStore::open_existing(&path)
+            .unwrap()
+            .runtime_intents()
+            .is_empty()
+    );
     // Shutdown may only append skill close events when configured; the default
     // echo agent has none, so every rejected runtime command is write-free.
     assert_eq!(std::fs::read_to_string(path).unwrap(), before);
@@ -371,36 +369,27 @@ fn headless_runtime_intent_retry_is_deduplicated_across_restart() {
         "{\"schema_version\":2,\"type\":\"shutdown\",\"id\":\"first-stop\"}\n",
     );
 
-    let mut first = Agent::with_echo(SessionStore::open(&path).unwrap());
+    let first = Agent::with_echo(SessionStore::open(&path).unwrap());
     let mut first_output = Vec::new();
-    run_headless(
-        &mut first,
-        Cursor::new(request.as_bytes()),
-        &mut first_output,
-    )
-    .unwrap();
+    run_headless_sequential(first, request.as_bytes(), &mut first_output).unwrap();
     let first_response = json_lines(&first_output)
         .into_iter()
         .find(|record| record["id"] == "intent-request-1")
         .unwrap();
     assert_eq!(first_response["data"]["created"], true);
     assert_eq!(first_response["data"]["idempotent_replay"], false);
-    let first_next_sequence = first.session().next_sequence();
-    assert_eq!(first.session().runtime_intents().len(), 1);
+    let first_session = SessionStore::open_existing(&path).unwrap();
+    let first_next_sequence = first_session.next_sequence();
+    assert_eq!(first_session.runtime_intents().len(), 1);
 
     let retry = concat!(
         "{\"schema_version\":1,\"type\":\"slash\",\"id\":\"intent-request-1\",",
         "\"message\":\"/compete submit --parent GOAL-1 audit owners\"}\n",
         "{\"schema_version\":2,\"type\":\"shutdown\",\"id\":\"second-stop\"}\n",
     );
-    let mut second = Agent::with_echo(SessionStore::open(&path).unwrap());
+    let second = Agent::with_echo(SessionStore::open(&path).unwrap());
     let mut second_output = Vec::new();
-    run_headless(
-        &mut second,
-        Cursor::new(retry.as_bytes()),
-        &mut second_output,
-    )
-    .unwrap();
+    run_headless_sequential(second, retry.as_bytes(), &mut second_output).unwrap();
     let retry_response = json_lines(&second_output)
         .into_iter()
         .find(|record| record["id"] == "intent-request-1")
@@ -408,8 +397,9 @@ fn headless_runtime_intent_retry_is_deduplicated_across_restart() {
     assert_eq!(retry_response["success"], true);
     assert_eq!(retry_response["data"]["created"], false);
     assert_eq!(retry_response["data"]["idempotent_replay"], true);
-    assert_eq!(second.session().runtime_intents().len(), 1);
-    assert_eq!(second.session().next_sequence(), first_next_sequence);
+    let second_session = SessionStore::open_existing(&path).unwrap();
+    assert_eq!(second_session.runtime_intents().len(), 1);
+    assert_eq!(second_session.next_sequence(), first_next_sequence);
 }
 
 #[test]
@@ -421,8 +411,8 @@ fn headless_runtime_intent_request_id_conflict_is_durable_and_write_free() {
         "\"text\":\"/loop start repair ITEM-1\"}\n",
         "{\"schema_version\":2,\"type\":\"shutdown\",\"id\":\"first-stop\"}\n",
     );
-    let mut first = Agent::with_echo(SessionStore::open(&path).unwrap());
-    run_headless(&mut first, Cursor::new(first_input.as_bytes()), Vec::new()).unwrap();
+    let first = Agent::with_echo(SessionStore::open(&path).unwrap());
+    run_headless_sequential(first, first_input.as_bytes(), &mut Vec::new()).unwrap();
     let before = std::fs::read(&path).unwrap();
 
     let conflict_input = concat!(
@@ -430,20 +420,21 @@ fn headless_runtime_intent_request_id_conflict_is_durable_and_write_free() {
         "\"text\":\"/loop start repair ITEM-2\"}\n",
         "{\"schema_version\":2,\"type\":\"shutdown\",\"id\":\"second-stop\"}\n",
     );
-    let mut second = Agent::with_echo(SessionStore::open(&path).unwrap());
+    let second = Agent::with_echo(SessionStore::open(&path).unwrap());
     let mut output = Vec::new();
-    run_headless(
-        &mut second,
-        Cursor::new(conflict_input.as_bytes()),
-        &mut output,
-    )
-    .unwrap();
+    run_headless_sequential(second, conflict_input.as_bytes(), &mut output).unwrap();
     let response = json_lines(&output)
         .into_iter()
         .find(|record| record["id"] == "shared-intent")
         .unwrap();
     assert_eq!(response["success"], false);
     assert_eq!(response["code"], "runtime_intent_conflict");
-    assert_eq!(second.session().runtime_intents().len(), 1);
+    assert_eq!(
+        SessionStore::open_existing(&path)
+            .unwrap()
+            .runtime_intents()
+            .len(),
+        1
+    );
     assert_eq!(std::fs::read(path).unwrap(), before);
 }

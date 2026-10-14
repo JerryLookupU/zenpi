@@ -1,10 +1,12 @@
+#[path = "support/sequential_host.rs"]
+mod sequential_host;
+use sequential_host::run_headless_sequential;
 use std::process::Command;
 
 use tempfile::tempdir;
 use zenpi::{
     backend::{AttachmentKind, InputAttachment},
     core::{Agent, TurnInputRequest},
-    headless::run_headless,
     session::SessionStore,
     slash_actions::{self, MAX_SLASH_DIFF_BYTES},
     tools::ToolContext,
@@ -210,12 +212,7 @@ fn headless_slash_owner_actions_are_usable_before_a_prompt() {
         "{\"type\":\"shutdown\",\"id\":\"q\"}\n",
     );
     let mut output = Vec::new();
-    run_headless(
-        &mut agent,
-        std::io::Cursor::new(input.as_bytes()),
-        &mut output,
-    )
-    .unwrap();
+    run_headless_sequential(agent, input.as_bytes(), &mut output).unwrap();
     let records = String::from_utf8(output).unwrap();
     let responses = records
         .lines()

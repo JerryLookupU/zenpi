@@ -1,4 +1,7 @@
 #![cfg(unix)]
+#[path = "support/sequential_host.rs"]
+mod sequential_host;
+use sequential_host::run_headless_sequential;
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -849,13 +852,12 @@ fn project_protocol_is_strict_versioned_bounded_and_owned() {
         );
     }
     let root = tempdir().unwrap();
-    let mut agent = agent(root.path());
     let mut output = Vec::new();
-    zenpi::headless::run_headless(&mut agent,std::io::Cursor::new("{\"schema_version\":2,\"type\":\"project\",\"id\":\"list\",\"project\":{\"action\":\"list\"}}\n"),&mut output).unwrap();
-    assert_eq!(
-        serde_json::from_slice::<Value>(&output).unwrap()["code"],
-        "requires_owned_host"
-    );
+    run_headless_sequential(agent(root.path()), "{\"schema_version\":2,\"type\":\"project\",\"id\":\"list\",\"project\":{\"action\":\"list\"}}\n",&mut output).unwrap();
+    // The only host owns the project pool, so a valid control is served.
+    let listed = serde_json::from_slice::<Value>(&output).unwrap();
+    assert_eq!(listed["success"], true, "{listed}");
+    assert!(listed["project"]["project_id"].is_string(), "{listed}");
 }
 
 #[test]

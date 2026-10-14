@@ -1,10 +1,13 @@
-use std::{fs, io::Cursor, path::Path, thread, time::Duration};
+#[path = "support/sequential_host.rs"]
+mod sequential_host;
+use sequential_host::run_headless_sequential;
+use std::{fs, path::Path, thread, time::Duration};
 
 use serde_json::Value;
 use tempfile::tempdir;
 use zenpi::{
     core::{Agent, Turn, TurnRole},
-    headless::{run_headless, session_gc_view_at, session_maintenance_view},
+    headless::{session_gc_view_at, session_maintenance_view},
     session::SessionStore,
     slash::{SessionAction, SessionGcPolicy, SlashCommand, SlashError, parse},
     tui::{MessageRole, SlashDispatchAction, TuiState, dispatch_slash_command},
@@ -233,7 +236,7 @@ fn headless_and_tui_dispatch_execute_typed_session_maintenance_locally() {
     let source_bytes = seed_session(&source_path);
 
     let active_path = directory.path().join("active.jsonl");
-    let mut agent = Agent::with_echo(SessionStore::open(&active_path).unwrap());
+    let agent = Agent::with_echo(SessionStore::open(&active_path).unwrap());
     let exported_path = directory.path().join("headless-export.jsonl");
     let requests = [
         serde_json::json!({
@@ -253,7 +256,7 @@ fn headless_and_tui_dispatch_execute_typed_session_maintenance_locally() {
     .join("\n")
         + "\n";
     let mut output = Vec::new();
-    run_headless(&mut agent, Cursor::new(requests.into_bytes()), &mut output).unwrap();
+    run_headless_sequential(agent, requests.into_bytes(), &mut output).unwrap();
     let response = response_lines(&output)
         .into_iter()
         .find(|value| value["id"] == "export")

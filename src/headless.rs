@@ -631,180 +631,6 @@ pub enum HeadlessError {
     View(#[from] crate::view_model::ViewModelError),
 }
 
-/// Run the headless loop over arbitrary buffered input/output.  This generic
-/// form is used by integration tests and embedders; `run_stdio` supplies the
-/// process stdin/stdout handles.
-pub fn run_headless<R: BufRead, W: Write>(
-    agent: &mut Agent,
-    mut input: R,
-    mut output: W,
-) -> Result<(), HeadlessError> {
-    let mut replay = ReplayState::open(agent.session())?;
-    let workspace = fs::canonicalize(&agent.session().header().cwd)?;
-    agent.register_live_owner(
-        replay.owner_epoch,
-        workspace.display().to_string(),
-        unix_time_ms(),
-    )?;
-    let mut event_sequence = replay.next_sequence;
-    // Keep at most one bounded frame in memory. `BufRead::read_line` grows its
-    // destination until LF, which lets an untrusted peer force an arbitrarily
-    // large allocation before the protocol limit is checked. The chunked
-    // reader below consumes an overlong frame through the caller's buffer but
-    // retains no more than `MAX_LINE_BYTES + 1` bytes.
-    let mut frame = Vec::with_capacity(crate::protocol::MAX_LINE_BYTES.min(8 * 1024));
-    loop {
-        match read_frame(&mut input, &mut frame)? {
-            Frame::Eof => {
-                agent.unregister_live_owner(replay.owner_epoch);
-                replay.close()?;
-                agent.close();
-                return Ok(());
-            }
-            Frame::TooLong => {
-                write_response(
-                    &mut output,
-                    StdioResponse::error_with_code(
-                        None,
-                        "invalid",
-                        "line_too_long",
-                        "input frame exceeds maximum size",
-                    ),
-                )?;
-                continue;
-            }
-            Frame::Data => {}
-        }
-        let frame_text = match std::str::from_utf8(&frame) {
-            Ok(frame) => frame,
-            Err(_) => {
-                write_response(
-                    &mut output,
-                    StdioResponse::error_with_code(
-                        None,
-                        "invalid",
-                        "invalid_utf8",
-                        "input frame is not valid UTF-8",
-                    ),
-                )?;
-                continue;
-            }
-        };
-        // The reader excludes LF; parse_line intentionally accepts an
-        // optional CR for CRLF clients.
-        if frame_text.trim().is_empty() {
-            continue;
-        }
-        let request = match parse_line(frame_text) {
-            Ok(request) => request,
-            Err(error) => {
-                write_response(
-                    &mut output,
-                    StdioResponse::error_with_code(
-                        None,
-                        "invalid",
-                        error.code(),
-                        error.to_string(),
-                    ),
-                )?;
-                continue;
-            }
-        };
-        let id = request.id().map(str::to_owned);
-        let command_kind = request.kind.clone();
-        let request_version = request.schema_version;
-        let fingerprint = request_fingerprint(&request)?;
-        // Validate a clone before consulting the replay cache. This prevents
-        // a reused ID with an unsupported version or malformed payload from
-        // bypassing protocol validation by replaying an old response.
-        let parsed_command = request.clone().into_command();
-        match replay.admit(id.as_deref(), &fingerprint)? {
-            RequestIdAdmission::Replay => {
-                if let Some(request_id) = id.as_deref()
-                    && let Some(cached) = replay.cached_line(request_id)
-                {
-                    output.write_all(replay_terminal_line(cached, request_version)?.as_bytes())?;
-                    output.flush()?;
-                    continue;
-                }
-            }
-            RequestIdAdmission::Conflict => {
-                write_response(
-                    &mut output,
-                    StdioResponse::error_with_code(
-                        id.clone(),
-                        command_kind,
-                        if is_runtime_intent_request(&request) {
-                            "runtime_intent_conflict"
-                        } else {
-                            "request_id_conflict"
-                        },
-                        "request ID was already used for a different request",
-                    )
-                    .for_version(request_version),
-                )?;
-                continue;
-            }
-            RequestIdAdmission::InFlightSame => {
-                // The synchronous host never has a concurrent operation, but
-                // retaining the explicit branch makes the invariant obvious
-                // if an embedding caller re-enters the dispatcher.
-                write_response(
-                    &mut output,
-                    StdioResponse::error_with_code(
-                        id,
-                        command_kind,
-                        "duplicate_request_in_flight",
-                        "request ID is already in flight",
-                    )
-                    .for_version(request_version),
-                )?;
-                continue;
-            }
-            RequestIdAdmission::New => {}
-            admission => {
-                write_response(
-                    &mut output,
-                    admission_error(id, command_kind, admission).for_version(request_version),
-                )?;
-                continue;
-            }
-        }
-        let command = match parsed_command {
-            Ok(command) => command,
-            Err(error) => {
-                write_cached_response(
-                    &mut output,
-                    StdioResponse::error_with_code(
-                        id,
-                        command_kind,
-                        error.code(),
-                        error.to_string(),
-                    )
-                    .for_version(request_version),
-                    &mut replay,
-                )?;
-                continue;
-            }
-        };
-        let should_stop = handle_command(
-            agent,
-            id,
-            command,
-            &mut output,
-            &mut event_sequence,
-            &mut replay,
-            request_version,
-        )?;
-        if should_stop {
-            agent.unregister_live_owner(replay.owner_epoch);
-            replay.close()?;
-            agent.close();
-            return Ok(());
-        }
-    }
-}
-
 /// Result of consuming one LF-delimited frame. The frame bytes themselves are
 /// retained in the caller-provided buffer so the loop can reuse its capacity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -863,13 +689,6 @@ fn read_frame<R: BufRead>(input: &mut R, frame: &mut Vec<u8>) -> io::Result<Fram
     }
 }
 
-/// Process stdin/stdout without printing any diagnostics to stdout.
-pub fn run_stdio(agent: &mut Agent) -> Result<(), HeadlessError> {
-    let stdin = io::stdin();
-    let stdout = io::stdout();
-    run_headless(agent, stdin.lock(), stdout.lock())
-}
-
 /// Report a startup failure that happens before the host loop exists (for
 /// example `session_locked`) as one protocol error frame on stdout.
 pub fn write_startup_error(code: &str, message: &str) {
@@ -885,8 +704,7 @@ pub fn write_startup_error(code: &str, message: &str) {
 /// Owned stdio entry point used by the binary. Input is read on a dedicated
 /// thread while provider/tool work runs through the bounded runtime, so a
 /// slow provider cannot stop headless clients from sending status or follow-up
-/// commands. The borrowed `run_stdio` above remains the deterministic
-/// synchronous embedding API.
+/// commands.
 pub fn run_stdio_owned(agent: Agent) -> Result<(), HeadlessError> {
     run_stdio_owned_with(agent, HeadlessOptions::default())
 }
@@ -6797,33 +6615,32 @@ where
                 )?,
             }
         }
-        other => match shared.try_lock() {
-            Ok(mut agent) => {
-                let should_stop = handle_command(
-                    &mut agent,
-                    id,
-                    other,
-                    output,
-                    event_sequence,
-                    replay,
-                    request_version,
-                )?;
-                if should_stop {
-                    *stopping = true;
+        other @ (Command::Connection(_) | Command::Handoff { .. } | Command::Resume { .. }) => {
+            match shared.try_lock() {
+                Ok(mut agent) => {
+                    handle_command(
+                        &mut agent,
+                        id,
+                        other,
+                        output,
+                        event_sequence,
+                        replay,
+                        request_version,
+                    )?;
                 }
+                Err(_) => write_retryable_response(
+                    output,
+                    StdioResponse::error_with_code(
+                        id,
+                        name,
+                        "agent_busy",
+                        "command cannot run while a turn owns the session",
+                    )
+                    .for_version(request_version),
+                    replay,
+                )?,
             }
-            Err(_) => write_retryable_response(
-                output,
-                StdioResponse::error_with_code(
-                    id,
-                    name,
-                    "agent_busy",
-                    "command cannot run while a turn owns the session",
-                )
-                .for_version(request_version),
-                replay,
-            )?,
-        },
+        }
     }
     Ok(())
 }
@@ -8639,6 +8456,8 @@ fn connection_response(
     }
 }
 
+/// Commands the async host answers inline under the session lock because
+/// they neither start runtime work nor switch the owned session.
 fn handle_command<W: Write>(
     agent: &mut Agent,
     id: Option<String>,
@@ -8647,382 +8466,12 @@ fn handle_command<W: Write>(
     event_sequence: &mut u64,
     replay: &mut ReplayState,
     request_version: u16,
-) -> Result<bool, HeadlessError> {
-    let command = match queue_slash_command(command, agent.session().session_id(), id.as_deref()) {
-        Ok(command) => command,
-        Err(error) => {
-            write_cached_versioned_response(
-                output,
-                StdioResponse::error_with_code(id, "input_queue", error.code(), error.to_string()),
-                request_version,
-                replay,
-            )?;
-            return Ok(false);
-        }
-    };
+) -> Result<(), HeadlessError> {
     let name = crate::protocol::command_name(&command);
     match command {
         Command::Connection(request) => {
             let response = connection_response(agent, request);
             write_cached_versioned_response(output, response, request_version, replay)?;
-        }
-        Command::ToolOutput(request) => {
-            let response = match agent.tool_output_control(request, &|| false) {
-                Ok(value) => StdioResponse::success(id, "tool_output", Some(value)),
-                Err(error) => StdioResponse::error_with_code(
-                    id,
-                    "tool_output",
-                    error.code(),
-                    error.to_string(),
-                ),
-            };
-            write_cached_versioned_response(output, response, request_version, replay)?;
-        }
-        Command::Tree(request) => {
-            let response = match agent.tree_request(request, &|| false) {
-                Ok(value) => StdioResponse::success(id, "tree", Some(value)),
-                Err(error) => {
-                    StdioResponse::error_with_code(id, "tree", error.code(), error.to_string())
-                }
-            };
-            write_cached_versioned_response(output, response, request_version, replay)?;
-        }
-        Command::Project(_) => {
-            write_cached_versioned_response(
-                output,
-                StdioResponse::error_with_code(
-                    id,
-                    "project",
-                    "requires_owned_host",
-                    "project controls require run_stdio_owned or run_async_streams",
-                ),
-                request_version,
-                replay,
-            )?;
-        }
-
-        Command::InputQueue(request) => {
-            let result = agent
-                .input_queue_request(request)
-                .map_err(|e| e.to_string());
-            write_cached_versioned_response(
-                output,
-                input_response(id, result),
-                request_version,
-                replay,
-            )?;
-        }
-        Command::Slash { input }
-            if crate::slash::resource_control(&input).is_some()
-                || (crate::slash::resource_input_candidate(&input)
-                    && matches!(
-                        crate::slash_actions::route_input_for_agent(agent, &input),
-                        Ok(crate::slash::InputRoute::Prompt(_))
-                    )) =>
-        {
-            let result = match crate::slash_actions::resource_control_value(agent, &input, || false)
-            {
-                Ok(Some(value)) => Ok(value),
-                Ok(None) => agent.process(TurnInputRequest::new(input)).map(|result| {
-                    json!({
-                        "submission": result.submission, "assistant": result.assistant,
-                    })
-                }),
-                Err(error) => Err(error),
-            };
-            write_events(agent, output, event_sequence, id.clone(), replay)?;
-            let response = match result {
-                Ok(value) => StdioResponse::success(id, name, Some(value)),
-                Err(error) => {
-                    StdioResponse::error_with_code(id, name, error.code(), error.to_string())
-                }
-            };
-            write_cached_versioned_response(output, response, request_version, replay)?;
-        }
-        Command::Slash { input } => match crate::slash::route_input(&input) {
-            Err(error) => {
-                let special = unsupported_session_maintenance_parse_error(&error);
-                let code = special
-                    .as_ref()
-                    .map_or("slash_invalid", |_| "unsupported_command");
-                let message = special.unwrap_or_else(|| error.to_string());
-                write_cached_versioned_response(
-                    output,
-                    StdioResponse::error_with_code(id, name, code, message),
-                    request_version,
-                    replay,
-                )?
-            }
-            Ok(crate::slash::InputRoute::Prompt(_)) => write_cached_versioned_response(
-                output,
-                StdioResponse::error_with_code(
-                    id,
-                    name,
-                    "not_slash_command",
-                    "command input must begin with `/`",
-                ),
-                request_version,
-                replay,
-            )?,
-            Ok(crate::slash::InputRoute::UserShell(input)) => {
-                match agent.run_user_shell_with_cancel(&input, || false) {
-                    Ok(data) => {
-                        write_events(agent, output, event_sequence, id.clone(), replay)?;
-                        write_cached_versioned_response(
-                            output,
-                            StdioResponse::success(id, name, Some(data)),
-                            request_version,
-                            replay,
-                        )?
-                    }
-                    Err(error) => {
-                        write_events(agent, output, event_sequence, id.clone(), replay)?;
-                        write_cached_versioned_response(
-                            output,
-                            StdioResponse::error_with_code(
-                                id,
-                                name,
-                                error.code(),
-                                error.to_string(),
-                            ),
-                            request_version,
-                            replay,
-                        )?;
-                    }
-                }
-            }
-            Ok(crate::slash::InputRoute::Slash(command)) => {
-                let command_name = command.name();
-                let session_open = matches!(
-                    &command,
-                    crate::slash::SlashCommand::Session {
-                        action: crate::slash::SessionAction::Open { .. }
-                            | crate::slash::SessionAction::ResumeLast
-                    }
-                );
-                let durable_fingerprint = slash_runtime_fingerprint(&command)?;
-                let runtime_source = id.as_deref().and_then(|request_id| {
-                    durable_fingerprint.as_deref().map(|fingerprint| {
-                        crate::runtime_intent::RuntimeIntentSource {
-                            request_id,
-                            fingerprint,
-                        }
-                    })
-                });
-                match execute_headless_slash(Some(agent), command, runtime_source) {
-                    Ok(SlashExecution::Response(data)) => {
-                        let response = slash_execution_response(
-                            id.clone(),
-                            command_name,
-                            data,
-                            request_version,
-                        );
-                        if session_open && response.success {
-                            replay.reset_for_session(
-                                agent.session(),
-                                id.as_deref(),
-                                *event_sequence,
-                            )?;
-                            *event_sequence = (*event_sequence).max(replay.next_sequence);
-                        }
-                        write_cached_response(output, response, replay)?
-                    }
-                    Ok(SlashExecution::Cancel) => write_cached_versioned_response(
-                        output,
-                        StdioResponse::error_with_code(
-                            id,
-                            command_name,
-                            "unsupported_sync_command",
-                            "cancel is available in asynchronous headless mode",
-                        ),
-                        request_version,
-                        replay,
-                    )?,
-                    Ok(SlashExecution::Exit) => {
-                        agent.close();
-                        write_cached_versioned_response(
-                            output,
-                            StdioResponse::success(
-                                id,
-                                command_name,
-                                Some(json!({"closing": true})),
-                            ),
-                            request_version,
-                            replay,
-                        )?;
-                        return Ok(true);
-                    }
-                    Err(error) => write_cached_versioned_response(
-                        output,
-                        StdioResponse::error_with_code(id, command_name, error.code, error.message),
-                        request_version,
-                        replay,
-                    )?,
-                }
-            }
-        },
-        Command::Resources { path } => match collect_resource_snapshot_at(
-            path.as_deref(),
-            agent
-                .attachment_workspace_root()
-                .unwrap_or_else(|| Path::new(&agent.session().header().cwd)),
-        ) {
-            Ok(snapshot) => write_cached_versioned_response(
-                output,
-                StdioResponse::success(id, name, Some(serialized_resource_snapshot(snapshot)?)),
-                request_version,
-                replay,
-            )?,
-            Err(error) => write_cached_versioned_response(
-                output,
-                StdioResponse::error_with_code(id, name, "resource_error", error.to_string()),
-                request_version,
-                replay,
-            )?,
-        },
-        Command::Prompt {
-            text,
-            mode,
-            expected_turn_id,
-            attachments,
-        } => {
-            let result = agent.process(TurnInputRequest {
-                message: text,
-                expected_turn_id,
-                mode,
-                attachments,
-            });
-            match result {
-                Ok(result) => {
-                    let data = json!({
-                        "submission": result.submission,
-                        "assistant": result.assistant,
-                    });
-                    // A turn's terminal response is the wire completion
-                    // boundary. Flush every lifecycle/provider event first.
-                    write_events(agent, output, event_sequence, id.clone(), replay)?;
-                    write_cached_versioned_response(
-                        output,
-                        StdioResponse::success(id.clone(), name, Some(data)),
-                        request_version,
-                        replay,
-                    )?;
-                }
-                Err(error) => {
-                    // Failed admission/provider calls can still leave a
-                    // TurnRejected or Error marker; never emit it after the
-                    // terminal error response.
-                    write_events(agent, output, event_sequence, id.clone(), replay)?;
-                    write_cached_versioned_response(
-                        output,
-                        StdioResponse::error_with_code(
-                            id.clone(),
-                            name,
-                            error.code(),
-                            error.to_string(),
-                        ),
-                        request_version,
-                        replay,
-                    )?;
-                }
-            }
-        }
-        Command::Steer {
-            text,
-            expected_turn_id,
-        } => {
-            let result = agent.process(TurnInputRequest {
-                message: text,
-                expected_turn_id,
-                mode: crate::protocol::TurnMode::Steer,
-                attachments: Vec::new(),
-            });
-            match result {
-                Ok(result) => {
-                    let data = json!({
-                        "submission": result.submission,
-                        "assistant": result.assistant,
-                    });
-                    write_events(agent, output, event_sequence, id.clone(), replay)?;
-                    write_cached_versioned_response(
-                        output,
-                        StdioResponse::success(id.clone(), name, Some(data)),
-                        request_version,
-                        replay,
-                    )?;
-                }
-                Err(error) => {
-                    write_events(agent, output, event_sequence, id.clone(), replay)?;
-                    write_cached_versioned_response(
-                        output,
-                        StdioResponse::error_with_code(
-                            id.clone(),
-                            name,
-                            error.code(),
-                            error.to_string(),
-                        ),
-                        request_version,
-                        replay,
-                    )?;
-                }
-            }
-        }
-        Command::Cancel { .. } => write_cached_versioned_response(
-            output,
-            StdioResponse::error_with_code(
-                id,
-                name,
-                "unsupported_sync_command",
-                "cancel is available in asynchronous stdio mode",
-            ),
-            request_version,
-            replay,
-        )?,
-        Command::Checkpoint(ref request) => {
-            let response = checkpoint_response(agent, request, id, name, replay)?;
-            write_cached_versioned_response(output, response, request_version, replay)?;
-        }
-        Command::Mailbox(ref request) => {
-            write_cached_versioned_response(
-                output,
-                mailbox_response(agent, request, id, name),
-                request_version,
-                replay,
-            )?;
-        }
-        Command::UserShell(_) => {
-            let input = match command {
-                Command::UserShell(request) => request.input,
-                _ => unreachable!(),
-            };
-            match agent.run_user_shell_with_cancel(&input, || false) {
-                Ok(data) => {
-                    write_events(agent, output, event_sequence, id.clone(), replay)?;
-                    write_cached_versioned_response(
-                        output,
-                        StdioResponse::success(id, name, Some(data)),
-                        request_version,
-                        replay,
-                    )?;
-                }
-                Err(error) => {
-                    write_events(agent, output, event_sequence, id.clone(), replay)?;
-                    write_cached_versioned_response(
-                        output,
-                        StdioResponse::error_with_code(id, name, error.code(), error.to_string()),
-                        request_version,
-                        replay,
-                    )?;
-                }
-            }
-        }
-        Command::Status => {
-            write_cached_versioned_response(
-                output,
-                StdioResponse::success(id, name, Some(serialized_agent_snapshot(agent)?)),
-                request_version,
-                replay,
-            )?;
         }
         Command::Handoff {
             to,
@@ -9085,111 +8534,20 @@ fn handle_command<W: Write>(
             }
         }
         Command::Resume {
-            path,
-            from_sequence,
-        } => match (path, from_sequence) {
-            (Some(path), None) => {
-                let path = match validate_existing_session_path(&path) {
-                    Ok(path) => path,
-                    Err(message) => {
-                        write_cached_versioned_response(
-                            output,
-                            StdioResponse::error_with_code(
-                                id,
-                                name,
-                                "session_path_denied",
-                                message,
-                            )
-                            .for_version(request_version),
-                            request_version,
-                            replay,
-                        )?;
-                        return Ok(false);
-                    }
-                };
-                match agent.resume_session(path) {
-                    Ok(()) => {
-                        // A session switch invalidates the old transport replay
-                        // namespace. Keep sequence monotonic while dropping old
-                        // events and terminal IDs before exposing the new
-                        // snapshot.
-                        agent.take_events();
-                        replay.reset_for_session(
-                            agent.session(),
-                            id.as_deref(),
-                            *event_sequence,
-                        )?;
-                        *event_sequence = (*event_sequence).max(replay.next_sequence);
-                        write_cached_versioned_response(
-                            output,
-                            StdioResponse::success(
-                                id,
-                                name,
-                                Some(serialized_agent_snapshot(agent)?),
-                            ),
-                            request_version,
-                            replay,
-                        )?;
-                    }
-                    Err(error) => write_cached_versioned_response(
-                        output,
-                        StdioResponse::error_with_code(id, name, error.code(), error.to_string()),
-                        request_version,
-                        replay,
-                    )?,
-                }
-            }
-            (None, Some(from_sequence)) => {
-                let report = replay.replay_from(from_sequence, output)?;
-                write_response(
-                    output,
-                    StdioResponse::success(
-                        id.clone(),
-                        name,
-                        Some(json!({
-                            "from_sequence": from_sequence,
-                            "replayed": report.replayed,
-                            "replay_gap": report.gap,
-                            "first_available_sequence": report.first_available,
-                            "last_available_sequence": report.last_available,
-                            "next_sequence": *event_sequence,
-                        })),
-                    )
-                    .for_version(request_version),
-                )?;
-                replay.release(id.as_deref())?;
-            }
-            (None, None) => write_cached_versioned_response(
-                output,
-                StdioResponse::success(id, name, Some(serialized_agent_snapshot(agent)?)),
-                request_version,
-                replay,
-            )?,
-            (Some(_), Some(_)) => unreachable!("protocol rejects path plus from_sequence"),
-        },
-        Command::Approve { .. } => write_cached_versioned_response(
+            path: None,
+            from_sequence: None,
+        } => write_cached_versioned_response(
             output,
-            StdioResponse::error_with_code(
-                id,
-                name,
-                "approval_unavailable",
-                "approval responses require the asynchronous headless host",
-            ),
+            StdioResponse::success(id, name, Some(serialized_agent_snapshot(agent)?)),
             request_version,
             replay,
         )?,
-        Command::Shutdown => {
-            agent.close();
-            write_cached_versioned_response(
-                output,
-                StdioResponse::success(id, name, Some(json!({"closed": true}))),
-                request_version,
-                replay,
-            )?;
-            return Ok(true);
-        }
+        other => unreachable!(
+            "async host dispatches {} before the inline owner",
+            crate::protocol::command_name(&other)
+        ),
     }
-    Ok(false)
+    Ok(())
 }
 
 /// The checkpoint cursor names the transcript journal. Transport replay has
