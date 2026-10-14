@@ -138,6 +138,7 @@ impl ProviderProfile {
             default_profile: None,
             profiles: BTreeMap::new(),
             zone_models: ZoneModels::default(),
+            compaction: None,
         }
     }
 
@@ -293,6 +294,32 @@ pub struct ConfigFile {
     /// continues to use the global `model`.
     #[serde(default, skip_serializing_if = "ZoneModels::is_empty")]
     pub zone_models: ZoneModels,
+    /// `[compaction]` table (pi `CompactionSettings`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<CompactionSettings>,
+}
+
+/// Automatic context compaction (pi). It runs when the latest real usage plus
+/// an estimate of later records exceeds `window - reserve_tokens`, and once on
+/// a provider context overflow. The summary output limit is 80% of
+/// `reserve_tokens` (50% for a split-turn prefix); `keep_recent_tokens` is the
+/// tail kept verbatim.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct CompactionSettings {
+    pub enabled: bool,
+    pub reserve_tokens: u64,
+    pub keep_recent_tokens: u64,
+}
+
+impl Default for CompactionSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            reserve_tokens: 16_384,
+            keep_recent_tokens: 20_000,
+        }
+    }
 }
 
 impl ConfigFile {
@@ -1398,6 +1425,7 @@ fn import_codex_from_root(codex_root: impl AsRef<Path>) -> Result<CodexImport, C
         supports_websockets,
         model_overrides: Vec::new(),
         zone_models: ZoneModels::default(),
+        compaction: None,
     };
     config.validate()?;
     let api_key = match fs::read_to_string(&source_auth) {

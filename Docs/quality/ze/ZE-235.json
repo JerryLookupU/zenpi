@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-235",
+  "claim_id": "ZE-235@blueprint-4.0.0",
+  "from": "worker",
+  "to": "master",
+  "summary": "Deleted the legacy deterministic digest compaction that had no production caller: context::prepare_context, context::restore_checkpoint, context::CompactionCheckpoint, the PreparedContext.checkpoint field and tests/context.rs. CompactionReport loses its public `checkpoint` field (it was always null since semantic compaction); serialized reports no longer carry it, and reports serialized before this change (with `checkpoint` null or a legacy digest object) still deserialize, the field ignored. A unit test in src/core.rs (compaction_report_tests) pins both directions.",
+  "changed_files": [
+    "Docs/quality/ze/ZE-235.json",
+    "src/context.rs",
+    "src/core.rs",
+    "tests/context.rs",
+    "tests/stage1_context_checkpoint.rs",
+    "tests/stage1_semantic_compaction.rs"
+  ],
+  "diff_stat": "5 files changed, 45 insertions(+), 301 deletions(-)",
+  "commands_run": [
+    "grep -rn 'fn prepare_context' src",
+    "cargo fmt --all",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo clippy --locked --all-targets --all-features -- -D warnings",
+    "cargo test --locked --lib compaction_report",
+    "cargo test --locked --lib context",
+    "cargo test --locked --test stage1_semantic_compaction --test stage1_context_checkpoint --test resume_compact_owner",
+    "cargo test --locked --all-features --no-fail-fast"
+  ],
+  "validation_result": {
+    "grep_fn_prepare_context": "pass: empty",
+    "compaction_report_serialization": "pass: core::compaction_report_tests::compaction_report_serializes_without_the_legacy_digest_checkpoint",
+    "related_suites": "pass: --lib context 5, stage1_semantic_compaction 18 (+2 ignored helpers), stage1_context_checkpoint 8, resume_compact_owner 6; tests/context.rs deleted per the row",
+    "clippy": "pass (default and --all-features, -D warnings)",
+    "full_suite": "pass except known load flakes, all passing on --test-threads=1 rerun: lib tui::local_remote_preview_tests::existing_terminal_projects_only_matching_live_session_and_root, core_session::user_shell_preserves_nonzero_signal_and_cancellation_evidence, stage1_extension_hooks::malformed_input_and_stale_capability_cannot_reach_provider (hook CommandTimeout under load)"
+  },
+  "notes": "Outside owned paths: tests/stage1_context_checkpoint.rs (legacy_digest_checkpoint_remains_readable_without_becoming_semantic built its marker with the deleted prepare_context and restored it with restore_checkpoint; it is now legacy_digest_checkpoint_never_becomes_semantic, using a literal legacy marker), tests/stage1_semantic_compaction.rs (one line asserting report.checkpoint.is_none() removed). Old digest markers already in journals stay inert journal data; provider preparation reads only semantic checkpoints, as before. Hosts (headless /compact, TUI, slash_actions) serialize the report unchanged apart from the absent `checkpoint` key.",
+  "created_at": "2026-10-14T19:06:52Z",
+  "digest": "36311030647915130d0003cf9108ca1d0deea9f5aed85f1e99dc9bfef1d71d7a"
+}

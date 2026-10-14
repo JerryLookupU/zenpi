@@ -118,9 +118,12 @@ fn changed_source_cut_tail_parent_summary_and_branch_are_rejected() {
     );
     changed = source.clone();
     changed.remove(3);
-    assert!(
+    // A call missing its result can only stay in the retained tail.
+    assert_eq!(
         context::prepare_semantic_compaction(&changed, "session-one", "linear", 0, &|| false)
-            .is_err()
+            .unwrap()
+            .source_end(),
+        2
     );
     assert!(
         context::restore_semantic_checkpoint(
@@ -164,7 +167,7 @@ fn unresolved_tool_results_stay_in_tail_and_failed_assistants_are_not_projected(
     assert!(!output.iter().any(|t| t.id == "aborted"));
     // A later user record cannot cause an unresolved prior call to be summarized away.
     turns.push(Turn::new("u3", TurnRole::User, "Continue"));
-    assert_eq!(finalize(&turns, "session-one").source_end, 6);
+    assert_eq!(finalize(&turns, "session-one").source_end, 7);
 }
 
 #[test]
@@ -173,9 +176,12 @@ fn failed_writes_are_not_reported_as_modified_and_unknown_prefix_is_not_compacte
     turns[4].metadata.as_mut().unwrap()["outcome"] = json!("denied");
     assert!(finalize(&turns, "session-one").modified_files.is_empty());
     turns[4].metadata.as_mut().unwrap()["outcome"] = json!("unknown_outcome");
-    assert!(
+    // Only a cut before the call (splitting its turn) keeps the unknown outcome out of the summary.
+    assert_eq!(
         context::prepare_semantic_compaction(&turns, "session-one", "linear", 0, &|| false)
-            .is_err()
+            .unwrap()
+            .source_end(),
+        2
     );
 }
 
@@ -345,29 +351,10 @@ fn checkpoint_recovery_child() {
 }
 
 #[test]
-fn legacy_digest_checkpoint_remains_readable_without_becoming_semantic() {
-    let turns: Vec<_> = (0..20)
-        .map(|i| {
-            Turn::new(
-                format!("t{i}"),
-                if i % 2 == 0 {
-                    TurnRole::User
-                } else {
-                    TurnRole::Assistant
-                },
-                "x".repeat(500),
-            )
-        })
-        .collect();
-    let budget = ContextBudget {
-        max_tokens: 1500,
-        reserved_output_tokens: 300,
-    };
-    let old = context::prepare_context(&turns, budget, &|| false)
-        .unwrap()
-        .checkpoint
-        .unwrap();
-    let json = serde_json::to_value(&old).unwrap();
-    assert!(serde_json::from_value::<SemanticCheckpoint>(json).is_err());
-    assert!(context::restore_checkpoint(&turns, &old).is_ok());
+fn legacy_digest_checkpoint_never_becomes_semantic() {
+    // Shape of the pre-ZE-235 deterministic digest marker.
+    let old = json!({"source_start":0,"source_end":10,"source_sha256":"ab",
+        "summary":"Compacted context checkpoint: 10 records",
+        "estimated_tokens_before":2600,"estimated_tokens_after":900});
+    assert!(serde_json::from_value::<SemanticCheckpoint>(old).is_err());
 }

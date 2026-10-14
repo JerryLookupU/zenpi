@@ -778,15 +778,10 @@ impl Backend for CaptureOnly {
             .metadata
             .is_some_and(|v| v["purpose"] == "semantic_compaction")
         {
-            let data: Value = serde_json::from_str(&request.turns[0].content).unwrap();
+            // pi: a free-text summary of role-labelled conversation text.
+            assert!(request.turns[0].content.starts_with("<conversation>"));
             let mut completion = Completion::text(
-                json!({
-                    "goals":["Continue the original task"],"constraints":[],"decisions":[],
-                    "progress":["Earlier history reviewed"],"pending_tasks":[],"critical_facts":[],
-                    "read_files":data["read_files"],"modified_files":data["modified_files"],
-                    "unresolved_tools":data["unresolved_tools"],
-                })
-                .to_string(),
+                "## Goal\nContinue the original task\n\n## Progress\n- Earlier history reviewed",
             );
             completion.model = Some("fixture-summary".into());
             completion.usage = Some(zenpi::backend::Usage {

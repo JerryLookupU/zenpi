@@ -125,13 +125,15 @@ impl Peer {
                         let request = read_request(&mut s);
                         let all = request.to_string();
                         let content = if request["metadata"]["purpose"] == "semantic_compaction" {
-                            let data: Value = serde_json::from_str(
-                                request["messages"].as_array().unwrap().last().unwrap()["content"]
-                                    .as_str()
-                                    .unwrap(),
+                            let branch = if all.contains("BRANCH_C_ONLY") {
+                                assert!(!all.contains("BRANCH_B_ONLY"));
+                                "BRANCH_C_ONLY"
+                            } else {
+                                "BRANCH_B_ONLY"
+                            };
+                            format!(
+                                "## Goal\nCOMMON_A\n\n## Constraints & Preferences\n- {branch}\n\n## Next Steps\n1. verify selected ancestry"
                             )
-                            .unwrap();
-                            json!({"goals":["COMMON_A"],"constraints":[if all.contains("BRANCH_C_ONLY"){assert!(!all.contains("BRANCH_B_ONLY"));"BRANCH_C_ONLY"}else{"BRANCH_B_ONLY"}],"decisions":[],"progress":[],"pending_tasks":["verify selected ancestry"],"critical_facts":[],"read_files":data["read_files"],"modified_files":data["modified_files"],"unresolved_tools":data["unresolved_tools"]}).to_string()
                         } else {
                             "done".into()
                         };
