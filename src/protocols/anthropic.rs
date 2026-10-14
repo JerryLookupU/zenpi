@@ -405,17 +405,11 @@ fn request_body_inner(
                 if !pending.remove(id) {
                     return Err(config("unexpected or duplicate Anthropic tool result"));
                 }
-                let is_error = turn
-                    .metadata
-                    .as_ref()
-                    .and_then(|m| m.get("outcome"))
-                    .and_then(Value::as_str)
-                    .is_some_and(|v| v != "succeeded");
+                let (text, is_error) = super::tool_result_text(turn);
                 if deepseek && is_error {
                     return Err(config("DeepSeek does not enforce tool_result.is_error"));
                 }
-                let mut block =
-                    json!({"type":"tool_result","tool_use_id":id,"content":turn.content});
+                let mut block = json!({"type":"tool_result","tool_use_id":id,"content":text});
                 if !deepseek {
                     block["is_error"] = json!(is_error);
                 }

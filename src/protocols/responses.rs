@@ -111,7 +111,8 @@ fn checked_input(turns: &[Turn], codex: bool) -> Result<Vec<Value>, BackendError
             if !pending.remove(id) {
                 return Err(invalid());
             }
-            input.push(json!({"type":"function_call_output", "call_id":ids.get(id).ok_or_else(invalid)?, "output":turn.content}));
+            let (output, _) = super::tool_result_text(turn);
+            input.push(json!({"type":"function_call_output", "call_id":ids.get(id).ok_or_else(invalid)?, "output":output}));
             continue;
         }
         if !pending.is_empty() {
@@ -353,10 +354,11 @@ fn responses_input_items(turn: &Turn) -> Vec<Value> {
             .and_then(|metadata| metadata.get("tool_call_id"))
             .and_then(Value::as_str)
             .unwrap_or(&turn.id);
+        let (output, _) = super::tool_result_text(turn);
         return vec![json!({
             "type": "function_call_output",
             "call_id": call_id,
-            "output": turn.content,
+            "output": output,
         })];
     }
     if turn.role == TurnRole::Assistant

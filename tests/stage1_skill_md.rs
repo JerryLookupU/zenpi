@@ -776,7 +776,9 @@ mod model_tools {
             .unwrap()["content"]
             .as_str()
             .unwrap();
-        serde_json::from_str(content).unwrap()
+        // ZE-213: successful extension-style results keep their JSON record,
+        // while a failed call reaches the model as its plain error text.
+        serde_json::from_str(content).unwrap_or_else(|_| Value::String(content.into()))
     }
     struct Cli {
         child: Child,
@@ -891,7 +893,7 @@ mod model_tools {
             last_tool(&requests[2])["output"]["resource"]["content"],
             "RESOURCE_SENTINEL"
         );
-        assert_eq!(last_tool(&requests[3])["status"], "error");
+        assert!(last_tool(&requests[3]).is_string());
         assert!(!requests[3].to_string().contains("MANUAL_SENTINEL"));
         let journal = fs::read_to_string(dir.path().join("cli.jsonl")).unwrap();
         assert!(journal.contains("source_hash") && journal.contains("MODEL_BODY_SENTINEL"));
@@ -931,7 +933,7 @@ mod model_tools {
         assert_eq!(cli.send("fresh", "Use reader now")["success"], true);
         handle.join().unwrap();
         let requests = requests.lock().unwrap();
-        assert_eq!(last_tool(&requests[1])["status"], "error");
+        assert!(last_tool(&requests[1]).is_string());
         assert!(
             last_tool(&requests[1])
                 .to_string()

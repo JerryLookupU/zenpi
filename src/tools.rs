@@ -1618,6 +1618,263 @@ pub fn compact_tool_result(
     })
 }
 
+/// Plain text the model receives for one tool result (pi `content`). The
+/// structured [`ToolResult`] stays the journal and UI record (pi `details`);
+/// providers get this text plus an `is_error` flag, never the JSON envelope.
+/// Built-in tools render a compact human form; anything else (extension
+/// tools, hook-rewritten or unexpected shapes) keeps the serialized record.
+pub fn model_facing_text(
+    result: &ToolResult,
+    capture: Option<&crate::tool_output::CaptureReport>,
+) -> String {
+    let (tool, output) = match result {
+        ToolResult::Error { error, .. } => return error.message.clone(),
+        ToolResult::Success { tool, output, .. } => (tool, output),
+    };
+    let rendered = if output.get("compacted").is_some() && output.get("preview").is_some() {
+        compacted_model_text(output, capture)
+    } else {
+        match tool.as_str() {
+            "read_file" => read_file_model_text(output),
+            "run_command" => run_command_model_text(output, capture),
+            "write_file" => write_file_model_text(output),
+            "edit_file" => edit_file_model_text(output),
+            "search_text" => search_model_text(output),
+            "find" => find_model_text(output),
+            "list_directory" => list_model_text(output),
+            _ => None,
+        }
+    };
+    rendered.unwrap_or_else(|| {
+        let mut value = serde_json::to_value(result).unwrap_or(Value::Null);
+        if let Some(report) = capture
+            && let Some(object) = value.as_object_mut()
+        {
+            object.insert(
+                "output_capture".into(),
+                serde_json::to_value(report).unwrap_or(Value::Null),
+            );
+        }
+        value.to_string()
+    })
+}
+
+/// How the model can page through one captured raw output stream.
+fn artifact_hint(artifact: &crate::tool_output::ArtifactRef) -> String {
+    format!(
+        "read_tool_output artifact_id={} call_id={}",
+        artifact.artifact_id, artifact.call_id
+    )
+}
+
+fn compacted_model_text(
+    output: &Value,
+    capture: Option<&crate::tool_output::CaptureReport>,
+) -> Option<String> {
+    let preview = output.get("preview")?.as_str()?;
+    let bytes = output.get("bytes").and_then(Value::as_u64).unwrap_or(0);
+    let note = match output.get("artifact").and_then(Value::as_str) {
+        Some(artifact) => format!(
+            "[Result too large ({bytes} bytes); full JSON stored at {artifact}. Preview follows]"
+        ),
+        None => format!("[Result too large ({bytes} bytes); showing a preview only]"),
+    };
+    let mut text = format!("{note}\n{preview}");
+    for artifact in capture.into_iter().flat_map(|report| &report.artifacts) {
+        let stream = match artifact.stream {
+            crate::tool_output::OutputStream::Stdout => "stdout",
+            crate::tool_output::OutputStream::Stderr => "stderr",
+        };
+        text.push_str(&format!("\n[Full {stream}: {}]", artifact_hint(artifact)));
+    }
+    Some(text)
+}
+
+fn output_flag(output: &Value, key: &str) -> bool {
+    output.get(key).and_then(Value::as_bool).unwrap_or(false)
+}
+
+fn read_file_model_text(output: &Value) -> Option<String> {
+    let content = output.get("content")?.as_str()?;
+    if !output_flag(output, "truncated") {
+        return Some(content.to_owned());
+    }
+    let mut text = content.to_owned();
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str(&format!(
+        "\n[Truncated at {} bytes. Use max_bytes (up to {MAX_READ_BYTES}) to read more]",
+        content.len()
+    ));
+    Some(text)
+}
+
+fn run_command_model_text(
+    output: &Value,
+    capture: Option<&crate::tool_output::CaptureReport>,
+) -> Option<String> {
+    let stdout = output.get("stdout")?.as_str()?;
+    let stderr = output.get("stderr")?.as_str()?;
+    let mut text = String::new();
+    for stream in [stdout, stderr] {
+        if stream.is_empty() {
+            continue;
+        }
+        text.push_str(stream);
+        if !stream.ends_with('\n') {
+            text.push('\n');
+        }
+    }
+    if !text.is_empty() {
+        text.push('\n');
+    }
+    if output_flag(output, "cancelled") {
+        text.push_str("Command was cancelled");
+    } else if output_flag(output, "timed_out") {
+        let timeout = output
+            .get("timeout_ms")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        text.push_str(&format!("Command timed out after {timeout} ms"));
+    } else if let Some(code) = output.get("exit_code").and_then(Value::as_i64) {
+        text.push_str(&format!("Command exited with code {code}"));
+    } else if let Some(signal) = output.get("signal").and_then(Value::as_i64) {
+        text.push_str(&format!("Command terminated by signal {signal}"));
+    } else {
+        text.push_str("Command finished without an exit code");
+    }
+    let artifacts: Vec<crate::tool_output::ArtifactRef> = output
+        .get("output_artifacts")
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
+        .or_else(|| capture.map(|report| report.artifacts.clone()))
+        .unwrap_or_default();
+    for (stream, key, label) in [
+        (
+            crate::tool_output::OutputStream::Stdout,
+            "stdout_truncated",
+            "stdout",
+        ),
+        (
+            crate::tool_output::OutputStream::Stderr,
+            "stderr_truncated",
+            "stderr",
+        ),
+    ] {
+        if !output_flag(output, key) {
+            continue;
+        }
+        text.push_str(&format!("\n[{label} truncated]"));
+        if let Some(artifact) = artifacts.iter().find(|artifact| artifact.stream == stream) {
+            text.push_str(&format!(" Full {label}: {}", artifact_hint(artifact)));
+        }
+    }
+    Some(text)
+}
+
+fn write_file_model_text(output: &Value) -> Option<String> {
+    let path = output.get("path")?.as_str()?;
+    let bytes = output.get("bytes")?.as_u64()?;
+    let verb = if output_flag(output, "created") {
+        "Created"
+    } else {
+        "Wrote"
+    };
+    Some(format!("{verb} {path} ({bytes} bytes)"))
+}
+
+fn edit_file_model_text(output: &Value) -> Option<String> {
+    let path = output.get("path")?.as_str()?;
+    let replacements = output
+        .get("replacements")
+        .and_then(Value::as_u64)
+        .unwrap_or(1);
+    let noun = if replacements == 1 {
+        "replacement"
+    } else {
+        "replacements"
+    };
+    Some(format!("Edited {path} ({replacements} {noun})"))
+}
+
+fn finish_listing(mut lines: Vec<String>, empty: &str, output: &Value) -> String {
+    if lines.is_empty() {
+        lines.push(empty.into());
+    }
+    if output_flag(output, "truncated") {
+        let reasons: Vec<&str> = output
+            .get("truncation_reasons")
+            .and_then(Value::as_array)
+            .map(|reasons| reasons.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        lines.push(if reasons.is_empty() {
+            "[Results truncated]".into()
+        } else {
+            format!("[Results truncated: {}]", reasons.join(", "))
+        });
+    }
+    lines.join("\n")
+}
+
+fn search_model_text(output: &Value) -> Option<String> {
+    let record = |item: &Value, matched: bool| -> Option<(String, u64, bool, String)> {
+        Some((
+            item.get("path")?.as_str()?.to_owned(),
+            item.get("line")?.as_u64()?,
+            matched,
+            item.get("text")?.as_str()?.to_owned(),
+        ))
+    };
+    let mut records = Vec::new();
+    for item in output.get("matches")?.as_array()? {
+        records.push(record(item, true)?);
+    }
+    for item in output
+        .get("context")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        records.push(record(item, false)?);
+    }
+    // Matches precede context for the same line, so dedup keeps the match.
+    records.sort_by(|left, right| (&left.0, left.1).cmp(&(&right.0, right.1)));
+    records.dedup_by(|later, earlier| earlier.0 == later.0 && earlier.1 == later.1);
+    let lines = records
+        .into_iter()
+        .map(|(path, line, matched, text)| {
+            let separator = if matched { ':' } else { '-' };
+            format!(
+                "{path}{separator}{line}{separator} {}",
+                text.trim_end_matches(['\r', '\n'])
+            )
+        })
+        .collect();
+    Some(finish_listing(lines, "No matches found", output))
+}
+
+fn find_model_text(output: &Value) -> Option<String> {
+    let mut lines = Vec::new();
+    for path in output.get("paths")?.as_array()? {
+        lines.push(path.as_str()?.to_owned());
+    }
+    Some(finish_listing(lines, "No files found", output))
+}
+
+fn list_model_text(output: &Value) -> Option<String> {
+    let mut lines = Vec::new();
+    for entry in output.get("entries")?.as_array()? {
+        let name = entry.get("name")?.as_str()?;
+        let suffix = match entry.get("kind").and_then(Value::as_str) {
+            Some("directory") => "/",
+            Some("symlink") => "@",
+            _ => "",
+        };
+        lines.push(format!("{name}{suffix}"));
+    }
+    Some(finish_listing(lines, "(empty directory)", output))
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ReadToolOutputTool;
 impl Tool for ReadToolOutputTool {
