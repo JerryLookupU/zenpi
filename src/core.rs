@@ -612,6 +612,7 @@ pub struct Agent {
     live_tool_sink: Option<LiveToolEventSink>,
     tools: Option<ToolRuntime>,
     context_budget: crate::context::ContextBudget,
+    compaction: crate::config::CompactionSettings,
     skills: crate::skills::SkillSet,
     resource_loader: Option<crate::resource_loader::ResourceLoader>,
     active_resources: Option<std::sync::Arc<crate::resource_loader::ResourceSnapshot>>,
@@ -939,6 +940,7 @@ impl Agent {
             live_tool_sink: None,
             tools: None,
             context_budget: crate::context::ContextBudget::default(),
+            compaction: crate::config::CompactionSettings::default(),
             skills: crate::skills::SkillSet::default(),
             resource_loader: None,
             active_resources: None,
@@ -2877,6 +2879,10 @@ impl Agent {
         self.context_budget = budget;
     }
 
+    pub fn set_compaction_settings(&mut self, settings: crate::config::CompactionSettings) {
+        self.compaction = settings;
+    }
+
     pub fn context_budget(&self) -> crate::context::ContextBudget {
         self.backend
             .model_descriptor(self.model.as_deref())
@@ -2964,9 +2970,13 @@ impl Agent {
         Ok(())
     }
 
+    /// Prepare provider context, compacting it first (pi) when the latest real
+    /// usage plus an estimate of later records exceeds `window - reserve`,
+    /// when the request cannot fit, or when `force` (a context overflow) asks.
     fn prepare_semantic_provider_context<F: Fn() -> bool>(
         &mut self,
         budget: crate::context::ContextBudget,
+        force: bool,
         cancelled: &F,
     ) -> Result<crate::context::PreparedContext, AgentError> {
         use crate::context::{ContextBudget, PreparedContext, estimate_tokens};
@@ -2980,17 +2990,54 @@ impl Agent {
         }
         let turns = self.context_source_for_provider()?;
         let estimate = estimate_tokens(&turns);
-        if estimate.input_tokens <= budget.max_tokens - budget.reserved_output_tokens {
+        let unbounded = ContextBudget {
+            max_tokens: u64::MAX,
+            reserved_output_tokens: 0,
+        };
+        let previous = self.session.latest_semantic_checkpoint(unbounded)?;
+        let settings = self.compaction;
+        // `budget` may already exclude the instructions; the window does not.
+        let window = self.context_budget().max_tokens.max(budget.max_tokens);
+        // The configured reserve applies while it leaves more than half the
+        // window for context; a smaller window keeps only its output reservation.
+        let reserve = if settings.reserve_tokens.saturating_mul(2) < window {
+            settings.reserve_tokens.max(budget.reserved_output_tokens)
+        } else {
+            budget.reserved_output_tokens
+        };
+        // Usage reported before the latest compaction measured the old context.
+        let stale: BTreeSet<&str> = previous
+            .iter()
+            .flat_map(|checkpoint| checkpoint.retained_ids.iter().map(String::as_str))
+            .collect();
+        let used =
+            crate::context::estimate_context_tokens(&turns, window - budget.max_tokens, &|turn| {
+                !stale.contains(turn.id.as_str())
+            });
+        let over = estimate.input_tokens > budget.max_tokens - budget.reserved_output_tokens;
+        let triggered = force || (settings.enabled && used > window.saturating_sub(reserve));
+        if !over && !triggered {
             return Ok(PreparedContext {
                 turns,
                 checkpoint: None,
                 estimate,
             });
         }
+        // An early (threshold) compaction that cannot run leaves a context
+        // that still fits; an over-budget or overflowed one fails explicitly.
+        let required = over || force;
+        let unchanged = PreparedContext {
+            turns,
+            checkpoint: None,
+            estimate,
+        };
         // Compaction rewrites history over a possibly broken tail. Leftover
         // unknown outcomes veto it; the turn must fail explicitly here rather
         // than send an over-budget request.
         if let Some(reason) = self.automation_vetoed() {
+            if !required {
+                return Ok(unchanged);
+            }
             self.session.append_event(serde_json::json!({
                 "type": "automation_vetoed", "automation": "semantic_compaction",
                 "reason": reason, "turn_id": self.active_turn_id,
@@ -3002,11 +3049,9 @@ impl Agent {
         let source = self.selected_history()?;
         let branch_id = self.session.selected_tree_branch();
         let session_id = self.session.session_id().to_owned();
-        let previous = self.session.latest_semantic_checkpoint(ContextBudget {
-            max_tokens: u64::MAX,
-            reserved_output_tokens: 0,
-        })?;
-        let keep_tokens = (budget.max_tokens - budget.reserved_output_tokens) / 2;
+        let keep_tokens = settings
+            .keep_recent_tokens
+            .min((budget.max_tokens - budget.reserved_output_tokens) / 2);
         let scope = self
             .active_turn_id
             .clone()
@@ -3021,9 +3066,17 @@ impl Agent {
             &|| pump.poll(cancelled()),
         );
         pump.finish()?;
-        let plan = plan.map_err(|e| {
-            AgentError::InvalidTurn(format!("semantic compaction has no safe bounded cut: {e}"))
-        })?;
+        let plan = match plan {
+            Ok(plan) => plan,
+            Err(crate::context::ContextError::InvalidCheckpoint) if !required => {
+                return Ok(unchanged);
+            }
+            Err(e) => {
+                return Err(AgentError::InvalidTurn(format!(
+                    "semantic compaction has no safe bounded cut: {e}"
+                )));
+            }
+        };
         let data = plan
             .summary_request_data(&source, previous.as_ref())
             .map_err(|e| {
@@ -3037,8 +3090,22 @@ impl Agent {
             |model| model.provider.clone(),
         );
         let request_budget = self.context_budget();
-        let output_limit = request_budget.reserved_output_tokens.min(4096);
-        if output_limit == 0 {
+        // pi: the history summary may use 80% of the reserve, a split-turn
+        // prefix 50%; neither exceeds the model's output reservation.
+        let parts = [
+            (
+                "history",
+                data.history,
+                settings.reserve_tokens / 5 * 4 + settings.reserve_tokens % 5 * 4 / 5,
+            ),
+            ("turn_prefix", data.turn_prefix, settings.reserve_tokens / 2),
+        ]
+        .into_iter()
+        .filter_map(|(part, text, limit)| {
+            text.map(|text| (part, text, limit.min(request_budget.reserved_output_tokens)))
+        })
+        .collect::<Vec<_>>();
+        if parts.iter().any(|(_, _, limit)| *limit == 0) {
             return Err(AgentError::InvalidTurn(
                 "semantic summary output budget is zero".into(),
             ));
@@ -3048,53 +3115,59 @@ impl Agent {
             &operation_id,
             crate::backend::RequestPurpose::SemanticCompaction,
         )?;
-        let mut request_turn = Turn::new(
-            format!("summary-{}", self.session.next_sequence()),
-            TurnRole::User,
-            &data,
-        );
-        request_turn.created_at_ms = source.last().map_or(0, |turn| turn.created_at_ms);
-        let request_turns = [request_turn];
-        let request_estimate = estimate_tokens(&request_turns)
-            .input_tokens
-            .saturating_add(crate::context::SUMMARY_INSTRUCTIONS.len().div_ceil(4) as u64)
-            .saturating_add(64);
-        if request_estimate.saturating_add(output_limit) > request_budget.max_tokens {
-            return Err(AgentError::InvalidTurn("semantic summary source exceeds model/request budget; existing checkpoint retained".into()));
-        }
         let price = descriptor.as_ref().and_then(|model| model.price.as_ref());
-        // Reserve the full allowed input window for a monetary ceiling. This is
-        // an upper-bound reservation, never a claim about the actual bill.
-        let quote = price
-            .map(|price| {
-                crate::governance::quoted_summary_cost(
-                    price,
-                    request_budget.max_tokens,
-                    output_limit,
-                )
-            })
-            .transpose()
-            .map_err(|e| AgentError::Governance(e.to_string()))?;
+        let mut requests = Vec::new();
+        for (part, text, output_limit) in parts {
+            let mut request_turn = Turn::new(
+                format!("summary-{}", self.session.next_sequence()),
+                TurnRole::User,
+                text,
+            );
+            request_turn.created_at_ms = source.last().map_or(0, |turn| turn.created_at_ms);
+            let request_estimate = estimate_tokens(std::slice::from_ref(&request_turn))
+                .input_tokens
+                .saturating_add(crate::context::SUMMARY_INSTRUCTIONS.len().div_ceil(4) as u64)
+                .saturating_add(64);
+            // Each summary request must itself fit the context window.
+            if request_estimate.saturating_add(output_limit) > request_budget.max_tokens {
+                return Err(AgentError::InvalidTurn("semantic summary source exceeds model/request budget; existing checkpoint retained".into()));
+            }
+            // Reserve the full allowed input window for a monetary ceiling. This
+            // is an upper-bound reservation, never a claim about the actual bill.
+            let quote = price
+                .map(|price| {
+                    crate::governance::quoted_summary_cost(
+                        price,
+                        request_budget.max_tokens,
+                        output_limit,
+                    )
+                })
+                .transpose()
+                .map_err(|e| AgentError::Governance(e.to_string()))?;
+            requests.push((part, request_turn, request_estimate, output_limit, quote));
+        }
         self.ensure_summary_ledger()?;
         let ledger = self.governance.as_mut().expect("summary ledger");
         ledger
             .persist(&mut self.session)
             .map_err(|e| AgentError::Governance(e.to_string()))?;
-        // Reserve the summary's token/cost ceiling together. HTTP admission is
-        // charged separately, only when the backend actually starts a send.
+        // Reserve every summary's token/cost ceiling before the first send. HTTP
+        // admission is charged separately, only when the backend starts a send.
         let mut candidate =
             crate::governance::BudgetLedger::restore(&self.session, ledger.limits())
                 .map_err(|e| AgentError::Governance(e.to_string()))?;
-        candidate
-            .charge(
-                crate::governance::ResourceKind::InputTokens,
-                request_estimate,
-            )
-            .and_then(|_| {
-                candidate.charge(crate::governance::ResourceKind::OutputTokens, output_limit)
-            })
-            .and_then(|_| candidate.reserve_summary_cost(quote))
-            .map_err(|e| AgentError::Governance(e.to_string()))?;
+        for (_, _, request_estimate, output_limit, quote) in &requests {
+            candidate
+                .charge(
+                    crate::governance::ResourceKind::InputTokens,
+                    *request_estimate,
+                )
+                .and_then(|_| {
+                    candidate.charge(crate::governance::ResourceKind::OutputTokens, *output_limit)
+                })
+                .and_then(|_| candidate.reserve_summary_cost(*quote))
+                .map_err(|e| AgentError::Governance(e.to_string()))?;
+        }
         candidate
             .persist(&mut self.session)
             .map_err(|e| AgentError::Governance(e.to_string()))?;
@@ -3110,162 +3183,189 @@ impl Agent {
                 retry_requires_confirmation: false,
             })?;
         use sha2::{Digest, Sha256};
-        self.session.append_event(serde_json::json!({
-            "type":"semantic_summary_requested", "operation_id":operation_id,
-            "source":plan.source(), "source_end":plan.source_end(),
-            "request_sha256":format!("{:x}",Sha256::digest(data.as_bytes())),
-            "requested_model":self.model, "provider":summary_provider, "backend":self.backend.name(), "model_metadata":descriptor,
-            "budget":request_budget, "approximate_input_tokens":request_estimate,
-            "max_output_tokens":output_limit, "reserved_cost_micro_usd":quote,
-            "price_known":price.is_some(),
-        }))?;
-        let metadata = serde_json::json!({"purpose":"semantic_compaction"});
-        let request =
-            CompletionRequest::new(&operation_id, &request_turns, self.model.as_deref(), &[])
+        let deadline = self.provider_request_deadline(&request_scope);
+        let outcome = (|| -> Result<PreparedContext, AgentError> {
+            let mut summaries = Vec::new();
+            let mut total_usage = crate::backend::Usage::default();
+            let mut reported_model = None;
+            for (part, request_turn, request_estimate, output_limit, quote) in requests {
+                self.session.append_event(serde_json::json!({
+                    "type":"semantic_summary_requested", "operation_id":operation_id, "part":part,
+                    "source":plan.source(), "source_end":plan.source_end(),
+                    "request_sha256":format!("{:x}",Sha256::digest(request_turn.content.as_bytes())),
+                    "requested_model":self.model, "provider":summary_provider, "backend":self.backend.name(), "model_metadata":descriptor,
+                    "budget":request_budget, "approximate_input_tokens":request_estimate,
+                    "max_output_tokens":output_limit, "reserved_cost_micro_usd":quote,
+                    "price_known":price.is_some(),
+                }))?;
+                let metadata = serde_json::json!({"purpose":"semantic_compaction"});
+                let request_turns = [request_turn];
+                let request = CompletionRequest::new(
+                    &operation_id,
+                    &request_turns,
+                    self.model.as_deref(),
+                    &[],
+                )
                 .with_instructions(Some(crate::context::SUMMARY_INSTRUCTIONS))
                 .with_metadata(Some(&metadata));
-        let request = match self.explicit_output_limit(output_limit) {
-            Some(limit) => request.with_max_output_tokens(limit),
-            None => request,
-        };
-        let deadline = self.provider_request_deadline(&request_scope);
-        let pump =
-            crate::input_queue::InputPump::new(&mut self.session, self.input_port.clone(), &scope);
-        let mut streamed_bytes = 0usize;
-        let mut admission_error = None;
-        let mut before_send = |_kind, actual_scope: &crate::backend::RequestScope| {
-            let result = pump.with_session(|session| {
-                admit_provider_send(
-                    session,
-                    &mut self.governance,
-                    &mut self.worker_budget,
-                    self.worker_admission_operation.as_deref(),
-                    self.tools.as_ref(),
-                    actual_scope,
-                    &request_scope,
-                )
-            });
-            result.map_err(|error| {
-                admission_error = Some(error);
-                BackendError::AdmissionDenied("provider request denied by owner".into())
-            })
-        };
-        let request_cancelled = || {
-            pump.poll(
-                cancelled()
-                    || self
-                        .tools
-                        .as_ref()
-                        .is_some_and(|runtime| runtime.context.checked_policy_evidence().is_err()),
-            )
-        };
-        let mut control = crate::backend::RequestControl {
-            cancelled: &request_cancelled,
-            deadline,
-            scope: request_scope.clone(),
-            before_send: &mut before_send,
-        };
-        let response =
-            self.backend
-                .complete_with_request_control(request, &mut control, &mut |event| {
-                    if let ProviderEvent::TextDelta { delta } = event {
-                        streamed_bytes = streamed_bytes.saturating_add(delta.len());
-                        if streamed_bytes > crate::context::MAX_SUMMARY_BYTES {
-                            return Err(BackendError::InvalidResponse(
-                                "semantic summary exceeded byte limit".into(),
-                            ));
+                let request = match self.explicit_output_limit(output_limit) {
+                    Some(limit) => request.with_max_output_tokens(limit),
+                    None => request,
+                };
+                let pump = crate::input_queue::InputPump::new(
+                    &mut self.session,
+                    self.input_port.clone(),
+                    &scope,
+                );
+                let mut streamed_bytes = 0usize;
+                let mut admission_error = None;
+                let mut before_send = |_kind, actual_scope: &crate::backend::RequestScope| {
+                    let result = pump.with_session(|session| {
+                        admit_provider_send(
+                            session,
+                            &mut self.governance,
+                            &mut self.worker_budget,
+                            self.worker_admission_operation.as_deref(),
+                            self.tools.as_ref(),
+                            actual_scope,
+                            &request_scope,
+                        )
+                    });
+                    result.map_err(|error| {
+                        admission_error = Some(error);
+                        BackendError::AdmissionDenied("provider request denied by owner".into())
+                    })
+                };
+                let request_cancelled = || {
+                    pump.poll(
+                        cancelled()
+                            || self.tools.as_ref().is_some_and(|runtime| {
+                                runtime.context.checked_policy_evidence().is_err()
+                            }),
+                    )
+                };
+                let mut control = crate::backend::RequestControl {
+                    cancelled: &request_cancelled,
+                    deadline,
+                    scope: request_scope.clone(),
+                    before_send: &mut before_send,
+                };
+                let response = self.backend.complete_with_request_control(
+                    request,
+                    &mut control,
+                    &mut |event| {
+                        if let ProviderEvent::TextDelta { delta } = event {
+                            streamed_bytes = streamed_bytes.saturating_add(delta.len());
+                            if streamed_bytes > crate::context::MAX_SUMMARY_BYTES {
+                                return Err(BackendError::InvalidResponse(
+                                    "semantic summary exceeded byte limit".into(),
+                                ));
+                            }
                         }
-                    }
-                    Ok(())
-                });
-        let pump_result = pump.finish();
-        let outcome = (|| -> Result<PreparedContext, AgentError> {
-            pump_result?;
-            if let Some(error) = admission_error {
-                return Err(error);
-            }
-            let response = response?;
-            let actual_cost = response
-                .usage
-                .map(|usage| {
-                    price
-                        .map(|price| {
-                            crate::governance::quoted_summary_cost(
-                                price,
-                                usage.input_tokens,
-                                usage.output_tokens,
+                        Ok(())
+                    },
+                );
+                pump.finish()?;
+                if let Some(error) = admission_error {
+                    return Err(error);
+                }
+                let response = response?;
+                let actual_cost = response
+                    .usage
+                    .map(|usage| {
+                        price
+                            .map(|price| {
+                                crate::governance::quoted_summary_cost(
+                                    price,
+                                    usage.input_tokens,
+                                    usage.output_tokens,
+                                )
+                            })
+                            .transpose()
+                    })
+                    .transpose()
+                    .map_err(|e| AgentError::Governance(e.to_string()))?
+                    .flatten();
+                let mut raw_end = response
+                    .content
+                    .len()
+                    .min(crate::context::MAX_SUMMARY_BYTES);
+                while !response.content.is_char_boundary(raw_end) {
+                    raw_end -= 1;
+                }
+                let annotation_bytes = serde_json::to_vec(&response.annotations)
+                    .map_err(|e| AgentError::InvalidTurn(e.to_string()))?;
+                let annotations = if annotation_bytes.len() <= crate::context::MAX_SUMMARY_BYTES {
+                    serde_json::to_value(&response.annotations).expect("JSON values serialize")
+                } else {
+                    serde_json::json!({"omitted":true,"bytes":annotation_bytes.len(),
+                    "sha256":format!("{:x}",Sha256::digest(&annotation_bytes))})
+                };
+                self.session.append_event(serde_json::json!({
+                    "type":"semantic_summary_response", "operation_id":operation_id, "part":part,
+                    "source":plan.source(), "response_id":response.response_id, "provider":summary_provider, "backend":self.backend.name(),
+                    "model":response.model, "usage":response.usage, "usage_cost_estimate_micro_usd":actual_cost, "cost_basis":"reported_tokens_at_recorded_model_rates",
+                    "raw_summary":&response.content[..raw_end], "raw_summary_bytes":response.content.len(),
+                    "raw_summary_truncated":raw_end < response.content.len(),
+                    "raw_summary_sha256":format!("{:x}",Sha256::digest(response.content.as_bytes())),
+                    "annotations":annotations,
+                }))?;
+                if let Some(usage) = response.usage {
+                    let ledger = self.governance.as_mut().expect("summary ledger");
+                    ledger
+                        .charge(
+                            crate::governance::ResourceKind::InputTokens,
+                            usage.input_tokens.saturating_sub(request_estimate),
+                        )
+                        .and_then(|_| {
+                            ledger.charge(
+                                crate::governance::ResourceKind::OutputTokens,
+                                usage.output_tokens.saturating_sub(output_limit),
                             )
                         })
-                        .transpose()
-                })
-                .transpose()
-                .map_err(|e| AgentError::Governance(e.to_string()))?
-                .flatten();
-            let mut raw_end = response
-                .content
-                .len()
-                .min(crate::context::MAX_SUMMARY_BYTES);
-            while !response.content.is_char_boundary(raw_end) {
-                raw_end -= 1;
+                        .and_then(|_| {
+                            ledger.reserve_summary_cost(
+                                actual_cost
+                                    .zip(quote)
+                                    .map(|(actual, quote)| actual.saturating_sub(quote)),
+                            )
+                        })
+                        .and_then(|_| ledger.persist(&mut self.session))
+                        .map_err(|e| AgentError::Governance(e.to_string()))?;
+                }
+                if cancelled() {
+                    return Err(BackendError::Cancelled.into());
+                }
+                if response.usage.is_some_and(|usage| {
+                    usage.input_tokens.saturating_add(output_limit) > request_budget.max_tokens
+                }) {
+                    return Err(AgentError::InvalidTurn("summary actual input usage exceeds request budget; previous checkpoint retained".into()));
+                }
+                let (summary, usage) = plan
+                    .validate_summary_completion(&response, output_limit)
+                    .map_err(|e| {
+                        AgentError::InvalidTurn(format!(
+                            "invalid semantic summary; previous checkpoint retained: {e}"
+                        ))
+                    })?;
+                total_usage.input_tokens += usage.input_tokens;
+                total_usage.output_tokens += usage.output_tokens;
+                total_usage.total_tokens += usage.total_tokens;
+                total_usage.cache_read_tokens += usage.cache_read_tokens;
+                total_usage.cache_write_tokens += usage.cache_write_tokens;
+                reported_model = reported_model.or(response.model);
+                summaries.push((part, summary));
             }
-            let annotation_bytes = serde_json::to_vec(&response.annotations)
-                .map_err(|e| AgentError::InvalidTurn(e.to_string()))?;
-            let annotations = if annotation_bytes.len() <= crate::context::MAX_SUMMARY_BYTES {
-                serde_json::to_value(&response.annotations).expect("JSON values serialize")
-            } else {
-                serde_json::json!({"omitted":true,"bytes":annotation_bytes.len(),
-                "sha256":format!("{:x}",Sha256::digest(&annotation_bytes))})
+            let (history, prefix) = match summaries.as_slice() {
+                [("history", history), ("turn_prefix", prefix)] => {
+                    (history.as_str(), Some(prefix.as_str()))
+                }
+                [("turn_prefix", prefix)] => (data.carried_summary.as_str(), Some(prefix.as_str())),
+                [(_, history)] => (history.as_str(), None),
+                _ => unreachable!("a compaction summarizes history or a turn prefix"),
             };
-            self.session.append_event(serde_json::json!({
-                "type":"semantic_summary_response", "operation_id":operation_id,
-                "source":plan.source(), "response_id":response.response_id, "provider":summary_provider, "backend":self.backend.name(),
-                "model":response.model, "usage":response.usage, "usage_cost_estimate_micro_usd":actual_cost, "cost_basis":"reported_tokens_at_recorded_model_rates",
-                "raw_summary":&response.content[..raw_end], "raw_summary_bytes":response.content.len(),
-                "raw_summary_truncated":raw_end < response.content.len(),
-                "raw_summary_sha256":format!("{:x}",Sha256::digest(response.content.as_bytes())),
-                "annotations":annotations,
-            }))?;
-            if let Some(usage) = response.usage {
-                let ledger = self.governance.as_mut().expect("summary ledger");
-                ledger
-                    .charge(
-                        crate::governance::ResourceKind::InputTokens,
-                        usage.input_tokens.saturating_sub(request_estimate),
-                    )
-                    .and_then(|_| {
-                        ledger.charge(
-                            crate::governance::ResourceKind::OutputTokens,
-                            usage.output_tokens.saturating_sub(output_limit),
-                        )
-                    })
-                    .and_then(|_| {
-                        ledger.reserve_summary_cost(
-                            actual_cost
-                                .zip(quote)
-                                .map(|(actual, quote)| actual.saturating_sub(quote)),
-                        )
-                    })
-                    .and_then(|_| ledger.persist(&mut self.session))
-                    .map_err(|e| AgentError::Governance(e.to_string()))?;
-            }
-            if cancelled() {
-                return Err(BackendError::Cancelled.into());
-            }
-            if response.usage.is_some_and(|usage| {
-                usage.input_tokens.saturating_add(output_limit) > request_budget.max_tokens
-            }) {
-                return Err(AgentError::InvalidTurn("summary actual input usage exceeds request budget; previous checkpoint retained".into()));
-            }
-            let (summary, usage) = plan
-                .validate_summary_completion(&response, output_limit)
-                .map_err(|e| {
-                    AgentError::InvalidTurn(format!(
-                        "invalid semantic summary; previous checkpoint retained: {e}"
-                    ))
-                })?;
-            let reported_model = response
-                .model
-                .clone()
+            let summary = crate::context::merge_summaries(history, prefix);
+            let reported_model = reported_model
                 .or_else(|| self.model.clone())
                 .or_else(|| self.backend.model().map(str::to_owned))
                 .ok_or_else(|| {
@@ -3275,9 +3375,9 @@ impl Agent {
                 .finalize(
                     &self.selected_history()?,
                     summary,
-                    summary_provider,
+                    summary_provider.clone(),
                     reported_model,
-                    usage,
+                    total_usage,
                     budget,
                     cancelled,
                 )
@@ -3354,7 +3454,8 @@ impl Agent {
         // Match InputPump's manual scope and retire it on success or failure.
         self.input_port.set_scope(Some("manual-compaction"));
         let preparing = self.input_port.preparation();
-        let result = self.prepare_semantic_provider_context(self.context_budget(), &cancelled);
+        let result =
+            self.prepare_semantic_provider_context(self.context_budget(), false, &cancelled);
         drop(preparing);
         self.input_port.set_scope(None);
         let prepared = result?;
@@ -4984,6 +5085,9 @@ impl Agent {
         let mut input_continuations = 0;
         let mut tool_iterations = 0;
         let mut system_prompt: Option<String> = None;
+        // pi: a context overflow compacts once and retries once.
+        let mut force_compaction = false;
+        let mut overflow_retried = false;
         for _iteration in 0..=max_iterations.saturating_add(max_input_continuations) {
             self.input_boundary(&gate, false, is_cancelled())?;
             if is_cancelled() {
@@ -5071,8 +5175,11 @@ impl Agent {
                 gate.begin_prepare()
                     .map_err(|e| AgentError::Recovery(e.to_string()))?;
                 let preparing = self.input_port.preparation();
-                let mut prepared =
-                    self.prepare_semantic_provider_context(turn_budget, is_cancelled)?;
+                let mut prepared = self.prepare_semantic_provider_context(
+                    turn_budget,
+                    std::mem::take(&mut force_compaction),
+                    is_cancelled,
+                )?;
                 // ZE-233 (templates): every template turn on this branch is sent
                 // expanded, so later turns and restarts see the same text.
                 // Expansions are re-rendered from the current snapshot (never
@@ -5222,7 +5329,18 @@ impl Agent {
             if let Some(error) = admission_error {
                 return Err(error);
             }
-            let mut completion = completion.map_err(AgentError::from)?;
+            let mut completion = match completion {
+                Err(BackendError::ContextOverflow { .. })
+                    if self.compaction.enabled && !overflow_retried =>
+                {
+                    overflow_retried = true;
+                    force_compaction = true;
+                    gate = new_gate()?;
+                    continue;
+                }
+                completion => completion.map_err(AgentError::from)?,
+            };
+            overflow_retried = false;
             if let Some(usage) = completion.usage
                 && let Some(governance) = self.governance.as_mut()
             {
@@ -5359,6 +5477,12 @@ impl Agent {
             assistant_call.metadata = Some(
                 serde_json::json!({ "tool_calls": call_metadata, "annotations": completion.annotations, "model": completion.model }),
             );
+            // Real usage anchors the next compaction check (pi).
+            if let (Some(usage), Some(metadata)) =
+                (completion.usage, assistant_call.metadata.as_mut())
+            {
+                metadata["usage"] = serde_json::json!(usage);
+            }
             self.session.append_turn(assistant_call)?;
             gate = new_gate()?;
             let batch_ids: Vec<_> = calls.iter().map(|call| call.id.clone()).collect();
@@ -8627,6 +8751,15 @@ fn run_host(options: CliOptions) -> Result<(), ZenpiError> {
     };
     let session = SessionStore::open(&session_path)?;
     let mut agent = Agent::new(session, backend);
+    // `[compaction]` from the user/project config; pi defaults otherwise.
+    let cwd = env::current_dir()?;
+    if let Some(settings) = crate::config::ConfigPaths::discover()
+        .and_then(|paths| crate::config::load_workspace_config(&paths, Some(&cwd)))
+        .ok()
+        .and_then(|config| config.compaction)
+    {
+        agent.set_compaction_settings(settings);
+    }
     agent.project_overrides = crate::config::ConfigOverrides {
         profile: options.profile.clone(),
         backend: options.backend_explicit.then(|| options.backend.clone()),

@@ -34,16 +34,10 @@ impl Backend for CaptureBackend {
             .metadata
             .is_some_and(|v| v["purpose"] == "semantic_compaction")
         {
-            let data: serde_json::Value = serde_json::from_str(&request.turns[0].content).unwrap();
-            let mut completion = Completion::text(
-                serde_json::json!({
-                    "goals":["Continue task"], "constraints":[], "decisions":[], "progress":[],
-                    "pending_tasks":["verify restart"], "critical_facts":[],
-                    "read_files":data["read_files"], "modified_files":data["modified_files"],
-                    "unresolved_tools":data["unresolved_tools"]
-                })
-                .to_string(),
-            );
+            // pi: a free-text summary of role-labelled conversation text.
+            assert!(request.turns[0].content.starts_with("<conversation>"));
+            let mut completion =
+                Completion::text("## Goal\nContinue task\n\n## Next Steps\n1. verify restart");
             completion.model = Some("fixture-summary".into());
             completion.usage = Some(zenpi::backend::Usage {
                 input_tokens: 100,
