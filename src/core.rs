@@ -6944,6 +6944,9 @@ pub struct CliOptions {
     pub max_tool_iterations: usize,
     /// `--tools a,b`: advertise exactly these builtin tools (ZE-214).
     pub tools: Option<Vec<String>>,
+    /// `--eof-drain-secs N`: headless drain bound after stdin EOF (ZE-242);
+    /// overrides `ZENPI_HEADLESS_EOF_DRAIN_SECS`.
+    pub eof_drain_secs: Option<u64>,
     pub backend: String,
     pub backend_explicit: bool,
     pub profile: Option<String>,
@@ -7005,6 +7008,7 @@ impl Default for CliOptions {
             auto: false,
             max_tool_iterations: 1000,
             tools: None,
+            eof_drain_secs: None,
             backend: "openai".into(),
             backend_explicit: false,
             profile: None,
@@ -7737,6 +7741,16 @@ where
                     crate::tools::parse_builtin_allowlist(&value).map_err(ZenpiError::arguments)?;
                 options.tools = Some(names);
             }
+            "--eof-drain-secs" => {
+                let value = inline
+                    .map(str::to_owned)
+                    .or_else(|| args.next())
+                    .ok_or_else(|| ZenpiError::arguments("--eof-drain-secs requires a number"))?;
+                let seconds = value.trim().parse::<u64>().map_err(|_| {
+                    ZenpiError::arguments("--eof-drain-secs must be a whole number of seconds")
+                })?;
+                options.eof_drain_secs = Some(seconds);
+            }
             "--auto" => {
                 if inline.is_some() {
                     return Err(ZenpiError::arguments("--auto does not take a value"));
@@ -7981,7 +7995,7 @@ fn print_help() {
         "zenpi host pair [--bind IP:PORT] [--advertise IP] [--identity PATH] [--duration-seconds 1..300] [--plain] [--workspace PATH --session PATH [--desktop | --list-projects]] [--list-devices [--json] | --revoke-device ID | --grant-device-read ID --project ID ... | --grant-device-control ID --project ID ... | --grant-device-approval ID --project ID ... | --grant-device-control-approval ID --project ID ...]"
     );
     println!(
-        "zenpi [--mode tui|headless] [--session PATH | -s NAME|ID] [--auto] [--max-tool-iterations N] [--tools a,b] [--backend openai|anthropic|google] [--profile NAME] [--model NAME]"
+        "zenpi [--mode tui|headless] [--session PATH | -s NAME|ID] [--auto] [--eof-drain-secs N] [--max-tool-iterations N] [--tools a,b] [--backend openai|anthropic|google] [--profile NAME] [--model NAME]"
     );
     println!("zenpi config import-codex [--profile NAME]");
     println!("zenpi config doctor [--profile NAME] [--json]");
@@ -8374,6 +8388,29 @@ pub fn run() -> Result<(), ZenpiError> {
             }
         }
     }
+    let headless = options.mode == RunMode::Headless;
+    let result = run_host(options);
+    if headless
+        && let Err(error) = &result
+        && session_locked(error)
+    {
+        // A headless client reads stdout, not stderr: give it the stable
+        // code before the process exits non-zero.
+        crate::headless::write_startup_error("session_locked", &error.to_string());
+    }
+    result
+}
+
+/// Whether startup failed because another live process owns the session.
+fn session_locked(error: &ZenpiError) -> bool {
+    matches!(
+        error,
+        ZenpiError::Session(crate::session::SessionError::Locked)
+            | ZenpiError::Agent(AgentError::Session(crate::session::SessionError::Locked))
+    )
+}
+
+fn run_host(options: CliOptions) -> Result<(), ZenpiError> {
     // ZE-214: `--tools a,b` scopes every owner this process prepares.
     crate::tools::set_builtin_allowlist(options.tools.clone());
     let backend = make_backend(&options)?;
@@ -8445,8 +8482,19 @@ pub fn run() -> Result<(), ZenpiError> {
         agent.restore_model_selection()?;
     }
     match options.mode {
-        RunMode::Headless => crate::headless::run_stdio_owned(agent)
-            .map_err(|error| ZenpiError::Message(error.to_string())),
+        RunMode::Headless => {
+            let mut headless =
+                crate::headless::HeadlessOptions::from_env().map_err(ZenpiError::arguments)?;
+            if let Some(seconds) = options.eof_drain_secs {
+                headless.eof_drain = Duration::from_secs(seconds);
+            }
+            // ZE-242: SIGTERM is observed by the host loop as `shutdown`.
+            crate::headless::install_termination_handler()?;
+            // The host reports its own `session_locked` frame on stdout, so
+            // its errors stay messages and are not reported twice.
+            crate::headless::run_stdio_owned_with(agent, headless)
+                .map_err(|error| ZenpiError::Message(error.to_string()))
+        }
         RunMode::Tui => crate::tui::run_async_with_profile(agent, options.profile),
     }
 }

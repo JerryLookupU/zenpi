@@ -152,6 +152,89 @@ struct ReplayState {
     acknowledged: u64,
 }
 
+/// Default bound on how long a host keeps draining admitted work after stdin
+/// reaches EOF. One-shot pipelines (`printf … | zenpi --mode headless`) wait
+/// for their turn; a wedged provider can no longer hold the process forever.
+pub const DEFAULT_EOF_DRAIN: Duration = Duration::from_secs(600);
+/// Environment override for [`DEFAULT_EOF_DRAIN`], in whole seconds.
+pub const EOF_DRAIN_ENV: &str = "ZENPI_HEADLESS_EOF_DRAIN_SECS";
+/// Bound on waiting for close hooks of an owner still held by a detached job.
+const CLOSE_HOOK_DEADLINE: Duration = Duration::from_secs(10);
+
+/// Lifecycle knobs of the asynchronous headless host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeadlessOptions {
+    /// After stdin EOF, admitted requests may finish for this long before the
+    /// runtime is shut down (which cancels them with a terminal response).
+    pub eof_drain: Duration,
+}
+
+impl Default for HeadlessOptions {
+    fn default() -> Self {
+        Self {
+            eof_drain: DEFAULT_EOF_DRAIN,
+        }
+    }
+}
+
+impl HeadlessOptions {
+    /// Defaults overridden by `ZENPI_HEADLESS_EOF_DRAIN_SECS` when it holds a
+    /// whole number of seconds.
+    pub fn from_env() -> Result<Self, String> {
+        let mut options = Self::default();
+        if let Some(raw) = std::env::var_os(EOF_DRAIN_ENV) {
+            let seconds = raw
+                .to_str()
+                .and_then(|value| value.trim().parse::<u64>().ok())
+                .ok_or_else(|| format!("{EOF_DRAIN_ENV} must be a whole number of seconds"))?;
+            options.eof_drain = Duration::from_secs(seconds);
+        }
+        Ok(options)
+    }
+}
+
+/// Set by the SIGTERM handler; the async host loop treats it as `shutdown`.
+static TERMINATION_REQUESTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+fn termination_requested() -> bool {
+    TERMINATION_REQUESTED.load(std::sync::atomic::Ordering::Acquire)
+}
+
+#[cfg(unix)]
+extern "C" fn request_termination(_signal: libc::c_int) {
+    // Only an atomic store: async-signal-safe.
+    TERMINATION_REQUESTED.store(true, std::sync::atomic::Ordering::Release);
+}
+
+/// Make SIGTERM behave like a `shutdown` request for the process-wide headless
+/// host: admitted work gets its terminal response, the transport WAL is
+/// closed cleanly and the process exits 0. The handler is one-shot
+/// (`SA_RESETHAND`), so a second SIGTERM still terminates immediately.
+#[cfg(unix)]
+pub fn install_termination_handler() -> io::Result<()> {
+    let handler: extern "C" fn(libc::c_int) = request_termination;
+    // SAFETY: an all-zero `sigaction` is a valid starting value; the mask is
+    // then initialised by `sigemptyset`, and the installed handler only
+    // performs an atomic store, which is async-signal-safe.
+    unsafe {
+        let mut action: libc::sigaction = std::mem::zeroed();
+        action.sa_sigaction = handler as libc::sighandler_t;
+        action.sa_flags = libc::SA_RESTART | libc::SA_RESETHAND;
+        libc::sigemptyset(&mut action.sa_mask);
+        if libc::sigaction(libc::SIGTERM, &action, std::ptr::null_mut()) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+/// Signals are a Unix lifecycle; other platforms keep their default action.
+#[cfg(not(unix))]
+pub fn install_termination_handler() -> io::Result<()> {
+    Ok(())
+}
+
 /// Open the transport WAL, retrying the transient `EWOULDBLOCK` that a forked
 /// child can leave behind when it briefly inherits the owning descriptor
 /// across `exec`. A genuine second owner still fails after the bounded budget.
@@ -163,9 +246,7 @@ fn open_reconnect_journal(
     for attempt in 0..MAX_ATTEMPTS {
         match ReconnectJournal::open(session) {
             Ok(opened) => return Ok(opened),
-            Err(crate::session::SessionError::Io(error))
-                if error.kind() == io::ErrorKind::WouldBlock && attempt + 1 < MAX_ATTEMPTS =>
-            {
+            Err(crate::session::SessionError::Locked) if attempt + 1 < MAX_ATTEMPTS => {
                 thread::sleep(delay);
                 delay = (delay * 2).min(Duration::from_millis(8));
             }
@@ -789,15 +870,32 @@ pub fn run_stdio(agent: &mut Agent) -> Result<(), HeadlessError> {
     run_headless(agent, stdin.lock(), stdout.lock())
 }
 
+/// Report a startup failure that happens before the host loop exists (for
+/// example `session_locked`) as one protocol error frame on stdout.
+pub fn write_startup_error(code: &str, message: &str) {
+    let stdout = io::stdout();
+    let mut output = stdout.lock();
+    let response = StdioResponse::error_with_code(None, "stdio", code, message)
+        .for_version(crate::protocol::PROTOCOL_VERSION);
+    if let Err(error) = write_response(&mut output, response) {
+        eprintln!("zenpi: could not report {code} on stdout: {error}");
+    }
+}
+
 /// Owned stdio entry point used by the binary. Input is read on a dedicated
 /// thread while provider/tool work runs through the bounded runtime, so a
 /// slow provider cannot stop headless clients from sending status or follow-up
 /// commands. The borrowed `run_stdio` above remains the deterministic
 /// synchronous embedding API.
 pub fn run_stdio_owned(agent: Agent) -> Result<(), HeadlessError> {
+    run_stdio_owned_with(agent, HeadlessOptions::default())
+}
+
+/// [`run_stdio_owned`] with explicit lifecycle options.
+pub fn run_stdio_owned_with(agent: Agent, options: HeadlessOptions) -> Result<(), HeadlessError> {
     let stdin = io::stdin();
     let stdout = io::stdout();
-    run_async_stdio(agent, stdin, stdout)
+    run_async_stdio(agent, stdin, stdout, options)
 }
 
 /// Asynchronous transport over caller-owned streams. This is public so PTY
@@ -808,7 +906,17 @@ pub fn run_async_streams<R: io::Read + Send + 'static, W: Write>(
     input: R,
     output: W,
 ) -> Result<(), HeadlessError> {
-    run_async_stdio(agent, input, output)
+    run_async_stdio(agent, input, output, HeadlessOptions::default())
+}
+
+/// [`run_async_streams`] with explicit lifecycle options.
+pub fn run_async_streams_with<R: io::Read + Send + 'static, W: Write>(
+    agent: Agent,
+    input: R,
+    output: W,
+    options: HeadlessOptions,
+) -> Result<(), HeadlessError> {
+    run_async_stdio(agent, input, output, options)
 }
 
 struct AsyncWork {
@@ -4373,6 +4481,7 @@ fn run_async_stdio<R: io::Read + Send + 'static, W: Write>(
     agent: Agent,
     input: R,
     mut output: W,
+    options: HeadlessOptions,
 ) -> Result<(), HeadlessError> {
     let root_owner = Arc::new(Mutex::new(agent));
     let mut pool = ProjectOwnerPool::new(Arc::clone(&root_owner)).map_err(io::Error::other)?;
@@ -4380,7 +4489,21 @@ fn run_async_stdio<R: io::Read + Send + 'static, W: Write>(
     let mut shared = pool.active();
     let mut replay = {
         let mut agent = shared.lock().map_err(|_| event_mailbox_headless_error())?;
-        let replay = ReplayState::open(agent.session())?;
+        let replay = match ReplayState::open(agent.session()) {
+            Ok(replay) => replay,
+            Err(HeadlessError::Session(crate::session::SessionError::Locked)) => {
+                // Tell the client why the transport ends before any request
+                // is read, using the stable machine-readable code.
+                let error = crate::session::SessionError::Locked;
+                write_response(
+                    &mut output,
+                    StdioResponse::error_with_code(None, "stdio", error.code(), error.to_string())
+                        .for_version(crate::protocol::PROTOCOL_VERSION),
+                )?;
+                return Err(error.into());
+            }
+            Err(error) => return Err(error),
+        };
         let workspace = fs::canonicalize(&agent.session().header().cwd)?;
         agent.register_live_owner(
             replay.owner_epoch,
@@ -4609,8 +4732,29 @@ fn run_async_stdio<R: io::Read + Send + 'static, W: Write>(
     let mut stopping_since: Option<Instant> = None;
     let mut shutdown_sent = false;
     let mut pending_shutdown: Option<(Option<String>, String, u16)> = None;
+    // An explicit shutdown (request or SIGTERM) cancels after a short grace;
+    // EOF lets admitted work finish, bounded by the configured drain.
+    let drain_deadline = |explicit: bool| {
+        if explicit {
+            SHUTDOWN_GRACE
+        } else {
+            options.eof_drain
+        }
+    };
     let loop_result = (|| -> Result<(), HeadlessError> {
         loop {
+            if termination_requested() && !explicit_shutdown && !shutdown_sent {
+                // SIGTERM is an implicit `shutdown`: stop reading input,
+                // cancel unanswerable approvals, give admitted work the
+                // shutdown grace, then acknowledge once the runtime closed.
+                // An EOF drain already in progress is upgraded to it.
+                stopping = true;
+                explicit_shutdown = true;
+                pending_shutdown.get_or_insert_with(|| {
+                    (None, "shutdown".into(), crate::protocol::PROTOCOL_VERSION)
+                });
+                stopping_since = Some(Instant::now());
+            }
             shared = pool.active();
             access.retain(|id, _| pool.context(id).is_some());
             for (id, owner) in pool.owner_handles() {
@@ -4693,8 +4837,8 @@ fn run_async_stdio<R: io::Read + Send + 'static, W: Write>(
             // cancel/reissue promotion; once the grace period expires,
             // `promote_pending_steers` reports an explicit runtime_closed
             // error instead of silently dropping it.
-            let steer_grace_elapsed = explicit_shutdown
-                && stopping_since.is_some_and(|started| started.elapsed() >= SHUTDOWN_GRACE);
+            let steer_grace_elapsed = stopping_since
+                .is_some_and(|started| started.elapsed() >= drain_deadline(explicit_shutdown));
             promote_pending_steers(
                 &runner,
                 &mut jobs,
@@ -4710,8 +4854,8 @@ fn run_async_stdio<R: io::Read + Send + 'static, W: Write>(
                 // after `jobs` became empty would strand an active provider
                 // forever: jobs can become empty only after the worker has
                 // observed shutdown and emitted their terminal events.
-                let grace_elapsed = explicit_shutdown
-                    && stopping_since.is_some_and(|started| started.elapsed() >= SHUTDOWN_GRACE);
+                let grace_elapsed = stopping_since
+                    .is_some_and(|started| started.elapsed() >= drain_deadline(explicit_shutdown));
                 if !shutdown_sent
                     && ((jobs.is_empty() && pending_steers.is_empty()) || grace_elapsed)
                 {
@@ -4775,9 +4919,9 @@ fn run_async_stdio<R: io::Read + Send + 'static, W: Write>(
                         explicit_shutdown = pending_shutdown.is_some();
                         stopping_since.get_or_insert_with(Instant::now);
                     }
-                    let steer_grace_elapsed = explicit_shutdown
-                        && stopping_since
-                            .is_some_and(|started| started.elapsed() >= SHUTDOWN_GRACE);
+                    let steer_grace_elapsed = stopping_since.is_some_and(|started| {
+                        started.elapsed() >= drain_deadline(explicit_shutdown)
+                    });
                     promote_pending_steers(
                         &runner,
                         &mut jobs,
@@ -4846,11 +4990,22 @@ fn run_async_stdio<R: io::Read + Send + 'static, W: Write>(
         if loop_result.is_ok() {
             replay.close()?;
         }
-        close_async_owners(
+        let deferred = close_async_owners(
             std::iter::once(root_owner)
                 .chain(pool.owner_handles().into_iter().map(|(_, owner)| owner)),
             replay.owner_epoch,
-        )
+        )?;
+        // The binary exits as soon as this host returns; wait (bounded) so
+        // close hooks of an owner released late by a detached job still run.
+        if let Some(done) = deferred
+            && done.recv_timeout(CLOSE_HOOK_DEADLINE).is_err()
+        {
+            eprintln!(
+                "zenpi: owner close hooks did not finish within {}s",
+                CLOSE_HOOK_DEADLINE.as_secs()
+            );
+        }
+        Ok(())
     })();
     match loop_result {
         Err(error) => {
@@ -4868,10 +5023,13 @@ fn run_async_stdio<R: io::Read + Send + 'static, W: Write>(
     }
 }
 
+/// Close every owner now when possible. Owners still locked by a detached job
+/// are closed by one cleanup thread; the returned receiver yields once that
+/// thread has run their close hooks.
 fn close_async_owners(
     owners: impl IntoIterator<Item = Arc<Mutex<Agent>>>,
     owner_epoch: u64,
-) -> Result<(), HeadlessError> {
+) -> Result<Option<mpsc::Receiver<()>>, HeadlessError> {
     let mut unique = Vec::new();
     for owner in owners {
         if !unique.iter().any(|other| Arc::ptr_eq(other, &owner)) {
@@ -4896,10 +5054,13 @@ fn close_async_owners(
             }
         }
     }
+    let mut cleanup_done = None;
     if !deferred.is_empty() {
         // At most one cleanup thread per host, using only captured owners.
-        // The process may exit before a detached job releases its lock; an
-        // embedding that remains alive can still run its final close hooks.
+        // The caller waits for it with a bound; an embedding that remains
+        // alive past that bound still runs the final close hooks.
+        let (done_tx, done_rx) = mpsc::channel();
+        cleanup_done = Some(done_rx);
         thread::Builder::new()
             .name("zenpi-owner-cleanup".into())
             .spawn(move || {
@@ -4916,9 +5077,10 @@ fn close_async_owners(
                         }
                     }
                 }
+                let _ = done_tx.send(());
             })?;
     }
-    close_error.map_or(Ok(()), Err)
+    close_error.map_or(Ok(cleanup_done), Err)
 }
 
 #[allow(clippy::too_many_arguments)]
