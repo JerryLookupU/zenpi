@@ -7620,10 +7620,14 @@ where
     let mut args = args.into_iter().map(Into::into).peekable();
     if args.peek().is_some_and(|argument| argument == "host") {
         args.next();
-        if args.next().as_deref() != Some("pair") {
-            return Err(ZenpiError::arguments("host requires pair"));
-        }
-        options.host_pair = Some(crate::host_pair::HostPairOptions::parse(args)?);
+        let serve = match args.next().as_deref() {
+            Some("pair") => false,
+            Some("serve") => true,
+            _ => return Err(ZenpiError::arguments("host requires pair or serve")),
+        };
+        let mut pair = crate::host_pair::HostPairOptions::parse(args)?;
+        pair.serve = serve;
+        options.host_pair = Some(pair);
         return Ok(options);
     }
     if args.peek().is_some_and(|argument| {

@@ -1061,3 +1061,90 @@ fn production_binary_invite_is_pinned_and_consumed_once() {
     assert!(replay.code.is_some());
     assert!(child.child_mut().wait().unwrap().success());
 }
+
+/// ZE-513: `zenpi host serve` outlives its invite and keeps its port.
+#[test]
+#[ignore = "requires a real production TLS listener and LAN-capable sandbox"]
+fn production_serve_outlives_the_invite_and_keeps_its_port_across_restart() {
+    let fixture = ProviderFixture::start();
+    let temporary = tempfile::tempdir().unwrap();
+    let workspace = temporary.path().join("workspace");
+    let home = temporary.path().join("home");
+    std::fs::create_dir(&workspace).unwrap();
+    std::fs::create_dir(&home).unwrap();
+    std::fs::write(
+        home.join("config.toml"),
+        format!(
+            "backend=\"openai\"\nmodel=\"gpt-4.1\"\nbase_url=\"{}\"\nwire_api=\"responses\"\nrequires_openai_auth=false\nmax_retries=0\n",
+            fixture.url
+        ),
+    )
+    .unwrap();
+    let workspace = workspace.canonicalize().unwrap();
+    let session = temporary.path().join("session.jsonl");
+    zenpi::session::SessionStore::open_in_workspace(&session, &workspace).unwrap();
+    let identity_path = temporary.path().join("identity.json");
+    let serve = || {
+        let child = Command::new(env!("CARGO_BIN_EXE_zenpi"))
+            .args([
+                "host",
+                "serve",
+                "--bind",
+                "127.0.0.1:0",
+                "--duration-seconds",
+                "2",
+                "--identity",
+            ])
+            .arg(&identity_path)
+            .arg("--workspace")
+            .arg(&workspace)
+            .arg("--session")
+            .arg(&session)
+            .env_clear()
+            .env("HOME", &home)
+            .env("ZENPI_HOME", &home)
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let (child, line) = read_invite_with_timeout(child);
+        (
+            child,
+            PairingInvite::from_uri(line.trim(), unix_seconds().unwrap()).unwrap(),
+        )
+    };
+    let (child, invite) = serve();
+    let identity = HostIdentity::load_or_create(&identity_path).unwrap();
+    let random = ring::rand::SystemRandom::new();
+    let document = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &random).unwrap();
+    let key = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, document.as_ref(), &random)
+        .unwrap();
+    let paired = tls_pair(&invite, &identity, &key, "serve-phone");
+    let Message::Response { result } = paired.payload else {
+        panic!("pairing response missing");
+    };
+    let device_id = result["device_id"].as_str().unwrap().to_owned();
+    use sha2::Digest;
+    let mut hash = sha2::Sha256::new();
+    hash.update(b"zenpi-project-workspace-v1\0");
+    hash.update(workspace.to_str().unwrap().as_bytes());
+    let project = format!("{:x}", hash.finalize());
+    let grant = Command::new(env!("CARGO_BIN_EXE_zenpi"))
+        .args(["host", "pair", "--identity"])
+        .arg(&identity_path)
+        .args(["--grant-device-read", &device_id, "--project", &project])
+        .output()
+        .unwrap();
+    assert!(grant.status.success());
+    // The invite expires; the paired device still reconnects with its key.
+    thread::sleep(Duration::from_secs(3));
+    let listing = authenticated_workspace_list(&invite, &identity, &key, &device_id);
+    assert!(listing["projects"].as_array().is_some());
+    drop(child);
+    let (_child, restarted) = serve();
+    assert_eq!(restarted.address.port(), invite.address.port());
+    let listing = authenticated_workspace_list(&restarted, &identity, &key, &device_id);
+    assert!(listing["projects"].as_array().is_some());
+}

@@ -44,6 +44,8 @@ pub struct HostPairOptions {
     pub duration_seconds: u64,
     pub plain: bool,
     pub desktop: bool,
+    /// `zenpi host serve`: the listener outlives every invite (ZE-513).
+    pub serve: bool,
     pub list_devices: bool,
     pub json: bool,
     pub list_projects: bool,
@@ -78,6 +80,7 @@ impl HostPairOptions {
             duration_seconds: 300,
             plain: false,
             desktop: false,
+            serve: false,
             list_devices: false,
             json: false,
             list_projects: false,
@@ -489,6 +492,23 @@ pub fn run(options: HostPairOptions) -> Result<(), ZenpiError> {
         attached.session = None;
         return crate::tui::run_async_with_remote(owner, None, Some(attached));
     }
+    let mut options = options;
+    let port_file = options.identity.with_extension("port");
+    if options.serve {
+        // A resident host keeps one address: the port it first bound and the
+        // selected interface rather than every interface.
+        if options.bind.port() == 0
+            && let Some(port) = std::fs::read_to_string(&port_file)
+                .ok()
+                .and_then(|text| text.trim().parse::<u16>().ok())
+        {
+            options.bind.set_port(port);
+        }
+        if options.bind.ip().is_unspecified() {
+            let selected = advertise_address(&options, options.bind)?;
+            options.bind.set_ip(selected.ip());
+        }
+    }
     let mut headless_host = None;
     let adapter = if let (Some(workspace), Some(session)) = (&options.workspace, &options.session) {
         let owner = crate::core::Agent::prepare_project_with_options(
@@ -509,6 +529,31 @@ pub fn run(options: HostPairOptions) -> Result<(), ZenpiError> {
     };
     let mut host = PairingHost::start_with_registry(&options, identity, registry, adapter)?;
     let ttl = Duration::from_secs(options.duration_seconds);
+    if options.serve {
+        let bound = host.listener.local_addr();
+        crate::config::atomic_write_if_changed(
+            &port_file,
+            format!("{}\n", bound.port()).as_bytes(),
+        )
+        .map_err(|error| ZenpiError::Message(error.to_string()))?;
+        println!(
+            "{}",
+            host.invite
+                .to_uri()
+                .map_err(|error| ZenpiError::Message(error.to_string()))?
+        );
+        println!(
+            "Safety code: {}\nInvite expires: {}\nListening on {bound} until stopped.",
+            host.invite.safety_code(),
+            host.invite.expires_at,
+        );
+        io::stdout().flush()?;
+        // Paired devices reconnect with their own keys; the listener stays up
+        // after the invite expires, until the process is stopped.
+        loop {
+            std::thread::park();
+        }
+    }
     if options.plain || !io::stdout().is_terminal() || !io::stdin().is_terminal() {
         println!(
             "{}",
@@ -540,8 +585,11 @@ pub fn run(options: HostPairOptions) -> Result<(), ZenpiError> {
 
 pub fn help() -> &'static str {
     "Usage: zenpi host pair [OPTIONS]
+       zenpi host serve [OPTIONS]
 
 Pair an Android device with this Rust host over TLS on the local network.
+`serve` keeps the listener up after the invite expires, on the selected
+interface and the port it first bound, until the process is stopped.
 Scan the desktop QR, compare the six-digit safety code, then confirm on Android.
 Pairing registers a device; project access must be granted separately.
 
