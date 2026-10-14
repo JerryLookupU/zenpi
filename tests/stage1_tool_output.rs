@@ -855,7 +855,7 @@ fn host_spawn_failure_durably_retains_incomplete_stream_references() {
 }
 
 #[test]
-fn real_http_model_command_sends_capture_reference_in_next_request() {
+fn real_http_model_command_sends_plain_text_and_journals_capture_reference() {
     use serde_json::Value;
     use std::io::{Read, Write};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -984,7 +984,19 @@ fn real_http_model_command_sends_capture_reference_in_next_request() {
         .iter()
         .find(|m| m["role"] == "tool")
         .unwrap();
-    let payload: Value = serde_json::from_str(message["content"].as_str().unwrap()).unwrap();
+    // ZE-213: the model receives plain text; the capture reference is
+    // journaled with the structured record (and named to the model only when
+    // a stream is truncated).
+    assert_eq!(
+        message["content"],
+        "actual-model-output\n\nCommand exited with code 0"
+    );
+    let saved = agent
+        .history()
+        .iter()
+        .find(|t| t.role == zenpi::core::TurnRole::Tool)
+        .unwrap();
+    let payload: Value = serde_json::from_str(&saved.content).unwrap();
     let report: CaptureReport = serde_json::from_value(payload["output_capture"].clone()).unwrap();
     assert_eq!(report.artifacts.len(), 2);
     assert!(
@@ -1002,11 +1014,6 @@ fn real_http_model_command_sends_capture_reference_in_next_request() {
         stdout.sha256.as_deref(),
         Some(digest(b"actual-model-output").as_str())
     );
-    let saved = agent
-        .history()
-        .iter()
-        .find(|t| t.role == zenpi::core::TurnRole::Tool)
-        .unwrap();
     assert_eq!(
         saved.metadata.as_ref().unwrap()["output_capture"]["artifacts"]
             .as_array()
@@ -1922,10 +1929,12 @@ fn public_model_reader_uses_real_http_reference_and_redacts_selected_raw_range()
                         .rev()
                         .find(|m| m["role"] == "tool")
                         .unwrap();
-                    let failure: Value =
-                        serde_json::from_str(last["content"].as_str().unwrap()).unwrap();
-                    assert_eq!(failure["status"], "error");
-                    assert_eq!(failure["call_id"], "forged-read-call");
+                    // ZE-213: a failed call reaches the model as its plain
+                    // error message, not as the journaled error record.
+                    let failure = last["content"].as_str().unwrap();
+                    assert_eq!(last["tool_call_id"], "forged-read-call");
+                    assert!(failure.contains("path"), "{failure}");
+                    assert!(serde_json::from_str::<Value>(failure).is_err());
                 }
                 let message = requests[1]["messages"]
                     .as_array()
@@ -1934,18 +1943,20 @@ fn public_model_reader_uses_real_http_reference_and_redacts_selected_raw_range()
                     .rev()
                     .find(|m| m["role"] == "tool")
                     .unwrap();
-                let payload: Value =
-                    serde_json::from_str(message["content"].as_str().unwrap()).unwrap();
-                let report: CaptureReport =
-                    serde_json::from_value(payload["output_capture"].clone()).unwrap();
-                let r = report
-                    .artifacts
-                    .iter()
-                    .find(|r| r.stream == OutputStream::Stdout)
-                    .unwrap();
-                assert!(r.bytes_stored > 65536);
+                // ZE-213: the oversized result is plain text naming the
+                // capture reference the model pages with read_tool_output.
+                let content = message["content"].as_str().unwrap();
+                assert!(serde_json::from_str::<Value>(content).is_err());
+                let hint = content
+                    .lines()
+                    .find_map(|line| line.strip_prefix("[Full stdout: read_tool_output "))
+                    .unwrap_or_else(|| panic!("no stdout reference in {content}"));
+                let mut fields = hint.trim_end_matches(']').split(' ');
+                let artifact_id = fields.next().unwrap().strip_prefix("artifact_id=").unwrap();
+                let call_id = fields.next().unwrap().strip_prefix("call_id=").unwrap();
+                assert_eq!(call_id, "actual-output-call");
                 let mut args =
-                    json!({"artifact_id":r.artifact_id,"call_id":r.call_id,"offset":8,"length":12});
+                    json!({"artifact_id":artifact_id,"call_id":call_id,"offset":8,"length":12});
                 if index == 1 {
                     args["path"] = json!("/tmp/model-chosen.raw");
                 }
@@ -2009,7 +2020,12 @@ fn public_model_reader_uses_real_http_reference_and_redacts_selected_raw_range()
         .iter()
         .find(|m| m["role"] == "tool")
         .unwrap();
-    let payload: Value = serde_json::from_str(message["content"].as_str().unwrap()).unwrap();
+    let saved = agent
+        .history()
+        .iter()
+        .find(|t| t.role == zenpi::core::TurnRole::Tool)
+        .unwrap();
+    let payload: Value = serde_json::from_str(&saved.content).unwrap();
     let report: CaptureReport = serde_json::from_value(payload["output_capture"].clone()).unwrap();
     assert_eq!(report.artifacts.len(), 2);
     assert!(
@@ -2024,11 +2040,13 @@ fn public_model_reader_uses_real_http_reference_and_redacts_selected_raw_range()
         .find(|r| r.stream == OutputStream::Stdout)
         .unwrap();
     assert!(stdout.bytes_stored > 65536);
-    let saved = agent
-        .history()
-        .iter()
-        .find(|t| t.role == zenpi::core::TurnRole::Tool)
-        .unwrap();
+    // ZE-213: the request carries plain text that names the journaled capture.
+    assert!(
+        message["content"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("artifact_id={}", stdout.artifact_id))
+    );
     assert_eq!(
         saved.metadata.as_ref().unwrap()["output_capture"]["artifacts"]
             .as_array()

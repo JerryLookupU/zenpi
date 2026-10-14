@@ -844,6 +844,7 @@ fn chat_message(turn: &Turn, provider: &str, model: &str) -> Result<Value, Backe
         "_zenpi_turn_id": turn.id,
     });
     if turn.role == TurnRole::Tool {
+        message["content"] = json!(super::tool_result_text(turn).0);
         if let Some(call_id) = turn
             .metadata
             .as_ref()

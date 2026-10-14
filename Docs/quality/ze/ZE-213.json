@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-213",
+  "claim_id": "ZE-213@blueprint-4.0.0",
+  "from": "worker",
+  "to": "master",
+  "summary": "Model-facing tool results are plain text (pi content/details split). tools::model_facing_text renders per built-in tool: read_file raw text (+ '[Truncated at N bytes. Use max_bytes (up to 524288) to read more]'); run_command stdout/stderr + 'Command exited with code N' (timeout/signal/cancel variants) + '[stdout truncated] Full stdout: read_tool_output artifact_id=.. call_id=..'; write_file 'Created|Wrote <path> (N bytes)'; edit_file 'Edited <path> (1 replacement)'; search_text 'path:line: text' (context 'path-line- text'); find one path per line; list_directory one name per line ('/' dirs, '@' symlinks); errors = message text; oversized compacted results = note + artifact path + preview + capture refs; other/extension tools keep the serialized record. core persists the structured JSON as turn content (journal/UI unchanged) and adds metadata.model_text + metadata.is_error; protocols::tool_result_text feeds Responses/Chat/Anthropic(is_error)/Gemini(output|error) encoders, deriving text from the record for older journals.",
+  "changed_files": [
+    "src/core.rs",
+    "src/protocols/anthropic.rs",
+    "src/protocols/chat.rs",
+    "src/protocols/google.rs",
+    "src/protocols/mod.rs",
+    "src/protocols/responses.rs",
+    "src/tools.rs",
+    "tests/stage1_extension_hooks.rs",
+    "tests/stage1_skill_md.rs",
+    "tests/stage1_tool_output.rs",
+    "tests/tool_result_text.rs",
+    "Docs/quality/ze/ZE-213.json"
+  ],
+  "diff_stat": "12 files changed, 908 insertions(+), 54 deletions(-)",
+  "commands_run": [
+    "git fetch && git merge --ff-only origin/main",
+    "cargo fmt --all",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo clippy --locked --all-targets --all-features -- -D warnings",
+    "cargo test --locked --lib tool_results_send_plain",
+    "cargo test --locked --test tool_result_text",
+    "cargo test --locked --test stage1_tool_output",
+    "cargo test --locked --test stage1_skill_md",
+    "cargo test --locked --test stage1_extension_hooks -- --test-threads=1",
+    "cargo test --locked --no-fail-fast",
+    "cargo test --locked -q --test core_session -- --test-threads=1",
+    "cargo test --locked -q --lib existing_terminal_projects_only_matching_live_session_and_root -- --test-threads=1"
+  ],
+  "validation_result": {
+    "fmt": "pass",
+    "clippy": "pass (default and --all-features, -D warnings)",
+    "request_body_snapshot": "pass: tests/tool_result_text.rs read_file_result_is_raw_unescaped_text_in_the_request_body (Responses, Chat, Anthropic over HTTP: tool result == raw file text, escaped once, no call_id/output_capture/status keys); src/protocols/mod.rs tool_results_send_plain_model_text_and_error_flag_on_every_wire covers Gemini too",
+    "task_test": "pass: edit_with_old_text_copied_verbatim_from_read_result_succeeds (file with quotes, tabs, backslashes; old text copied from the request body) on 3 wires",
+    "full_suite": "cargo test --no-fail-fast: all binaries pass except load-flaky lib PTY test existing_terminal_projects_only_matching_live_session_and_root and core_session user_shell_preserves_nonzero_signal_and_cancellation_evidence (timing); both pass on rerun with --test-threads=1",
+    "flaky_note": "stage1_extension_hooks CommandTimeout(1000) failures reproduce on baseline 920c86b under load; the 3 ZE-213-affected tests pass on rerun"
+  },
+  "notes": "Updated tests that asserted JSON-in-request: stage1_tool_output (capture report now read from journal; truncated/oversized results name the read_tool_output reference in text), stage1_extension_hooks (errors checked via journal is_error + sent model_text), stage1_skill_md (error results are plain strings). Chat/Responses wires carry no error flag (pi convention); Anthropic sends is_error, Gemini uses response.error. Capture artifact refs are shown to the model only when a stream is truncated or the result was compacted. read_file hint is byte-based until ZE-203 adds line offsets; context token estimates still use the journal JSON.",
+  "created_at": "2026-10-14T13:56:06Z",
+  "digest": "d4951579f8d6c651b81477f085f7eac4c33d7e06c2c6f2db59aef71eabeca25e"
+}

@@ -271,6 +271,27 @@ fn server(
     });
     (url, requests, handle)
 }
+/// ZE-213: a failed call reaches the model as its plain error text (the chat
+/// wire has no error flag); the journaled tool turn records `is_error`.
+fn sent_tool_error(agent: &Agent, request: &Value) -> bool {
+    let Some(turn) = agent
+        .history()
+        .iter()
+        .rev()
+        .find(|turn| turn.role == zenpi::core::TurnRole::Tool)
+    else {
+        return false;
+    };
+    let metadata = turn.metadata.as_ref().unwrap();
+    let sent = request["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|message| message["role"] == "tool")
+        .map(|message| message["content"].clone());
+    metadata["is_error"] == true && sent.as_ref() == Some(&metadata["model_text"])
+}
 fn call(name: &str, args: Value) -> Option<ToolCall> {
     Some(ToolCall {
         id: "call-1".into(),
@@ -720,7 +741,7 @@ fn selected_workspace_supports_legacy_extension_tools_and_rejects_hook_path_esca
                 1
             );
         } else {
-            assert!(output.contains("error"));
+            assert!(sent_tool_error(&a, &requests[1]));
             assert!(
                 events(&ext, "a")
                     .iter()
@@ -833,10 +854,7 @@ fn before_tool_failures_never_spawn_requested_command() {
         a.process_sync("run").unwrap();
         handle.join().unwrap();
         assert!(!root.join("forbidden.txt").exists(), "{mode}");
-        assert!(
-            requests.lock().unwrap()[1].to_string().contains("error"),
-            "{mode}"
-        );
+        assert!(sent_tool_error(&a, &requests.lock().unwrap()[1]), "{mode}");
         if let Ok(pid) = fs::read_to_string(ext.join("a/running")) {
             assert_eq!(
                 unsafe { libc::kill(pid.parse().unwrap(), 0) },
@@ -864,7 +882,7 @@ fn rewritten_schema_path_and_original_deny_are_checked_before_dispatch() {
         a.configure_extensions(&ext, || false).unwrap();
         a.process_sync("read").unwrap();
         h.join().unwrap();
-        assert!(requests.lock().unwrap()[1].to_string().contains("error"));
+        assert!(sent_tool_error(&a, &requests.lock().unwrap()[1]), "{mode}");
     }
     let dir = tempdir().unwrap();
     let root = dir.path();

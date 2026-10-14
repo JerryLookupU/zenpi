@@ -667,6 +667,42 @@ fn validate_response_format(format: &Value) -> Result<(), BackendError> {
     Ok(())
 }
 
+/// The model-facing text and error flag of one tool turn. The turn content is
+/// the structured journal record; providers receive the plain text recorded
+/// beside it. Older journals without that text derive it from the record, and
+/// a turn whose content is not a tool record is sent unchanged.
+pub(crate) fn tool_result_text(turn: &crate::core::Turn) -> (String, bool) {
+    let metadata = turn.metadata.as_ref();
+    let outcome_error = metadata
+        .and_then(|m| m.get("outcome"))
+        .and_then(Value::as_str)
+        .is_some_and(|v| v != "succeeded");
+    let is_error = metadata
+        .and_then(|m| m.get("is_error"))
+        .and_then(Value::as_bool)
+        .unwrap_or(outcome_error);
+    if let Some(text) = metadata
+        .and_then(|m| m.get("model_text"))
+        .and_then(Value::as_str)
+    {
+        return (text.to_owned(), is_error);
+    }
+    let Ok(mut record) = serde_json::from_str::<Value>(&turn.content) else {
+        return (turn.content.clone(), is_error);
+    };
+    let capture = record
+        .as_object_mut()
+        .and_then(|object| object.remove("output_capture"))
+        .and_then(|value| serde_json::from_value(value).ok());
+    match serde_json::from_value::<crate::tools::ToolResult>(record) {
+        Ok(result) => (
+            crate::tools::model_facing_text(&result, capture.as_ref()),
+            is_error,
+        ),
+        Err(_) => (turn.content.clone(), is_error),
+    }
+}
+
 #[cfg(test)]
 mod route_tests {
     use super::*;
@@ -1368,5 +1404,112 @@ mod route_tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn tool_results_send_plain_model_text_and_error_flag_on_every_wire() {
+        let raw = "say \"hi\"\tthen\n";
+        let record = json!({"status":"success","call_id":"c1","tool":"read_file",
+            "output":{"path":"q.txt","content":raw,"truncated":false},
+            "output_capture":{"artifacts":[],"errors":[]}});
+        let mut turns = tool_history("c1");
+        turns[2].content = record.to_string();
+        // Legacy journal: no recorded text, derived from the record.
+        let legacy = tool_result_text(&turns[2]);
+        assert_eq!(legacy, (raw.to_owned(), false));
+        turns[2].metadata = Some(json!({"tool_call_id":"c1","outcome":"succeeded",
+            "model_text":raw,"is_error":false}));
+        let error = {
+            let mut turns = turns.clone();
+            turns[2].metadata = Some(json!({"tool_call_id":"c1","outcome":"failed",
+                "model_text":"file not found","is_error":true}));
+            turns
+        };
+        for wire in [
+            OpenAiWireApi::Responses,
+            OpenAiWireApi::ChatCompletions,
+            OpenAiWireApi::AnthropicMessages,
+            OpenAiWireApi::GoogleGenerativeAi,
+        ] {
+            let options = RequestOptions {
+                wire_api: wire,
+                model: "fixture-model",
+                provider: None,
+                reasoning_effort: None,
+                verbosity: None,
+                capabilities: ProviderCapabilities::for_wire_api(wire),
+                descriptor: None,
+            };
+            let native = |mut turns: Vec<Turn>| {
+                if wire == OpenAiWireApi::GoogleGenerativeAi {
+                    // Gemini replays tool calls only from their native parts.
+                    use sha2::{Digest, Sha256};
+                    let parts = json!([{"text":"checking"},
+                        {"functionCall":{"id":"c1","name":"lookup","args":{"value":1}}}]);
+                    let digest = format!("{:x}", Sha256::digest(parts.to_string().as_bytes()));
+                    turns[1].metadata.as_mut().unwrap()["annotations"] = json!([{
+                        "type":"native_history","wire":"google_generative_ai","provider":"google",
+                        "model":"fixture-model","response_id":"r1","parts":parts,
+                        "parts_sha256":digest}]);
+                    turns[1].metadata.as_mut().unwrap()["tool_calls"] =
+                        json!([{"id":"c1","name":"lookup","arguments":{"value":1}}]);
+                }
+                turns
+            };
+            let (turns, error) = (native(turns.clone()), native(error.clone()));
+            let encode = |turns: &[Turn]| {
+                encode_request(&CompletionRequest::new("op", turns, None, &[]), &options).unwrap()
+            };
+            let body = encode(&turns);
+            let (sent, sent_error) = match wire {
+                OpenAiWireApi::Responses => {
+                    let item = body["input"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|item| item["type"] == "function_call_output")
+                        .unwrap()
+                        .clone();
+                    (item["output"].clone(), Value::Null)
+                }
+                OpenAiWireApi::ChatCompletions => {
+                    let message = body["messages"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|message| message["role"] == "tool")
+                        .unwrap()
+                        .clone();
+                    (message["content"].clone(), Value::Null)
+                }
+                OpenAiWireApi::AnthropicMessages => {
+                    let block = body["messages"][2]["content"][0].clone();
+                    (block["content"].clone(), block["is_error"].clone())
+                }
+                OpenAiWireApi::GoogleGenerativeAi => {
+                    let response =
+                        body["contents"][2]["parts"][0]["functionResponse"]["response"].clone();
+                    (response["output"].clone(), Value::Null)
+                }
+            };
+            assert_eq!(sent, json!(raw), "{wire:?}");
+            assert!(!body.to_string().contains("output_capture"), "{wire:?}");
+            if wire == OpenAiWireApi::AnthropicMessages {
+                assert_eq!(sent_error, json!(false));
+                let body = encode(&error);
+                assert_eq!(body["messages"][2]["content"][0]["is_error"], json!(true));
+                assert_eq!(
+                    body["messages"][2]["content"][0]["content"],
+                    json!("file not found")
+                );
+            }
+            if wire == OpenAiWireApi::GoogleGenerativeAi {
+                let body = encode(&error);
+                assert_eq!(
+                    body["contents"][2]["parts"][0]["functionResponse"]["response"],
+                    json!({"error":"file not found"})
+                );
+            }
+        }
     }
 }

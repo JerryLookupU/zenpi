@@ -6262,8 +6262,15 @@ impl Agent {
         }
         let serialized = serde_json::to_string(&result_value)
             .map_err(|error| AgentError::InvalidTurn(error.to_string()))?;
+        // The journal keeps the structured record as the turn content (UI and
+        // recovery read it) and the plain model-facing text beside it; the
+        // provider request encoders send only the text plus `is_error`.
+        let model_text =
+            crate::tools::model_facing_text(&invocation.result, invocation.output_capture.as_ref());
         let mut tool_turn = Turn::with_parent(next_id("tool"), turn_id, TurnRole::Tool, serialized);
         tool_turn.metadata = Some(serde_json::json!({
+            "model_text": model_text,
+            "is_error": !invocation.result.is_success(),
             "tool_call_id": call.id,
             "tool_name": call.name,
             "operation_id": operation_id,

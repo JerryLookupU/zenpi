@@ -366,13 +366,8 @@ pub(crate) fn request_body(
                 let (name, wire_id) = pending
                     .remove(id)
                     .ok_or_else(|| config("unexpected or duplicate Gemini tool result"))?;
-                let failed = turn
-                    .metadata
-                    .as_ref()
-                    .and_then(|m| m.get("outcome"))
-                    .and_then(Value::as_str)
-                    .is_some_and(|v| v != "succeeded");
-                let mut fc = json!({"name":name,"response":if failed {json!({"error":turn.content})}else{json!({"output":turn.content})}});
+                let (text, failed) = super::tool_result_text(turn);
+                let mut fc = json!({"name":name,"response":if failed {json!({"error":text})}else{json!({"output":text})}});
                 if let Some(id) = wire_id {
                     fc["id"] = json!(id);
                 }
