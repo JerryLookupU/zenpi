@@ -1160,7 +1160,7 @@ mod tests {
         assert_eq!(render(b"\x1b]0;title\x07hello"), "hello");
     }
 
-    #[cfg(unix)]
+    #[cfg(all(unix, feature = "remote"))]
     #[test]
     fn remote_screen_reassembles_soft_wrap_before_secret_redaction() {
         let mut screen = imp::Screen::new();

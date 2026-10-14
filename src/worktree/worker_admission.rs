@@ -1,10 +1,10 @@
 //! Durable request admission before work enters a worktree runner.
 
-use super::{
+use super::worktree_runner::WorktreeRunner;
+use crate::remote::{
     auth::{AuthenticatedDevice, DeviceRegistry},
     host_adapter::HostAdapter,
     protocol::{Envelope, ErrorCode, ExecutionState, Message, Operation},
-    worktree_runner::WorktreeRunner,
 };
 use crate::{
     core::{AgentError, ProcessResult},
@@ -135,7 +135,7 @@ fn dispatch_observed(
         {
             return Err(ErrorCode::InvalidRequest);
         }
-        super::command::validate_remote_file_references(text)
+        crate::remote::command::validate_remote_file_references(text)
             .map_err(|_| ErrorCode::InvalidRequest)?;
         let project = request
             .project_id
@@ -331,7 +331,7 @@ mod tests {
                 &URL_SAFE_NO_PAD.encode(
                     key.sign(
                         &random,
-                        &super::super::auth::pairing_proof_message(
+                        &crate::remote::auth::pairing_proof_message(
                             &"a".repeat(64),
                             "token",
                             "pair",
@@ -350,13 +350,13 @@ mod tests {
                 &record.id,
                 1,
                 vec![
-                    super::super::auth::Capability::Read,
-                    super::super::auth::Capability::Control,
+                    crate::remote::auth::Capability::Read,
+                    crate::remote::auth::Capability::Control,
                 ],
                 vec![project.clone()],
             )
             .unwrap();
-        let mut challenge = super::super::auth::DeviceChallenge::new("a".repeat(64)).unwrap();
+        let mut challenge = crate::remote::auth::DeviceChallenge::new("a".repeat(64)).unwrap();
         let device = challenge
             .authenticate(
                 &registry,
@@ -376,7 +376,7 @@ mod tests {
         )
         .unwrap();
         let mut request = Envelope::new(
-            super::super::protocol::Channel::Control,
+            crate::remote::protocol::Channel::Control,
             Message::Request {
                 operation: Operation::Prompt,
                 arguments: json!({"text":"never-resubmit", "subtab_id":state.active_id, "subtab_revision":state.revision}),

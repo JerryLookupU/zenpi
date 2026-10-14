@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-510",
+  "claim_id": "ZE-510@blueprint-4.0.0",
+  "from": "worker",
+  "to": "master",
+  "summary": "Remote receipts, acks, prompt bindings and Git/quota intents move from project-workspace.json into a sibling remote-state.json. The project checkpoint keeps only schema_version, workspace, sessions, subtabs and the workspace revision (now workspace_revision, owned by the pool), so a build without remote state reads it unchanged. Both files are replaced under the one project-workspace.lock: every CAS baseline is checked, all replacements are fsynced, then core is renamed before remote, so a crash between renames leaves a remote reservation unresolved (unknown outcome) rather than a remote success the workspace does not show. A pre-split checkpoint with inline remote_workspace is migrated on restore (remote-state.json written first, then the inline copy dropped).",
+  "changed_files": [
+    "Docs/quality/ze/ZE-510.json",
+    "src/project_workspace.rs",
+    "tests/remote_android_ack_interop.rs",
+    "tests/remote_android_approval_interop.rs",
+    "tests/remote_headless.rs",
+    "tests/remote_migration.rs",
+    "tests/remote_workspace.rs"
+  ],
+  "diff_stat": "7 files changed, 452 insertions(+), 326 deletions(-)",
+  "commands_run": [
+    "cargo fmt --all",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo clippy --locked --all-targets --all-features -- -D warnings",
+    "cargo test --locked --all-features --no-fail-fast",
+    "cargo test --locked --all-features --test stage1_extension_hooks -- --test-threads=1",
+    "cargo test --locked --all-features --lib remote_state_stays",
+    "tools/build_android_interop_classes.sh; cargo test --locked --test remote_android_{ack,approval,session,terminal,workspace,worktree,model,}_interop -- --ignored --test-threads=1",
+    "python3 tools/check_modes.py",
+    "git diff -U0 | grep -E '^\\+.*#!?\\[allow\\((dead_code|unused)'"
+  ],
+  "validation_result": {
+    "fmt": "ok",
+    "clippy_default": "ok",
+    "clippy_all_features": "ok",
+    "test_all_features": "156 test binaries ok; stage1_extension_hooks failed_reload_keeps_tools_and_lease_successful_reload_revokes_old load-flaky, 22/22 ok with --test-threads=1",
+    "android_interop": "8 suites ok (ack 1, approval 1, session 1, terminal 1, workspace 1, worktree 1, model 6, interop 3)",
+    "core_checkpoint_keys": "schema_version, sessions, subtabs, workspace, workspace_revision (unit test remote_state_stays_out_of_the_project_checkpoint_and_legacy_state_moves_out)",
+    "check_modes": "ok",
+    "new_allow_dead_code_unused": "none"
+  },
+  "notes": "The remote feature does not exist yet (ZE-520), so the validator 'a checkpoint written with --features remote loads in the default build' is proven structurally here (the core file carries no remote keys) and end-to-end in ZE-520. Tests that edited the inline remote_workspace now read a combined view (tests/remote_workspace.rs saved_state) and write it back as a legacy checkpoint, which also exercises the migration path. A missing project-workspace.json resets remote-state.json, as deleting the single file did before. Remaining crash window: between the two fsynced renames a combined commit can leave the workspace advanced with its receipt still null; that receipt reports unknown_outcome and quota/worktree reconcile refuses it as stale (no false success, no replay). No new unwrap/expect/panic in non-test code, no unsafe beyond the existing flock calls moved unchanged.",
+  "created_at": "2026-10-14T20:43:39Z",
+  "digest": "286dffaa17412b83c3f2b0905682f1ea4e0a23843a0bd65e0f3f6350e23736b3"
+}

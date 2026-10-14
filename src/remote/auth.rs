@@ -116,9 +116,7 @@ impl AuthenticatedDevice {
     }
 }
 
-pub fn valid_identifier(value: &str) -> bool {
-    !value.trim().is_empty() && value.len() <= 128 && !value.chars().any(char::is_control)
-}
+pub use crate::protocol::valid_identifier;
 
 fn decode_key(public_key: &str) -> Result<Vec<u8>, AuthError> {
     if public_key.len() != 87 {

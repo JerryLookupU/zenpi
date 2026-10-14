@@ -1,3 +1,5 @@
+#![cfg(feature = "remote")]
+
 use serde_json::json;
 use zenpi::{
     core::{Turn, TurnRole},

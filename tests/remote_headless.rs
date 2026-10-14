@@ -1,3 +1,5 @@
+#![cfg(feature = "remote")]
+
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use ring::signature::{ECDSA_P256_SHA256_ASN1_SIGNING, EcdsaKeyPair, KeyPair};
 use serde_json::json;
@@ -262,17 +264,11 @@ fn adapter_reads_the_actual_owner_and_new_local_turns_without_a_parallel_agent()
     let revision = pool.lock().unwrap().workspace_revision();
     let response = adapter.dispatch(&registry, &device, ack(2));
     assert_eq!(response.execution_state, Some(ExecutionState::Succeeded));
-    let checkpoint = temp.path().join("project-workspace.json");
+    let checkpoint = temp.path().join("remote-state.json");
     let bytes = std::fs::read(&checkpoint).unwrap();
     let saved: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(
-        saved["remote_workspace"]["event_acks"][0]["cursor"]["next_sequence"],
-        2
-    );
-    assert_eq!(
-        saved["remote_workspace"]["event_acks"][0]["device_id"],
-        device.id()
-    );
+    assert_eq!(saved["event_acks"][0]["cursor"]["next_sequence"], 2);
+    assert_eq!(saved["event_acks"][0]["device_id"], device.id());
     for next in [2, 1, 0] {
         let response = adapter.dispatch(&registry, &device, ack(next));
         assert_eq!(response.execution_state, Some(ExecutionState::Succeeded));
@@ -361,8 +357,8 @@ fn adapter_reads_the_actual_owner_and_new_local_turns_without_a_parallel_agent()
     );
     assert_eq!(std::fs::read(&checkpoint).unwrap(), bytes);
     let mut corrupt: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    let duplicate = corrupt["remote_workspace"]["event_acks"][0].clone();
-    corrupt["remote_workspace"]["event_acks"]
+    let duplicate = corrupt["event_acks"][0].clone();
+    corrupt["event_acks"]
         .as_array_mut()
         .unwrap()
         .push(duplicate);
@@ -381,7 +377,7 @@ fn adapter_reads_the_actual_owner_and_new_local_turns_without_a_parallel_agent()
         json!(null),
     ] {
         let mut corrupt = saved.clone();
-        corrupt["remote_workspace"]["event_acks"] = invalid;
+        corrupt["event_acks"] = invalid;
         std::fs::write(&checkpoint, serde_json::to_vec(&corrupt).unwrap()).unwrap();
         assert!(
             ProjectOwnerPool::new(owner.clone())
@@ -391,10 +387,7 @@ fn adapter_reads_the_actual_owner_and_new_local_turns_without_a_parallel_agent()
         );
     }
     let mut legacy = saved.clone();
-    legacy["remote_workspace"]
-        .as_object_mut()
-        .unwrap()
-        .remove("event_acks");
+    legacy.as_object_mut().unwrap().remove("event_acks");
     std::fs::write(&checkpoint, serde_json::to_vec(&legacy).unwrap()).unwrap();
     assert!(
         ProjectOwnerPool::new(owner.clone())
@@ -409,7 +402,7 @@ fn adapter_reads_the_actual_owner_and_new_local_turns_without_a_parallel_agent()
         "project_id":id, "cursor":{"session_id":session_id, "next_sequence":2}})
         })
         .collect();
-    full["remote_workspace"]["event_acks"] = json!(slots);
+    full["event_acks"] = json!(slots);
     let full_bytes = serde_json::to_vec(&full).unwrap();
     std::fs::write(&checkpoint, &full_bytes).unwrap();
     let mut full_pool = ProjectOwnerPool::new(owner.clone()).unwrap();
@@ -420,7 +413,7 @@ fn adapter_reads_the_actual_owner_and_new_local_turns_without_a_parallel_agent()
         Some(ErrorCode::ResourceLimit)
     );
     assert_eq!(std::fs::read(&checkpoint).unwrap(), full_bytes);
-    full["remote_workspace"]["event_acks"]
+    full["event_acks"]
         .as_array_mut()
         .unwrap()
         .push(json!({"device_id":format!("{:064x}", 128), "project_id":id,

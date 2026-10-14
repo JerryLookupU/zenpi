@@ -50,7 +50,8 @@ jobs:
       - name: Run tests
         # Several integration fixtures bind short-lived loopback listeners;
         # serial execution avoids OS-level port/resource contention while
-        # retaining the complete all-targets matrix.
+        # retaining the complete all-targets matrix. `--all-features` includes
+        # `remote`, which the remote suites (tests/remote_*.rs) require.
         run: cargo test --all-targets --all-features --locked --no-fail-fast -- --test-threads=1
 
       - name: Validate authoritative blueprint and Gantt
@@ -196,7 +197,7 @@ jobs:
         working-directory: android
         run: ./gradlew --console=plain :app:testDebugUnitTest lint verifyRoborazziDebug
 
-      - name: Run Rust/Kotlin interop tests (remote_android_*_interop)
+      - name: Run Rust/Kotlin interop tests (remote_android_*_interop, --features remote)
         run: tools/build_android_interop_classes.sh --run
 
       - name: Upload Android test and lint reports

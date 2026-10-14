@@ -162,9 +162,9 @@ impl WorkerOwner {
 }
 
 pub(crate) fn key(project: &str, session: &str, tab: &str, slot: u16) -> Result<String, String> {
-    if !super::auth::valid_identifier(project)
-        || !super::auth::valid_identifier(session)
-        || !super::auth::valid_identifier(tab)
+    if !crate::protocol::valid_identifier(project)
+        || !crate::protocol::valid_identifier(session)
+        || !crate::protocol::valid_identifier(tab)
         || slot >= crate::runtime::MAX_CONCURRENCY
     {
         return Err("invalid worker project/session/subtab/slot identity".into());

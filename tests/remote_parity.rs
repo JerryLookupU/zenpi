@@ -1,3 +1,5 @@
+#![cfg(feature = "remote")]
+
 #[path = "support/sequential_host.rs"]
 mod sequential_host;
 mod support;
@@ -16,9 +18,9 @@ use zenpi::{
     backend::{Backend, BackendError, Completion, CompletionRequest},
     core::Agent,
     project_workspace::ProjectOwnerPool,
-    remote::subtab::SubtabState,
     session::SessionStore,
     tools::{SideEffectPolicy, ToolCall, ToolContext, ToolRegistry},
+    worktree::subtab::SubtabState,
 };
 
 struct RootBackend(AtomicUsize);
@@ -254,16 +256,16 @@ fn registered_git_worktree_is_selected_without_replacing_session_owner() {
     let project = pool.active_context().project_id.clone();
     let main = pool.subtab_state(&project).unwrap();
     let legacy = vec![
-        zenpi::remote::subtab::LegacySubtab {
+        zenpi::worktree::subtab::LegacySubtab {
             name: "main".into(),
             root: root.display().to_string(),
-            kind: zenpi::remote::subtab::SubtabKind::Main,
+            kind: zenpi::worktree::subtab::SubtabKind::Main,
             concurrency: 1,
         },
-        zenpi::remote::subtab::LegacySubtab {
+        zenpi::worktree::subtab::LegacySubtab {
             name: "branch".into(),
             root: worktree.display().to_string(),
-            kind: zenpi::remote::subtab::SubtabKind::Worktree,
+            kind: zenpi::worktree::subtab::SubtabKind::Worktree,
             concurrency: 1,
         },
     ];

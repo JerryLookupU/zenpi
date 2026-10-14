@@ -341,6 +341,7 @@ pub fn diff_value_at_with_cancel(
 
 /// Remote review shares the local reader, but excludes known credential paths
 /// before Git reads patches or supplies untracked-file candidates.
+#[cfg(feature = "remote")]
 pub(crate) fn remote_diff_value_at_with_cancel(
     workspace_root: &Path,
     path: &str,
@@ -355,6 +356,7 @@ pub(crate) fn remote_diff_value_at_with_cancel(
     diff_value_at_inner(workspace_root, Some(path), Some(&control))
 }
 
+#[cfg(feature = "remote")]
 pub(crate) fn remote_diff_document_at_with_cancel(
     workspace_root: &Path,
     path: &str,
@@ -755,6 +757,7 @@ pub fn prompt_files_at(workspace_root: &Path, path: &str) -> Result<Value, Slash
     prompt_files_with_limit(workspace_root, path, 64, false)
 }
 
+#[cfg(feature = "remote")]
 pub(crate) fn remote_prompt_files_at(
     workspace_root: &Path,
     path: &str,
@@ -762,6 +765,7 @@ pub(crate) fn remote_prompt_files_at(
     prompt_files_with_limit(workspace_root, path, 64, true)
 }
 
+#[cfg(feature = "remote")]
 pub(crate) fn prompt_files_catalog_at(
     workspace_root: &Path,
     path: &str,
@@ -1426,6 +1430,7 @@ mod attachment_identity_tests {
     #[cfg(unix)]
     use crate::{core::TurnInputRequest, session::SessionStore, tools::ToolContext};
 
+    #[cfg(feature = "remote")]
     #[test]
     fn remote_file_listing_omits_private_paths_without_changing_local_discovery() {
         let root = tempfile::tempdir().unwrap();
@@ -1764,6 +1769,7 @@ mod diff_identity_tests {
         root
     }
 
+    #[cfg(feature = "remote")]
     #[test]
     fn remote_private_exclusions_preserve_literal_names_and_unborn_head() {
         for committed in [false, true] {
@@ -1818,6 +1824,7 @@ mod diff_identity_tests {
         }
     }
 
+    #[cfg(feature = "remote")]
     #[test]
     fn remote_private_exclusions_override_inherited_pathspec_modes() {
         for variable in [

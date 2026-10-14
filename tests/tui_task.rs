@@ -197,15 +197,15 @@ fn harness_and_binary_share_the_production_loop() {
         let end = start + source[start..].find("\n}\n").unwrap();
         &source[start..end]
     };
-    assert!(body("run_async_with_profile").contains("run_async_with_remote(agent, profile, None)"));
+    // Without the `remote` feature the pairing-options argument is compiled out.
+    let profile = body("run_async_with_profile");
+    assert!(profile.contains("run_tui_loop(") && profile.contains("TuiIo::Terminal"));
     assert!(
         body("run_async_with_remote")
             .contains("run_tui_loop(agent, profile, remote, TuiIo::Terminal)")
     );
-    assert!(
-        body("run_async_with_harness")
-            .contains("run_tui_loop(agent, None, None, TuiIo::Harness(harness))")
-    );
+    let harness = body("run_async_with_harness");
+    assert!(harness.contains("run_tui_loop(") && harness.contains("TuiIo::Harness(harness)"));
     assert_eq!(source.matches("fn run_tui_loop(").count(), 1);
     // The binary's TUI mode enters through run_async_with_profile.
     assert!(

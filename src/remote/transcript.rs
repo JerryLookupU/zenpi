@@ -303,10 +303,11 @@ pub fn read(
                     .ok_or(ErrorCode::InvalidRequest)?;
                 // Resolve only the runtime-confirmed slot; unrelated journals are not read.
                 {
-                    let key = super::worker::key(project, &context.session_id, subtab, slot)
-                        .map_err(|_| ErrorCode::InvalidRequest)?;
+                    let key =
+                        crate::worktree::worker::key(project, &context.session_id, subtab, slot)
+                            .map_err(|_| ErrorCode::InvalidRequest)?;
                     let path = directory.join(format!("{key}.jsonl"));
-                    let journal = super::worker::read_existing_journal(&path)
+                    let journal = crate::worktree::worker::read_existing_journal(&path)
                         .map_err(|_| ErrorCode::ResourceLimit)?;
                     if journal.session_id() != worker_session {
                         return Err(ErrorCode::InvalidRequest);

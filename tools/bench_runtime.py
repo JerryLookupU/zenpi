@@ -30,8 +30,9 @@ from typing import Any
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 BUDGETS = {
-    # Measured baseline (ZE-108); ZE-520 moves rcgen/qrcode behind `remote` and tightens it.
-    "normal_dependencies_max": 21,
+    # Direct non-optional dependencies of the default build, measured after
+    # ZE-520 moved rcgen/qrcode behind the `remote` feature (was 21).
+    "normal_dependencies_max": 19,
     "release_binary_bytes_max": 8 * 1024 * 1024,
     "cold_start_max_ms_max": 1000.0,
     "cold_start_peak_rss_max_bytes": 96 * 1024 * 1024,
@@ -50,6 +51,9 @@ BUDGETS = {
 }
 
 HEADLESS_FOOTPRINT_SCHEMA_VERSION = 1
+# Never part of the default (core) build: the async runtime and the remote host's
+# certificate and QR generators (ZE-520).
+CORE_FORBIDDEN_CRATES = ("tokio", "rcgen", "qrcode")
 
 
 def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
@@ -163,10 +167,19 @@ def dependency_receipt() -> dict[str, Any]:
     metadata = json.loads(run(["cargo", "metadata", "--format-version", "1", "--no-deps", "--locked"], capture_output=True).stdout)
     package = next(item for item in metadata["packages"] if item["name"] == "zenpi")
     normal = sorted(
-        {item["name"] for item in package["dependencies"] if item.get("kind") in (None, "normal")}
+        {item["name"] for item in package["dependencies"]
+         if item.get("kind") in (None, "normal") and not item.get("optional")}
     )
     tree = run(["cargo", "tree", "--depth", "1", "--locked"], capture_output=True).stdout.splitlines()
-    return {"normal_count": len(normal), "normal": normal, "features": package["features"], "tree": tree}
+    crates = {
+        line.split()[0]
+        for line in run(["cargo", "tree", "--locked", "-e", "normal", "--prefix", "none"],
+                        capture_output=True).stdout.splitlines()
+        if line.strip()
+    }
+    forbidden = sorted(crates.intersection(CORE_FORBIDDEN_CRATES))
+    return {"normal_count": len(normal), "normal": normal, "features": package["features"], "tree": tree,
+            "crate_count": len(crates), "forbidden": forbidden}
 
 
 def write_startup_observation(directory: pathlib.Path | None, index: int, observation: dict[str, Any]) -> None:
@@ -445,6 +458,7 @@ def evaluate(report: dict[str, Any]) -> dict[str, bool]:
     probe = report["runtime_probe"]
     gates = {
         "normal_dependencies": report["dependencies"]["normal_count"] <= BUDGETS["normal_dependencies_max"],
+        "core_dependency_boundary": not report["dependencies"]["forbidden"],
         "release_binary": report["release_binary_bytes"] <= BUDGETS["release_binary_bytes_max"],
         "cold_start": elapsed["max"] <= BUDGETS["cold_start_max_ms_max"],
         "cold_start_peak_rss": rss["max"] <= BUDGETS["cold_start_peak_rss_max_bytes"],

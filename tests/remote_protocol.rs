@@ -1,3 +1,5 @@
+#![cfg(feature = "remote")]
+
 use serde_json::json;
 use zenpi::remote::protocol::{
     Channel, Envelope, ErrorCode, EventCursor, ExecutionState, MAX_CONTROL_BYTES, MAX_ID_BYTES,

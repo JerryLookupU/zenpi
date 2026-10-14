@@ -1,3 +1,5 @@
+#![cfg(feature = "remote")]
+
 use std::{
     fs,
     path::{Path, PathBuf},

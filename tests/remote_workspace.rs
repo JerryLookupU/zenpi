@@ -1,3 +1,5 @@
+#![cfg(feature = "remote")]
+
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use ring::signature::{ECDSA_P256_SHA256_ASN1_SIGNING, EcdsaKeyPair, KeyPair};
 use serde_json::{Value, json};
@@ -26,6 +28,27 @@ fn pool(root: &Path) -> ProjectOwnerPool {
     let mut pool = ProjectOwnerPool::new(Arc::new(Mutex::new(owner))).unwrap();
     pool.restore_checkpoint().unwrap();
     pool
+}
+
+/// The single-file view used before ZE-510 split remote state into
+/// `remote-state.json`; written back, it is a legacy checkpoint.
+fn saved_state(root: &Path) -> Value {
+    let mut saved: Value =
+        serde_json::from_slice(&std::fs::read(root.join("project-workspace.json")).unwrap())
+            .unwrap();
+    if saved.get("remote_workspace").is_some() {
+        return saved;
+    }
+    let mut remote: Value = std::fs::read(root.join("remote-state.json"))
+        .map(|bytes| serde_json::from_slice(&bytes).unwrap())
+        .unwrap_or_else(|_| json!({"receipts":[]}));
+    remote["revision"] = saved
+        .as_object_mut()
+        .unwrap()
+        .remove("workspace_revision")
+        .unwrap();
+    saved["remote_workspace"] = remote;
+    saved
 }
 
 #[test]
@@ -1042,7 +1065,7 @@ fn remote_new_session_preserves_old_journal_and_retries_after_restart_without_re
         json!({}),
     );
     let checkpoint = root.join("project-workspace.json");
-    let mut saved: Value = serde_json::from_slice(&std::fs::read(&checkpoint).unwrap()).unwrap();
+    let mut saved: Value = saved_state(&root);
     saved["remote_workspace"]["receipts"].as_array_mut().unwrap().push(json!({"device_id":phone.id(),
         "request_id":"reserved-new","fingerprint":format!("{:x}",sha2::Sha256::digest(serde_json::to_vec(&pending).unwrap())),"result":null}));
     std::fs::write(&checkpoint, serde_json::to_vec(&saved).unwrap()).unwrap();
@@ -1842,7 +1865,7 @@ fn reasoning_selection_default_none_cas_and_restart_receipts_share_model_namespa
         rejected
     );
     let checkpoint = root.join("project-workspace.json");
-    let mut saved: Value = serde_json::from_slice(&std::fs::read(&checkpoint).unwrap()).unwrap();
+    let mut saved: Value = saved_state(&root);
     saved["remote_workspace"]
         .as_object_mut()
         .unwrap()
@@ -2256,8 +2279,7 @@ fn model_selection_invalid_busy_and_unresolved_reservations_do_not_repeat() {
         Some(ErrorCode::RequestIdConflict)
     );
     let checkpoint_path = root.join("project-workspace.json");
-    let mut checkpoint: Value =
-        serde_json::from_slice(&std::fs::read(&checkpoint_path).unwrap()).unwrap();
+    let mut checkpoint: Value = saved_state(&root);
     checkpoint["remote_workspace"]
         .as_object_mut()
         .unwrap()
@@ -2339,7 +2361,7 @@ fn model_request_binding_operation_corruption_fails_checkpoint_restore() {
     );
     select(&mut host, &registry, &phone, &req, false);
     let path = root.join("project-workspace.json");
-    let saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let saved: Value = saved_state(&root);
     let owner = host.owner(&project).unwrap();
     drop(host);
     for operation in ["cancel", "model_status", "unknown", "prompt"] {
@@ -4333,9 +4355,9 @@ fn remote_approval_one_shot_decision_is_digest_fenced_durable_and_separately_aut
                 })
                 .is_err()
         );
-        let saved: Value =
-            serde_json::from_slice(&std::fs::read(root.join("project-workspace.json")).unwrap())
-                .unwrap();
+        let saved: Value = saved_state(&root);
+        let durable = ["project-workspace.json", "remote-state.json"]
+            .map(|name| std::fs::read(root.join(name)).unwrap());
         assert_eq!(
             saved["remote_workspace"]["approval_receipts"][0]["binding"]["state"],
             "accepted"
@@ -4370,7 +4392,12 @@ fn remote_approval_one_shot_decision_is_digest_fenced_durable_and_separately_aut
                 .unwrap_err()
                 .contains("approval receipts")
         );
-        std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+        for (name, bytes) in ["project-workspace.json", "remote-state.json"]
+            .iter()
+            .zip(&durable)
+        {
+            std::fs::write(root.join(name), bytes).unwrap();
+        }
         let mut changed = command.clone();
         if let Message::Request { arguments, .. } = &mut changed.payload {
             arguments["decision"] = json!(if decision == ApprovalDecision::Allow {
@@ -4453,7 +4480,7 @@ fn remote_prompt_identity_fences_other_operations_restart_and_missing_journal() 
     });
     assert_eq!(accepted.execution_state, Some(ExecutionState::Accepted));
     let checkpoint = root.join("project-workspace.json");
-    let saved: Value = serde_json::from_slice(&std::fs::read(&checkpoint).unwrap()).unwrap();
+    let saved: Value = saved_state(&root);
     assert_eq!(
         saved["remote_workspace"]["prompt_bindings"]
             .as_array()
@@ -4484,7 +4511,7 @@ fn remote_prompt_identity_fences_other_operations_restart_and_missing_journal() 
         let code = match operation {
             Operation::WorkspaceSelect => mutate(&mut host, &registry, &phone, &cross).unwrap_err(),
             Operation::SubtabSelect => {
-                zenpi::remote::subtab::mutate(&mut host, &registry, &phone, &cross).unwrap_err()
+                zenpi::worktree::subtab::mutate(&mut host, &registry, &phone, &cross).unwrap_err()
             }
             Operation::Cancel => CancelAdmissions
                 .dispatch(&mut host, &registry, &phone, &cross, None, || panic!())
@@ -4602,8 +4629,7 @@ fn remote_prompt_identity_fences_other_operations_restart_and_missing_journal() 
         accepted
     );
     for field in ["fingerprint", "session_id", "device_id"] {
-        let mut corrupt: Value =
-            serde_json::from_slice(&std::fs::read(&checkpoint).unwrap()).unwrap();
+        let mut corrupt: Value = saved_state(&root);
         corrupt["remote_workspace"]["prompt_bindings"][0][field] = json!("");
         std::fs::write(&checkpoint, serde_json::to_vec(&corrupt).unwrap()).unwrap();
         let agent = Agent::with_echo(
@@ -4688,7 +4714,7 @@ fn remote_prompt_identity_is_project_independent_and_checkpoint_failure_never_su
     // A competing writer defeats reservation CAS before any runner admission.
     let checkpoint = root.join("project-workspace.json");
     let saved = std::fs::read(&checkpoint).unwrap();
-    let mut changed: Value = serde_json::from_slice(&saved).unwrap();
+    let mut changed: Value = saved_state(&root);
     changed["remote_workspace"]["revision"] = json!(999);
     std::fs::write(&checkpoint, serde_json::to_vec(&changed).unwrap()).unwrap();
     let fresh = request(
@@ -5125,8 +5151,7 @@ fn remote_cancel_reservations_and_failed_admission_survive_restart_without_reexe
             &command,
             Some((&original, phone.id())),
             || {
-                let mut saved: Value =
-                    serde_json::from_slice(&std::fs::read(&checkpoint).unwrap()).unwrap();
+                let mut saved: Value = saved_state(&root);
                 assert_eq!(
                     saved["remote_workspace"]["cancel_receipts"][0]["state"],
                     "unknown_outcome"
@@ -5229,7 +5254,7 @@ fn remote_cancel_checkpoint_conflict_refuses_side_effect_and_legacy_receipts_are
     );
     assert_eq!(result.execution_state, Some(ExecutionState::UnknownOutcome));
     let checkpoint = root.join("project-workspace.json");
-    let mut saved: Value = serde_json::from_slice(&std::fs::read(&checkpoint).unwrap()).unwrap();
+    let mut saved: Value = saved_state(&root);
     saved["remote_workspace"]
         .as_object_mut()
         .unwrap()
@@ -5257,7 +5282,7 @@ fn remote_cancel_checkpoint_conflict_refuses_side_effect_and_legacy_receipts_are
             .execution_state,
         Some(ExecutionState::Accepted)
     );
-    let saved: Value = serde_json::from_slice(&std::fs::read(&checkpoint).unwrap()).unwrap();
+    let saved: Value = saved_state(&root);
     for change in 0..5 {
         let mut invalid = saved.clone();
         match change {
@@ -5293,7 +5318,8 @@ fn remote_cancel_checkpoint_conflict_refuses_side_effect_and_legacy_receipts_are
 
 #[test]
 fn remote_git_worktree_create_close_dirty_refusal_and_restart_deduplication() {
-    use zenpi::remote::{host_adapter::HostAdapter, protocol::ExecutionState, subtab};
+    use zenpi::remote::{host_adapter::HostAdapter, protocol::ExecutionState};
+    use zenpi::worktree::subtab;
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
     let git = |args: &[&str]| {
@@ -5563,7 +5589,8 @@ fn post_git_checkpoint_conflict_preserves_unknown_intent_without_reexecution() {
 #[cfg(unix)]
 fn operator_reconciles_observed_create_and_remove_without_git_replay() {
     use std::os::unix::fs::PermissionsExt;
-    use zenpi::remote::{host_adapter::HostAdapter, protocol::ExecutionState, subtab};
+    use zenpi::remote::{host_adapter::HostAdapter, protocol::ExecutionState};
+    use zenpi::worktree::subtab;
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
     let git = |args: &[&str]| {
@@ -5718,8 +5745,7 @@ fn operator_reconciles_observed_create_and_remove_without_git_replay() {
         "repair-remove",
         json!({"subtab_id":before_remove.active_id,"subtab_revision":before_remove.revision}),
     );
-    let before_checkpoint: Value =
-        serde_json::from_slice(&std::fs::read(&checkpoint).unwrap()).unwrap();
+    let before_checkpoint: Value = saved_state(&root);
     std::fs::write(path.join("keep.txt"), "original").unwrap();
     let removed = subtab::mutate(&mut host, &registry, &phone, &close).unwrap();
     let after_remove = host.subtab_state(&project).unwrap();
@@ -5797,7 +5823,7 @@ fn operator_reconciles_observed_create_and_remove_without_git_replay() {
 
 #[test]
 fn remote_directory_tabs_are_contained_non_destructive_and_exact_retry_safe() {
-    use zenpi::remote::subtab::mutate;
+    use zenpi::worktree::subtab::mutate;
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
     let inside = root.join("inside");
@@ -5911,10 +5937,8 @@ fn remote_directory_tabs_are_contained_non_destructive_and_exact_retry_safe() {
 
 #[test]
 fn subtab_remote_control_is_acl_revision_fenced_durable_and_reconciles_desktop() {
-    use zenpi::remote::{
-        host_adapter::HostAdapter,
-        subtab::{LegacySubtab, SubtabKind},
-    };
+    use zenpi::remote::host_adapter::HostAdapter;
+    use zenpi::worktree::subtab::{LegacySubtab, SubtabKind};
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
     let mut host = pool(&root);
@@ -5966,18 +5990,18 @@ fn subtab_remote_control_is_acl_revision_fenced_durable_and_reconciles_desktop()
         json!({"subtab_id":target,"subtab_revision":state.revision,"name":"renamed"}),
     );
     assert_eq!(
-        zenpi::remote::subtab::mutate(&mut host, &registry, &read_only, &rename),
+        zenpi::worktree::subtab::mutate(&mut host, &registry, &read_only, &rename),
         Err(ErrorCode::Unauthorized)
     );
     assert_eq!(
-        zenpi::remote::subtab::mutate(&mut host, &registry, &foreign, &rename),
+        zenpi::worktree::subtab::mutate(&mut host, &registry, &foreign, &rename),
         Err(ErrorCode::Unauthorized)
     );
-    let result = zenpi::remote::subtab::mutate(&mut host, &registry, &phone, &rename).unwrap();
+    let result = zenpi::worktree::subtab::mutate(&mut host, &registry, &phone, &rename).unwrap();
     assert_eq!(host.subtab_state(&project).unwrap().tabs[2].name, "renamed");
     let revision = host.workspace_revision();
     assert_eq!(
-        zenpi::remote::subtab::mutate(&mut host, &registry, &phone, &rename).unwrap(),
+        zenpi::worktree::subtab::mutate(&mut host, &registry, &phone, &rename).unwrap(),
         result
     );
     assert_eq!(host.workspace_revision(), revision);
@@ -5986,7 +6010,7 @@ fn subtab_remote_control_is_acl_revision_fenced_durable_and_reconciles_desktop()
         arguments["name"] = json!("different");
     }
     assert_eq!(
-        zenpi::remote::subtab::mutate(&mut host, &registry, &phone, &conflict),
+        zenpi::worktree::subtab::mutate(&mut host, &registry, &phone, &conflict),
         Err(ErrorCode::RequestIdConflict)
     );
     let state = host.subtab_state(&project).unwrap();
@@ -5998,7 +6022,7 @@ fn subtab_remote_control_is_acl_revision_fenced_durable_and_reconciles_desktop()
         json!({"subtab_id":target,"subtab_revision":state.revision-1}),
     );
     assert_eq!(
-        zenpi::remote::subtab::mutate(&mut host, &registry, &phone, &stale),
+        zenpi::worktree::subtab::mutate(&mut host, &registry, &phone, &stale),
         Err(ErrorCode::RevisionConflict)
     );
     let select = request(
@@ -6031,7 +6055,7 @@ fn subtab_remote_control_is_acl_revision_fenced_durable_and_reconciles_desktop()
             ErrorCode::InvalidRequest
         };
         assert_eq!(
-            zenpi::remote::subtab::mutate(&mut host, &registry, &phone, &invalid),
+            zenpi::worktree::subtab::mutate(&mut host, &registry, &phone, &invalid),
             Err(expected)
         );
         assert_eq!(host.subtab_state(&project).unwrap(), state);
@@ -6039,14 +6063,14 @@ fn subtab_remote_control_is_acl_revision_fenced_durable_and_reconciles_desktop()
     let arch = host.arch_agent(&project).unwrap();
     let arch_guard = arch.lock().unwrap();
     assert_eq!(
-        zenpi::remote::subtab::mutate(&mut host, &registry, &phone, &select),
+        zenpi::worktree::subtab::mutate(&mut host, &registry, &phone, &select),
         Err(ErrorCode::Busy)
     );
     drop(arch_guard);
     let owner = host.active();
     let held = owner.lock().unwrap();
     assert_eq!(
-        zenpi::remote::subtab::mutate(&mut host, &registry, &phone, &select),
+        zenpi::worktree::subtab::mutate(&mut host, &registry, &phone, &select),
         Err(ErrorCode::Busy)
     );
     drop(held);
@@ -6067,14 +6091,14 @@ fn subtab_remote_control_is_acl_revision_fenced_durable_and_reconciles_desktop()
         "move",
         json!({"subtab_id":target,"subtab_revision":state.revision,"before_id":state.tabs[1].id}),
     );
-    zenpi::remote::subtab::mutate(&mut host, &registry, &phone, &move_request).unwrap();
+    zenpi::worktree::subtab::mutate(&mut host, &registry, &phone, &move_request).unwrap();
     let committed = host.subtab_state(&project).unwrap();
     assert_eq!(committed.tabs[1].id, target);
     drop(host);
     let mut host = pool(&root);
     assert_eq!(host.subtab_state(&project).unwrap(), committed);
     assert_eq!(
-        zenpi::remote::subtab::mutate(&mut host, &registry, &phone, &rename).unwrap(),
+        zenpi::worktree::subtab::mutate(&mut host, &registry, &phone, &rename).unwrap(),
         result
     );
     let list = Envelope {
@@ -6088,17 +6112,17 @@ fn subtab_remote_control_is_acl_revision_fenced_durable_and_reconciles_desktop()
             },
         )
     };
-    let visible = zenpi::remote::subtab::listing(&host, &registry, &read_only, &list).unwrap();
+    let visible = zenpi::worktree::subtab::listing(&host, &registry, &read_only, &list).unwrap();
     assert_eq!(visible["active_subtab_id"], target);
     assert_eq!(visible["subtab_control"], false);
     assert!(!visible.to_string().contains(&root.display().to_string()));
     assert_eq!(
-        zenpi::remote::subtab::listing(&host, &registry, &foreign, &list),
+        zenpi::worktree::subtab::listing(&host, &registry, &foreign, &list),
         Err(ErrorCode::Unauthorized)
     );
     registry.revoke(phone.id()).unwrap();
     assert_eq!(
-        zenpi::remote::subtab::mutate(&mut host, &registry, &phone, &rename),
+        zenpi::worktree::subtab::mutate(&mut host, &registry, &phone, &rename),
         Err(ErrorCode::Unauthorized)
     );
 }
@@ -6135,18 +6159,18 @@ fn remote_subtab_write_refuses_busy_worker_before_checkpoint_and_retries_exactly
     let before = std::fs::read(&path).unwrap();
     let guard = worker.agent().lock().unwrap();
     assert_eq!(
-        zenpi::remote::subtab::mutate(&mut host, &registry, &phone, &rename),
+        zenpi::worktree::subtab::mutate(&mut host, &registry, &phone, &rename),
         Err(ErrorCode::Busy)
     );
     assert_eq!(std::fs::read(&path).unwrap(), before);
     assert_eq!(host.subtab_state(&project).unwrap(), state);
     drop(guard);
-    let result = zenpi::remote::subtab::mutate(&mut host, &registry, &phone, &rename).unwrap();
+    let result = zenpi::worktree::subtab::mutate(&mut host, &registry, &phone, &rename).unwrap();
     let after = std::fs::read(&path).unwrap();
     let guard = worker.agent().lock().unwrap();
     // A durable exact receipt is still queryable while execution is busy.
     assert_eq!(
-        zenpi::remote::subtab::mutate(&mut host, &registry, &phone, &rename).unwrap(),
+        zenpi::worktree::subtab::mutate(&mut host, &registry, &phone, &rename).unwrap(),
         result
     );
     assert_eq!(std::fs::read(&path).unwrap(), after);
@@ -6156,10 +6180,9 @@ fn remote_subtab_write_refuses_busy_worker_before_checkpoint_and_retries_exactly
 #[test]
 fn worker_admission_is_durable_device_scoped_and_exact_retries_never_run_again() {
     use zenpi::{
-        remote::{
-            protocol::ExecutionState, worker_admission::dispatch, worktree_runner::WorktreeRunner,
-        },
+        remote::protocol::ExecutionState,
         runtime::{JobOutcome, RuntimeConfig, RuntimeEvent},
+        worktree::{worker_admission::dispatch, worktree_runner::WorktreeRunner},
     };
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
@@ -6264,8 +6287,8 @@ fn worker_admission_is_durable_device_scoped_and_exact_retries_never_run_again()
 #[test]
 fn worker_admission_refusals_leave_checkpoint_and_worker_history_unchanged() {
     use zenpi::{
-        remote::{worker_admission::dispatch, worktree_runner::WorktreeRunner},
         runtime::RuntimeConfig,
+        worktree::{worker_admission::dispatch, worktree_runner::WorktreeRunner},
     };
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
@@ -6367,10 +6390,9 @@ fn worker_admission_refusals_leave_checkpoint_and_worker_history_unchanged() {
 #[test]
 fn worker_checkpoint_only_reservation_after_crash_is_unknown_and_never_resubmitted() {
     use zenpi::{
-        remote::{
-            protocol::ExecutionState, worker_admission::dispatch, worktree_runner::WorktreeRunner,
-        },
+        remote::protocol::ExecutionState,
         runtime::{RuntimeConfig, RuntimeEvent},
+        worktree::{worker_admission::dispatch, worktree_runner::WorktreeRunner},
     };
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
@@ -6462,10 +6484,9 @@ fn worker_checkpoint_only_reservation_after_crash_is_unknown_and_never_resubmitt
 #[test]
 fn worker_journal_import_restores_cross_owner_request_binding_before_new_submission() {
     use zenpi::{
-        remote::{
-            protocol::ExecutionState, worker_admission::dispatch, worktree_runner::WorktreeRunner,
-        },
+        remote::protocol::ExecutionState,
         runtime::{RuntimeConfig, RuntimeEvent},
+        worktree::{worker_admission::dispatch, worktree_runner::WorktreeRunner},
     };
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
@@ -6503,7 +6524,7 @@ fn worker_journal_import_restores_cross_owner_request_binding_before_new_submiss
     runner.shutdown_and_join().unwrap();
     drop(host);
     let checkpoint = root.join("project-workspace.json");
-    let mut saved: Value = serde_json::from_slice(&std::fs::read(&checkpoint).unwrap()).unwrap();
+    let mut saved: Value = saved_state(&root);
     saved["remote_workspace"]["prompt_bindings"] = json!([]);
     std::fs::write(&checkpoint, serde_json::to_vec(&saved).unwrap()).unwrap();
     let mut host = pool(&root);
@@ -6540,13 +6561,13 @@ fn worker_journal_import_restores_cross_owner_request_binding_before_new_submiss
 #[test]
 fn tracked_worker_completion_survives_master_contention_and_restart_without_duplicate_append() {
     use zenpi::{
-        remote::{
-            protocol::ExecutionState,
+        remote::protocol::ExecutionState,
+        runtime::{RuntimeConfig, RuntimeEvent},
+        worktree::{
             worker_admission::dispatch_tracked,
             worker_progress::{WorkerProgress, listing},
             worktree_runner::WorktreeRunner,
         },
-        runtime::{RuntimeConfig, RuntimeEvent},
     };
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
@@ -6632,11 +6653,11 @@ fn tracked_worker_completion_survives_master_contention_and_restart_without_dupl
 #[test]
 fn worker_progress_append_failure_is_unknown_and_never_blindly_retried() {
     use zenpi::{
-        remote::{
+        runtime::{RuntimeConfig, RuntimeEvent},
+        worktree::{
             worker_admission::dispatch_tracked, worker_progress::WorkerProgress,
             worktree_runner::WorktreeRunner,
         },
-        runtime::{RuntimeConfig, RuntimeEvent},
     };
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
@@ -6702,12 +6723,12 @@ fn worker_progress_append_failure_is_unknown_and_never_blindly_retried() {
 #[test]
 fn worker_completed_output_survives_restart_redacted_without_rewriting_private_worker_journal() {
     use zenpi::{
-        remote::{
+        runtime::{RuntimeConfig, RuntimeEvent},
+        worktree::{
             worker_admission::dispatch_tracked,
             worker_progress::{WorkerProgress, listing},
             worktree_runner::WorktreeRunner,
         },
-        runtime::{RuntimeConfig, RuntimeEvent},
     };
     for body in ["public answer\nAPI_KEY=PRIVATE_COMPLETED_SECRET\n-----BEGIN PRIVATE KEY-----\nPRIVATE_BODY\n-----END PRIVATE KEY-----\nend".to_owned(), "\u{754c}".repeat(2000)] {
         let temp = tempfile::tempdir().unwrap();
@@ -6752,13 +6773,13 @@ fn worker_completed_output_survives_restart_redacted_without_rewriting_private_w
 #[test]
 fn tracked_worker_queue_rejection_is_durable_failure_not_permanent_accepted() {
     use zenpi::{
-        remote::{
-            protocol::ExecutionState,
+        remote::protocol::ExecutionState,
+        runtime::{RuntimeConfig, RuntimeEvent},
+        worktree::{
             worker_admission::dispatch_tracked,
             worker_progress::{WorkerProgress, listing},
             worktree_runner::WorktreeRunner,
         },
-        runtime::{RuntimeConfig, RuntimeEvent},
     };
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
@@ -6856,11 +6877,12 @@ fn tracked_worker_queue_rejection_is_durable_failure_not_permanent_accepted() {
 #[test]
 fn worker_cancellation_is_device_scoped_exact_retry_safe_and_does_not_stop_other_slots() {
     use zenpi::{
-        remote::{
-            protocol::ExecutionState, worker_admission::dispatch_tracked,
-            worker_progress::WorkerProgress, worktree_runner::WorktreeRunner,
-        },
+        remote::protocol::ExecutionState,
         runtime::{RuntimeConfig, RuntimeEvent},
+        worktree::{
+            worker_admission::dispatch_tracked, worker_progress::WorkerProgress,
+            worktree_runner::WorktreeRunner,
+        },
     };
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
@@ -7074,11 +7096,12 @@ fn worker_cancellation_is_device_scoped_exact_retry_safe_and_does_not_stop_other
 #[test]
 fn old_worker_tracker_cannot_cancel_a_new_runner_even_when_its_job_ids_restart() {
     use zenpi::{
-        remote::{
-            protocol::ExecutionState, worker_admission::dispatch_tracked,
-            worker_progress::WorkerProgress, worktree_runner::WorktreeRunner,
-        },
+        remote::protocol::ExecutionState,
         runtime::RuntimeConfig,
+        worktree::{
+            worker_admission::dispatch_tracked, worker_progress::WorkerProgress,
+            worktree_runner::WorktreeRunner,
+        },
     };
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
@@ -7148,11 +7171,12 @@ fn old_worker_tracker_cannot_cancel_a_new_runner_even_when_its_job_ids_restart()
 #[test]
 fn two_devices_using_the_same_worker_request_string_cancel_only_their_own_job() {
     use zenpi::{
-        remote::{
-            protocol::ExecutionState, worker_admission::dispatch_tracked,
-            worker_progress::WorkerProgress, worktree_runner::WorktreeRunner,
-        },
+        remote::protocol::ExecutionState,
         runtime::{RuntimeConfig, RuntimeEvent},
+        worktree::{
+            worker_admission::dispatch_tracked, worker_progress::WorkerProgress,
+            worktree_runner::WorktreeRunner,
+        },
     };
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
@@ -8399,10 +8423,9 @@ fn desktop_worker_route_executes_independent_turn_and_retries_across_headless_re
 #[test]
 fn remote_concurrency_is_durable_cas_fenced_and_drives_real_worker_quota() {
     use zenpi::{
-        remote::{
-            host_adapter::HostAdapter, protocol::ExecutionState, worktree_runner::WorktreeRunner,
-        },
+        remote::{host_adapter::HostAdapter, protocol::ExecutionState},
         runtime::{RuntimeConfig, RuntimeEvent},
+        worktree::worktree_runner::WorktreeRunner,
     };
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
@@ -8616,7 +8639,7 @@ fn quota_crash_intent_is_unknown_on_remote_retry_and_local_cli_commits_without_e
         Some(ExecutionState::Succeeded)
     );
     let path = root.join("project-workspace.json");
-    let mut saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let mut saved: Value = saved_state(&root);
     // Reconstruct the exact persisted pre-application crash boundary.
     saved["subtabs"][&project] = json!(before);
     saved["remote_workspace"]["revision"] = json!(req.expected_revision.unwrap());
@@ -9041,14 +9064,14 @@ fn legacy_checkpoint_migrates_on_commit_and_malformed_retry_ledger_is_refused() 
     let initial = host.active_context().project_id.clone();
     host.select(&initial).unwrap();
     let path = temp.path().join("project-workspace.json");
-    let mut saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let mut saved: Value = saved_state(temp.path());
     saved.as_object_mut().unwrap().remove("remote_workspace");
     drop(host);
     std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
     let mut migrated = pool(temp.path());
     assert_eq!(migrated.workspace_revision(), 0);
     migrated.select(&initial).unwrap();
-    let mut saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let mut saved: Value = saved_state(temp.path());
     assert!(saved["remote_workspace"]["receipts"].is_array());
     saved["remote_workspace"]["receipts"] =
         json!([{"device_id":"bad", "request_id":"id", "fingerprint":"bad", "result":{}}]);

@@ -1,3 +1,5 @@
+#![cfg(feature = "remote")]
+
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use ring::signature::{ECDSA_P256_SHA256_ASN1_SIGNING, EcdsaKeyPair, KeyPair};
 use std::{
@@ -1900,13 +1902,13 @@ fn exercise(mode: &str) {
             rename.required_owner = Some(host.workspace_owner().into());
             rename.expected_revision = Some(host.workspace_revision());
             let changed =
-                zenpi::remote::subtab::mutate(&mut host, &registry, &authenticated, &rename)
+                zenpi::worktree::subtab::mutate(&mut host, &registry, &authenticated, &rename)
                     .unwrap();
             let signal =
                 zenpi::remote::wakeup::watch(request.session_id.as_deref().unwrap()).unwrap();
             let observed = signal.revision();
             assert_eq!(
-                zenpi::remote::subtab::mutate(&mut host, &registry, &authenticated, &rename)
+                zenpi::worktree::subtab::mutate(&mut host, &registry, &authenticated, &rename)
                     .unwrap(),
                 changed
             );

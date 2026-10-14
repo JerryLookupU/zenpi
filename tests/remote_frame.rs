@@ -1,3 +1,5 @@
+#![cfg(feature = "remote")]
+
 use std::io::{self, Cursor, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::time::{Duration, Instant};

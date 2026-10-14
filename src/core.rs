@@ -4066,13 +4066,14 @@ impl Agent {
                     &cancelled,
                 )?;
                 coordinator.persist_accepted(&response.request_id, |accepted| {
-                    let mut event = serde_json::json!({
+                    let event = serde_json::json!({
                         "type": "approval_resolved", "request_id": accepted.request.request_id,
                         "turn_id": operation_id, "call_id": operation_id, "tool": "user_shell",
                         "origin": "user_shell", "policy_digest": policy_digest,
                         "decision": accepted.response.decision, "remember": accepted.response.remember,
                     });
-                    accepted.annotate_remote(&mut event);
+                    #[cfg(feature = "remote")]
+                    let event = accepted.with_remote(event);
                     self.session.append_event(event)
                 }).map_err(|error| match error {
                     crate::approval::PersistApprovalError::Approval(error) => AgentError::Approval(error),
@@ -5998,7 +5999,7 @@ impl Agent {
                 Err(error) => return Err(error.into()),
             };
             coordinator.persist_accepted(&response.request_id, |accepted| {
-                let mut event = serde_json::json!({
+                let event = serde_json::json!({
                     "type": "approval_resolved",
                     "request_id": accepted.request.request_id,
                     "turn_id": accepted.request.turn_id,
@@ -6021,7 +6022,8 @@ impl Agent {
                     "source": crate::approval::HOST_ANSWER_SOURCE,
                     "execution": evidence,
                 });
-                accepted.annotate_remote(&mut event);
+                #[cfg(feature = "remote")]
+                let event = accepted.with_remote(event);
                 self.session.append_event(event)
             }).map_err(|error| match error {
                 crate::approval::PersistApprovalError::Approval(error) => AgentError::Approval(error),
@@ -6589,12 +6591,14 @@ impl Agent {
             Ok(ProcessResult {
                 submission,
                 assistant,
+                #[cfg(feature = "remote")]
                 worker_history_evidence: None,
             })
         } else {
             Ok(ProcessResult {
                 submission,
                 assistant: None,
+                #[cfg(feature = "remote")]
                 worker_history_evidence: None,
             })
         }
@@ -6619,6 +6623,7 @@ impl Agent {
         Ok(ProcessResult {
             submission,
             assistant,
+            #[cfg(feature = "remote")]
             worker_history_evidence: None,
         })
     }
@@ -6978,7 +6983,8 @@ impl Agent {
 pub struct ProcessResult {
     pub submission: TurnSubmission,
     pub assistant: Option<Turn>,
-    pub(crate) worker_history_evidence: Option<crate::remote::worker::HistoryEvidence>,
+    #[cfg(feature = "remote")]
+    pub(crate) worker_history_evidence: Option<crate::worktree::worker::HistoryEvidence>,
 }
 
 fn admit_provider_send(
@@ -7135,6 +7141,7 @@ pub enum RunMode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CliOptions {
+    #[cfg(feature = "remote")]
     pub host_pair: Option<crate::host_pair::HostPairOptions>,
     pub mode: RunMode,
     pub session: PathBuf,
@@ -7214,6 +7221,7 @@ pub enum CliCommand {
 impl Default for CliOptions {
     fn default() -> Self {
         Self {
+            #[cfg(feature = "remote")]
             host_pair: None,
             mode: RunMode::Tui,
             session: SessionStore::default_path(),
@@ -7621,6 +7629,13 @@ where
 {
     let mut options = CliOptions::default();
     let mut args = args.into_iter().map(Into::into).peekable();
+    #[cfg(not(feature = "remote"))]
+    if args.peek().is_some_and(|argument| argument == "host") {
+        return Err(ZenpiError::arguments(
+            "host requires a zenpi build with the remote feature",
+        ));
+    }
+    #[cfg(feature = "remote")]
     if args.peek().is_some_and(|argument| argument == "host") {
         args.next();
         let serve = match args.next().as_deref() {
@@ -8229,6 +8244,7 @@ fn backend_from_effective(
 }
 
 fn print_help() {
+    #[cfg(feature = "remote")]
     println!(
         "zenpi host pair [--bind IP:PORT] [--advertise IP] [--tailnet] [--identity PATH] [--duration-seconds 1..300] [--plain] [--workspace PATH --session PATH [--desktop | --list-projects]] [--list-devices [--json] | --revoke-device ID]"
     );
@@ -8259,6 +8275,7 @@ fn print_help() {
 /// Binary entry point shared with tests and embedders.
 pub fn run() -> Result<(), ZenpiError> {
     let options = parse_args(env::args().skip(1))?;
+    #[cfg(feature = "remote")]
     if let Some(pair) = options.host_pair {
         return crate::host_pair::run(pair);
     }

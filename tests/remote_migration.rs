@@ -1,3 +1,5 @@
+#![cfg(feature = "remote")]
+
 use serde_json::{Value, json};
 use std::{
     path::Path,
@@ -20,7 +22,7 @@ fn legacy(root: &Path) -> (String, String, Vec<u8>) {
     host.select(&project).unwrap();
     let path = root.join("project-workspace.json");
     let mut saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    saved.as_object_mut().unwrap().remove("remote_workspace");
+    saved.as_object_mut().unwrap().remove("workspace_revision");
     saved.as_object_mut().unwrap().remove("subtabs");
     let bytes = serde_json::to_vec(&saved).unwrap();
     std::fs::write(path, &bytes).unwrap();
@@ -61,12 +63,10 @@ fn legacy_owner_imports_all_admission_kinds_once_without_replaying_side_effects(
     assert_eq!(host.active_context().session_id, session);
     assert_eq!(host.workspace_revision(), 0);
     assert!(owner.lock().unwrap().session().turns().is_empty());
-    let checkpoint = root.join("project-workspace.json");
+    let checkpoint = root.join("remote-state.json");
     let migrated = std::fs::read(&checkpoint).unwrap();
     let saved: Value = serde_json::from_slice(&migrated).unwrap();
-    let bindings = saved["remote_workspace"]["prompt_bindings"]
-        .as_array()
-        .unwrap();
+    let bindings = saved["prompt_bindings"].as_array().unwrap();
     assert_eq!(bindings.len(), 3);
     assert!(bindings[0].get("operation").is_none());
     assert_eq!(bindings[1]["operation"], "model_select");
@@ -148,7 +148,7 @@ fn interrupted_migration_preserves_old_checkpoint_and_can_retry_without_loss() {
         ))
         .unwrap();
     drop(journal);
-    let temporary = root.join(format!("project-workspace.{}.tmp", std::process::id()));
+    let temporary = root.join(format!("remote-state.{}.tmp", std::process::id()));
     std::fs::write(&temporary, b"interrupted partial checkpoint").unwrap();
     let (mut host, _) = fresh(&root);
     assert!(host.restore_checkpoint().is_err());
@@ -164,15 +164,8 @@ fn interrupted_migration_preserves_old_checkpoint_and_can_retry_without_loss() {
     std::fs::remove_file(&temporary).unwrap();
     assert!(host.restore_checkpoint().unwrap());
     let saved: Value =
-        serde_json::from_slice(&std::fs::read(root.join("project-workspace.json")).unwrap())
-            .unwrap();
-    assert_eq!(
-        saved["remote_workspace"]["prompt_bindings"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
-    );
+        serde_json::from_slice(&std::fs::read(root.join("remote-state.json")).unwrap()).unwrap();
+    assert_eq!(saved["prompt_bindings"].as_array().unwrap().len(), 1);
     assert!(!temporary.exists());
 }
 
@@ -199,14 +192,10 @@ fn missing_checkpoint_recovers_journal_bindings_without_recreating_execution() {
     assert_eq!(host.active_context().session_id, session);
     assert!(owner.lock().unwrap().session().turns().is_empty());
     let saved: Value =
-        serde_json::from_slice(&std::fs::read(root.join("project-workspace.json")).unwrap())
-            .unwrap();
+        serde_json::from_slice(&std::fs::read(root.join("remote-state.json")).unwrap()).unwrap();
+    assert_eq!(saved["prompt_bindings"][0]["operation"], "reasoning_select");
     assert_eq!(
-        saved["remote_workspace"]["prompt_bindings"][0]["operation"],
-        "reasoning_select"
-    );
-    assert_eq!(
-        saved["remote_workspace"]["prompt_bindings"][0]["request_id"],
+        saved["prompt_bindings"][0]["request_id"],
         "previous-reservation"
     );
     assert_eq!(std::fs::read(root.join("session.jsonl")).unwrap(), bytes);

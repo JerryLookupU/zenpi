@@ -18,7 +18,7 @@ type Job<I, O, E> = Box<dyn Fn(I, CancellationToken) -> Result<O, E> + Send + Sy
 
 pub(crate) struct WorkerPrompt {
     pub text: String,
-    pub request: super::protocol::Envelope,
+    pub request: crate::remote::protocol::Envelope,
     pub device: String,
 }
 
@@ -28,7 +28,7 @@ impl WorktreeRunner<WorkerPrompt, crate::core::ProcessResult, crate::core::Agent
         project: &str,
         subtab: &str,
         config: RuntimeConfig,
-        live: Arc<super::live_text::LivePromptText>,
+        live: Arc<crate::remote::live_text::LivePromptText>,
     ) -> Result<Self, String> {
         Self::spawn(
             pool,
@@ -44,7 +44,7 @@ impl WorktreeRunner<WorkerPrompt, crate::core::ProcessResult, crate::core::Agent
                     &mut agent,
                     &|| token.is_cancelled(),
                     |agent| {
-                        let input = super::command::prompt_input(agent, job.text)?;
+                        let input = crate::remote::command::prompt_input(agent, job.text)?;
                         agent.process_with_cancel_and_events(
                             input,
                             || token.is_cancelled(),
@@ -59,7 +59,7 @@ impl WorktreeRunner<WorkerPrompt, crate::core::ProcessResult, crate::core::Agent
                     use sha2::{Digest, Sha256};
                     let history = agent.session().turns()[history_start..]
                         .iter()
-                        .map(super::transcript::history_entry)
+                        .map(crate::remote::transcript::history_entry)
                         .collect::<Result<Vec<_>, _>>()
                         .map_err(|_| {
                             crate::core::AgentError::InvalidTurn(
@@ -179,7 +179,7 @@ impl WorktreeRunner<String, crate::core::ProcessResult, crate::core::AgentError>
                     &mut agent,
                     &|| token.is_cancelled(),
                     |agent| {
-                        let input = super::command::prompt_input(agent, text)?;
+                        let input = crate::remote::command::prompt_input(agent, text)?;
                         agent.process_with_cancel(input, || token.is_cancelled())
                     },
                 )??;

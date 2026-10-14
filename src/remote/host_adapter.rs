@@ -439,7 +439,7 @@ impl HostAdapter {
                 ..
             }
         ) {
-            return match super::subtab::mutate(pool, registry, device, &request) {
+            return match crate::worktree::subtab::mutate(pool, registry, device, &request) {
                 Ok(result) => {
                     let unknown = result.is_null();
                     let mut response =
@@ -560,7 +560,7 @@ impl HostAdapter {
         }
         if matches!(&request.payload, Message::Request { operation: Operation::SubtabList, arguments } if arguments.as_object().is_some_and(|v| v.is_empty()))
         {
-            match super::subtab::listing(pool, registry, device, &request) {
+            match crate::worktree::subtab::listing(pool, registry, device, &request) {
                 Ok(result) => {
                     response.payload = Message::Response { result };
                     response.execution_state = Some(ExecutionState::Succeeded);

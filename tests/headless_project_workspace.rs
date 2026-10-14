@@ -731,6 +731,55 @@ fn failed_workspace_restore_still_adopts_the_checkpoint() {
     assert!(String::from_utf8_lossy(&rewritten).contains("two"));
 }
 
+/// ZE-510/ZE-520: whichever build wrote it, remote state lives in
+/// remote-state.json, so a build with or without `remote` restores the
+/// project checkpoint; a pre-split inline copy is moved out unchanged.
+#[test]
+fn project_checkpoint_restores_beside_remote_state_and_moves_legacy_inline_state_out() {
+    let root = tempdir().unwrap();
+    let one = root.path().join("one");
+    let two = root.path().join("two");
+    fs::create_dir(&one).unwrap();
+    fs::create_dir(&two).unwrap();
+    let mut first = ProjectOwnerPool::new(Arc::new(Mutex::new(agent(root.path())))).unwrap();
+    first.restore_checkpoint().unwrap();
+    first.open(Some(&one)).unwrap();
+    let context = first.active_context().clone();
+    drop(first);
+    let checkpoint = root.path().join("project-workspace.json");
+    let remote_path = root.path().join("remote-state.json");
+    let remote = json!({"receipts":[],"cancel_receipts":[],"steer_receipts":[],
+        "approval_receipts":[],"prompt_bindings":[],"event_acks":[{"device_id":"a".repeat(64),
+        "project_id":context.project_id,"cursor":{"session_id":context.session_id,"next_sequence":3}}]});
+    let remote_bytes = serde_json::to_vec(&remote).unwrap();
+    fs::write(&remote_path, &remote_bytes).unwrap();
+    let saved: Value = serde_json::from_slice(&fs::read(&checkpoint).unwrap()).unwrap();
+    assert!(saved.get("remote_workspace").is_none());
+    let revision = saved["workspace_revision"].clone();
+    assert!(revision.as_u64().unwrap() > 0);
+
+    let mut second = ProjectOwnerPool::new(Arc::new(Mutex::new(agent(root.path())))).unwrap();
+    assert!(second.restore_checkpoint().unwrap());
+    assert_eq!(second.active_context().project_id, context.project_id);
+    second.open(Some(&two)).unwrap();
+    assert_eq!(fs::read(&remote_path).unwrap(), remote_bytes);
+    drop(second);
+
+    let mut legacy = saved.clone();
+    legacy.as_object_mut().unwrap().remove("workspace_revision");
+    let mut inline = remote.clone();
+    inline["revision"] = revision.clone();
+    legacy["remote_workspace"] = inline;
+    fs::write(&checkpoint, serde_json::to_vec(&legacy).unwrap()).unwrap();
+    fs::remove_file(&remote_path).unwrap();
+    let mut third = ProjectOwnerPool::new(Arc::new(Mutex::new(agent(root.path())))).unwrap();
+    assert!(third.restore_checkpoint().unwrap());
+    assert_eq!(third.workspace_revision(), revision.as_u64().unwrap());
+    let migrated: Value = serde_json::from_slice(&fs::read(&checkpoint).unwrap()).unwrap();
+    assert_eq!(migrated, saved);
+    let moved: Value = serde_json::from_slice(&fs::read(&remote_path).unwrap()).unwrap();
+    assert_eq!(moved, remote);
+}
 #[test]
 fn unreadable_saved_journal_never_adopts_checkpoint_or_overwrites_request_identity() {
     let root = tempdir().unwrap();
@@ -749,11 +798,14 @@ fn unreadable_saved_journal_never_adopts_checkpoint_or_overwrites_request_identi
     fs::write(&checkpoint, &durable).unwrap();
     let mut second = ProjectOwnerPool::new(Arc::new(Mutex::new(agent(root.path())))).unwrap();
     let before = second.workspace().clone();
+    #[cfg(feature = "remote")]
     let signal = zenpi::remote::wakeup::watch(&second.active_context().session_id).unwrap();
+    #[cfg(feature = "remote")]
     let observed = signal.revision();
     assert!(second.restore_checkpoint().is_err());
     assert!(!second.has_workspace_checkpoint());
     assert_eq!(second.workspace(), &before);
+    #[cfg(feature = "remote")]
     assert_eq!(signal.revision(), observed);
     assert_eq!(fs::read(checkpoint).unwrap(), durable);
 }

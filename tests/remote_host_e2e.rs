@@ -1,3 +1,4 @@
+#![cfg(feature = "remote")]
 //! Production-binary pairing smoke: QR invite -> pinned TLS -> one-use device
 //! registration.  This is intentionally a real listener test, not a pipe or
 //! echo fixture; Android camera and physical-LAN gates live in the Android

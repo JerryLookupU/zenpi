@@ -7,11 +7,13 @@ use std::{
 };
 
 use super::{
+    worker_progress::WorkerProgress,
+    worktree_runner::{WorkerPrompt, WorktreeRunner},
+};
+use crate::remote::{
     auth::{AuthenticatedDevice, DeviceRegistry},
     host_adapter::HostAdapter,
     protocol::{Envelope, ErrorCode, Message, Operation},
-    worker_progress::WorkerProgress,
-    worktree_runner::{WorkerPrompt, WorktreeRunner},
 };
 use crate::{
     core::{AgentError, ProcessResult},
@@ -28,7 +30,7 @@ pub struct LocalCancelReport {
 struct Lane {
     runner: Runner,
     progress: WorkerProgress,
-    live: Arc<super::live_text::LivePromptText>,
+    live: Arc<crate::remote::live_text::LivePromptText>,
 }
 use std::sync::Arc;
 
@@ -58,7 +60,7 @@ mod tests {
                 &URL_SAFE_NO_PAD.encode(
                     key.sign(
                         &random,
-                        &super::super::auth::pairing_proof_message(
+                        &crate::remote::auth::pairing_proof_message(
                             &"a".repeat(64),
                             "token",
                             "pair",
@@ -77,13 +79,13 @@ mod tests {
                 &record.id,
                 record.revision,
                 vec![
-                    super::super::auth::Capability::Read,
-                    super::super::auth::Capability::Control,
+                    crate::remote::auth::Capability::Read,
+                    crate::remote::auth::Capability::Control,
                 ],
                 vec![project.into()],
             )
             .unwrap();
-        let mut challenge = super::super::auth::DeviceChallenge::new("a".repeat(64)).unwrap();
+        let mut challenge = crate::remote::auth::DeviceChallenge::new("a".repeat(64)).unwrap();
         challenge
             .authenticate(
                 registry,
@@ -153,7 +155,7 @@ mod tests {
                 Lane {
                     runner,
                     progress: WorkerProgress::default(),
-                    live: Arc::new(super::super::live_text::LivePromptText::default()),
+                    live: Arc::new(crate::remote::live_text::LivePromptText::default()),
                 },
             );
         }
@@ -172,7 +174,7 @@ mod tests {
             let response = controller.dispatch_prompt(&mut pool, &registry, device, &prompt, false);
             assert_eq!(
                 response.execution_state,
-                Some(super::super::protocol::ExecutionState::Accepted)
+                Some(crate::remote::protocol::ExecutionState::Accepted)
             );
             receipts.push((prompt, device.clone(), response));
         }
@@ -277,7 +279,7 @@ mod tests {
         let final_status = controller.local_status(&pool, &project, &main).unwrap();
         assert_eq!(final_status.len(), 2);
         assert!(final_status.iter().all(|task| task.state
-            == super::super::protocol::ExecutionState::Cancelled
+            == crate::remote::protocol::ExecutionState::Cancelled
             && !task.runtime_active));
         assert_eq!(
             controller.cancel_local(&pool, &project, &main).unwrap(),
@@ -342,7 +344,7 @@ mod tests {
                 Lane {
                     runner,
                     progress: WorkerProgress::default(),
-                    live: Arc::new(super::super::live_text::LivePromptText::default()),
+                    live: Arc::new(crate::remote::live_text::LivePromptText::default()),
                 },
             );
         }
@@ -358,7 +360,7 @@ mod tests {
                 controller
                     .dispatch_prompt(&mut pool, &registry, &device, &prompt, false)
                     .execution_state,
-                Some(super::super::protocol::ExecutionState::Accepted)
+                Some(crate::remote::protocol::ExecutionState::Accepted)
             );
         }
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -443,7 +445,7 @@ mod tests {
             Lane {
                 runner,
                 progress: WorkerProgress::default(),
-                live: Arc::new(super::super::live_text::LivePromptText::default()),
+                live: Arc::new(crate::remote::live_text::LivePromptText::default()),
             },
         );
         let prompt = request(
@@ -455,7 +457,7 @@ mod tests {
         let admitted = controller.dispatch_prompt(&mut pool, &registry, &device, &prompt, false);
         assert_eq!(
             admitted.execution_state,
-            Some(super::super::protocol::ExecutionState::Accepted)
+            Some(crate::remote::protocol::ExecutionState::Accepted)
         );
         let deadline = Instant::now() + Duration::from_secs(5);
         while !entered.load(Ordering::Acquire) {
@@ -498,7 +500,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             receipt.execution_state,
-            Some(super::super::protocol::ExecutionState::Accepted)
+            Some(crate::remote::protocol::ExecutionState::Accepted)
         );
         assert_eq!(
             controller
@@ -615,7 +617,7 @@ mod tests {
                 controller
                     .dispatch_prompt(&mut pool, &registry, phone, &prompt, false)
                     .execution_state,
-                Some(super::super::protocol::ExecutionState::Accepted)
+                Some(crate::remote::protocol::ExecutionState::Accepted)
             );
             if index == 0 {
                 let deadline = Instant::now() + Duration::from_secs(3);
@@ -667,7 +669,7 @@ mod tests {
         );
         read.required_owner = None;
         read.expected_revision = None;
-        let page = super::super::transcript::read(&pool, &registry, &device, &read).unwrap();
+        let page = crate::remote::transcript::read(&pool, &registry, &device, &read).unwrap();
         assert_eq!(page["total_turns"], 2);
         let projected = controller.listing(&pool, device.id(), &project);
         for field in ["worker_slot", "worker_session_id", "history_digest"] {
@@ -699,7 +701,7 @@ mod tests {
                 .append_event(wrong)
                 .unwrap();
             assert_eq!(
-                super::super::transcript::read(&pool, &registry, &device, &read),
+                crate::remote::transcript::read(&pool, &registry, &device, &read),
                 Err(ErrorCode::InvalidRequest)
             );
         }
@@ -712,7 +714,7 @@ mod tests {
             .append_event(wrong)
             .unwrap();
         assert_eq!(
-            super::super::transcript::read(&pool, &registry, &device, &read),
+            crate::remote::transcript::read(&pool, &registry, &device, &read),
             Err(ErrorCode::InvalidRequest)
         );
         master
@@ -725,7 +727,7 @@ mod tests {
         let mut pool = ProjectOwnerPool::new(master.clone()).unwrap();
         pool.restore_checkpoint().unwrap();
         assert_eq!(
-            super::super::transcript::read(&pool, &registry, &device, &read).unwrap(),
+            crate::remote::transcript::read(&pool, &registry, &device, &read).unwrap(),
             page
         );
         std::fs::write(&sibling_path, sibling_bytes).unwrap();
@@ -810,7 +812,7 @@ mod tests {
         let accepted = controller.dispatch_prompt(&mut pool, &registry, &device, &prompt, false);
         assert_eq!(
             accepted.execution_state,
-            Some(super::super::protocol::ExecutionState::Accepted)
+            Some(crate::remote::protocol::ExecutionState::Accepted)
         );
         let deadline = Instant::now() + Duration::from_secs(10);
         while controller.busy(&project) {
@@ -823,7 +825,7 @@ mod tests {
         let mut listing_request = request(&pool, "listing", Operation::WorkspaceList, json!({}));
         listing_request.required_owner = None;
         listing_request.expected_revision = None;
-        let listing = super::super::host_adapter::HostAdapter::dispatch_owned(
+        let listing = crate::remote::host_adapter::HostAdapter::dispatch_owned(
             &mut pool,
             &registry,
             &device,
@@ -836,7 +838,7 @@ mod tests {
         let mut snapshot = request(&pool, "snapshot", Operation::Inspect, json!({}));
         snapshot.required_owner = None;
         snapshot.expected_revision = None;
-        let snapshot = super::super::host_adapter::HostAdapter::dispatch_owned(
+        let snapshot = crate::remote::host_adapter::HostAdapter::dispatch_owned(
             &mut pool, &registry, &device, snapshot,
         );
         let Message::Response { result: snapshot } = snapshot.payload else {
@@ -886,12 +888,12 @@ mod tests {
             run_java("generate");
             let bytes = std::fs::read(&command_path).unwrap();
             let mut input = bytes.as_slice();
-            let command = super::super::frame::read_frame(&mut input)
+            let command = crate::remote::frame::read_frame(&mut input)
                 .unwrap()
                 .unwrap();
             assert!(input.is_empty());
             let value =
-                super::super::transcript::read(&pool, &registry, &device, &command).unwrap();
+                crate::remote::transcript::read(&pool, &registry, &device, &command).unwrap();
             assert!(!value.to_string().contains("PRIVATE_TOOL_LOOP_SECRET"));
             if mode == "history" {
                 assert_eq!(value["total_turns"], 20);
@@ -912,22 +914,22 @@ mod tests {
             let mut retain = |sent: &Envelope, receipt: &Envelope| {
                 use base64::engine::general_purpose::STANDARD;
                 let mut wire = Vec::new();
-                super::super::frame::write_frame(&mut wire, receipt).unwrap();
+                crate::remote::frame::write_frame(&mut wire, receipt).unwrap();
                 exchanges.push(
                     json!({"request":sent,"code":receipt.code,"wire_base64":STANDARD.encode(wire)}),
                 );
             };
             let mut response = Envelope::new(
-                super::super::protocol::Channel::Control,
+                crate::remote::protocol::Channel::Control,
                 Message::Response {
                     result: value.clone(),
                 },
             );
             response.id = command.id.clone();
-            response.execution_state = Some(super::super::protocol::ExecutionState::Succeeded);
+            response.execution_state = Some(crate::remote::protocol::ExecutionState::Succeeded);
             retain(&command, &response);
             let code =
-                super::super::transcript::read(&pool, &registry, &foreign, &command).unwrap_err();
+                crate::remote::transcript::read(&pool, &registry, &foreign, &command).unwrap_err();
             assert_eq!(code, ErrorCode::InvalidRequest);
             retain(&command, &HostAdapter::failure(&command, code));
             if mode == "arguments" {
@@ -935,7 +937,7 @@ mod tests {
                 if let Message::Request { arguments, .. } = &mut changed.payload {
                     arguments["tool_call_id"] = json!("foreign");
                 }
-                let code = super::super::transcript::read(&pool, &registry, &device, &changed)
+                let code = crate::remote::transcript::read(&pool, &registry, &device, &changed)
                     .unwrap_err();
                 assert_eq!(code, ErrorCode::InvalidRequest);
                 retain(&changed, &HostAdapter::failure(&changed, code));
@@ -946,7 +948,7 @@ mod tests {
                     arguments["digest"] = json!("0".repeat(64));
                 }
                 let code =
-                    super::super::transcript::read(&pool, &registry, &device, &stale).unwrap_err();
+                    crate::remote::transcript::read(&pool, &registry, &device, &stale).unwrap_err();
                 assert_eq!(code, ErrorCode::RevisionConflict);
                 retain(&stale, &HostAdapter::failure(&stale, code));
             }
@@ -1048,7 +1050,7 @@ mod tests {
             controller
                 .dispatch_prompt(&mut pool, &registry, &device, &prompt, false)
                 .execution_state,
-            Some(super::super::protocol::ExecutionState::Accepted)
+            Some(crate::remote::protocol::ExecutionState::Accepted)
         );
         let deadline = Instant::now() + Duration::from_secs(5);
         while controller.busy(&project) {
@@ -1064,7 +1066,7 @@ mod tests {
         );
         read.required_owner = None;
         read.expected_revision = None;
-        let page = super::super::transcript::read(&pool, &registry, &device, &read).unwrap();
+        let page = crate::remote::transcript::read(&pool, &registry, &device, &read).unwrap();
         let turns = page["turns"].as_array().unwrap();
         assert_eq!(
             turns
@@ -1105,12 +1107,12 @@ mod tests {
             arguments: json!({"request_id":"tool-history-task","turn_id":turns[1]["id"],"tool_call_id":"read-task-file","offset":0,"digest":null}),
         };
         let arguments_page =
-            super::super::transcript::read(&pool, &registry, &device, &arguments_read).unwrap();
+            crate::remote::transcript::read(&pool, &registry, &device, &arguments_read).unwrap();
         assert_eq!(arguments_page["text"], "{\"path\":\"evidence.txt\"}");
         assert_eq!(arguments_page["tool_name"], "read_file");
         let foreign = phone(&registry, &project);
         assert_eq!(
-            super::super::transcript::read(&pool, &registry, &foreign, &arguments_read),
+            crate::remote::transcript::read(&pool, &registry, &foreign, &arguments_read),
             Err(ErrorCode::InvalidRequest)
         );
         for change in [
@@ -1128,7 +1130,7 @@ mod tests {
                     .extend(change.as_object().unwrap().clone());
             }
             assert_eq!(
-                super::super::transcript::read(&pool, &registry, &device, &invalid),
+                crate::remote::transcript::read(&pool, &registry, &device, &invalid),
                 Err(ErrorCode::InvalidRequest)
             );
         }
@@ -1151,11 +1153,11 @@ mod tests {
         }
         std::fs::write(&path, changed).unwrap();
         assert_eq!(
-            super::super::transcript::read(&pool, &registry, &device, &arguments_read),
+            crate::remote::transcript::read(&pool, &registry, &device, &arguments_read),
             Err(ErrorCode::InvalidRequest)
         );
         assert_eq!(
-            super::super::transcript::read(&pool, &registry, &device, &read),
+            crate::remote::transcript::read(&pool, &registry, &device, &read),
             Err(ErrorCode::InvalidRequest)
         );
         let mut selected = read.clone();
@@ -1164,7 +1166,7 @@ mod tests {
             arguments: json!({"request_id":"tool-history-task","turn_id":call_id,"offset":0,"digest":null}),
         };
         assert_eq!(
-            super::super::transcript::read(&pool, &registry, &device, &selected),
+            crate::remote::transcript::read(&pool, &registry, &device, &selected),
             Err(ErrorCode::InvalidRequest)
         );
         // Rehashing the altered worker manifest cannot change the master's evidence.
@@ -1193,12 +1195,12 @@ mod tests {
         }
         std::fs::write(&path, changed).unwrap();
         assert_eq!(
-            super::super::transcript::read(&pool, &registry, &device, &read),
+            crate::remote::transcript::read(&pool, &registry, &device, &read),
             Err(ErrorCode::InvalidRequest)
         );
         std::fs::write(&path, original).unwrap();
         assert_eq!(
-            super::super::transcript::read(&pool, &registry, &device, &read).unwrap(),
+            crate::remote::transcript::read(&pool, &registry, &device, &read).unwrap(),
             page
         );
         let worker_before = std::fs::read(&path).unwrap();
@@ -1209,7 +1211,7 @@ mod tests {
         let mut pool = ProjectOwnerPool::new(master.clone()).unwrap();
         pool.restore_checkpoint().unwrap();
         assert_eq!(
-            super::super::transcript::read(&pool, &registry, &device, &arguments_read).unwrap(),
+            crate::remote::transcript::read(&pool, &registry, &device, &arguments_read).unwrap(),
             arguments_page
         );
         assert_eq!(std::fs::read(&path).unwrap(), worker_before);
@@ -1217,13 +1219,13 @@ mod tests {
         assert!(pool.worker_handles(&project).is_empty());
         registry.revoke(device.id()).unwrap();
         assert!(
-            super::super::transcript::read(&pool, &registry, &device, &arguments_read).is_err()
+            crate::remote::transcript::read(&pool, &registry, &device, &arguments_read).is_err()
         );
     }
 
     #[test]
     fn worker_output_pages_remain_device_scoped_readonly_after_retirement_and_restart() {
-        use super::super::protocol::ExecutionState;
+        use crate::remote::protocol::ExecutionState;
         use sha2::Digest;
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().canonicalize().unwrap();
@@ -1299,14 +1301,14 @@ mod tests {
             operation: Operation::TranscriptRead,
             arguments: json!({"request_id":"paged-worker","view":"history","offset":0,"digest":null}),
         };
-        let list = super::super::transcript::read(&pool, &registry, &device, &history).unwrap();
+        let list = crate::remote::transcript::read(&pool, &registry, &device, &history).unwrap();
         assert_eq!(list["turns"].as_array().unwrap().len(), 2);
         assert_eq!(list["turns"][0]["role"], "user");
         assert_eq!(list["turns"][1]["role"], "assistant");
         assert!(!list.to_string().contains("PRIVATE_PAGED_WORKER"));
         assert!(!list.to_string().contains("OTHER_DEVICE_HISTORY_ONLY"));
         assert_eq!(
-            super::super::transcript::read(&pool, &registry, &foreign, &history),
+            crate::remote::transcript::read(&pool, &registry, &foreign, &history),
             Err(ErrorCode::InvalidRequest)
         );
         let user_id = list["turns"][0]["id"].as_str().unwrap();
@@ -1316,22 +1318,22 @@ mod tests {
             arguments: json!({"request_id":"paged-worker","turn_id":user_id,"offset":0,"digest":null}),
         };
         assert_eq!(
-            super::super::transcript::read(&pool, &registry, &device, &user_read).unwrap()["role"],
+            crate::remote::transcript::read(&pool, &registry, &device, &user_read).unwrap()["role"],
             "user"
         );
         if let Message::Request { arguments, .. } = &mut user_read.payload {
             arguments["turn_id"] = json!("foreign-turn");
         }
         assert_eq!(
-            super::super::transcript::read(&pool, &registry, &device, &user_read),
+            crate::remote::transcript::read(&pool, &registry, &device, &user_read),
             Err(ErrorCode::InvalidRequest)
         );
-        let first = super::super::transcript::read(&pool, &registry, &device, &read).unwrap();
+        let first = crate::remote::transcript::read(&pool, &registry, &device, &read).unwrap();
         assert_eq!(first["request_id"], "paged-worker");
         assert_eq!(first["subtab_id"], state.active_id);
         assert!(first["has_more"].as_bool().unwrap());
         assert_eq!(
-            super::super::transcript::read(&pool, &registry, &foreign, &read),
+            crate::remote::transcript::read(&pool, &registry, &foreign, &read),
             Err(ErrorCode::InvalidRequest)
         );
         let journal_path = std::fs::read_dir(root.join(".zenpi/workers"))
@@ -1371,18 +1373,18 @@ mod tests {
             }
             std::fs::write(&journal_path, bytes).unwrap();
             assert_eq!(
-                super::super::transcript::read(&pool, &registry, &device, &read),
+                crate::remote::transcript::read(&pool, &registry, &device, &read),
                 Err(ErrorCode::InvalidRequest),
                 "{field}"
             );
             std::fs::write(&journal_path, &original).unwrap();
         }
         assert_eq!(
-            super::super::transcript::read(&pool, &registry, &device, &read).unwrap(),
+            crate::remote::transcript::read(&pool, &registry, &device, &read).unwrap(),
             first
         );
         assert_eq!(
-            super::super::transcript::read(&pool, &registry, &device, &history).unwrap(),
+            crate::remote::transcript::read(&pool, &registry, &device, &history).unwrap(),
             list
         );
         let mut changed = records.clone();
@@ -1399,7 +1401,7 @@ mod tests {
         }
         std::fs::write(&journal_path, bytes).unwrap();
         assert_eq!(
-            super::super::transcript::read(&pool, &registry, &device, &read),
+            crate::remote::transcript::read(&pool, &registry, &device, &read),
             Err(ErrorCode::InvalidRequest)
         );
         let mut changed = records.clone();
@@ -1421,7 +1423,7 @@ mod tests {
         }
         std::fs::write(&journal_path, bytes).unwrap();
         assert_eq!(
-            super::super::transcript::read(&pool, &registry, &device, &read),
+            crate::remote::transcript::read(&pool, &registry, &device, &read),
             Err(ErrorCode::InvalidRequest)
         );
         std::fs::write(&journal_path, &original).unwrap();
@@ -1436,7 +1438,7 @@ mod tests {
             journal.append_event(binding).unwrap();
         }
         assert_eq!(
-            super::super::transcript::read(&pool, &registry, &device, &read),
+            crate::remote::transcript::read(&pool, &registry, &device, &read),
             Err(ErrorCode::InvalidRequest)
         );
         std::fs::write(&journal_path, &original).unwrap();
@@ -1452,7 +1454,7 @@ mod tests {
         }
         std::fs::write(&journal_path, bytes).unwrap();
         assert_eq!(
-            super::super::transcript::read(&pool, &registry, &device, &history),
+            crate::remote::transcript::read(&pool, &registry, &device, &history),
             Err(ErrorCode::InvalidRequest)
         );
         std::fs::write(&journal_path, &original).unwrap();
@@ -1474,7 +1476,7 @@ mod tests {
         }
         std::fs::write(&journal_path, bytes).unwrap();
         assert_eq!(
-            super::super::transcript::read(&pool, &registry, &device, &history),
+            crate::remote::transcript::read(&pool, &registry, &device, &history),
             Err(ErrorCode::InvalidRequest)
         );
         std::fs::write(&journal_path, &original).unwrap();
@@ -1490,11 +1492,11 @@ mod tests {
         let mut pool = ProjectOwnerPool::new(master.clone()).unwrap();
         pool.restore_checkpoint().unwrap();
         assert_eq!(
-            super::super::transcript::read(&pool, &registry, &device, &history).unwrap(),
+            crate::remote::transcript::read(&pool, &registry, &device, &history).unwrap(),
             list
         );
         assert_eq!(
-            super::super::transcript::read(&pool, &registry, &device, &read).unwrap(),
+            crate::remote::transcript::read(&pool, &registry, &device, &read).unwrap(),
             first
         );
         let master_before = std::fs::read(master.lock().unwrap().session().path()).unwrap();
@@ -1508,7 +1510,7 @@ mod tests {
                 operation: Operation::TranscriptRead,
                 arguments: json!({"request_id":"paged-worker","offset":page["next_offset"],"digest":page["digest"]}),
             };
-            page = super::super::transcript::read(&pool, &registry, &device, &read).unwrap();
+            page = crate::remote::transcript::read(&pool, &registry, &device, &read).unwrap();
             assert!(
                 !page["text"]
                     .as_str()
@@ -1522,7 +1524,7 @@ mod tests {
             arguments["digest"] = json!("0".repeat(64));
         }
         assert_eq!(
-            super::super::transcript::read(&pool, &registry, &device, &read),
+            crate::remote::transcript::read(&pool, &registry, &device, &read),
             Err(ErrorCode::RevisionConflict)
         );
         for (path, bytes) in before {
@@ -1539,7 +1541,7 @@ mod tests {
         );
         registry.revoke(device.id()).unwrap();
         assert_eq!(
-            super::super::transcript::read(&pool, &registry, &device, &read),
+            crate::remote::transcript::read(&pool, &registry, &device, &read),
             Err(ErrorCode::Unauthorized)
         );
         assert!(master.lock().unwrap().session().turns().is_empty());
@@ -1547,7 +1549,7 @@ mod tests {
 
     #[test]
     fn live_growth_at_global_capacity_refuses_before_reservation_then_fits_after_retirement() {
-        use super::super::protocol::ExecutionState;
+        use crate::remote::protocol::ExecutionState;
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().canonicalize().unwrap();
         let master = Arc::new(Mutex::new(Agent::with_echo(
@@ -1599,7 +1601,7 @@ mod tests {
             Lane {
                 runner,
                 progress: WorkerProgress::default(),
-                live: Arc::new(super::super::live_text::LivePromptText::default()),
+                live: Arc::new(crate::remote::live_text::LivePromptText::default()),
             },
         );
         let registry = DeviceRegistry::new(root.join("devices.json"), "a".repeat(64)).unwrap();
@@ -1667,7 +1669,7 @@ mod tests {
 
     #[test]
     fn remote_live_quota_retries_settle_once_and_new_prompts_use_committed_scope() {
-        use super::super::protocol::ExecutionState;
+        use crate::remote::protocol::ExecutionState;
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().canonicalize().unwrap();
         let master = Arc::new(Mutex::new(Agent::with_echo(
@@ -1691,7 +1693,7 @@ mod tests {
         let gates = release.clone();
         let entered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let starts = entered.clone();
-        let live = Arc::new(super::super::live_text::LivePromptText::default());
+        let live = Arc::new(crate::remote::live_text::LivePromptText::default());
         let runner = Runner::spawn(
             &mut pool,
             &project,
@@ -1749,7 +1751,7 @@ mod tests {
             .set_permissions(
                 revoked.id(),
                 record.revision,
-                vec![super::super::auth::Capability::Read],
+                vec![crate::remote::auth::Capability::Read],
                 vec![project.clone()],
             )
             .unwrap();
@@ -1890,7 +1892,7 @@ mod tests {
 
     #[test]
     fn revoke_after_runtime_submission_cannot_commit_on_retry_or_background_poll() {
-        use super::super::protocol::ExecutionState;
+        use crate::remote::protocol::ExecutionState;
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().canonicalize().unwrap();
         let master = Arc::new(Mutex::new(Agent::with_echo(
@@ -1937,7 +1939,7 @@ mod tests {
             Lane {
                 runner,
                 progress: WorkerProgress::default(),
-                live: Arc::new(super::super::live_text::LivePromptText::default()),
+                live: Arc::new(crate::remote::live_text::LivePromptText::default()),
             },
         );
         let prompt = request(
@@ -2003,7 +2005,7 @@ mod tests {
 
     #[test]
     fn completed_tasks_do_not_retire_an_unconfirmed_quota_and_exact_retry_releases_lane() {
-        use super::super::protocol::ExecutionState;
+        use crate::remote::protocol::ExecutionState;
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().canonicalize().unwrap();
         let master = Arc::new(Mutex::new(Agent::with_echo(
@@ -2022,7 +2024,7 @@ mod tests {
         let state = pool.subtab_state(&project).unwrap();
         let registry = DeviceRegistry::new(root.join("devices.json"), "a".repeat(64)).unwrap();
         let device = phone(&registry, &project);
-        let live = Arc::new(super::super::live_text::LivePromptText::default());
+        let live = Arc::new(crate::remote::live_text::LivePromptText::default());
         let runner = Runner::spawn(
             &mut pool,
             &project,
@@ -2139,7 +2141,7 @@ mod tests {
 
     #[test]
     fn remote_lowering_preserves_active_writers_and_queued_jobs_follow_new_quota() {
-        use super::super::protocol::ExecutionState;
+        use crate::remote::protocol::ExecutionState;
         use std::sync::mpsc;
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().canonicalize().unwrap();
@@ -2198,7 +2200,7 @@ mod tests {
             Lane {
                 runner,
                 progress: WorkerProgress::default(),
-                live: Arc::new(super::super::live_text::LivePromptText::default()),
+                live: Arc::new(crate::remote::live_text::LivePromptText::default()),
             },
         );
         let requests: Vec<_> = (0..5).map(|index| request(&pool, &format!("job-{index}"), Operation::Prompt,
@@ -2298,10 +2300,10 @@ mod tests {
     #[test]
     #[ignore = "requires current Kotlin JVM classes; executed by source checker"]
     fn android_cancel_frame_stops_one_running_worker_and_restores_receipt() {
-        use super::super::protocol::{Channel, ExecutionState};
         use crate::backend::{
             Backend, BackendError, Completion, CompletionRequest, ProviderEvent, RequestControl,
         };
+        use crate::remote::protocol::{Channel, ExecutionState};
         use base64::engine::general_purpose::STANDARD;
         use std::sync::atomic::AtomicUsize;
         let temp = tempfile::tempdir().unwrap();
@@ -2391,7 +2393,7 @@ mod tests {
             *worker.agent().lock().unwrap() = agent;
             worker_paths.push(path);
             drop(worker);
-            let live = Arc::new(super::super::live_text::LivePromptText::default());
+            let live = Arc::new(crate::remote::live_text::LivePromptText::default());
             let runner = Runner::spawn_observed_prompts(
                 &mut pool,
                 &project,
@@ -2434,7 +2436,7 @@ mod tests {
             run_java("submit");
             let bytes = std::fs::read(&command_path).unwrap();
             let mut input = bytes.as_slice();
-            let prompt = super::super::frame::read_frame(&mut input)
+            let prompt = crate::remote::frame::read_frame(&mut input)
                 .unwrap()
                 .unwrap();
             assert!(input.is_empty());
@@ -2489,7 +2491,7 @@ mod tests {
         run_java("generate");
         let bytes = std::fs::read(&command_path).unwrap();
         let mut input = bytes.as_slice();
-        let cancel = super::super::frame::read_frame(&mut input)
+        let cancel = crate::remote::frame::read_frame(&mut input)
             .unwrap()
             .unwrap();
         assert!(input.is_empty());
@@ -2497,7 +2499,7 @@ mod tests {
         let mut exchanges = Vec::new();
         let mut retain = |command: &Envelope, response: &Envelope| {
             let mut wire = Vec::new();
-            super::super::frame::write_frame(&mut wire, response).unwrap();
+            crate::remote::frame::write_frame(&mut wire, response).unwrap();
             let wire = STANDARD.encode(wire);
             exchanges.push(json!({"request":command,"code":response.code,"wire_base64":wire}));
             wire
@@ -2607,7 +2609,7 @@ mod tests {
         let mut restored = ProjectOwnerPool::new(recovered_master.clone()).unwrap();
         restored.restore_checkpoint().unwrap();
         let journal = std::fs::read(root.join("session.jsonl")).unwrap();
-        let retry = super::super::command::CancelAdmissions.dispatch(
+        let retry = crate::remote::command::CancelAdmissions.dispatch(
             &mut restored,
             &registry,
             &device,
@@ -2633,7 +2635,7 @@ mod tests {
         let mut security_exchanges = Vec::new();
         let mut capture_security = |command: &Envelope, response: &Envelope| {
             let mut wire = Vec::new();
-            super::super::frame::write_frame(&mut wire, response).unwrap();
+            crate::remote::frame::write_frame(&mut wire, response).unwrap();
             security_exchanges.push(
                 json!({"request":command,"code":response.code,"wire_base64":STANDARD.encode(wire)}),
             );
@@ -2660,7 +2662,7 @@ mod tests {
             panic!("cancel")
         };
         arguments["request_id"] = json!("sibling-task");
-        let refused = super::super::command::CancelAdmissions.dispatch(
+        let refused = crate::remote::command::CancelAdmissions.dispatch(
             &mut restored,
             &registry,
             &device,
@@ -2677,7 +2679,7 @@ mod tests {
             assert_eq!(refused.code, Some(ErrorCode::Unauthorized));
             capture_security(prompt, &refused);
         }
-        let refused = super::super::command::CancelAdmissions.dispatch(
+        let refused = crate::remote::command::CancelAdmissions.dispatch(
             &mut restored,
             &registry,
             &device,
@@ -2696,7 +2698,7 @@ mod tests {
             .iter()
             .map(|(prompt, accepted)| {
                 let mut wire = Vec::new();
-                super::super::frame::write_frame(&mut wire, accepted).unwrap();
+                crate::remote::frame::write_frame(&mut wire, accepted).unwrap();
                 json!({"request":prompt,"wire_base64":STANDARD.encode(wire)})
             })
             .collect::<Vec<_>>();
@@ -2758,7 +2760,7 @@ mod tests {
         arguments: Value,
     ) -> Envelope {
         let mut req = Envelope::new(
-            super::super::protocol::Channel::Control,
+            crate::remote::protocol::Channel::Control,
             Message::Request {
                 operation,
                 arguments,
@@ -2800,7 +2802,7 @@ mod tests {
             Lane {
                 runner,
                 progress: WorkerProgress::default(),
-                live: Arc::new(super::super::live_text::LivePromptText::default()),
+                live: Arc::new(crate::remote::live_text::LivePromptText::default()),
             },
         );
         for index in 0..18 {
@@ -2814,7 +2816,7 @@ mod tests {
                 controller
                     .dispatch_prompt(&mut pool, &registry, &device, &prompt, false)
                     .execution_state,
-                Some(super::super::protocol::ExecutionState::Accepted)
+                Some(crate::remote::protocol::ExecutionState::Accepted)
             );
         }
         controller.poll(&mut pool);
@@ -2831,7 +2833,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             page.execution_state,
-            Some(super::super::protocol::ExecutionState::Succeeded)
+            Some(crate::remote::protocol::ExecutionState::Succeeded)
         );
         let payload = match page.payload {
             Message::Response { result } => result,
@@ -2919,7 +2921,7 @@ mod tests {
                 controller.dispatch_prompt(&mut pool, &registry, &device, &prompt, false);
             assert_eq!(
                 admitted.execution_state,
-                Some(super::super::protocol::ExecutionState::Accepted),
+                Some(crate::remote::protocol::ExecutionState::Accepted),
                 "task {index}: {admitted:?}"
             );
             let deadline = Instant::now() + Duration::from_secs(5);
@@ -2997,16 +2999,16 @@ mod tests {
             );
             read.required_owner = None;
             read.expected_revision = None;
-            let result = super::super::transcript::read(&pool, &registry, &device, &read).unwrap();
+            let result = crate::remote::transcript::read(&pool, &registry, &device, &read).unwrap();
             assert_eq!(result["request_id"], target["request_id"]);
             assert_eq!(result["subtab_id"], target["subtab_id"]);
             assert!(result.to_string().contains("page-output-"));
             assert_eq!(
-                super::super::transcript::read(&pool, &registry, &foreign, &read),
+                crate::remote::transcript::read(&pool, &registry, &foreign, &read),
                 Err(ErrorCode::InvalidRequest)
             );
             assert_eq!(
-                super::super::transcript::read(&pool, &registry, &device, &read).unwrap(),
+                crate::remote::transcript::read(&pool, &registry, &device, &read).unwrap(),
                 result
             );
         }
@@ -3025,7 +3027,7 @@ mod tests {
 
     #[test]
     fn sibling_live_lanes_keep_executing_and_refresh_only_unchanged_scope_after_quota_commit() {
-        use super::super::protocol::ExecutionState;
+        use crate::remote::protocol::ExecutionState;
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().canonicalize().unwrap();
         let child = root.join("child");
@@ -3083,7 +3085,7 @@ mod tests {
                 Lane {
                     runner,
                     progress: WorkerProgress::default(),
-                    live: Arc::new(super::super::live_text::LivePromptText::default()),
+                    live: Arc::new(crate::remote::live_text::LivePromptText::default()),
                 },
             );
         }
@@ -3238,7 +3240,7 @@ mod tests {
         pool.restore_checkpoint().unwrap();
         let project = pool.active_context().project_id.clone();
         let state = pool.subtab_state(&project).unwrap();
-        let live = Arc::new(super::super::live_text::LivePromptText::default());
+        let live = Arc::new(crate::remote::live_text::LivePromptText::default());
         let runner = Runner::spawn_observed_prompts(
             &mut pool,
             &project,
@@ -3313,7 +3315,7 @@ mod tests {
         let registry = DeviceRegistry::new(root.join("devices.json"), "a".repeat(64)).unwrap();
         let device = phone(&registry, &project);
         let other = phone(&registry, &project);
-        let live = Arc::new(super::super::live_text::LivePromptText::default());
+        let live = Arc::new(crate::remote::live_text::LivePromptText::default());
         let emitting = live.clone();
         let entered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let started = entered.clone();
@@ -3363,7 +3365,7 @@ mod tests {
                 controller
                     .dispatch_prompt(&mut pool, &registry, device, request, false)
                     .execution_state,
-                Some(super::super::protocol::ExecutionState::Accepted)
+                Some(crate::remote::protocol::ExecutionState::Accepted)
             );
         }
         let deadline = Instant::now() + Duration::from_secs(3);
@@ -3462,7 +3464,7 @@ mod tests {
             Lane {
                 runner,
                 progress: WorkerProgress::default(),
-                live: Arc::new(super::super::live_text::LivePromptText::default()),
+                live: Arc::new(crate::remote::live_text::LivePromptText::default()),
             },
         );
         for index in 0..2 {
@@ -3476,7 +3478,7 @@ mod tests {
                 controller
                     .dispatch_prompt(&mut pool, &registry, &device, &req, false)
                     .execution_state,
-                Some(super::super::protocol::ExecutionState::Accepted)
+                Some(crate::remote::protocol::ExecutionState::Accepted)
             );
         }
         let deadline = Instant::now() + Duration::from_secs(3);
@@ -3502,7 +3504,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             receipt.execution_state,
-            Some(super::super::protocol::ExecutionState::Accepted)
+            Some(crate::remote::protocol::ExecutionState::Accepted)
         );
         assert_eq!(
             controller
@@ -3638,13 +3640,13 @@ impl WorktreeHost {
         Some(match result {
             Ok(result) => {
                 let mut response = Envelope::new(
-                    super::protocol::Channel::Control,
+                    crate::remote::protocol::Channel::Control,
                     Message::Response { result },
                 );
                 response.id = request.id.clone();
                 response.project_id = request.project_id.clone();
                 response.session_id = request.session_id.clone();
-                response.execution_state = Some(super::protocol::ExecutionState::Succeeded);
+                response.execution_state = Some(crate::remote::protocol::ExecutionState::Succeeded);
                 response
             }
             Err(code) => HostAdapter::failure(request, code),
@@ -3661,7 +3663,7 @@ impl WorktreeHost {
         request: &Envelope,
         master_busy: bool,
     ) -> Option<Envelope> {
-        use super::protocol::{Channel, ExecutionState};
+        use crate::remote::protocol::{Channel, ExecutionState};
         use sha2::{Digest, Sha256};
         let Message::Request {
             operation: Operation::SetConcurrency,
@@ -3903,7 +3905,7 @@ impl WorktreeHost {
             request,
             !master_busy && self.lanes.len() < 64,
             |pool, text| {
-                let live = Arc::new(super::live_text::LivePromptText::default());
+                let live = Arc::new(crate::remote::live_text::LivePromptText::default());
                 let runner = Runner::spawn_observed_prompts(
                     pool,
                     project,

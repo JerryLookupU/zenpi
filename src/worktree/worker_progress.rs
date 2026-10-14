@@ -1,6 +1,6 @@
 //! Bounded execution observation; completed results survive owner contention.
 
-use super::protocol::{Envelope, ErrorCode, ExecutionState};
+use crate::remote::protocol::{Envelope, ErrorCode, ExecutionState};
 use crate::{
     core::{AgentError, ProcessResult},
     project_workspace::ProjectOwnerPool,
@@ -64,7 +64,7 @@ impl WorkerProgress {
     ) -> Vec<LocalTaskStatus> {
         let mut values = self.pending.values().rev().filter(|pending| pending.request.project_id.as_deref() == Some(project)
             && pending.request.session_id.as_deref() == Some(session)
-            && matches!(&pending.request.payload, super::protocol::Message::Request { arguments, .. } if arguments["subtab_id"] == subtab))
+            && matches!(&pending.request.payload, crate::remote::protocol::Message::Request { arguments, .. } if arguments["subtab_id"] == subtab))
             .map(|pending| LocalTaskStatus { device: pending.device.clone(), request: pending.request.id.clone().unwrap_or_default(),
                 state: pending.value.as_ref().and_then(|value| serde_json::from_value(value["state"].clone()).ok()).unwrap_or(ExecutionState::Accepted),
                 runtime_active: !pending.runtime_done }).collect::<Vec<_>>();
@@ -193,7 +193,7 @@ impl WorkerProgress {
                     JobOutcome::Succeeded(_) => (ExecutionState::Succeeded, None),
                     JobOutcome::Failed(error) => (
                         ExecutionState::Failed,
-                        Some(super::command::failure_code(&error)),
+                        Some(crate::remote::command::failure_code(&error)),
                     ),
                     JobOutcome::Panicked => {
                         (ExecutionState::Failed, Some(ErrorCode::InternalError))
@@ -220,7 +220,9 @@ impl WorkerProgress {
         let mut value = json!({"type":PROGRESS,"device_id":pending.device,
             "request_id":pending.request.id,"project_id":pending.request.project_id,
             "session_id":pending.request.session_id,"state":state});
-        if let super::protocol::Message::Request { arguments, .. } = &pending.request.payload {
+        if let crate::remote::protocol::Message::Request { arguments, .. } =
+            &pending.request.payload
+        {
             value["subtab_id"] = arguments["subtab_id"].clone();
         }
         if let Some(code) = code {
@@ -279,7 +281,7 @@ impl WorkerProgress {
             let saved = agent.session_mut().append_event(value.clone()).is_ok();
             pending.dirty = false;
             if saved {
-                super::wakeup::notify(agent.session().session_id());
+                crate::remote::wakeup::notify(agent.session().session_id());
             } else {
                 if let Some(value) = &mut pending.value {
                     value["state"] = json!(ExecutionState::UnknownOutcome);
@@ -317,7 +319,7 @@ impl WorkerProgress {
     }
 
     pub(crate) fn has_target(&self, request: &Envelope, device: Option<&str>) -> bool {
-        let super::protocol::Message::Request { arguments, .. } = &request.payload else {
+        let crate::remote::protocol::Message::Request { arguments, .. } = &request.payload else {
             return false;
         };
         self.pending.values().any(|pending| {
@@ -353,14 +355,14 @@ impl WorkerProgress {
     pub fn cancel<I: Send + 'static>(
         &self,
         pool: &mut ProjectOwnerPool,
-        registry: &super::auth::DeviceRegistry,
-        device: &super::auth::AuthenticatedDevice,
+        registry: &crate::remote::auth::DeviceRegistry,
+        device: &crate::remote::auth::AuthenticatedDevice,
         request: &Envelope,
         runner: &super::worktree_runner::WorktreeRunner<I, ProcessResult, AgentError>,
     ) -> Envelope {
         let target = match &request.payload {
-            super::protocol::Message::Request {
-                operation: super::protocol::Operation::Cancel,
+            crate::remote::protocol::Message::Request {
+                operation: crate::remote::protocol::Operation::Cancel,
                 arguments,
             } => arguments.get("request_id").and_then(Value::as_str),
             _ => None,
@@ -379,7 +381,7 @@ impl WorkerProgress {
         let active = candidates()
             .find(|pending| pending.device == device.id())
             .or_else(|| candidates().next());
-        super::command::CancelAdmissions.dispatch(
+        crate::remote::command::CancelAdmissions.dispatch(
             pool,
             registry,
             device,
@@ -459,7 +461,7 @@ impl WorkerProgress {
             // Admission is already tracked even before the first runtime event is drained.
             let mut projected = pending.value.clone().unwrap_or_else(|| {
                 let subtab = match &pending.request.payload {
-                    super::protocol::Message::Request { arguments, .. } => arguments["subtab_id"].clone(),
+                    crate::remote::protocol::Message::Request { arguments, .. } => arguments["subtab_id"].clone(),
                     _ => Value::Null,
                 };
                 json!({"request_id":pending.request.id,"project_id":pending.request.project_id,
@@ -528,8 +530,8 @@ pub(crate) fn local_durable_status(
         else {
             continue;
         };
-        if !super::auth::valid_identifier(device)
-            || !super::auth::valid_identifier(request)
+        if !crate::remote::auth::valid_identifier(device)
+            || !crate::remote::auth::valid_identifier(request)
             || !seen.insert((device.to_owned(), request.to_owned()))
         {
             continue;
@@ -584,7 +586,7 @@ pub(crate) fn durable_listing(
         let Some(id) = event["request_id"].as_str() else {
             continue;
         };
-        if !super::auth::valid_identifier(id)
+        if !crate::remote::auth::valid_identifier(id)
             || event["project_id"] != project
             || event["session_id"] != agent.session().session_id()
         {
@@ -681,9 +683,9 @@ mod tests {
             BackgroundRunner::spawn(|_: (), _| Ok::<_, String>(()), RuntimeConfig::default());
         let id = runner.try_submit(()).unwrap();
         let mut req = Envelope::new(
-            super::super::protocol::Channel::Control,
-            super::super::protocol::Message::Request {
-                operation: super::super::protocol::Operation::Prompt,
+            crate::remote::protocol::Channel::Control,
+            crate::remote::protocol::Message::Request {
+                operation: crate::remote::protocol::Operation::Prompt,
                 arguments: json!({"subtab_id":"tab"}),
             },
         );
@@ -814,9 +816,9 @@ mod tests {
                 BackgroundRunner::spawn(|_: (), _| Ok::<_, String>(()), RuntimeConfig::default());
             let id = runner.try_submit(()).unwrap();
             let mut req = Envelope::new(
-                super::super::protocol::Channel::Control,
-                super::super::protocol::Message::Request {
-                    operation: super::super::protocol::Operation::Prompt,
+                crate::remote::protocol::Channel::Control,
+                crate::remote::protocol::Message::Request {
+                    operation: crate::remote::protocol::Operation::Prompt,
                     arguments: json!({"subtab_id":"tab"}),
                 },
             );
@@ -890,8 +892,8 @@ mod tests {
         for index in 0..MAX_TRACKED {
             let id = runner.try_submit(()).unwrap();
             let mut req = Envelope::new(
-                super::super::protocol::Channel::Control,
-                super::super::protocol::Message::Response {
+                crate::remote::protocol::Channel::Control,
+                crate::remote::protocol::Message::Response {
                     result: Value::Null,
                 },
             );
@@ -918,9 +920,9 @@ mod tests {
         for index in 0..40 {
             let id = runner.try_submit(()).unwrap();
             let mut request = Envelope::new(
-                super::super::protocol::Channel::Control,
-                super::super::protocol::Message::Request {
-                    operation: super::super::protocol::Operation::Prompt,
+                crate::remote::protocol::Channel::Control,
+                crate::remote::protocol::Message::Request {
+                    operation: crate::remote::protocol::Operation::Prompt,
                     arguments: json!({"subtab_id":"tab"}),
                 },
             );
@@ -993,9 +995,9 @@ mod tests {
         for index in 0..40 {
             let id = runner.try_submit(()).unwrap();
             let mut request = Envelope::new(
-                super::super::protocol::Channel::Control,
-                super::super::protocol::Message::Request {
-                    operation: super::super::protocol::Operation::Prompt,
+                crate::remote::protocol::Channel::Control,
+                crate::remote::protocol::Message::Request {
+                    operation: crate::remote::protocol::Operation::Prompt,
                     arguments: json!({"subtab_id":"tab","text":"PRIVATE_PROMPT"}),
                 },
             );
