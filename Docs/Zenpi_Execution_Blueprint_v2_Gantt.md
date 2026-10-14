@@ -5,9 +5,9 @@
 
 ```yaml
 source: Docs/Zenpi_Execution_Blueprint_v2.md
-source_sha256: 60ebfbae7deab07d1b9abdf37fdc40144c209811e168165bfaa3cbda5f8e074a
+source_sha256: 6a5fdf64ce98b26a30c9acada5e0cf82047fa5db5b3907244ebf2cf6c03face7
 blueprint_version: 4.0.0
-generated_at: 2026-10-14T16:35:38Z
+generated_at: 2026-10-14T16:47:42Z
 ```
 
 ## Dependency-order view
@@ -81,7 +81,7 @@ gantt
     ZE-240 异步生产 host 在 prompt 入队时就判定  mode  和  expe :done, ZE_240, after ZE_104, 1d
     ZE-241 事件按因果顺序输出：每个 job 一个按序号排序的单一邮箱，取代"准入、增量、工 :done, ZE_241, after ZE_104, 1d
     ZE-242 生命周期：<br>• SIGTERM 等同于  shutdown  <br>• :done, ZE_242, after ZE_104, 1d
-    ZE-243 删除二进制不使用的同步  run_headless / run_stdio  及 :ZE_243, after ZE_240, 1d
+    ZE-243 删除二进制不使用的同步  run_headless / run_stdio  及 :done, ZE_243, after ZE_240, 1d
     ZE-250 修复 text→tool→text 的顺序：工具开始时结束当前流式段，结束时只收 :done, ZE_250, after ZE_106, 1d
     ZE-251 审批的过期清扫覆盖后台标签页 中断只作用于当前 job 所属的 owner 取消 :done, ZE_251, after ZE_106, 1d
     ZE-252 双击 Ctrl-C 的计数只在同一热区内累计（跨热区的两次不构成双击） 同一热区 :ZE_252, after ZE_106, 1d
@@ -110,7 +110,7 @@ gantt
     ZE-999 Master 终验：A、B 两块 全部为  [x]  G-BUILD、G-TES :ZE_999, after ZE_400 ZE_401 ZE_402 ZE_403 ZE_404 ZE_406 ZE_599, 1d
     section B1
     ZE-500 代码入库与 CI 基线：<br>• 提交  android/ 、 src/rem :done, ZE_500, after ZE_100 ZE_108, 1d
-    ZE-502 接受已有的核心成果：<br>• 主机侧：线协议（frame、envelope v :ZE_502, after ZE_500, 1d
+    ZE-502 接受已有的核心成果：<br>• 主机侧：线协议（frame、envelope v :done, ZE_502, after ZE_500, 1d
     section B2
     ZE-510 把远程状态（回执、ack、intent）从  project-workspace :ZE_510, after ZE_502, 1d
     ZE-511 把 worktree、worker、subtab 子系统从  src/remot :ZE_511, after ZE_510, 1d
@@ -144,7 +144,7 @@ gantt
 
 ## Monitoring index
 
-Counts: open 54 · self-tested 0 · accepted 59 · total 113
+Counts: open 52 · self-tested 0 · accepted 61 · total 113
 
 | ID | Layer | State | Ready | Depends | Claim | Integration | Est. LOC | Title |
 |---|---|---|---|---|---|---|---:|---|
@@ -208,18 +208,18 @@ Counts: open 54 · self-tested 0 · accepted 59 · total 113
 | ZE-240 | A2 | accepted | no | ZE-104 | ZE-240@blueprint-4.0.0 | accepted | 60 | 异步生产 host 在 prompt 入队时就判定 `mode` 和 `expected_turn_id`（目前要等排队执行时才判定）：`start_if_idle` 在忙时立即返回 `not_idle` |
 | ZE-241 | A2 | accepted | no | ZE-104 | ZE-241@blueprint-4.0.0 | accepted | 80 | 事件按因果顺序输出：每个 job 一个按序号排序的单一邮箱，取代"准入、增量、工具"三条队列分批写出。领取前先写失败测试核实该问题确实存在 |
 | ZE-242 | A2 | accepted | no | ZE-104 | ZE-242@blueprint-4.0.0 | accepted | 100 | 生命周期：<br>• SIGTERM 等同于 `shutdown`；<br>• EOF 有可配置、有上限的排空时限；<br>• close hook 在进程退出前完成；<br>• session 被占用时返回明确的 `session_locked`；<br>layer `A2` \| Depends: ZE-104 \| Owned paths: `src/headless.rs`, `src/core.rs` \| Validators: 一轮进行中 `kill -TERM`，得到终态响应且 WAL 干净；`printf '{prompt}\n' \\| zenpi --mode headless --auto` 在终态事件后以 0 退出；第二个进程打开同一个 session 时以 `session_locked` 退出 \| Estimated LOC: 100 |
-| ZE-243 | A2 | open | yes | ZE-240 | — | — | 900 | 删除二进制不使用的同步 `run_headless`/`run_stdio` 及其中不可达的 Prompt/Steer 分支，把约 41 个测试迁到 `run_async_streams` |
+| ZE-243 | A2 | accepted | no | ZE-240 | ZE-243@blueprint-4.0.0 | accepted | 900 | 删除二进制不使用的同步 `run_headless`/`run_stdio` 及其中不可达的 Prompt/Steer 分支，把约 41 个测试迁到 `run_async_streams` |
 | ZE-250 | A2 | accepted | no | ZE-106 | ZE-250@blueprint-4.0.0 | accepted | 40 | 修复 text→tool→text 的顺序：工具开始时结束当前流式段，结束时只收尾当前段，不覆盖工具前的文本 |
 | ZE-251 | A2 | accepted | no | ZE-106 | ZE-251@blueprint-4.0.0 | accepted | 70 | 审批的过期清扫覆盖后台标签页；中断只作用于当前 job 所属的 owner；取消投递失败（QueueFull）时，提示"未送达，请重试"，而不是"已请求中断" |
 | ZE-252 | A2 | open | yes | ZE-106 | ZE-252@blueprint-4.0.0 | — | 30 | 双击 Ctrl-C 的计数只在同一热区内累计（跨热区的两次不构成双击）；同一热区内的双击强杀（含 Shell 热区）保持 ZS1-179 的语义 |
 | ZE-253 | A2 | accepted | no | — | ZE-253@blueprint-4.0.0 | accepted | 100 | `COMMAND_SPECS` 作为唯一的命令目录：补齐 `/reasoning` `/tree` `/output` `/input` `/reload` `/skills` `/templates` 以及 `resource` 别名；`/reasoning` 也能在 headless 的 command 帧中使用，使 headless 可以在运行时调整思考级别；`/approval` 不带参数时只显示当前模式；`/yolo` 不带参数时切换开关；删除 `/review` 别名 |
-| ZE-254 | A2 | open | yes | ZE-106 | — | — | 500 | 删除旧的同步 TUI 路径（`run`、`run_interactive`、`run_with_state*`、`agent=None` 分支），把 `stage1_input_host` 的端到端测试迁到 ZE-106 的注入点上 |
+| ZE-254 | A2 | open | yes | ZE-106 | ZE-254@blueprint-4.0.0 | — | 500 | 删除旧的同步 TUI 路径（`run`、`run_interactive`、`run_with_state*`、`agent=None` 分支），把 `stage1_input_host` 的端到端测试迁到 ZE-106 的注入点上 |
 | ZE-255 | A2 | accepted | no | — | ZE-255@blueprint-4.0.0 | accepted | 60 | panic 时恢复终端：`TerminalGuard::enter` 安装一个串接原有 hook 的 panic hook，执行与 `leave()` 相同的恢复步骤 |
 | ZE-260 | A2 | accepted | no | — | ZE-260@blueprint-4.0.0 | accepted | 130 | DAG 正确性：<br>• worker 默认用 `current_exe()`；<br>• 存储满时 `send` 返回错误，不再静默丢弃；<br>• 写入改为临时文件 + fsync + rename 的原子写；<br>• 消息体按字节限制；<br>• 回收子进程；<br>• `dag_spawn` 限制深度 ≤ 3，且扇出不超过父节点租约；<br>layer `A2` \| Depends: — \| Owned paths: `src/dag.rs`, `src/tools.rs`, `tests/dag.rs` \| Validators: `dag_send_full_mailbox_errors`；`dag_spawn_defaults_to_current_exe`；写到一半被截断后存储仍可读；第 4 层 spawn 被拒绝 \| Estimated LOC: 130 |
-| ZE-300 | A3 | open | no | ZE-243 | — | — | 300 | headless 去轮询（对应 redis ae：睡到下一个真实截止时间）：<br>• stdin、runtime、审批三类唤醒合并为一个阻塞 channel；<br>• `worker_loop` 改用 condvar，job 完成时主动唤醒；<br>• job 线程创建失败时发出类型化的 `SpawnFailed`，并继续消化排队中的任务；<br>• shutdown 之后再 submit 时显式返回 `Rejected`；<br>layer `A3` \| Depends: ZE-243 \| Owned paths: `src/headless.rs`, `src/runtime.rs` \| Validators: 空闲进程 10 s 内 `ru_nvcsw` 增量 ≤ 50；200 个进程都卡在 10 s 的脚本化 provider 上时，总 CPU < 单核的 1%；stdout 读端暂停 5 s 期间，stdin 发出的 cancel 在 250 ms 内送达 job；注入 spawn 失败后，下一个排队任务仍能完成 \| Estimated LOC: 300 |
+| ZE-300 | A3 | open | yes | ZE-243 | — | — | 300 | headless 去轮询（对应 redis ae：睡到下一个真实截止时间）：<br>• stdin、runtime、审批三类唤醒合并为一个阻塞 channel；<br>• `worker_loop` 改用 condvar，job 完成时主动唤醒；<br>• job 线程创建失败时发出类型化的 `SpawnFailed`，并继续消化排队中的任务；<br>• shutdown 之后再 submit 时显式返回 `Rejected`；<br>layer `A3` \| Depends: ZE-243 \| Owned paths: `src/headless.rs`, `src/runtime.rs` \| Validators: 空闲进程 10 s 内 `ru_nvcsw` 增量 ≤ 50；200 个进程都卡在 10 s 的脚本化 provider 上时，总 CPU < 单核的 1%；stdout 读端暂停 5 s 期间，stdin 发出的 cancel 在 250 ms 内送达 job；注入 spawn 失败后，下一个排队任务仍能完成 \| Estimated LOC: 300 |
 | ZE-301 | A3 | open | yes | ZE-105 | — | — | 180 | 传输层：进程内共享一个 `ureq::Agent`（keep-alive 连接池、共享 TLS 配置）；在连接器内通过 `RequestControl` 的 Arc 标志实现取消，删除每个请求的发送线程和 5 ms park 轮询 |
 | ZE-302 | A3 | open | yes | ZE-201, ZE-207 | — | — | 220 | 工具、搜索、扩展的读取改用 `poll(2)` 阻塞等待：单个线程同时监听两个 fd 和子进程，poll 超时取"工具截止时间"与"100 ms 取消检查"中较小的一个；删除 2–5 ms 的 sleep 循环和固定 50 ms 等待；进程组信号只发给尚未被回收的 leader；改动涉及的 `unsafe` 一律加 `// SAFETY:` 注释 |
-| ZE-303 | A3 | open | no | ZE-243 | — | — | 260 | reconnect WAL 收敛（对应 redis aof：只对确认点做持久化，写失败视为"提交不确定"）：<br>• `Event` 记录不再写入 WAL，改放内存环形缓冲；<br>• 只对 Reserved、Terminal、Ack 三类记录 fsync，且 Terminal 先 fsync 再写 stdout；<br>• 任何一次追加失败后，日志被毒化，之后的追加都返回 `CommitUncertain`；<br>• 打开时用 write、`sync_all`、rename、目录 fsync 的方式压缩；<br>• 截断撕裂的末尾前，先复制为 `.torn`；<br>• 请求 ID 账本与 terminals 一起按 FIFO 修剪；<br>• 干净关闭且没有未知结果时，删除 WAL；<br>layer `A3` \| Depends: ZE-243 \| Owned paths: `src/session.rs`, `src/headless.rs` \| Validators: 每个请求写入 WAL 的字节数 ≤ 终态大小 + 1 KiB；每个请求的 fsync ≤ 3 次；注入短写和 fsync 错误后仍能重新打开；干净 shutdown 后 export/delete 成功；2 万次带 ID 的 `status` 全部成功，被淘汰的 ID 返回 `replay_expired` \| Estimated LOC: 260 |
+| ZE-303 | A3 | open | yes | ZE-243 | — | — | 260 | reconnect WAL 收敛（对应 redis aof：只对确认点做持久化，写失败视为"提交不确定"）：<br>• `Event` 记录不再写入 WAL，改放内存环形缓冲；<br>• 只对 Reserved、Terminal、Ack 三类记录 fsync，且 Terminal 先 fsync 再写 stdout；<br>• 任何一次追加失败后，日志被毒化，之后的追加都返回 `CommitUncertain`；<br>• 打开时用 write、`sync_all`、rename、目录 fsync 的方式压缩；<br>• 截断撕裂的末尾前，先复制为 `.torn`；<br>• 请求 ID 账本与 terminals 一起按 FIFO 修剪；<br>• 干净关闭且没有未知结果时，删除 WAL；<br>layer `A3` \| Depends: ZE-243 \| Owned paths: `src/session.rs`, `src/headless.rs` \| Validators: 每个请求写入 WAL 的字节数 ≤ 终态大小 + 1 KiB；每个请求的 fsync ≤ 3 次；注入短写和 fsync 错误后仍能重新打开；干净 shutdown 后 export/delete 成功；2 万次带 ID 的 `status` 全部成功，被淘汰的 ID 返回 `replay_expired` \| Estimated LOC: 260 |
 | ZE-304 | A3 | open | yes | ZE-231 | — | — | 60 | session 日志的 fsync 策略：只对 turn、`operation_*` 和终态记录 fsync，其他记录在下一个边界时一起刷盘。崩溃时最多丢失最后一个边界之后的记录，不会丢失任何已接受的 turn。flock 改为阻塞等待，不再用 `LOCK_NB`。注意 macOS 上 `sync_data` 走的是 `F_FULLFSYNC`，单次代价较高 |
 | ZE-305 | A3 | open | no | ZE-232 | — | — | 260 | session 内存瘦身：去掉 `records: Vec<Value>` 和 `event_values` 这两份重复副本（只保留序号、类型、偏移，需要时重新解析）；缓存已校验过的 checkpoint；`tree_ancestry_turns` 不再克隆整棵树 |
 | ZE-306 | A3 | open | yes | ZE-236 | — | — | 70 | session 列表和"最新 session"查找只读文件头加 mtime，并按 cwd 过滤 |
@@ -234,16 +234,16 @@ Counts: open 54 · self-tested 0 · accepted 59 · total 113
 | ZE-406 | A4 | open | no | ZE-100, ZE-404 | — | — | 40 | 文档收口：<br>• README 和 `Docs/Zenpi_Execution_Spec.md` 只描述已验收的能力，列出冻结模块，并以 G-RUST 为准；<br>• v1、Stage 1、Stage 2 移到 `Docs/archive/`，同步修正引用它们的 validator 和 gantt 工具路径；<br>• 把与审计结论矛盾的 learn 笔记标为过期：`session-manager.ts_transform`（恢复语义）和 `tui.ts_transform`（合并重绘）；<br>• 在 `Cargo.toml` 的 crossterm patch 旁边注明上游 issue #1126、#1142；<br>layer `A4` \| Depends: ZE-100, ZE-404 \| Owned paths: `README.md`, `Docs/Zenpi_Execution_Spec.md`, `Docs/archive/`, `tools/`, `Docs/learn/files/pi-mono/`, `Cargo.toml` \| Validators: G-BP；`tools/validate_blueprint.py` 和 `tools/validate_stage1_blueprint.py` 指向归档路径后仍能运行 \| Estimated LOC: 40 |
 | ZE-999 | A4 | open | no | ZE-400, ZE-401, ZE-402, ZE-403, ZE-404, ZE-406, ZE-599 | — | — | 0 | Master 终验：A、B 两块 全部为 `[x]`；G-BUILD、G-TEST、G-RUST、G-TASK、G-BENCH、`G-LOAD(2000)` 全部通过；Gantt 未过期，handoff 齐全 |
 | ZE-500 | B1 | accepted | no | ZE-100, ZE-108 | ZE-500@blueprint-4.0.0 | accepted | 150 | 代码入库与 CI 基线：<br>• 提交 `android/`、`src/remote/`、`src/host_pair.rs`、`tests/remote_*.rs`、`fuzz/remote_protocol/`；<br>• CI 增加 G-ANDROID，并在 CI 中运行原本 `#[ignore]` 的 8 个 `remote_android_*_interop` 测试；<br>• Stage 2 的执行脚手架（`tools/*stage2*`、`.ops/stage2_android2unix/`）中 CI 用不到的部分，原样移到 `Docs/archive/stage2/`；<br>layer `B1` \| Depends: ZE-100, ZE-108 \| Owned paths: `android/`, `src/remote/`, `src/host_pair.rs`, `tests/remote_*.rs`, `fuzz/remote_protocol/`, `.github/workflows/ci.yml`, `tools/`, `.ops/stage2_android2unix/`, `Docs/archive/stage2/` \| Validators: `git ls-files android src/remote \\| wc -l` > 0；G-REMOTE；G-ANDROID；interop 测试在 CI 中通过 \| Estimated LOC: 150 |
-| ZE-502 | B1 | open | yes | ZE-500 | — | — | 50 | 接受已有的核心成果：<br>• 主机侧：线协议（frame、envelope v1、严格 JSON）、TLS 1.3 监听与 ALPN、二维码邀请与证书 pin 配对、设备注册表与撤销、owner 路由、事件 cursor、回放与订阅；<br>• Android 侧：`pairing/`、`security/`、`transport/`、`state/`；<br>• 运行原有的测试和 fuzz 语料，结果写进 handoff；<br>layer `B1` \| Depends: ZE-500 \| Owned paths: `src/remote/{frame,protocol,strict_json,listener,lan,pairing,auth,command,host_adapter,events,subscription,transcript,live_text,wakeup}.rs`, `android/app/src/main/java/zenpi/{pairing,security,transport,state}/` \| Validators: G-REMOTE（含 `remote_protocol`、`remote_pairing`、`remote_auth`、`remote_events`、`remote_subscription_tls`、`remote_parity`）；G-ANDROID 的 JVM 部分全部通过 \| Estimated LOC: 50 |
-| ZE-510 | B2 | open | no | ZE-502 | — | — | 400 | 把远程状态（回执、ack、intent）从 `project-workspace.json` 移到独立的 `remote-state.json`，保证不带 feature 的构建也能读取由 remote 构建写出的 checkpoint |
+| ZE-502 | B1 | accepted | no | ZE-500 | ZE-502@blueprint-4.0.0 | accepted | 50 | 接受已有的核心成果：<br>• 主机侧：线协议（frame、envelope v1、严格 JSON）、TLS 1.3 监听与 ALPN、二维码邀请与证书 pin 配对、设备注册表与撤销、owner 路由、事件 cursor、回放与订阅；<br>• Android 侧：`pairing/`、`security/`、`transport/`、`state/`；<br>• 运行原有的测试和 fuzz 语料，结果写进 handoff；<br>layer `B1` \| Depends: ZE-500 \| Owned paths: `src/remote/{frame,protocol,strict_json,listener,lan,pairing,auth,command,host_adapter,events,subscription,transcript,live_text,wakeup}.rs`, `android/app/src/main/java/zenpi/{pairing,security,transport,state}/` \| Validators: G-REMOTE（含 `remote_protocol`、`remote_pairing`、`remote_auth`、`remote_events`、`remote_subscription_tls`、`remote_parity`）；G-ANDROID 的 JVM 部分全部通过 \| Estimated LOC: 50 |
+| ZE-510 | B2 | open | yes | ZE-502 | — | — | 400 | 把远程状态（回执、ack、intent）从 `project-workspace.json` 移到独立的 `remote-state.json`，保证不带 feature 的构建也能读取由 remote 构建写出的 checkpoint |
 | ZE-511 | B2 | open | no | ZE-510 | — | — | 600 | 把 worktree、worker、subtab 子系统从 `src/remote/` 移到 `src/worktree/`。这部分 TUI 也在用，行为不变，按 §7 冻结；目的是解除对 remote feature 开关的阻塞 |
-| ZE-512 | B2 | open | no | ZE-243, ZE-502 | — | — | 1200 | 删除 `HeadlessHost` 独立的 prompt runner 和 10 ms 轮询，远程宿主改为复用 headless 异步 host 的准入、取消和 steer 逻辑，保证同一个概念只有一个 owner |
-| ZE-513 | B2 | open | no | ZE-502 | — | — | 250 | 常驻的 `zenpi host serve`：<br>• 监听器的生命周期与邀请解耦；<br>• 固定端口写进 identity；<br>• 默认绑定选中的网卡，而不是 0.0.0.0；<br>• 保留挂载在桌面 TUI 上的模式；<br>layer `B2` \| Depends: ZE-502 \| Owned paths: `src/host_pair.rs`, `src/remote/listener.rs`, `src/core.rs` \| Validators: 端到端测试：配对 → 邀请过期 → 10 分钟后仍可重连；重启后端口不变 \| Estimated LOC: 250 |
+| ZE-512 | B2 | open | yes | ZE-243, ZE-502 | — | — | 1200 | 删除 `HeadlessHost` 独立的 prompt runner 和 10 ms 轮询，远程宿主改为复用 headless 异步 host 的准入、取消和 steer 逻辑，保证同一个概念只有一个 owner |
+| ZE-513 | B2 | open | yes | ZE-502 | — | — | 250 | 常驻的 `zenpi host serve`：<br>• 监听器的生命周期与邀请解耦；<br>• 固定端口写进 identity；<br>• 默认绑定选中的网卡，而不是 0.0.0.0；<br>• 保留挂载在桌面 TUI 上的模式；<br>layer `B2` \| Depends: ZE-502 \| Owned paths: `src/host_pair.rs`, `src/remote/listener.rs`, `src/core.rs` \| Validators: 端到端测试：配对 → 邀请过期 → 10 分钟后仍可重连；重启后端口不变 \| Estimated LOC: 250 |
 | ZE-514 | B2 | open | no | ZE-513 | — | — | 600 | 配对后即可使用：<br>• 桌面确认后，授予所挂载项目的 Control 和 Approval；<br>• 保留 `--list-devices` 和 `--revoke-device`，删除 4 个 grant CLI；<br>• 删除可以由二维码推出的 6 位安全码；<br>• Pair 和 Authenticate 的响应如实报告 `control_available`；<br>layer `B2` \| Depends: ZE-513 \| Owned paths: `src/remote/auth.rs`, `src/remote/pairing.rs`, `src/host_pair.rs`, `android/.../pairing/`, `tests/remote_auth.rs`, `tests/remote_device_grants.rs` \| Validators: 新配对的设备能直接发 prompt；被撤销或重放的 token 会被拒绝；撤销在下一帧生效 \| Estimated LOC: 600 |
 | ZE-515 | B2 | open | no | ZE-514 | — | — | 700 | 基于密钥的身份与二维码 v2：<br>• `host_id = sha256(SPKI)`，证书轮换后 pin 仍然有效；<br>• 二维码 v2 带上与 token 绑定的有序地址提示（`lan`、`tailnet`），v1 仍可解析；<br>• Android 端已保存的主机自动迁移；<br>layer `B2` \| Depends: ZE-514 \| Owned paths: `src/remote/pairing.rs`, `src/remote/auth.rs`, `android/.../pairing/`, `android/.../transport/PairingClient.kt`, `android/.../security/PairedHostStore.kt` \| Validators: v1 和 v2 邀请都按严格模式解析；证书轮换后仍能连接；已存主机的迁移测试 \| Estimated LOC: 700 |
 | ZE-516 | B2 | open | no | ZE-515 | — | — | 600 | 网络 T1 叠加网：<br>• 主机端 `--tailnet` 按网卡地址识别 `100.64.0.0/10` 和 `fd7a:115c:a1e0::/48`，加入地址提示，不调用 Tailscale API；<br>• Android 只对这两个网段放行 `TRANSPORT_VPN`；<br>• 多提示拨号：局域网优先，失败后依次尝试下一个；任何一个 pin 不符都直接失败，不回退；<br>• 用户指南补上 Tailscale/Headscale 的配置，以及 `ssh -R` 兜底方案；<br>layer `B2` \| Depends: ZE-515 \| Owned paths: `src/remote/lan.rs`, `src/host_pair.rs`, `android/.../lifecycle/LanSocketRouting.kt`, `android/.../lifecycle/NetworkMonitor.kt`, `android/.../transport/HostClient.kt`, `Docs/stage2_android2unix_user_guide.md` \| Validators: CGNAT 和 fd7a 地址被识别为叠加网；局域网不可达时回退到 tailnet 提示；任一提示 pin 错误时直接失败；非叠加网段的 VPN 仍被拒绝 \| Estimated LOC: 600 |
-| ZE-517 | B2 | open | no | ZE-502 | — | — | 600 | 流式对齐：把 `live_text` 目前 4 KiB 的整行预览改为逐 token 的增量，回放时顺序正确 |
-| ZE-518 | B2 | open | no | ZE-502 | — | — | 1800 | 拆分 Android UI：<br>• 把 `PairingScreen`（约 60 个参数）拆到 `ui/` 包，`PairingState`（约 90 个字段）拆成子状态；<br>• 修掉每秒一次的空转重组；<br>• 草稿只以 host、session、tab 的 id 为键，不含 revision，避免远端改名时清空草稿；<br>行为保持不变 |
+| ZE-517 | B2 | open | yes | ZE-502 | — | — | 600 | 流式对齐：把 `live_text` 目前 4 KiB 的整行预览改为逐 token 的增量，回放时顺序正确 |
+| ZE-518 | B2 | open | yes | ZE-502 | — | — | 1800 | 拆分 Android UI：<br>• 把 `PairingScreen`（约 60 个参数）拆到 `ui/` 包，`PairingState`（约 90 个字段）拆成子状态；<br>• 修掉每秒一次的空转重组；<br>• 草稿只以 host、session、tab 的 id 为键，不含 revision，避免远端改名时清空草稿；<br>行为保持不变 |
 | ZE-519 | B2 | open | no | ZE-518 | — | — | 400 | 竖屏截图测试底座：Roborazzi，分辨率 360×800 和 412×915，字号 1.0 和 1.3，覆盖明暗主题 |
 | ZE-530 | B2 | open | no | ZE-519, ZE-517 | — | — | 1300 | 对话主屏：<br>• 用 reverse 的 `LazyColumn`，自动贴底，带流式行；<br>• 工具行默认折叠；<br>• 轻量 markdown：代码块、行内代码、列表，不引入第三方库；<br>• 底部固定输入框：发送 / steer / 停止三态，配 `ImeAction.Send` 和 `imePadding`；<br>• 顶栏放 Agent/Arch 模式切换、worktree chip 和模型 chip；<br>layer `B2` \| Depends: ZE-519, ZE-517 \| Owned paths: `android/.../ui/ConversationScreen.kt`, `android/.../ui/Markdown.kt`, `android/.../ui/Composer.kt` \| Validators: 截图黄金图；500 轮对话的 fixture 卡顿帧 < 5%；草稿在旋转后仍保留 \| Estimated LOC: 1300 |
 | ZE-531 | B2 | open | no | ZE-530 | — | — | 450 | 审批：常驻审批条加底部面板。面板显示 i/N 和彩色补丁，点一次即决定，有待决审批时无法关闭；可以开启生物识别确认 |
