@@ -1,0 +1,447 @@
+INSTRUMENTATION_STATUS: class=zenpi.ScannerActivityTest
+INSTRUMENTATION_STATUS: current=1
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=1
+INSTRUMENTATION_STATUS: stream=
+zenpi.ScannerActivityTest:
+INSTRUMENTATION_STATUS: test=actualCameraPermissionDenialReturnsToProductionPairingScreen
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.ScannerActivityTest
+INSTRUMENTATION_STATUS: current=1
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=1
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=actualCameraPermissionDenialReturnsToProductionPairingScreen
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_RESULT: stream=
+
+Time: 2.881
+
+OK (1 test)
+
+
+INSTRUMENTATION_CODE: -1
+
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=1
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stream=
+zenpi.ScannerResultTest:
+INSTRUMENTATION_STATUS: test=permissionTimeoutAndUnavailablePreserveHostCacheAndAuthority
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=1
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stack=java.lang.IllegalArgumentException: Required value was null.
+	at zenpi.state.ProjectionCacheCodec.encode(ProjectionCacheCodec.kt:22)
+	at zenpi.security.PairedHostStore.saveProjection(PairedHostStore.kt:54)
+	at zenpi.ScannerResultTest$exercise$1.invokeSuspend(ScannerResultTest.kt:24)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:104)
+	at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:277)
+	at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+	at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source:1)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:48)
+	at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source:1)
+	at zenpi.ScannerResultTest.exercise(ScannerResultTest.kt:18)
+	at zenpi.ScannerResultTest.exercise$default(ScannerResultTest.kt:18)
+	at zenpi.ScannerResultTest.permissionTimeoutAndUnavailablePreserveHostCacheAndAuthority(ScannerResultTest.kt:37)
+
+INSTRUMENTATION_STATUS: stream=
+Error in permissionTimeoutAndUnavailablePreserveHostCacheAndAuthority(zenpi.ScannerResultTest):
+java.lang.IllegalArgumentException: Required value was null.
+	at zenpi.state.ProjectionCacheCodec.encode(ProjectionCacheCodec.kt:22)
+	at zenpi.security.PairedHostStore.saveProjection(PairedHostStore.kt:54)
+	at zenpi.ScannerResultTest$exercise$1.invokeSuspend(ScannerResultTest.kt:24)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:104)
+	at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:277)
+	at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+	at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source:1)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:48)
+	at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source:1)
+	at zenpi.ScannerResultTest.exercise(ScannerResultTest.kt:18)
+	at zenpi.ScannerResultTest.exercise$default(ScannerResultTest.kt:18)
+	at zenpi.ScannerResultTest.permissionTimeoutAndUnavailablePreserveHostCacheAndAuthority(ScannerResultTest.kt:37)
+
+INSTRUMENTATION_STATUS: test=permissionTimeoutAndUnavailablePreserveHostCacheAndAuthority
+INSTRUMENTATION_STATUS_CODE: -2
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=2
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=malformedScanNeverBecomesHostOrEchoesSecret
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=2
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stack=java.lang.IllegalArgumentException: Required value was null.
+	at zenpi.state.ProjectionCacheCodec.encode(ProjectionCacheCodec.kt:22)
+	at zenpi.security.PairedHostStore.saveProjection(PairedHostStore.kt:54)
+	at zenpi.ScannerResultTest$exercise$1.invokeSuspend(ScannerResultTest.kt:24)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:104)
+	at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:277)
+	at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+	at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source:1)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:48)
+	at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source:1)
+	at zenpi.ScannerResultTest.exercise(ScannerResultTest.kt:18)
+	at zenpi.ScannerResultTest.exercise$default(ScannerResultTest.kt:18)
+	at zenpi.ScannerResultTest.malformedScanNeverBecomesHostOrEchoesSecret(ScannerResultTest.kt:67)
+
+INSTRUMENTATION_STATUS: stream=
+Error in malformedScanNeverBecomesHostOrEchoesSecret(zenpi.ScannerResultTest):
+java.lang.IllegalArgumentException: Required value was null.
+	at zenpi.state.ProjectionCacheCodec.encode(ProjectionCacheCodec.kt:22)
+	at zenpi.security.PairedHostStore.saveProjection(PairedHostStore.kt:54)
+	at zenpi.ScannerResultTest$exercise$1.invokeSuspend(ScannerResultTest.kt:24)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:104)
+	at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:277)
+	at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+	at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source:1)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:48)
+	at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source:1)
+	at zenpi.ScannerResultTest.exercise(ScannerResultTest.kt:18)
+	at zenpi.ScannerResultTest.exercise$default(ScannerResultTest.kt:18)
+	at zenpi.ScannerResultTest.malformedScanNeverBecomesHostOrEchoesSecret(ScannerResultTest.kt:67)
+
+INSTRUMENTATION_STATUS: test=malformedScanNeverBecomesHostOrEchoesSecret
+INSTRUMENTATION_STATUS_CODE: -2
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=3
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=unresolvedWriteFencesScannerResultsIncludingErrors
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=3
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stack=java.lang.IllegalArgumentException: Required value was null.
+	at zenpi.state.ProjectionCacheCodec.encode(ProjectionCacheCodec.kt:22)
+	at zenpi.security.PairedHostStore.saveProjection(PairedHostStore.kt:54)
+	at zenpi.ScannerResultTest$exercise$1.invokeSuspend(ScannerResultTest.kt:24)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:104)
+	at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:277)
+	at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+	at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source:1)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:48)
+	at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source:1)
+	at zenpi.ScannerResultTest.exercise(ScannerResultTest.kt:18)
+	at zenpi.ScannerResultTest.unresolvedWriteFencesScannerResultsIncludingErrors(ScannerResultTest.kt:76)
+
+INSTRUMENTATION_STATUS: stream=
+Error in unresolvedWriteFencesScannerResultsIncludingErrors(zenpi.ScannerResultTest):
+java.lang.IllegalArgumentException: Required value was null.
+	at zenpi.state.ProjectionCacheCodec.encode(ProjectionCacheCodec.kt:22)
+	at zenpi.security.PairedHostStore.saveProjection(PairedHostStore.kt:54)
+	at zenpi.ScannerResultTest$exercise$1.invokeSuspend(ScannerResultTest.kt:24)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:104)
+	at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:277)
+	at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+	at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source:1)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:48)
+	at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source:1)
+	at zenpi.ScannerResultTest.exercise(ScannerResultTest.kt:18)
+	at zenpi.ScannerResultTest.unresolvedWriteFencesScannerResultsIncludingErrors(ScannerResultTest.kt:76)
+
+INSTRUMENTATION_STATUS: test=unresolvedWriteFencesScannerResultsIncludingErrors
+INSTRUMENTATION_STATUS_CODE: -2
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=4
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=validScanRequiresConfirmationAndNeverPersistsInvitation
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=4
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stack=java.lang.IllegalArgumentException: Required value was null.
+	at zenpi.state.ProjectionCacheCodec.encode(ProjectionCacheCodec.kt:22)
+	at zenpi.security.PairedHostStore.saveProjection(PairedHostStore.kt:54)
+	at zenpi.ScannerResultTest$exercise$1.invokeSuspend(ScannerResultTest.kt:24)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:104)
+	at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:277)
+	at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+	at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source:1)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:48)
+	at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source:1)
+	at zenpi.ScannerResultTest.exercise(ScannerResultTest.kt:18)
+	at zenpi.ScannerResultTest.exercise$default(ScannerResultTest.kt:18)
+	at zenpi.ScannerResultTest.validScanRequiresConfirmationAndNeverPersistsInvitation(ScannerResultTest.kt:57)
+
+INSTRUMENTATION_STATUS: stream=
+Error in validScanRequiresConfirmationAndNeverPersistsInvitation(zenpi.ScannerResultTest):
+java.lang.IllegalArgumentException: Required value was null.
+	at zenpi.state.ProjectionCacheCodec.encode(ProjectionCacheCodec.kt:22)
+	at zenpi.security.PairedHostStore.saveProjection(PairedHostStore.kt:54)
+	at zenpi.ScannerResultTest$exercise$1.invokeSuspend(ScannerResultTest.kt:24)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:104)
+	at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:277)
+	at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+	at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source:1)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:48)
+	at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source:1)
+	at zenpi.ScannerResultTest.exercise(ScannerResultTest.kt:18)
+	at zenpi.ScannerResultTest.exercise$default(ScannerResultTest.kt:18)
+	at zenpi.ScannerResultTest.validScanRequiresConfirmationAndNeverPersistsInvitation(ScannerResultTest.kt:57)
+
+INSTRUMENTATION_STATUS: test=validScanRequiresConfirmationAndNeverPersistsInvitation
+INSTRUMENTATION_STATUS_CODE: -2
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=5
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=cancellationDoesNotForgetOrInventPairing
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=5
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stack=java.lang.IllegalArgumentException: Required value was null.
+	at zenpi.state.ProjectionCacheCodec.encode(ProjectionCacheCodec.kt:22)
+	at zenpi.security.PairedHostStore.saveProjection(PairedHostStore.kt:54)
+	at zenpi.ScannerResultTest$exercise$1.invokeSuspend(ScannerResultTest.kt:24)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:104)
+	at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:277)
+	at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+	at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source:1)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:48)
+	at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source:1)
+	at zenpi.ScannerResultTest.exercise(ScannerResultTest.kt:18)
+	at zenpi.ScannerResultTest.exercise$default(ScannerResultTest.kt:18)
+	at zenpi.ScannerResultTest.cancellationDoesNotForgetOrInventPairing(ScannerResultTest.kt:51)
+
+INSTRUMENTATION_STATUS: stream=
+Error in cancellationDoesNotForgetOrInventPairing(zenpi.ScannerResultTest):
+java.lang.IllegalArgumentException: Required value was null.
+	at zenpi.state.ProjectionCacheCodec.encode(ProjectionCacheCodec.kt:22)
+	at zenpi.security.PairedHostStore.saveProjection(PairedHostStore.kt:54)
+	at zenpi.ScannerResultTest$exercise$1.invokeSuspend(ScannerResultTest.kt:24)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:104)
+	at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:277)
+	at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+	at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source:1)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:48)
+	at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source:1)
+	at zenpi.ScannerResultTest.exercise(ScannerResultTest.kt:18)
+	at zenpi.ScannerResultTest.exercise$default(ScannerResultTest.kt:18)
+	at zenpi.ScannerResultTest.cancellationDoesNotForgetOrInventPairing(ScannerResultTest.kt:51)
+
+INSTRUMENTATION_STATUS: test=cancellationDoesNotForgetOrInventPairing
+INSTRUMENTATION_STATUS_CODE: -2
+INSTRUMENTATION_STATUS: class=zenpi.PairingScreenTest
+INSTRUMENTATION_STATUS: current=6
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stream=
+zenpi.PairingScreenTest:
+INSTRUMENTATION_STATUS: test=selfRevocationRequiresConfirmationSeparateFromLocalForget
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.PairingScreenTest
+INSTRUMENTATION_STATUS: current=6
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=selfRevocationRequiresConfirmationSeparateFromLocalForget
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.PairingScreenTest
+INSTRUMENTATION_STATUS: current=7
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=safetyCodeRequiresHumanEntryAndCancelIsAccessible
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.PairingScreenTest
+INSTRUMENTATION_STATUS: current=7
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=safetyCodeRequiresHumanEntryAndCancelIsAccessible
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.PairingScreenTest
+INSTRUMENTATION_STATUS: current=8
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=scannerErrorIsVisibleWithoutRemovingCachedHostAndPendingWriteHidesScan
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.PairingScreenTest
+INSTRUMENTATION_STATUS: current=8
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=scannerErrorIsVisibleWithoutRemovingCachedHostAndPendingWriteHidesScan
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.PairingScreenTest
+INSTRUMENTATION_STATUS: current=9
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=registeredDeviceDoesNotClaimHostControl
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.PairingScreenTest
+INSTRUMENTATION_STATUS: current=9
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=registeredDeviceDoesNotClaimHostControl
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.PairingScreenTest
+INSTRUMENTATION_STATUS: current=10
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=unresolvedRevocationDisablesScanRefreshAndAnotherRevoke
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.PairingScreenTest
+INSTRUMENTATION_STATUS: current=10
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=unresolvedRevocationDisablesScanRefreshAndAnotherRevoke
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.DiffScreenTest
+INSTRUMENTATION_STATUS: current=11
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stream=
+zenpi.DiffScreenTest:
+INSTRUMENTATION_STATUS: test=boundedPatchFlagsPathAndCloseAreVisibleOnNarrowDisplay
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.DiffScreenTest
+INSTRUMENTATION_STATUS: current=11
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=boundedPatchFlagsPathAndCloseAreVisibleOnNarrowDisplay
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.DiffScreenTest
+INSTRUMENTATION_STATUS: current=12
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=readOnlyDiffControlIsFencedOfflineAndDuringPendingWrites
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.DiffScreenTest
+INSTRUMENTATION_STATUS: current=12
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=readOnlyDiffControlIsFencedOfflineAndDuringPendingWrites
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_RESULT: stream=
+
+Time: 12.16
+There were 5 failures:
+1) permissionTimeoutAndUnavailablePreserveHostCacheAndAuthority(zenpi.ScannerResultTest)
+java.lang.IllegalArgumentException: Required value was null.
+	at zenpi.state.ProjectionCacheCodec.encode(ProjectionCacheCodec.kt:22)
+	at zenpi.security.PairedHostStore.saveProjection(PairedHostStore.kt:54)
+	at zenpi.ScannerResultTest$exercise$1.invokeSuspend(ScannerResultTest.kt:24)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:104)
+	at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:277)
+	at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+	at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source:1)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:48)
+	at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source:1)
+	at zenpi.ScannerResultTest.exercise(ScannerResultTest.kt:18)
+	at zenpi.ScannerResultTest.exercise$default(ScannerResultTest.kt:18)
+	at zenpi.ScannerResultTest.permissionTimeoutAndUnavailablePreserveHostCacheAndAuthority(ScannerResultTest.kt:37)
+2) malformedScanNeverBecomesHostOrEchoesSecret(zenpi.ScannerResultTest)
+java.lang.IllegalArgumentException: Required value was null.
+	at zenpi.state.ProjectionCacheCodec.encode(ProjectionCacheCodec.kt:22)
+	at zenpi.security.PairedHostStore.saveProjection(PairedHostStore.kt:54)
+	at zenpi.ScannerResultTest$exercise$1.invokeSuspend(ScannerResultTest.kt:24)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:104)
+	at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:277)
+	at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+	at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source:1)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:48)
+	at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source:1)
+	at zenpi.ScannerResultTest.exercise(ScannerResultTest.kt:18)
+	at zenpi.ScannerResultTest.exercise$default(ScannerResultTest.kt:18)
+	at zenpi.ScannerResultTest.malformedScanNeverBecomesHostOrEchoesSecret(ScannerResultTest.kt:67)
+3) unresolvedWriteFencesScannerResultsIncludingErrors(zenpi.ScannerResultTest)
+java.lang.IllegalArgumentException: Required value was null.
+	at zenpi.state.ProjectionCacheCodec.encode(ProjectionCacheCodec.kt:22)
+	at zenpi.security.PairedHostStore.saveProjection(PairedHostStore.kt:54)
+	at zenpi.ScannerResultTest$exercise$1.invokeSuspend(ScannerResultTest.kt:24)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:104)
+	at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:277)
+	at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+	at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source:1)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:48)
+	at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source:1)
+	at zenpi.ScannerResultTest.exercise(ScannerResultTest.kt:18)
+	at zenpi.ScannerResultTest.unresolvedWriteFencesScannerResultsIncludingErrors(ScannerResultTest.kt:76)
+4) validScanRequiresConfirmationAndNeverPersistsInvitation(zenpi.ScannerResultTest)
+java.lang.IllegalArgumentException: Required value was null.
+	at zenpi.state.ProjectionCacheCodec.encode(ProjectionCacheCodec.kt:22)
+	at zenpi.security.PairedHostStore.saveProjection(PairedHostStore.kt:54)
+	at zenpi.ScannerResultTest$exercise$1.invokeSuspend(ScannerResultTest.kt:24)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:104)
+	at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:277)
+	at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+	at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source:1)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:48)
+	at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source:1)
+	at zenpi.ScannerResultTest.exercise(ScannerResultTest.kt:18)
+	at zenpi.ScannerResultTest.exercise$default(ScannerResultTest.kt:18)
+	at zenpi.ScannerResultTest.validScanRequiresConfirmationAndNeverPersistsInvitation(ScannerResultTest.kt:57)
+5) cancellationDoesNotForgetOrInventPairing(zenpi.ScannerResultTest)
+java.lang.IllegalArgumentException: Required value was null.
+	at zenpi.state.ProjectionCacheCodec.encode(ProjectionCacheCodec.kt:22)
+	at zenpi.security.PairedHostStore.saveProjection(PairedHostStore.kt:54)
+	at zenpi.ScannerResultTest$exercise$1.invokeSuspend(ScannerResultTest.kt:24)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:104)
+	at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:277)
+	at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+	at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source:1)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:48)
+	at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source:1)
+	at zenpi.ScannerResultTest.exercise(ScannerResultTest.kt:18)
+	at zenpi.ScannerResultTest.exercise$default(ScannerResultTest.kt:18)
+	at zenpi.ScannerResultTest.cancellationDoesNotForgetOrInventPairing(ScannerResultTest.kt:51)
+
+FAILURES!!!
+Tests run: 12,  Failures: 5
+
+
+INSTRUMENTATION_CODE: -1

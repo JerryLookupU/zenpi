@@ -1,0 +1,26 @@
+{
+  "scope": "production non-TUI Rust host / Android composer and saved prompt recovery after actual process death",
+  "passed": true,
+  "direct_host_interface_verified": true,
+  "adb_reverse_used": false,
+  "camera_scanning_verified": false,
+  "physical_phone_lan_verified": false,
+  "terminal_qr_decode_verified": false,
+  "android_composer_provider_turn_verified": true,
+  "encrypted_pending_prompt_process_recovery_verified": true,
+  "exact_retry_without_provider_replay_verified": true,
+  "provider_requests": 2,
+  "listener_expiry_closed_verified": true,
+  "artifacts": {
+    "target/debug/zenpi": "bdd666957d8a7323617b955252894cdb925df868ed939baec86ccff37bd502e9",
+    "android/app/build/outputs/apk/debug/app-debug.apk": "08a888a3dd46991340bd51d4cceb4cb0f6851d78684652c8dc1bfb7a6dcd89d0",
+    "android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk": "139593d00766fdf574a00ae912ebf558b40845fa75126eb6e46aaffeb1b8a8dc",
+    "tools/stage2_headless_android_smoke.py": "20a32159c33b7fe131074f12fb2dc71cb8a028e1b572a068bdf445725d9f9af2"
+  },
+  "android_api": "36",
+  "serial": "emulator-5580",
+  "started_at_unix": 1790889957.957537,
+  "finished_at_unix": 1790890013.925075,
+  "failure": null,
+  "integration_state": "uncommitted provisional evidence; no whole-item acceptance"
+}

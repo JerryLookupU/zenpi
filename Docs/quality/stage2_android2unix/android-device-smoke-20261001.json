@@ -1,0 +1,20 @@
+{
+  "scope": "production Rust host / Android pinned TLS + Compose pairing states via adb reverse",
+  "camera_scanning_verified": false,
+  "lan_reachability_verified": false,
+  "device_registration_verified": true,
+  "session_sync_verified": false,
+  "started_at_unix": 1790859947.492555,
+  "finished_at_unix": 1790859955.4619641,
+  "serial": "emulator-5580",
+  "android_api": "36",
+  "passed": true,
+  "instrumentation_exit_code": 0,
+  "instrumentation_stdout_sha256": "eff9d6f88cf62498ef546b9337eb36c6510513849d6e22c4d5a5548b56fe26d9",
+  "instrumentation_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "artifacts": {
+    "target/debug/zenpi": "3b4798b3850cc2c7e8d2fadf15c1821436829a9d7855a2214cc912d944e780a9",
+    "android/app/build/outputs/apk/debug/app-debug.apk": "037a00f67e384aab31a50a112bc3f576e4b0360440ac8b0abab3b268893accda",
+    "android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk": "8b8a836ebce94ff0f0cf46682f2d10272f80be3d64b50aad47f72f9839a4124c"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "passed": true,
+  "scope": "production desktop managed worktree close safety; no remote Git capability",
+  "started_at_unix": 1790871081.902963,
+  "finished_at_unix": 1790871088.1554859,
+  "tracked_dirty_refusal_verified": true,
+  "untracked_refusal_verified": true,
+  "locked_refusal_verified": true,
+  "failed_close_tab_and_selection_retained": true,
+  "ignored_file_refusal_verified": true,
+  "clean_close_verified": true,
+  "branch_retained_verified": true,
+  "remote_git_control_verified": false,
+  "crash_atomicity_verified": false,
+  "binary_sha256": "b87610400f754824adc0b7598c35eec5763fed8ce00405ecbf9bf8866c0a77d8",
+  "harness_sha256": "f5639f9ff20a09386cb1338859889ad8166004dc4140dcc52540e6bed0e9fb63",
+  "terminal_stdout_sha256": "1418d1f951164e4b2d6fb9af99eede80fdbb5cf4ca01ec780d2735a1411940ce",
+  "integration_state": "provisional uncommitted worktree; no item acceptance"
+}

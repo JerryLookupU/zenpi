@@ -1,0 +1,257 @@
+{
+  "prompt_bindings": [
+    {
+      "device_id": "b3335591fa767f7cecd540635b05e24289ab36e778334cadaa493acfcd743e9e",
+      "fingerprint": "c662fcc8c6d23e1a141f7520cebb33faedf8d3ee20f1c96d8d461831d07e14b0",
+      "project_id": "27fbc1c8b7a81aace1b7886a475ba31178bda91ef5f43d67bf983ef2cc865c67",
+      "request_id": "a42b23ae-beba-4edf-a379-241b2d181e6b",
+      "session_id": "session-1790894831184-28636-0"
+    },
+    {
+      "device_id": "b3335591fa767f7cecd540635b05e24289ab36e778334cadaa493acfcd743e9e",
+      "fingerprint": "9efb1bfef8700edb8f69dc9d0c5d27b790be11b00da3a1ead3ca4da3c2adfc1c",
+      "project_id": "27fbc1c8b7a81aace1b7886a475ba31178bda91ef5f43d67bf983ef2cc865c67",
+      "request_id": "1ac157e2-0369-4764-bfc0-4694d8261c8e",
+      "session_id": "session-1790894831184-28636-0"
+    },
+    {
+      "device_id": "b3335591fa767f7cecd540635b05e24289ab36e778334cadaa493acfcd743e9e",
+      "fingerprint": "48bdfa0c6a9af8c7d5b0db4ac8de7015f71965a02d248ab8be701c3c6316b2a5",
+      "project_id": "27fbc1c8b7a81aace1b7886a475ba31178bda91ef5f43d67bf983ef2cc865c67",
+      "request_id": "056e29c3-3f77-49ba-a406-52795198ecfc",
+      "session_id": "session-1790894831184-28636-0"
+    },
+    {
+      "device_id": "b3335591fa767f7cecd540635b05e24289ab36e778334cadaa493acfcd743e9e",
+      "fingerprint": "5cc7a66d85ad04eabf2a842528f4f6bacf77393e8327bee338f469d47eb9e34e",
+      "project_id": "27fbc1c8b7a81aace1b7886a475ba31178bda91ef5f43d67bf983ef2cc865c67",
+      "request_id": "37cb0842-821e-4129-a72b-5b9435f78f9c",
+      "session_id": "session-1790894831184-28636-0"
+    },
+    {
+      "device_id": "b3335591fa767f7cecd540635b05e24289ab36e778334cadaa493acfcd743e9e",
+      "fingerprint": "d7c230092e82a3b6872bf490cb8268c480f622bdbcb68d5ca69e156aa409f8d2",
+      "project_id": "27fbc1c8b7a81aace1b7886a475ba31178bda91ef5f43d67bf983ef2cc865c67",
+      "request_id": "8ff97734-97a9-46ab-a514-8d84e5eabd20",
+      "session_id": "session-1790894831184-28636-0"
+    },
+    {
+      "device_id": "b3335591fa767f7cecd540635b05e24289ab36e778334cadaa493acfcd743e9e",
+      "fingerprint": "fa9975e916d160fa76b1576bef92f62e09e23a241fd03dc3b621c0dc2feeca46",
+      "project_id": "27fbc1c8b7a81aace1b7886a475ba31178bda91ef5f43d67bf983ef2cc865c67",
+      "request_id": "b8fa08be-4e47-4ef7-87f0-7c23bdcc1807",
+      "session_id": "session-1790894831184-28636-0"
+    }
+  ],
+  "prompt_admissions": [
+    {
+      "device_id": "b3335591fa767f7cecd540635b05e24289ab36e778334cadaa493acfcd743e9e",
+      "execution_subtab": {
+        "id": "34f8e6b20166268ebc43eea4f6fbcdb5d36351c05b0050a204ca25ecf9c4c7a3",
+        "kind": "main",
+        "root": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-0ktmd4fb/workspace"
+      },
+      "fingerprint": "c662fcc8c6d23e1a141f7520cebb33faedf8d3ee20f1c96d8d461831d07e14b0",
+      "request_id": "a42b23ae-beba-4edf-a379-241b2d181e6b",
+      "result": null,
+      "state": "reserved",
+      "type": "remote_prompt_admission_v1"
+    },
+    {
+      "device_id": "b3335591fa767f7cecd540635b05e24289ab36e778334cadaa493acfcd743e9e",
+      "execution_subtab": {
+        "id": "34f8e6b20166268ebc43eea4f6fbcdb5d36351c05b0050a204ca25ecf9c4c7a3",
+        "kind": "main",
+        "root": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-0ktmd4fb/workspace"
+      },
+      "fingerprint": "c662fcc8c6d23e1a141f7520cebb33faedf8d3ee20f1c96d8d461831d07e14b0",
+      "request_id": "a42b23ae-beba-4edf-a379-241b2d181e6b",
+      "result": {
+        "job_id": "2",
+        "project_id": "27fbc1c8b7a81aace1b7886a475ba31178bda91ef5f43d67bf983ef2cc865c67",
+        "request_id": "a42b23ae-beba-4edf-a379-241b2d181e6b",
+        "session_id": "session-1790894831184-28636-0"
+      },
+      "state": "accepted",
+      "type": "remote_prompt_admission_v1"
+    },
+    {
+      "device_id": "b3335591fa767f7cecd540635b05e24289ab36e778334cadaa493acfcd743e9e",
+      "execution_subtab": {
+        "id": "34f8e6b20166268ebc43eea4f6fbcdb5d36351c05b0050a204ca25ecf9c4c7a3",
+        "kind": "main",
+        "root": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-0ktmd4fb/workspace"
+      },
+      "fingerprint": "9efb1bfef8700edb8f69dc9d0c5d27b790be11b00da3a1ead3ca4da3c2adfc1c",
+      "request_id": "1ac157e2-0369-4764-bfc0-4694d8261c8e",
+      "result": null,
+      "state": "reserved",
+      "type": "remote_prompt_admission_v1"
+    },
+    {
+      "device_id": "b3335591fa767f7cecd540635b05e24289ab36e778334cadaa493acfcd743e9e",
+      "execution_subtab": {
+        "id": "34f8e6b20166268ebc43eea4f6fbcdb5d36351c05b0050a204ca25ecf9c4c7a3",
+        "kind": "main",
+        "root": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-0ktmd4fb/workspace"
+      },
+      "fingerprint": "9efb1bfef8700edb8f69dc9d0c5d27b790be11b00da3a1ead3ca4da3c2adfc1c",
+      "request_id": "1ac157e2-0369-4764-bfc0-4694d8261c8e",
+      "result": {
+        "job_id": "3",
+        "project_id": "27fbc1c8b7a81aace1b7886a475ba31178bda91ef5f43d67bf983ef2cc865c67",
+        "request_id": "1ac157e2-0369-4764-bfc0-4694d8261c8e",
+        "session_id": "session-1790894831184-28636-0"
+      },
+      "state": "accepted",
+      "type": "remote_prompt_admission_v1"
+    },
+    {
+      "device_id": "b3335591fa767f7cecd540635b05e24289ab36e778334cadaa493acfcd743e9e",
+      "execution_subtab": {
+        "id": "34f8e6b20166268ebc43eea4f6fbcdb5d36351c05b0050a204ca25ecf9c4c7a3",
+        "kind": "main",
+        "root": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-0ktmd4fb/workspace"
+      },
+      "fingerprint": "48bdfa0c6a9af8c7d5b0db4ac8de7015f71965a02d248ab8be701c3c6316b2a5",
+      "request_id": "056e29c3-3f77-49ba-a406-52795198ecfc",
+      "result": null,
+      "state": "reserved",
+      "type": "remote_prompt_admission_v1"
+    },
+    {
+      "device_id": "b3335591fa767f7cecd540635b05e24289ab36e778334cadaa493acfcd743e9e",
+      "execution_subtab": {
+        "id": "34f8e6b20166268ebc43eea4f6fbcdb5d36351c05b0050a204ca25ecf9c4c7a3",
+        "kind": "main",
+        "root": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-0ktmd4fb/workspace"
+      },
+      "fingerprint": "48bdfa0c6a9af8c7d5b0db4ac8de7015f71965a02d248ab8be701c3c6316b2a5",
+      "request_id": "056e29c3-3f77-49ba-a406-52795198ecfc",
+      "result": {
+        "job_id": "4",
+        "project_id": "27fbc1c8b7a81aace1b7886a475ba31178bda91ef5f43d67bf983ef2cc865c67",
+        "request_id": "056e29c3-3f77-49ba-a406-52795198ecfc",
+        "session_id": "session-1790894831184-28636-0"
+      },
+      "state": "accepted",
+      "type": "remote_prompt_admission_v1"
+    },
+    {
+      "device_id": "b3335591fa767f7cecd540635b05e24289ab36e778334cadaa493acfcd743e9e",
+      "execution_subtab": {
+        "id": "07e5a322ebde51de77af2f4d660803d37172619584f56f51982389b5d7e42c6b",
+        "kind": "in_place",
+        "root": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-0ktmd4fb/workspace/directory-one"
+      },
+      "fingerprint": "5cc7a66d85ad04eabf2a842528f4f6bacf77393e8327bee338f469d47eb9e34e",
+      "request_id": "37cb0842-821e-4129-a72b-5b9435f78f9c",
+      "result": null,
+      "state": "reserved",
+      "type": "remote_prompt_admission_v1"
+    },
+    {
+      "device_id": "b3335591fa767f7cecd540635b05e24289ab36e778334cadaa493acfcd743e9e",
+      "execution_subtab": {
+        "id": "07e5a322ebde51de77af2f4d660803d37172619584f56f51982389b5d7e42c6b",
+        "kind": "in_place",
+        "root": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-0ktmd4fb/workspace/directory-one"
+      },
+      "fingerprint": "5cc7a66d85ad04eabf2a842528f4f6bacf77393e8327bee338f469d47eb9e34e",
+      "request_id": "37cb0842-821e-4129-a72b-5b9435f78f9c",
+      "result": {
+        "job_id": "7",
+        "project_id": "27fbc1c8b7a81aace1b7886a475ba31178bda91ef5f43d67bf983ef2cc865c67",
+        "request_id": "37cb0842-821e-4129-a72b-5b9435f78f9c",
+        "session_id": "session-1790894831184-28636-0"
+      },
+      "state": "accepted",
+      "type": "remote_prompt_admission_v1"
+    },
+    {
+      "device_id": "b3335591fa767f7cecd540635b05e24289ab36e778334cadaa493acfcd743e9e",
+      "execution_subtab": {
+        "id": "54de975a0969888f7cb4654300b5477fd73a0a298650efc952791eb80781bb07",
+        "kind": "in_place",
+        "root": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-0ktmd4fb/workspace/directory-two"
+      },
+      "fingerprint": "d7c230092e82a3b6872bf490cb8268c480f622bdbcb68d5ca69e156aa409f8d2",
+      "request_id": "8ff97734-97a9-46ab-a514-8d84e5eabd20",
+      "result": null,
+      "state": "reserved",
+      "type": "remote_prompt_admission_v1"
+    },
+    {
+      "device_id": "b3335591fa767f7cecd540635b05e24289ab36e778334cadaa493acfcd743e9e",
+      "execution_subtab": {
+        "id": "54de975a0969888f7cb4654300b5477fd73a0a298650efc952791eb80781bb07",
+        "kind": "in_place",
+        "root": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-0ktmd4fb/workspace/directory-two"
+      },
+      "fingerprint": "d7c230092e82a3b6872bf490cb8268c480f622bdbcb68d5ca69e156aa409f8d2",
+      "request_id": "8ff97734-97a9-46ab-a514-8d84e5eabd20",
+      "result": {
+        "job_id": "8",
+        "project_id": "27fbc1c8b7a81aace1b7886a475ba31178bda91ef5f43d67bf983ef2cc865c67",
+        "request_id": "8ff97734-97a9-46ab-a514-8d84e5eabd20",
+        "session_id": "session-1790894831184-28636-0"
+      },
+      "state": "accepted",
+      "type": "remote_prompt_admission_v1"
+    },
+    {
+      "device_id": "b3335591fa767f7cecd540635b05e24289ab36e778334cadaa493acfcd743e9e",
+      "execution_subtab": {
+        "id": "aa40e0e2123b08fdad13cf2c81c429d80fef238d5f0674b13a6097bb02f7a776",
+        "kind": "worktree",
+        "root": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-0ktmd4fb/workspace/.zenpi-worktrees/android-feature"
+      },
+      "fingerprint": "fa9975e916d160fa76b1576bef92f62e09e23a241fd03dc3b621c0dc2feeca46",
+      "request_id": "b8fa08be-4e47-4ef7-87f0-7c23bdcc1807",
+      "result": null,
+      "state": "reserved",
+      "type": "remote_prompt_admission_v1"
+    },
+    {
+      "device_id": "b3335591fa767f7cecd540635b05e24289ab36e778334cadaa493acfcd743e9e",
+      "execution_subtab": {
+        "id": "aa40e0e2123b08fdad13cf2c81c429d80fef238d5f0674b13a6097bb02f7a776",
+        "kind": "worktree",
+        "root": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-0ktmd4fb/workspace/.zenpi-worktrees/android-feature"
+      },
+      "fingerprint": "fa9975e916d160fa76b1576bef92f62e09e23a241fd03dc3b621c0dc2feeca46",
+      "request_id": "b8fa08be-4e47-4ef7-87f0-7c23bdcc1807",
+      "result": {
+        "job_id": "9",
+        "project_id": "27fbc1c8b7a81aace1b7886a475ba31178bda91ef5f43d67bf983ef2cc865c67",
+        "request_id": "b8fa08be-4e47-4ef7-87f0-7c23bdcc1807",
+        "session_id": "session-1790894831184-28636-0"
+      },
+      "state": "accepted",
+      "type": "remote_prompt_admission_v1"
+    }
+  ],
+  "progress": [
+    "running",
+    "succeeded",
+    "running",
+    "failed",
+    "running",
+    "cancelled",
+    "running",
+    "succeeded",
+    "running",
+    "succeeded",
+    "running",
+    "succeeded"
+  ],
+  "worktree_checks": [
+    "create",
+    "dirty_refusal",
+    "remove"
+  ],
+  "worktree_id": "aa40e0e2123b08fdad13cf2c81c429d80fef238d5f0674b13a6097bb02f7a776",
+  "directory_stress_verified": true,
+  "directory_execution_verified": true,
+  "prompt_binding_verified": true
+}

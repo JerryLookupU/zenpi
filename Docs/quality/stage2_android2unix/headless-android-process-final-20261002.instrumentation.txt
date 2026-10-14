@@ -1,0 +1,42 @@
+INSTRUMENTATION_STATUS: class=zenpi.HeadlessHostTest
+INSTRUMENTATION_STATUS: current=1
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=1
+INSTRUMENTATION_STATUS: stream=
+zenpi.HeadlessHostTest:
+INSTRUMENTATION_STATUS: test=androidComposerUsesHeadlessOwnerAndRetainsCommittedPromptUntilProcessDeath
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: zenpi_phase=headless_local_grant_requested
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: network_process_pid=3945
+INSTRUMENTATION_STATUS: request_id=13399efb-9a05-4f28-b7af-2bc2e0714534
+INSTRUMENTATION_STATUS: zenpi_phase=headless_prompt_committed_before_death
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_RESULT: shortMsg=Process crashed.
+INSTRUMENTATION_CODE: 0
+
+INSTRUMENTATION_STATUS: class=zenpi.HeadlessHostTest
+INSTRUMENTATION_STATUS: current=1
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=1
+INSTRUMENTATION_STATUS: stream=
+zenpi.HeadlessHostTest:
+INSTRUMENTATION_STATUS: test=newAndroidProcessResolvesOnlyTheSavedHeadlessPrompt
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: zenpi_phase=headless_prompt_process_recovery_verified
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.HeadlessHostTest
+INSTRUMENTATION_STATUS: current=1
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=1
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=newAndroidProcessResolvesOnlyTheSavedHeadlessPrompt
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_RESULT: stream=
+
+Time: 2.406
+
+OK (1 test)
+
+
+INSTRUMENTATION_CODE: -1

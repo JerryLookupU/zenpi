@@ -1,0 +1,116 @@
+INSTRUMENTATION_STATUS: class=zenpi.WorkspaceFilesScreenTest
+INSTRUMENTATION_STATUS: current=1
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=5
+INSTRUMENTATION_STATUS: stream=
+zenpi.WorkspaceFilesScreenTest:
+INSTRUMENTATION_STATUS: test=filePagingIsReadOnlyAndOfflineOrLoadingCannotNavigate
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.WorkspaceFilesScreenTest
+INSTRUMENTATION_STATUS: current=1
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=5
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=filePagingIsReadOnlyAndOfflineOrLoadingCannotNavigate
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.WorkspaceFilesScreenTest
+INSTRUMENTATION_STATUS: current=2
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=5
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=selectedHostFileInsertsQuotedReferenceWithoutSendingAndDirectoriesNavigate
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.WorkspaceFilesScreenTest
+INSTRUMENTATION_STATUS: current=2
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=5
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=selectedHostFileInsertsQuotedReferenceWithoutSendingAndDirectoriesNavigate
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.ResourceCatalogScreenTest
+INSTRUMENTATION_STATUS: current=3
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=5
+INSTRUMENTATION_STATUS: stream=
+zenpi.ResourceCatalogScreenTest:
+INSTRUMENTATION_STATUS: test=pagingControlsNavigateWithoutReplacingDraftOrSending
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.ResourceCatalogScreenTest
+INSTRUMENTATION_STATUS: current=3
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=5
+INSTRUMENTATION_STATUS: stack=java.lang.IllegalStateException: No compose hierarchies found in the app. Possible reasons include: (1) the Activity that calls setContent did not launch; (2) setContent was not called; (3) setContent was called before the ComposeTestRule ran. If setContent is called by the Activity, make sure the Activity is launched after the ComposeTestRule runs
+	at androidx.compose.ui.test.TestContext.getAllSemanticsNodes$ui_test_release(TestOwner.kt:87)
+	at androidx.compose.ui.test.SemanticsNodeInteraction.fetchSemanticsNodes$ui_test_release(SemanticsNodeInteraction.kt:63)
+	at androidx.compose.ui.test.SemanticsNodeInteraction.fetchOneOrThrow(SemanticsNodeInteraction.kt:157)
+	at androidx.compose.ui.test.SemanticsNodeInteraction.fetchOneOrThrow$default(SemanticsNodeInteraction.kt:150)
+	at androidx.compose.ui.test.SemanticsNodeInteraction.fetchSemanticsNode(SemanticsNodeInteraction.kt:84)
+	at androidx.compose.ui.test.TextActionsKt.getNodeAndFocus(TextActions.kt:114)
+	at androidx.compose.ui.test.TextActionsKt.getNodeAndFocus$default(TextActions.kt:108)
+	at androidx.compose.ui.test.TextActionsKt.performTextInput(TextActions.kt:44)
+	at zenpi.ResourceCatalogScreenTest.pagingControlsNavigateWithoutReplacingDraftOrSending(ResourceCatalogScreenTest.kt:82)
+
+INSTRUMENTATION_STATUS: stream=
+Error in pagingControlsNavigateWithoutReplacingDraftOrSending(zenpi.ResourceCatalogScreenTest):
+java.lang.IllegalStateException: No compose hierarchies found in the app. Possible reasons include: (1) the Activity that calls setContent did not launch; (2) setContent was not called; (3) setContent was called before the ComposeTestRule ran. If setContent is called by the Activity, make sure the Activity is launched after the ComposeTestRule runs
+	at androidx.compose.ui.test.TestContext.getAllSemanticsNodes$ui_test_release(TestOwner.kt:87)
+	at androidx.compose.ui.test.SemanticsNodeInteraction.fetchSemanticsNodes$ui_test_release(SemanticsNodeInteraction.kt:63)
+	at androidx.compose.ui.test.SemanticsNodeInteraction.fetchOneOrThrow(SemanticsNodeInteraction.kt:157)
+	at androidx.compose.ui.test.SemanticsNodeInteraction.fetchOneOrThrow$default(SemanticsNodeInteraction.kt:150)
+	at androidx.compose.ui.test.SemanticsNodeInteraction.fetchSemanticsNode(SemanticsNodeInteraction.kt:84)
+	at androidx.compose.ui.test.TextActionsKt.getNodeAndFocus(TextActions.kt:114)
+	at androidx.compose.ui.test.TextActionsKt.getNodeAndFocus$default(TextActions.kt:108)
+	at androidx.compose.ui.test.TextActionsKt.performTextInput(TextActions.kt:44)
+	at zenpi.ResourceCatalogScreenTest.pagingControlsNavigateWithoutReplacingDraftOrSending(ResourceCatalogScreenTest.kt:82)
+
+INSTRUMENTATION_STATUS: test=pagingControlsNavigateWithoutReplacingDraftOrSending
+INSTRUMENTATION_STATUS_CODE: -2
+INSTRUMENTATION_STATUS: class=zenpi.ResourceCatalogScreenTest
+INSTRUMENTATION_STATUS: current=4
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=5
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=reloadRequiresAdvertisedControlAndIsDisabledOfflineOrDuringPendingWrite
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.ResourceCatalogScreenTest
+INSTRUMENTATION_STATUS: current=4
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=5
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=reloadRequiresAdvertisedControlAndIsDisabledOfflineOrDuringPendingWrite
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.ResourceCatalogScreenTest
+INSTRUMENTATION_STATUS: current=5
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=5
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=resourcePrependsDraftArgumentsWithoutSendingAndStaleOrOfflineChoicesAreDisabled
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.ResourceCatalogScreenTest
+INSTRUMENTATION_STATUS: current=5
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=5
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=resourcePrependsDraftArgumentsWithoutSendingAndStaleOrOfflineChoicesAreDisabled
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_RESULT: stream=
+
+Time: 102.818
+There was 1 failure:
+1) pagingControlsNavigateWithoutReplacingDraftOrSending(zenpi.ResourceCatalogScreenTest)
+java.lang.IllegalStateException: No compose hierarchies found in the app. Possible reasons include: (1) the Activity that calls setContent did not launch; (2) setContent was not called; (3) setContent was called before the ComposeTestRule ran. If setContent is called by the Activity, make sure the Activity is launched after the ComposeTestRule runs
+	at androidx.compose.ui.test.TestContext.getAllSemanticsNodes$ui_test_release(TestOwner.kt:87)
+	at androidx.compose.ui.test.SemanticsNodeInteraction.fetchSemanticsNodes$ui_test_release(SemanticsNodeInteraction.kt:63)
+	at androidx.compose.ui.test.SemanticsNodeInteraction.fetchOneOrThrow(SemanticsNodeInteraction.kt:157)
+	at androidx.compose.ui.test.SemanticsNodeInteraction.fetchOneOrThrow$default(SemanticsNodeInteraction.kt:150)
+	at androidx.compose.ui.test.SemanticsNodeInteraction.fetchSemanticsNode(SemanticsNodeInteraction.kt:84)
+	at androidx.compose.ui.test.TextActionsKt.getNodeAndFocus(TextActions.kt:114)
+	at androidx.compose.ui.test.TextActionsKt.getNodeAndFocus$default(TextActions.kt:108)
+	at androidx.compose.ui.test.TextActionsKt.performTextInput(TextActions.kt:44)
+	at zenpi.ResourceCatalogScreenTest.pagingControlsNavigateWithoutReplacingDraftOrSending(ResourceCatalogScreenTest.kt:82)
+
+FAILURES!!!
+Tests run: 5,  Failures: 1
+
+
+INSTRUMENTATION_CODE: -1

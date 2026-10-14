@@ -5,6 +5,71 @@ use zenpi::security::{
 const FIXTURE_SECRET: &str = "sk-fixture-secret-123456";
 
 #[test]
+fn text_and_nested_json_withhold_private_pem_body_until_matching_end() {
+    for label in [
+        "PRIVATE KEY",
+        "RSA PRIVATE KEY",
+        "EC PRIVATE KEY",
+        "OPENSSH PRIVATE KEY",
+        "ENCRYPTED PRIVATE KEY",
+    ] {
+        let input = format!(
+            "before\n-----BEGIN {label}-----\nPRIVATE_BODY_7Xq9\n-----END PUBLIC KEY-----\nSTILL_PRIVATE_BODY_9Kd2\n-----END {label}-----\nafter\n"
+        );
+        let redacted = redact_text(&input, &[]);
+        assert!(redacted.starts_with("before\n"));
+        assert!(redacted.ends_with("after\n"));
+        assert!(!redacted.contains("PRIVATE_BODY"), "{label}: {redacted}");
+        let nested = redact_json(&serde_json::json!({"transcript":[{"content":input}]}), &[]);
+        assert!(!nested.to_string().contains("PRIVATE_BODY"));
+    }
+}
+
+#[test]
+fn unterminated_private_pem_and_inline_quoted_body_are_withheld() {
+    for input in [
+        "-----begin rsa private key-----\r\nPRIVATE_BODY_UNFINISHED\r\n",
+        "-----BEGIN PRIVATE KEY-----\nPRIVATE_BODY_UNFINISHED",
+        "quoted: -----BEGIN EC PRIVATE KEY-----PRIVATE_BODY_UNFINISHED-----END EC PRIVATE KEY-----\npublic tail",
+    ] {
+        let redacted = redact_text(input, &[]);
+        assert!(!redacted.contains("PRIVATE_BODY"));
+        assert!(redacted.contains("<redacted private key>"));
+    }
+    assert!(
+        redact_text(
+            "-----BEGIN PRIVATE KEY-----\r\nbody\r\n-----END PRIVATE KEY-----\r\n",
+            &[]
+        )
+        .ends_with("\r\n")
+    );
+}
+
+#[test]
+fn public_pem_and_ordinary_line_endings_are_preserved() {
+    for input in [
+        "ordinary\ntext\n",
+        "ordinary\r\ntext",
+        "-----BEGIN PUBLIC KEY-----\nPUBLIC_BODY\n-----END PUBLIC KEY-----\n",
+        "-----BEGIN CERTIFICATE-----\nPUBLIC_CERT\n-----END CERTIFICATE-----",
+    ] {
+        assert_eq!(redact_text(input, &[]), input);
+    }
+}
+
+#[test]
+fn nested_and_mismatched_private_pem_ends_do_not_release_outer_body() {
+    let input = "-----BEGIN RSA PRIVATE KEY-----\nPRIVATE_BODY_OUTER\n-----BEGIN EC PRIVATE KEY-----\nPRIVATE_BODY_INNER\n-----END RSA PRIVATE KEY-----\nPRIVATE_BODY_STILL_INNER\n-----END EC PRIVATE KEY-----\nPRIVATE_BODY_STILL_OUTER\n-----END RSA PRIVATE KEY-----\nvisible\n";
+    let redacted = redact_text(input, &[]);
+    assert!(!redacted.contains("PRIVATE_BODY"));
+    assert!(redacted.ends_with("visible\n"));
+    assert_eq!(redact_text(&redacted, &[]), redacted);
+    let diff = "+-----BEGIN PRIVATE KEY-----\n+PRIVATE_BODY_ADDED\n+-----END PRIVATE KEY-----\n+safe\n-ordinary\n";
+    assert!(!redact_text(diff, &[]).contains("PRIVATE_BODY"));
+    assert!(redact_text(diff, &[]).ends_with("+safe\n-ordinary\n"));
+}
+
+#[test]
 fn revocation_debug_never_exposes_secret_bytes() {
     let secret = "opaque-revocation-fixture-4871";
     let (handle, revocation) = SecretHandle::new(secret, "b".repeat(64)).unwrap();

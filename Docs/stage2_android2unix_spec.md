@@ -2,7 +2,7 @@
 
 ```yaml
 schema_version: execution-spec/stage2
-spec_version: 2.0.0
+spec_version: 2.1.0
 authoritative_blueprint: Docs/stage2_android2unix_blueprint.md
 gantt_projection: Docs/stage2_android2unix_gantt.md
 gantt_naming: exact-prefix-Blueprint-to-Gantt
@@ -15,23 +15,29 @@ per_item_code_loc_cap: 5000
 loc_policy: every Blueprint item has an integer Estimated LOC with 0 <= value < 5000; scope is a per-item forecast of implementation/test code attributable to the row (Rust/Kotlin/Gradle/Python/Shell), not a current-file inventory; docs/config/generated artifacts count 0; the declared forecast has a strict upper bound of 5000 (exclusive); aggregate repository LOC is informational
 blueprint_parser: tools/validate_stage2_android2unix_blueprint.py
 gantt_generator: tools/generate_stage2_android2unix_gantt.py
+controller: .ops/stage2_android2unix/controller.py
+selector: Docs/execution/stage2_android2unix_active_requirement.json
+status_projection: .ops/stage2_android2unix/state/status.json
+ledger_root: .ops/stage2_android2unix/state
+scheduler_cadence: every 10 minutes
 runtime_root: .ops/stage2_android2unix
 evidence_root: Docs/quality/stage2_android2unix
-max_logical_claims: 35
-max_admitted_executions: 3
-max_starting_lanes: 3
-max_live_transports: 3
-max_authenticated_goals: 3
-max_running_turns: 3
+desktop_qr_surface: full-screen TUI pairing view rendered by zenpi host pair (S2-021)
+max_logical_claims: 36
+max_admitted_executions: 5
+max_starting_lanes: 5
+max_live_transports: 5
+max_authenticated_goals: 5
+max_running_turns: 5
 max_outstanding_requests_per_execution: 1
-max_request_starts_per_60s: 3
-max_inflight_requests: 3
+max_request_starts_per_60s: 5
+max_inflight_requests: 5
 max_integration_lanes: 1
 max_validator_lanes: 1
-launch_fanout: 3
-request_breaker_threshold: 3 starts or 3 failures in 60s
+launch_fanout: 5
+request_breaker_threshold: 5 starts or 5 failures in 60s
 request_breaker_reset: explicit Master/operator receipt only
-cron_marker: disabled-until-explicit-install
+cron_marker: zenpi-stage2-android2unix-execution
 completion_cleanup: zero unresolved checklist, handoff, integration, repair, live transport, task root and lock
 ```
 
@@ -51,10 +57,13 @@ state are hard failures.
 
 The controller must report logical claims, admitted executions, starting/live
 transports, authenticated/running goals, request starts, in-flight and
-outstanding requests, handoffs, integration and repair independently. It may
-launch a maximum of three dependency-ready conflict-safe claims in one wave,
-but must not treat fanout as a hidden overall cap. Slow tests, builds, network
-fixtures and integration run outside the global scheduler lease.
+outstanding requests, handoffs, integration and repair independently. The
+operator target is five concurrent workers, so the admitted-execution,
+starting-lane, live-transport, authenticated-goal and running-turn caps are all
+five and `launch_fanout` is five. Fanout is a per-wave pressure limit, not a
+hidden overall cap: one scheduler invocation pumps bounded waves until five
+admitted lanes are live or a concrete binding reason is persisted. Slow tests,
+builds, network fixtures and integration run outside the global scheduler lease.
 
 Every underfilled slot gets a persisted concrete reason: dependency,
 ownership conflict, startup deadline, host resource, validator, route,

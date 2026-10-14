@@ -1,0 +1,63 @@
+INSTRUMENTATION_STATUS: class=zenpi.HeadlessHostTest
+INSTRUMENTATION_STATUS: current=1
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=1
+INSTRUMENTATION_STATUS: stream=
+zenpi.HeadlessHostTest:
+INSTRUMENTATION_STATUS: test=androidComposerUsesHeadlessOwnerAndRetainsCommittedPromptUntilProcessDeath
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: zenpi_phase=headless_local_grant_requested
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: zenpi_phase=headless_diff_read_verified
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: zenpi_phase=headless_file_picker_reference_verified
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: zenpi_phase=headless_running_stream_verified
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: zenpi_phase=headless_background_writes_fenced_verified
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: zenpi_phase=headless_background_reads_fenced_verified
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: zenpi_phase=headless_running_stream_resumed_verified
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: headless_concurrent_read_count=3
+INSTRUMENTATION_STATUS: zenpi_phase=headless_concurrent_reads_verified
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: zenpi_phase=headless_model_reasoning_selection_verified
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: zenpi_phase=headless_resource_pages_draft_verified
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: network_process_pid=3751
+INSTRUMENTATION_STATUS: request_id=7333fd15-4aab-4652-9b75-498d8df2f693
+INSTRUMENTATION_STATUS: zenpi_phase=headless_prompt_committed_before_death
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_RESULT: shortMsg=Process crashed.
+INSTRUMENTATION_CODE: 0
+
+INSTRUMENTATION_STATUS: class=zenpi.HeadlessHostTest
+INSTRUMENTATION_STATUS: current=1
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=1
+INSTRUMENTATION_STATUS: stream=
+zenpi.HeadlessHostTest:
+INSTRUMENTATION_STATUS: test=newAndroidProcessResolvesOnlyTheSavedHeadlessPrompt
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: zenpi_phase=headless_durable_cursor_ack_verified
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: zenpi_phase=headless_prompt_process_recovery_verified
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.HeadlessHostTest
+INSTRUMENTATION_STATUS: current=1
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=1
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=newAndroidProcessResolvesOnlyTheSavedHeadlessPrompt
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_RESULT: stream=
+
+Time: 3.984
+
+OK (1 test)
+
+
+INSTRUMENTATION_CODE: -1

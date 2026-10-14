@@ -1,0 +1,79 @@
+{
+  "passed": true,
+  "started_at_unix": 1790862132.1372201,
+  "finished_at_unix": 1790862162.146204,
+  "scope": "production desktop PTY / same owner observed by Android via authenticated snapshot reads",
+  "terminal_qr_decoded_verified": true,
+  "camera_scanning_verified": false,
+  "lan_reachability_verified": false,
+  "shared_desktop_owner_update_verified": true,
+  "live_event_replay_verified": false,
+  "remote_mutation_verified": false,
+  "listener_closed_with_desktop": true,
+  "desktop_provider_requests": 1,
+  "host_revocation_verified": true,
+  "environment_names": [
+    "ZENPI_HOME",
+    "NO_PROXY",
+    "no_proxy",
+    "TERM",
+    "NO_COLOR"
+  ],
+  "no_color_qr_verified": true,
+  "screenshot": {
+    "path": "Docs/quality/stage2_android2unix/desktop-android-shared-owner-20261001.png",
+    "sha256": "d38efd1bf060ea7dff81df1ccd8a60c6691edd39023038b43e4c677841f06828"
+  },
+  "host_argv": [
+    "/Users/mac/Github/zenpi/target/debug/zenpi",
+    "host",
+    "pair",
+    "--desktop",
+    "--workspace",
+    "/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-z3nw3lvg/workspace",
+    "--session",
+    "/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-z3nw3lvg/session.jsonl",
+    "--bind",
+    "127.0.0.1:0",
+    "--identity",
+    "/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-z3nw3lvg/identity.json"
+  ],
+  "host_cwd": "/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-z3nw3lvg/workspace",
+  "seed": {
+    "argv": [
+      "/Users/mac/Github/zenpi/target/debug/zenpi",
+      "--mode",
+      "headless",
+      "--session",
+      "/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-z3nw3lvg/session.jsonl"
+    ],
+    "cwd": "/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-z3nw3lvg/workspace",
+    "exit_code": 0,
+    "stdout_sha256": "8d2c550a65fbccad7327e1443163815e01b3b5d73bdd70edfdeda55c190068ec",
+    "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "provider_requests": 1
+  },
+  "requirement": {
+    "schema_version": "stage2-selector/v1",
+    "active": true,
+    "activated_by": "master",
+    "activated_at": "2026-10-01T19:16:06+0800",
+    "blueprint": "Docs/stage2_android2unix_blueprint.md",
+    "specification": "Docs/stage2_android2unix_spec.md",
+    "requirement_digest": "9887f784c944db898610e136dca2774496abb2f80b3e5a8fdd6a0b32659e009d",
+    "spec_digest": "403e6339b0318a420d93600fc52926acf6a9e46ec899bd9a9edb03c235190a28",
+    "target_repo": "/Users/mac/Github/zenpi",
+    "target_baseline": "current-worktree-with-user-changes",
+    "run_id": "zenpi-stage2-android2unix-20261001"
+  },
+  "baseline_revision": "1a8ff1acf72e0816fad503a05df2b1d18e07361b",
+  "integration_state": "provisional uncommitted worktree; no item acceptance",
+  "instrumentation_exit_code": 0,
+  "stdout_sha256": "57c2af3db9193821b7465534a4b02274e39dd7848e83b09880ebc80777d3a43b",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "artifacts": {
+    "target/debug/zenpi": "5e73e6d9e091fc17771fb0f4d0fff6e8975954e24856c0679799e6ef4095b8e3",
+    "android/app/build/outputs/apk/debug/app-debug.apk": "5b42007886385f5938e41bc5a13c3bb532f023a37050fcdf5a89fd09238ce831",
+    "android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk": "070a252f9c0a96b266a7be72a444f478e4487934e2815efb331a4cf36be33143"
+  }
+}

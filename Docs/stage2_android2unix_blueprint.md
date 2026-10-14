@@ -1,14 +1,20 @@
 # Zenpi Stage 2 — Android ↔ Unix 工作机联动执行 Blueprint
 
+> **已被取代（2026-10-14，ZE-100）**：权威执行清单为 `Docs/Zenpi_Execution_Blueprint_v2.md`。本文件只作历史证据与规格参考，不再领取或勾选任务。
+
 > 本文件是 Stage 2 Android 联动项目的唯一执行清单。Stage 1 文档是前置阶段的历史权威清单；本阶段只改变 Stage 2 的状态，不回写 Stage 1 状态。
 
 ```yaml
 schema_version: execution-blueprint/stage2
-blueprint_version: 2.0.0
-revision_date: 2026-09-20
-review_date: 2026-09-20
+blueprint_version: 2.1.0
+revision_date: 2026-10-01
+review_date: 2026-10-01
 status: bootstrap-active
-authoritative: true
+authoritative: false
+superseded_by: Docs/Zenpi_Execution_Blueprint_v2.md
+superseded_at: 2026-10-14
+controller: .ops/stage2_android2unix/controller.py
+execution_concurrency: 5
 predecessor: Docs/stage_1_v3_pi_mono_blueprint.md
 reference_research: Docs/researches/android2unix.md
 reference_proposal: Docs/researches/android2unix_proposal.md
@@ -40,8 +46,9 @@ macOS/Linux.
 
 The first deliverable is intentionally LAN-first: the user runs
 `zenpi host pair`, the Unix host starts a temporary TLS/TCP listener, and the
-Android app scans a QR containing an address, port, host-key fingerprint,
-short-lived one-time token and expiry. QR does not solve arbitrary NAT. Public
+desktop host renders a full-screen TUI pairing view whose scannable QR contains
+an address, port, host-key fingerprint, short-lived one-time token and expiry
+(S2-021). The Android app scans that QR. QR does not solve arbitrary NAT. Public
 Internet ICE/STUN/TURN, relay operation and background push are later optional
 work, never hidden MVP dependencies.
 
@@ -162,9 +169,12 @@ enough to answer an ambiguous retry without repeating a side effect.
 
 ### Pairing and security
 
-The host creates a persistent identity and a short-lived invite. Android pins
-the host public key/certificate, confirms a six-digit safety code and stores its
-device key in Android Keystore. MVP may use pinned host key plus one-time token;
+The host creates a persistent identity and a short-lived invite. The desktop
+host surfaces that invite as a full-screen terminal QR view plus address,
+fingerprint, six-digit safety code and expiry so the Android camera can scan it
+directly. Android pins the host public key/certificate, confirms the six-digit
+safety code and stores its device key in Android Keystore. MVP may use pinned
+host key plus one-time token;
 mTLS and device ACL/revocation are required before calling the feature suitable
 for untrusted networks.
 
@@ -191,6 +201,7 @@ bounded; it is not an infinite keepalive promise.
 - [ ] **S2-011** — Implement opt-in TLS/TCP listener lifecycle for `zenpi host pair`；layer `L1` | Depends: S2-010 | Owner scope: bind policy, shutdown, listener task, connection limits and no-listener default | Owned paths: `src/remote/listener.rs`, `src/remote/mod.rs`, `src/core.rs`, `tests/remote_listener.rs` | Validators: G-HOST; G-NETWORK; `cargo test --locked --test remote_listener` | Rollback: remove host subcommand and keep production binary TUI/headless-only | Estimate: loopback/LAN fixture and clean shutdown | Estimated LOC: 2200
 - [ ] **S2-012** — Add QR invite, host identity and pinned-key pairing；layer `L1` | Depends: S2-011 | Owner scope: invite encoding, expiry, one-time use, fingerprint and SAS confirmation | Owned paths: `src/remote/pairing.rs`, `src/security.rs`, `tests/remote_pairing.rs`, `Docs/stage2_android2unix_protocol.md` | Validators: G-SECURITY; G-CODE; `cargo test --locked --test remote_pairing` | Rollback: invalidate all invite records and disable listener admission | Estimate: no credentials in QR and replay/expiry tests | Estimated LOC: 2300
 - [ ] **S2-013** — Add device registry, project ACL and revocation；layer `L1` | Depends: S2-012 | Owner scope: device identity, permissions, revoke and fail-closed authorization | Owned paths: `src/remote/auth.rs`, `src/remote/pairing.rs`, `tests/remote_auth.rs` | Validators: G-SECURITY; G-CODE; `cargo test --locked --test remote_auth` | Rollback: revoke generated devices and require fresh pairing | Estimate: read-only/control/approval capability matrix | Estimated LOC: 1900
+- [ ] **S2-021** — Render a full-screen desktop TUI QR pairing view for `zenpi host pair`；layer `L1` | Depends: S2-011, S2-012 | Owner scope: desktop host-pair TUI view with scannable terminal QR, LAN address and port, host-key fingerprint, six-digit safety code, expiry, refresh and cancel | Owned paths: `src/host_pair.rs`, `src/tui.rs`, `tests/remote_tui_pairing.rs` | Validators: G-FILE; G-HOST; `cargo test --locked --test remote_tui_pairing` | Rollback: remove only the pairing view and keep the CLI listener and plain-text invite output intact, never printing provider credentials | Estimate: ratatui full-screen view over the invite record with a terminal QR renderer and cancel/refresh lifecycle | Estimated LOC: 1300
 - [ ] **S2-014** — Adapt owned headless streams to the network host；layer `L1` | Depends: S2-003, S2-010, S2-013 | Owner scope: caller-owned stream adapter, owner epoch and error envelope | Owned paths: `src/headless.rs`, `src/remote/host_adapter.rs`, `tests/remote_headless.rs` | Validators: G-HOST; G-CODE; `cargo test --locked --test remote_headless` | Rollback: leave `run_async_streams` public and remove only network adapter | Estimate: production JSONL behavior over fixture TLS stream | Estimated LOC: 2600
 - [ ] **S2-015** — Define host-owned workspace control API；layer `L1` | Depends: S2-003, S2-014 | Owner scope: project open/select/list/close, context and revision response | Owned paths: `src/remote/workspace_api.rs`, `src/project_workspace.rs`, `tests/remote_workspace.rs` | Validators: G-FILE; G-CODE; G-HOST; `cargo test --locked --test remote_workspace` | Rollback: route only to existing typed owned project command | Estimate: CAS and busy-owner behavior | Estimated LOC: 2100
 - [ ] **S2-016** — Move layer-2 tabs into a host-owned stable-ID domain；layer `L1` | Depends: S2-015 | Owner scope: subtab schema v2, stable IDs, migration, ordering and atomic checkpoint | Owned paths: `src/remote/subtab.rs`, `src/project_workspace.rs`, `src/tui.rs`, `tests/remote_subtab.rs` | Validators: G-FILE; G-CODE; G-HOST; `cargo test --locked --test remote_subtab` | Rollback: read legacy TUI layout as read-only and discard incomplete migration checkpoint | Estimate: old index migration plus concurrent revision tests | Estimated LOC: 3400
@@ -223,7 +234,7 @@ bounded; it is not an infinite keepalive promise.
 
 ### L5 — release and operational readiness
 
-- [ ] **S2-070** — Produce reproducible Unix host release and operator runbook；layer `L5` | Depends: S2-051, S2-052, S2-054, S2-056 | Owner scope: release profile, listener permissions, pairing/revoke/backup and rollback | Owned paths: `Cargo.toml`, `Cargo.lock`, `tools/stage2_host_smoke.py`, `Docs/quality/stage2_android2unix/runbook.md`, `Docs/quality/stage2_android2unix/release.md` | Validators: G-RELEASE; G-HOST; `cargo build --release --locked`; smoke script | Rollback: remove host remote feature and restore prior binary/config | Estimate: clean build plus documented rollback drill | Estimated LOC: 1800
+- [ ] **S2-070** — Produce reproducible Unix host release and operator runbook；layer `L5` | Depends: S2-051, S2-052, S2-054, S2-056 | Owner scope: release profile, listener permissions, pairing/revoke/backup and rollback | Owned paths: `Cargo.toml`, `Cargo.lock`, `build.rs`, `tools/stage2_host_smoke.py`, `Docs/quality/stage2_android2unix/runbook.md`, `Docs/quality/stage2_android2unix/release.md` | Validators: G-RELEASE; G-HOST; `cargo build --release --locked`; smoke script | Rollback: remove host remote feature and restore prior binary/config | Estimate: clean build plus documented rollback drill | Estimated LOC: 1800
 - [ ] **S2-071** — Produce signed Android debug/release packaging and install smoke；layer `L5` | Depends: S2-030, S2-037, S2-038, S2-055 | Owner scope: reproducible Gradle build, manifest permissions, package and upgrade path | Owned paths: `android/`, `Docs/quality/stage2_android2unix/android-release.md` | Validators: G-RELEASE; G-ANDROID; `./gradlew :app:assembleRelease`; install/upgrade smoke | Rollback: publish previous APK and invalidate new pairing format if necessary | Estimate: debug and release artifact hashes, no credentials | Estimated LOC: 1700
 - [ ] **S2-072** — Run security/privacy and threat-model review；layer `L5` | Depends: S2-052, S2-054, S2-055, S2-070, S2-071 | Owner scope: secrets, logs, path boundary, replay, device revoke and disclosure | Owned paths: `Docs/quality/stage2_android2unix/security-review.md`, `src/remote/`, `android/app/src/main/` | Validators: G-SECURITY; G-RELEASE; `rg` secret/redaction audit plus Master review | Rollback: block release, revoke test devices and remove unsafe capability | Estimate: threat matrix with residual-risk sign-off | Estimated LOC: 900
 - [ ] **S2-073** — Publish parity, support and known-limits documentation；layer `L5` | Depends: S2-054, S2-055, S2-070, S2-071, S2-072 | Owner scope: user setup, LAN limitation, lifecycle semantics, error states and recovery | Owned paths: `Docs/stage2_android2unix_user_guide.md` | Validators: G-FILE; G-RELEASE; link/path audit and Master review | Rollback: publish docs-only correction without changing runtime | Estimate: documentation and command examples only | Estimated LOC: 0

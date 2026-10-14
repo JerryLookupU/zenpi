@@ -1,0 +1,90 @@
+INSTRUMENTATION_STATUS: class=zenpi.EmulatorQrHostTest
+INSTRUMENTATION_STATUS: current=1
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=1
+INSTRUMENTATION_STATUS: stream=
+zenpi.EmulatorQrHostTest:
+INSTRUMENTATION_STATUS: test=terminalQrCameraFramesPairWithPinnedProductionHost
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: zenpi_phase=emulator_qr_production_camera_requested
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: zenpi_phase=emulator_qr_local_cleanup_verified
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.EmulatorQrHostTest
+INSTRUMENTATION_STATUS: current=1
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=1
+INSTRUMENTATION_STATUS: stack=java.lang.IllegalStateException: No compose hierarchies found in the app. Possible reasons include: (1) the Activity that calls setContent did not launch; (2) setContent was not called; (3) setContent was called before the ComposeTestRule ran. If setContent is called by the Activity, make sure the Activity is launched after the ComposeTestRule runs
+	at androidx.compose.ui.test.TestContext.getAllSemanticsNodes$ui_test_release(TestOwner.kt:87)
+	at androidx.compose.ui.test.TestContext.getAllSemanticsNodes$ui_test_release$default(TestOwner.kt:81)
+	at androidx.compose.ui.test.SemanticsNodeInteractionCollection.fetchSemanticsNodes(SemanticsNodeInteraction.kt:256)
+	at androidx.compose.ui.test.SemanticsNodeInteractionCollection.fetchSemanticsNodes$default(SemanticsNodeInteraction.kt:249)
+	at zenpi.EmulatorQrHostTest$terminalQrCameraFramesPairWithPinnedProductionHost$1$3.invoke(EmulatorQrHostTest.kt:50)
+	at zenpi.EmulatorQrHostTest$terminalQrCameraFramesPairWithPinnedProductionHost$1$3.invoke(EmulatorQrHostTest.kt:49)
+	at androidx.compose.ui.test.AndroidComposeUiTestEnvironment$AndroidComposeUiTestImpl.waitUntil(ComposeUiTest.android.kt:434)
+	at androidx.compose.ui.test.junit4.AndroidComposeTestRule.waitUntil(AndroidComposeTestRule.android.kt:306)
+	at zenpi.EmulatorQrHostTest$terminalQrCameraFramesPairWithPinnedProductionHost$1.invokeSuspend(EmulatorQrHostTest.kt:49)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:104)
+	at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:277)
+	at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+	at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source:1)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:48)
+	at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source:1)
+	at zenpi.EmulatorQrHostTest.terminalQrCameraFramesPairWithPinnedProductionHost(EmulatorQrHostTest.kt:20)
+
+INSTRUMENTATION_STATUS: stream=
+Error in terminalQrCameraFramesPairWithPinnedProductionHost(zenpi.EmulatorQrHostTest):
+java.lang.IllegalStateException: No compose hierarchies found in the app. Possible reasons include: (1) the Activity that calls setContent did not launch; (2) setContent was not called; (3) setContent was called before the ComposeTestRule ran. If setContent is called by the Activity, make sure the Activity is launched after the ComposeTestRule runs
+	at androidx.compose.ui.test.TestContext.getAllSemanticsNodes$ui_test_release(TestOwner.kt:87)
+	at androidx.compose.ui.test.TestContext.getAllSemanticsNodes$ui_test_release$default(TestOwner.kt:81)
+	at androidx.compose.ui.test.SemanticsNodeInteractionCollection.fetchSemanticsNodes(SemanticsNodeInteraction.kt:256)
+	at androidx.compose.ui.test.SemanticsNodeInteractionCollection.fetchSemanticsNodes$default(SemanticsNodeInteraction.kt:249)
+	at zenpi.EmulatorQrHostTest$terminalQrCameraFramesPairWithPinnedProductionHost$1$3.invoke(EmulatorQrHostTest.kt:50)
+	at zenpi.EmulatorQrHostTest$terminalQrCameraFramesPairWithPinnedProductionHost$1$3.invoke(EmulatorQrHostTest.kt:49)
+	at androidx.compose.ui.test.AndroidComposeUiTestEnvironment$AndroidComposeUiTestImpl.waitUntil(ComposeUiTest.android.kt:434)
+	at androidx.compose.ui.test.junit4.AndroidComposeTestRule.waitUntil(AndroidComposeTestRule.android.kt:306)
+	at zenpi.EmulatorQrHostTest$terminalQrCameraFramesPairWithPinnedProductionHost$1.invokeSuspend(EmulatorQrHostTest.kt:49)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:104)
+	at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:277)
+	at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+	at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source:1)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:48)
+	at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source:1)
+	at zenpi.EmulatorQrHostTest.terminalQrCameraFramesPairWithPinnedProductionHost(EmulatorQrHostTest.kt:20)
+
+INSTRUMENTATION_STATUS: test=terminalQrCameraFramesPairWithPinnedProductionHost
+INSTRUMENTATION_STATUS_CODE: -2
+INSTRUMENTATION_RESULT: stream=
+
+Time: 5.764
+There was 1 failure:
+1) terminalQrCameraFramesPairWithPinnedProductionHost(zenpi.EmulatorQrHostTest)
+java.lang.IllegalStateException: No compose hierarchies found in the app. Possible reasons include: (1) the Activity that calls setContent did not launch; (2) setContent was not called; (3) setContent was called before the ComposeTestRule ran. If setContent is called by the Activity, make sure the Activity is launched after the ComposeTestRule runs
+	at androidx.compose.ui.test.TestContext.getAllSemanticsNodes$ui_test_release(TestOwner.kt:87)
+	at androidx.compose.ui.test.TestContext.getAllSemanticsNodes$ui_test_release$default(TestOwner.kt:81)
+	at androidx.compose.ui.test.SemanticsNodeInteractionCollection.fetchSemanticsNodes(SemanticsNodeInteraction.kt:256)
+	at androidx.compose.ui.test.SemanticsNodeInteractionCollection.fetchSemanticsNodes$default(SemanticsNodeInteraction.kt:249)
+	at zenpi.EmulatorQrHostTest$terminalQrCameraFramesPairWithPinnedProductionHost$1$3.invoke(EmulatorQrHostTest.kt:50)
+	at zenpi.EmulatorQrHostTest$terminalQrCameraFramesPairWithPinnedProductionHost$1$3.invoke(EmulatorQrHostTest.kt:49)
+	at androidx.compose.ui.test.AndroidComposeUiTestEnvironment$AndroidComposeUiTestImpl.waitUntil(ComposeUiTest.android.kt:434)
+	at androidx.compose.ui.test.junit4.AndroidComposeTestRule.waitUntil(AndroidComposeTestRule.android.kt:306)
+	at zenpi.EmulatorQrHostTest$terminalQrCameraFramesPairWithPinnedProductionHost$1.invokeSuspend(EmulatorQrHostTest.kt:49)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:104)
+	at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:277)
+	at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+	at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source:1)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:48)
+	at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source:1)
+	at zenpi.EmulatorQrHostTest.terminalQrCameraFramesPairWithPinnedProductionHost(EmulatorQrHostTest.kt:20)
+
+FAILURES!!!
+Tests run: 1,  Failures: 1
+
+
+INSTRUMENTATION_CODE: -1

@@ -1,0 +1,90 @@
+INSTRUMENTATION_STATUS: class=zenpi.HeadlessHostTest
+INSTRUMENTATION_STATUS: current=1
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=1
+INSTRUMENTATION_STATUS: stream=
+zenpi.HeadlessHostTest:
+INSTRUMENTATION_STATUS: test=androidComposerUsesHeadlessOwnerAndRetainsCommittedPromptUntilProcessDeath
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: zenpi_phase=headless_local_grant_requested
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: zenpi_phase=headless_diff_read_verified
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.HeadlessHostTest
+INSTRUMENTATION_STATUS: current=1
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=1
+INSTRUMENTATION_STATUS: stack=java.lang.AssertionError: Semantic Node has no parent layout with a Scroll SemanticsAction
+	at androidx.compose.ui.test.ActionsKt.scrollToNode(Actions.kt:92)
+	at androidx.compose.ui.test.ActionsKt.performScrollTo(Actions.kt:77)
+	at zenpi.HeadlessHostTest$androidComposerUsesHeadlessOwnerAndRetainsCommittedPromptUntilProcessDeath$1.invokeSuspend(HeadlessHostTest.kt:102)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTaskKt.resume(DispatchedTask.kt:231)
+	at kotlinx.coroutines.DispatchedTaskKt.dispatch(DispatchedTask.kt:164)
+	at kotlinx.coroutines.CancellableContinuationImpl.dispatchResume(CancellableContinuationImpl.kt:466)
+	at kotlinx.coroutines.CancellableContinuationImpl.resumeImpl(CancellableContinuationImpl.kt:500)
+	at kotlinx.coroutines.CancellableContinuationImpl.resumeImpl$default(CancellableContinuationImpl.kt:489)
+	at kotlinx.coroutines.CancellableContinuationImpl.resumeUndispatched(CancellableContinuationImpl.kt:587)
+	at kotlinx.coroutines.EventLoopImplBase$DelayedResumeTask.run(EventLoop.common.kt:490)
+	at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:277)
+	at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+	at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source:1)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:48)
+	at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source:1)
+	at zenpi.HeadlessHostTest.androidComposerUsesHeadlessOwnerAndRetainsCommittedPromptUntilProcessDeath(HeadlessHostTest.kt:35)
+
+INSTRUMENTATION_STATUS: stream=
+Error in androidComposerUsesHeadlessOwnerAndRetainsCommittedPromptUntilProcessDeath(zenpi.HeadlessHostTest):
+java.lang.AssertionError: Semantic Node has no parent layout with a Scroll SemanticsAction
+	at androidx.compose.ui.test.ActionsKt.scrollToNode(Actions.kt:92)
+	at androidx.compose.ui.test.ActionsKt.performScrollTo(Actions.kt:77)
+	at zenpi.HeadlessHostTest$androidComposerUsesHeadlessOwnerAndRetainsCommittedPromptUntilProcessDeath$1.invokeSuspend(HeadlessHostTest.kt:102)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTaskKt.resume(DispatchedTask.kt:231)
+	at kotlinx.coroutines.DispatchedTaskKt.dispatch(DispatchedTask.kt:164)
+	at kotlinx.coroutines.CancellableContinuationImpl.dispatchResume(CancellableContinuationImpl.kt:466)
+	at kotlinx.coroutines.CancellableContinuationImpl.resumeImpl(CancellableContinuationImpl.kt:500)
+	at kotlinx.coroutines.CancellableContinuationImpl.resumeImpl$default(CancellableContinuationImpl.kt:489)
+	at kotlinx.coroutines.CancellableContinuationImpl.resumeUndispatched(CancellableContinuationImpl.kt:587)
+	at kotlinx.coroutines.EventLoopImplBase$DelayedResumeTask.run(EventLoop.common.kt:490)
+	at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:277)
+	at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+	at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source:1)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:48)
+	at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source:1)
+	at zenpi.HeadlessHostTest.androidComposerUsesHeadlessOwnerAndRetainsCommittedPromptUntilProcessDeath(HeadlessHostTest.kt:35)
+
+INSTRUMENTATION_STATUS: test=androidComposerUsesHeadlessOwnerAndRetainsCommittedPromptUntilProcessDeath
+INSTRUMENTATION_STATUS_CODE: -2
+INSTRUMENTATION_RESULT: stream=
+
+Time: 9.604
+There was 1 failure:
+1) androidComposerUsesHeadlessOwnerAndRetainsCommittedPromptUntilProcessDeath(zenpi.HeadlessHostTest)
+java.lang.AssertionError: Semantic Node has no parent layout with a Scroll SemanticsAction
+	at androidx.compose.ui.test.ActionsKt.scrollToNode(Actions.kt:92)
+	at androidx.compose.ui.test.ActionsKt.performScrollTo(Actions.kt:77)
+	at zenpi.HeadlessHostTest$androidComposerUsesHeadlessOwnerAndRetainsCommittedPromptUntilProcessDeath$1.invokeSuspend(HeadlessHostTest.kt:102)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTaskKt.resume(DispatchedTask.kt:231)
+	at kotlinx.coroutines.DispatchedTaskKt.dispatch(DispatchedTask.kt:164)
+	at kotlinx.coroutines.CancellableContinuationImpl.dispatchResume(CancellableContinuationImpl.kt:466)
+	at kotlinx.coroutines.CancellableContinuationImpl.resumeImpl(CancellableContinuationImpl.kt:500)
+	at kotlinx.coroutines.CancellableContinuationImpl.resumeImpl$default(CancellableContinuationImpl.kt:489)
+	at kotlinx.coroutines.CancellableContinuationImpl.resumeUndispatched(CancellableContinuationImpl.kt:587)
+	at kotlinx.coroutines.EventLoopImplBase$DelayedResumeTask.run(EventLoop.common.kt:490)
+	at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:277)
+	at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+	at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source:1)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:48)
+	at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source:1)
+	at zenpi.HeadlessHostTest.androidComposerUsesHeadlessOwnerAndRetainsCommittedPromptUntilProcessDeath(HeadlessHostTest.kt:35)
+
+FAILURES!!!
+Tests run: 1,  Failures: 1
+
+
+INSTRUMENTATION_CODE: -1

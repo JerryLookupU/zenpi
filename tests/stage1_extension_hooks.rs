@@ -64,7 +64,7 @@ input_schema = {{ type = "object" }}
 /// Real subprocess fixture selected only by the extension launcher above.
 /// The host still owns actual pipes, process groups, deadlines and cancellation.
 #[test]
-#[ignore = "subprocess helper invoked by the 17 extension owner tests"]
+#[ignore = "subprocess helper invoked by extension owner tests"]
 fn extension_fixture_process() {
     use std::io::BufRead;
     use std::os::fd::FromRawFd;
@@ -82,6 +82,7 @@ fn extension_fixture_process() {
     let params = &request["params"];
     let method = request["method"].as_str().unwrap();
     let mode = fs::read_to_string("mode").unwrap();
+    let workspace = std::env::var("ZENPI_WORKSPACE").unwrap();
     let hook = params["hook"].as_str().unwrap_or(method);
     let mut journal = fs::OpenOptions::new()
         .create(true)
@@ -91,18 +92,28 @@ fn extension_fixture_process() {
     writeln!(
         journal,
         "{}",
-        json!({"hook":hook,"pid":std::process::id(),"capability":request["capability"],"event":params.get("event")})
+        json!({"hook":hook,"pid":std::process::id(),"workspace":workspace,"capability":request["capability"],"event":params.get("event")})
     )
     .unwrap();
     journal.flush().unwrap();
 
+    if method == "initialize" && mode == "hang_initialize" {
+        fs::write("running", std::process::id().to_string()).unwrap();
+        thread::sleep(Duration::from_secs(30));
+    }
+
     let result = match method {
         "initialize" => json!({
-            "api_version":if mode == "bad_init" { 90 } else { 2 },
+            "api_version":if mode == "bad_init" || (mode == "reject_marked_workspace" && Path::new(&workspace).join("reject-initialize").exists()) { 90 } else { 2 },
             "hooks":params["hooks"],
             "tools":params["tools"].as_array().unwrap().iter().map(|tool| tool["name"].clone()).collect::<Vec<_>>()
         }),
-        "tools/call" => json!({"echo":params["arguments"]}),
+        "tools/call" => {
+            let contents = params["arguments"]["path"]
+                .as_str()
+                .map(|path| fs::read_to_string(Path::new(&workspace).join(path)).unwrap());
+            json!({"echo":params["arguments"],"workspace":workspace,"contents":contents})
+        }
         _ => {
             assert!(
                 !(mode == "isolated_failures" && hook == "agent_start"),
@@ -308,6 +319,415 @@ fn echo_agent(root: &Path) -> Agent {
 fn serial() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[test]
+fn selected_subtab_reinitializes_frozen_extensions_and_restores_fresh_authority() {
+    let _serial = serial();
+    let dir = tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let child = root.join("selected");
+    fs::create_dir(&child).unwrap();
+    fs::write(root.join("keep.txt"), "MAIN_CONTENT").unwrap();
+    fs::write(child.join("keep.txt"), "SELECTED_CONTENT").unwrap();
+    let ext = root.join("extensions");
+    extension(
+        &ext,
+        "a",
+        &[
+            "input",
+            "context",
+            "before_tool",
+            "after_tool",
+            "agent_start",
+            "agent_end",
+            "session_start",
+            "session_close",
+        ],
+        "normal",
+    );
+    let (url, requests, handle) = server(vec![
+        call("a_echo", json!({"path":"keep.txt"})),
+        None,
+        call("a_echo", json!({"path":"keep.txt"})),
+        None,
+    ]);
+    let mut a = agent(&root, url);
+    a.configure_extensions(&ext, || false).unwrap();
+    let original = a.extension_lease().unwrap();
+    let session = a.session().session_id().to_owned();
+    // Neither a newly installed extension nor an edited manifest is an
+    // implicit reload/grant at a subtab boundary.
+    extension(&ext, "new", &["input"], "normal");
+    fs::write(
+        ext.join("a/extension.toml"),
+        "invalid manifest after admission",
+    )
+    .unwrap();
+    let owner = Arc::new(Mutex::new(a));
+    let mut pool = zenpi::project_workspace::ProjectOwnerPool::new(owner.clone()).unwrap();
+    pool.restore_checkpoint().unwrap();
+    let project = pool.active_context().project_id.clone();
+    let state = pool.subtab_state(&project).unwrap();
+    pool.commit_subtabs(
+        &project,
+        state.revision,
+        state
+            .add_directory(&project, &root, &child, "selected")
+            .unwrap(),
+    )
+    .unwrap();
+    let execution = pool.subtab_execution(&project).unwrap();
+    let mut a = owner.lock().unwrap();
+    let scoped = execution
+        .run(&mut a, |a| {
+            assert!(!original.is_active());
+            assert_eq!(a.session().session_id(), session);
+            let scoped = a.extension_lease().unwrap();
+            assert!(scoped.is_active());
+            a.process_sync("read selected").unwrap();
+            scoped
+        })
+        .unwrap();
+    assert!(!scoped.is_active());
+    assert_eq!(a.attachment_workspace_root(), Some(root.as_path()));
+    let restored = a.extension_lease().unwrap();
+    assert!(restored.is_active());
+    assert_ne!(restored.identity(), original.identity());
+    assert_ne!(restored.identity(), scoped.identity());
+    assert_eq!(restored.identity().session_id, session);
+    a.process_sync("read main").unwrap();
+    a.try_close().unwrap();
+    handle.join().unwrap();
+    let requests = requests.lock().unwrap();
+    assert!(requests[1].to_string().contains("SELECTED_CONTENT"));
+    assert!(requests[3].to_string().contains("MAIN_CONTENT"));
+    assert!(
+        requests
+            .iter()
+            .all(|request| !request.to_string().contains("new_echo"))
+    );
+    assert!(events(&ext, "new").is_empty());
+    let ev = events(&ext, "a");
+    for event in &ev {
+        let generation = event["capability"]["generation"].as_u64().unwrap();
+        let expected = if generation == scoped.identity().generation {
+            &child
+        } else {
+            &root
+        };
+        assert_eq!(event["workspace"], json!(expected));
+        assert_eq!(event["capability"]["session_id"], session);
+    }
+    for generation in [
+        original.identity().generation,
+        scoped.identity().generation,
+        restored.identity().generation,
+    ] {
+        for hook in ["initialize", "session_start", "session_close"] {
+            assert_eq!(
+                ev.iter()
+                    .filter(|e| e["hook"] == hook && e["capability"]["generation"] == generation)
+                    .count(),
+                1
+            );
+        }
+    }
+    for hook in [
+        "input",
+        "context",
+        "before_tool",
+        "tools/call",
+        "after_tool",
+        "agent_start",
+        "agent_end",
+    ] {
+        assert!(
+            ev.iter()
+                .any(|e| e["hook"] == hook && e["workspace"] == json!(child)),
+            "{hook}"
+        );
+    }
+    assert_eq!(
+        a.session()
+            .events()
+            .iter()
+            .filter(|e| e["type"] == "extensions_workspace_selected")
+            .count(),
+        1
+    );
+    assert_eq!(
+        a.session()
+            .events()
+            .iter()
+            .filter(|e| e["type"] == "extensions_workspace_restored")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn workspace_extension_prepare_failure_and_cancellation_leave_original_live() {
+    let _serial = serial();
+    for reject_restore in [false, true] {
+        let dir = tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let child = root.join("selected");
+        fs::create_dir(&child).unwrap();
+        let ext = root.join("extensions");
+        extension(&ext, "a", &["session_start", "session_close"], "normal");
+        let mut a = echo_agent(&root);
+        a.configure_extensions(&ext, || false).unwrap();
+        let original = a.extension_lease().unwrap();
+        let sequence = a.session().next_sequence();
+        fs::write(ext.join("a/mode"), "reject_marked_workspace").unwrap();
+        fs::write(
+            if reject_restore {
+                root.join("reject-initialize")
+            } else {
+                child.join("reject-initialize")
+            },
+            "reject",
+        )
+        .unwrap();
+        assert!(
+            a.with_tool_workspace(&child, |_| panic!("must not execute"))
+                .is_err()
+        );
+        assert!(original.is_active());
+        assert_eq!(a.extension_lease().unwrap().identity(), original.identity());
+        assert_eq!(a.attachment_workspace_root(), Some(root.as_path()));
+        assert_eq!(a.session().next_sequence(), sequence);
+        assert!(
+            events(&ext, "a")
+                .iter()
+                .all(|e| e["hook"] != "session_close")
+        );
+    }
+    let dir = tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let child = root.join("selected");
+    fs::create_dir(&child).unwrap();
+    let ext = root.join("extensions");
+    extension(&ext, "a", &["session_start", "session_close"], "normal");
+    let mut a = echo_agent(&root);
+    a.configure_extensions(&ext, || false).unwrap();
+    let original = a.extension_lease().unwrap();
+    let sequence = a.session().next_sequence();
+    fs::write(ext.join("a/mode"), "hang_initialize").unwrap();
+    let running = ext.join("a/running");
+    let start = Instant::now();
+    let error = a
+        .with_tool_workspace_cancelable(&child, &|| running.exists(), |_| {
+            panic!("cancelled prepare must not execute")
+        })
+        .unwrap_err();
+    assert!(start.elapsed() < Duration::from_secs(2));
+    assert_eq!(error.code(), "backend_cancelled");
+    let pid: i32 = fs::read_to_string(running).unwrap().parse().unwrap();
+    assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
+    assert!(original.is_active());
+    assert_eq!(a.extension_lease().unwrap().identity(), original.identity());
+    assert_eq!(a.session().next_sequence(), sequence);
+    fs::write(ext.join("a/mode"), "normal").unwrap();
+    a.process_sync("original still works").unwrap();
+}
+
+#[test]
+fn workspace_extensions_restore_on_error_unwind_but_never_reopen_closed_agent() {
+    let _serial = serial();
+    let dir = tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let child = root.join("selected");
+    fs::create_dir(&child).unwrap();
+    let ext = root.join("extensions");
+    extension(&ext, "a", &["session_start", "session_close"], "normal");
+    let mut a = echo_agent(&root);
+    a.configure_extensions(&ext, || false).unwrap();
+    let first = a.extension_lease().unwrap();
+    let mut scoped = None;
+    let error = a
+        .with_tool_workspace(&child, |a| {
+            scoped = a.extension_lease();
+            Err::<(), _>("request error")
+        })
+        .unwrap();
+    assert_eq!(error, Err("request error"));
+    assert!(!first.is_active());
+    assert!(!scoped.unwrap().is_active());
+    let before_unwind = a.extension_lease().unwrap();
+    let mut scoped = None;
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = a.with_tool_workspace(&child, |a| {
+                scoped = a.extension_lease();
+                panic!("controlled request unwind");
+            });
+        }))
+        .is_err()
+    );
+    assert!(!before_unwind.is_active());
+    assert!(!scoped.unwrap().is_active());
+    assert!(a.extension_lease().unwrap().is_active());
+    assert_eq!(a.attachment_workspace_root(), Some(root.as_path()));
+    a.with_tool_workspace(&child, |a| a.try_close())
+        .unwrap()
+        .unwrap();
+    assert!(!a.extension_lease().unwrap().is_active());
+    assert!(a.process_sync("must remain closed").is_err());
+}
+
+#[test]
+fn selected_workspace_hook_rewrites_keep_original_approval_coordinator_and_policy() {
+    let _serial = serial();
+    let dir = tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let child = root.join("selected");
+    fs::create_dir(&child).unwrap();
+    let ext = root.join("extensions");
+    extension(&ext, "a", &["before_tool", "after_tool"], "write");
+    let (url, requests, handle) = server(vec![
+        call(
+            "write_file",
+            json!({"path":"original.txt","content":"original"}),
+        ),
+        None,
+        call(
+            "write_file",
+            json!({"path":"original.txt","content":"original"}),
+        ),
+        None,
+    ]);
+    let mut a = agent(&root, url);
+    let coordinator = a
+        .set_approval_policy(ApprovalPolicy {
+            mode: ApprovalMode::Always,
+            ..Default::default()
+        })
+        .unwrap();
+    a.configure_extensions(&ext, || false).unwrap();
+    let session = a.session().session_id().to_owned();
+    let scoped_root = child.clone();
+    let worker = thread::spawn(move || {
+        a.with_tool_workspace(&scoped_root, |a| a.process_sync("write selected"))
+            .unwrap()
+            .unwrap();
+        a.process_sync("write main denied").unwrap();
+        a
+    });
+    for decision in [ApprovalDecision::Allow, ApprovalDecision::Deny] {
+        let start = Instant::now();
+        let request = loop {
+            if let Some(request) = coordinator.drain_pending().pop() {
+                break request;
+            }
+            assert!(start.elapsed() < Duration::from_secs(10));
+            thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(
+            request.arguments,
+            json!({"path":"approved.txt","content":"changed"})
+        );
+        assert!(!root.join("approved.txt").exists());
+        if decision == ApprovalDecision::Allow {
+            assert!(!child.join("approved.txt").exists());
+        }
+        coordinator
+            .respond(ApprovalResponse {
+                request_id: request.request_id,
+                decision,
+                remember: false,
+                message: None,
+            })
+            .unwrap();
+    }
+    let a = worker.join().unwrap();
+    handle.join().unwrap();
+    assert_eq!(a.session().session_id(), session);
+    assert_eq!(a.attachment_workspace_root(), Some(root.as_path()));
+    assert_eq!(
+        fs::read_to_string(child.join("approved.txt")).unwrap(),
+        "changed"
+    );
+    assert!(!root.join("approved.txt").exists());
+    assert!(!child.join("original.txt").exists());
+    assert!(!root.join("original.txt").exists());
+    assert!(requests.lock().unwrap()[3].to_string().contains("denied"));
+    assert_eq!(
+        a.session()
+            .events()
+            .iter()
+            .filter(|e| e["type"] == "approval_resolved")
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn selected_workspace_supports_legacy_extension_tools_and_rejects_hook_path_escape() {
+    let _serial = serial();
+    for legacy in [true, false] {
+        let dir = tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let child = root.join("selected");
+        fs::create_dir(&child).unwrap();
+        fs::write(root.join("outside.txt"), "MAIN_SECRET_MUST_NOT_LEAK").unwrap();
+        fs::write(child.join("keep.txt"), "SELECTED_LEGACY_CONTENT").unwrap();
+        let ext = root.join("extensions");
+        extension(
+            &ext,
+            "a",
+            if legacy { &[] } else { &["before_tool"] },
+            if legacy { "normal" } else { "escape" },
+        );
+        if legacy {
+            let manifest = ext.join("a/extension.toml");
+            fs::write(
+                &manifest,
+                fs::read_to_string(&manifest)
+                    .unwrap()
+                    .replace("api_version = 2", "api_version = 1"),
+            )
+            .unwrap();
+        }
+        let (url, requests, handle) = server(vec![
+            call(
+                if legacy { "a_echo" } else { "read_file" },
+                json!({"path":"keep.txt"}),
+            ),
+            None,
+        ]);
+        let mut a = agent(&root, url);
+        a.configure_extensions(&ext, || false).unwrap();
+        let original = a.extension_lease().unwrap();
+        a.with_tool_workspace(&child, |a| a.process_sync("selected read"))
+            .unwrap()
+            .unwrap();
+        handle.join().unwrap();
+        assert!(!original.is_active());
+        assert!(a.extension_lease().unwrap().is_active());
+        assert_eq!(a.attachment_workspace_root(), Some(root.as_path()));
+        let requests = requests.lock().unwrap();
+        let output = requests[1].to_string();
+        assert!(!output.contains("MAIN_SECRET_MUST_NOT_LEAK"));
+        if legacy {
+            assert!(output.contains("SELECTED_LEGACY_CONTENT"));
+            assert_eq!(
+                events(&ext, "a")
+                    .iter()
+                    .filter(|e| e["hook"] == "tools/call" && e["workspace"] == json!(child))
+                    .count(),
+                1
+            );
+        } else {
+            assert!(output.contains("error"));
+            assert!(
+                events(&ext, "a")
+                    .iter()
+                    .any(|e| e["hook"] == "before_tool" && e["workspace"] == json!(child))
+            );
+        }
+    }
 }
 
 #[test]
@@ -671,6 +1091,7 @@ struct Cli {
     input: std::process::ChildStdin,
     lines: std::sync::mpsc::Receiver<Value>,
     reader: Option<thread::JoinHandle<()>>,
+    stderr: std::path::PathBuf,
 }
 impl Cli {
     fn start(root: &Path, url: &str) -> Self {
@@ -678,6 +1099,7 @@ impl Cli {
         use std::process::{Command, Stdio};
         fs::create_dir_all(root.join("user")).unwrap();
         fs::write(root.join("user/config.toml"),format!("model='fixture-model'\nbase_url='{url}'\nwire_api='chat'\nrequires_openai_auth=false\n")).unwrap();
+        let stderr = root.join("cli-stderr.log");
         let mut child = Command::new(env!("CARGO_BIN_EXE_zenpi"))
             .args(["--headless", "--session", "cli.jsonl"])
             .current_dir(root)
@@ -690,7 +1112,7 @@ impl Cli {
             .env_remove("OPENAI_MODEL")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(fs::File::create(&stderr).unwrap())
             .spawn()
             .unwrap();
         let input = child.stdin.take().unwrap();
@@ -709,6 +1131,7 @@ impl Cli {
             input,
             lines,
             reader: Some(reader),
+            stderr,
         }
     }
     fn wait_exit(&mut self) {
@@ -726,9 +1149,22 @@ impl Cli {
         writeln!(self.input, "{value}").unwrap();
         self.input.flush().unwrap();
     }
-    fn response(&self, id: &str) -> Value {
+    fn response(&mut self, id: &str) -> Value {
         loop {
-            let value = self.lines.recv_timeout(Duration::from_secs(12)).unwrap();
+            let value = self
+                .lines
+                .recv_timeout(Duration::from_secs(12))
+                .unwrap_or_else(|error| {
+                    let status = self.child.try_wait().unwrap();
+                    let mut stderr = Vec::new();
+                    if let Ok(file) = fs::File::open(&self.stderr) {
+                        file.take(8192).read_to_end(&mut stderr).unwrap();
+                    }
+                    panic!(
+                        "CLI response {id}: {error}; status={status:?}; stderr={}",
+                        String::from_utf8_lossy(&stderr)
+                    );
+                });
             if value["id"] == id && value["type"] == "response" {
                 return value;
             }

@@ -28,6 +28,99 @@ use crate::{
 /// a review command must remain cheap even when a repository has a huge file.
 pub const MAX_SLASH_DIFF_BYTES: usize = 64 * 1024;
 
+/// Parse explicit @ tokens at word boundaries, preserving native path spelling.
+pub fn prompt_file_references(text: &str) -> Result<Vec<(usize, usize, String, bool)>, String> {
+    let mut result = Vec::new();
+    let mut i = 0;
+    while i < text.len() {
+        let c = text[i..].chars().next().unwrap();
+        if c != '@'
+            || (i > 0
+                && !text[..i]
+                    .chars()
+                    .next_back()
+                    .is_some_and(char::is_whitespace))
+        {
+            i += c.len_utf8();
+            continue;
+        }
+        let start = i;
+        i += 1;
+        let quoted = text[i..].starts_with('"');
+        if quoted {
+            i += 1;
+        }
+        let mut path = String::new();
+        let mut closed = !quoted;
+        while i < text.len() {
+            let c = text[i..].chars().next().unwrap();
+            if quoted && c == '"' {
+                i += 1;
+                closed = true;
+                break;
+            }
+            if !quoted && c.is_whitespace() {
+                break;
+            }
+            if quoted && c == '\\' {
+                i += 1;
+                if i >= text.len() {
+                    break;
+                }
+                let next = text[i..].chars().next().unwrap();
+                path.push(next);
+                i += next.len_utf8();
+            } else {
+                path.push(c);
+                i += c.len_utf8();
+            }
+            if path.len() > 4096 {
+                return Err("File reference exceeds 4096 bytes".into());
+            }
+        }
+        result.push((start, i, path, closed));
+        if result.len() > crate::backend::MAX_ATTACHMENTS_PER_TURN {
+            return Err("Too many file references".into());
+        }
+    }
+    Ok(result)
+}
+
+/// Queue steering carries plain text, not commands or materialized attachments.
+pub fn plain_queue_input(text: &str) -> Result<(), String> {
+    if text.trim().is_empty() || text.contains('\0') || text.len() > 64 * 1024 {
+        return Err("Invalid text-only input".into());
+    }
+    if text.trim_start().starts_with(['/', '!']) {
+        return Err("Commands require a scheduled or idle prompt".into());
+    }
+    if !prompt_file_references(text)?.is_empty() {
+        return Err("File references require a scheduled or idle prompt; in-turn queue inputs are text-only".into());
+    }
+    Ok(())
+}
+
+/// Resolve references inside the currently captured tool workspace, before provider admission.
+pub fn prompt_attachments(agent: &Agent, text: &str) -> Result<Vec<InputAttachment>, AgentError> {
+    if text.starts_with('/') {
+        return Ok(Vec::new());
+    }
+    let mut attachments = Vec::new();
+    for (_, _, path, closed) in prompt_file_references(text).map_err(AgentError::InvalidTurn)? {
+        if !closed || path.is_empty() {
+            return Err(AgentError::InvalidTurn("Incomplete file reference".into()));
+        }
+        let root = agent
+            .attachment_workspace_root()
+            .ok_or_else(|| AgentError::InvalidTurn("File reference requires project cwd".into()))?;
+        attachments.push(
+            attachment_for_path(root, &path)
+                .map_err(|error| AgentError::InvalidTurn(error.to_string()))?,
+        );
+    }
+    Ok(attachments)
+}
+
 /// Read the actual Agent selection plus project-aware profile choices. This
 /// uses no provider calls and leaves turn/cancellation state untouched.
 pub fn models_value(agent: &Agent) -> Result<Value, AgentError> {
@@ -240,13 +333,47 @@ pub fn diff_value_at_with_cancel(
     let control = DiffControl {
         cancelled: &cancelled,
         deadline: std::time::Instant::now() + std::time::Duration::from_secs(30),
+        remote: false,
+        max_diff_bytes: MAX_SLASH_DIFF_BYTES,
     };
     diff_value_at_inner(workspace_root.as_ref(), path, Some(&control))
+}
+
+/// Remote review shares the local reader, but excludes known credential paths
+/// before Git reads patches or supplies untracked-file candidates.
+pub(crate) fn remote_diff_value_at_with_cancel(
+    workspace_root: &Path,
+    path: &str,
+    cancelled: impl Fn() -> bool,
+) -> Result<Value, SlashActionError> {
+    let control = DiffControl {
+        cancelled: &cancelled,
+        deadline: std::time::Instant::now() + std::time::Duration::from_secs(30),
+        remote: true,
+        max_diff_bytes: MAX_SLASH_DIFF_BYTES,
+    };
+    diff_value_at_inner(workspace_root, Some(path), Some(&control))
+}
+
+pub(crate) fn remote_diff_document_at_with_cancel(
+    workspace_root: &Path,
+    path: &str,
+    cancelled: impl Fn() -> bool,
+) -> Result<Value, SlashActionError> {
+    let control = DiffControl {
+        cancelled: &cancelled,
+        deadline: std::time::Instant::now() + std::time::Duration::from_secs(30),
+        remote: true,
+        max_diff_bytes: 1024 * 1024,
+    };
+    diff_value_at_inner(workspace_root, Some(path), Some(&control))
 }
 
 struct DiffControl<'a> {
     cancelled: &'a dyn Fn() -> bool,
     deadline: std::time::Instant,
+    remote: bool,
+    max_diff_bytes: usize,
 }
 impl DiffControl<'_> {
     fn check(&self) -> Result<(), SlashActionError> {
@@ -271,6 +398,7 @@ fn diff_value_at_inner(
 ) -> Result<Value, SlashActionError> {
     check_diff(control)?;
     let workspace = canonical_workspace(workspace_root)?;
+    let max_diff_bytes = control.map_or(MAX_SLASH_DIFF_BYTES, |value| value.max_diff_bytes);
     check_diff(control)?;
     let git_status = |workspace: &Path, path: Option<&Path>| git_status(workspace, path, control);
     let git_diff_process = |workspace: &Path, args: &[&str], path: Option<&Path>| {
@@ -281,6 +409,15 @@ fn diff_value_at_inner(
         Some(raw) => Some(resolve_relative_controlled(&workspace, raw, true, control)?),
         None => None,
     };
+    if control.is_some_and(|control| control.remote)
+        && relative.as_deref().is_some_and(|target| {
+            target
+                .strip_prefix(&workspace)
+                .is_ok_and(crate::tools::credential_path)
+        })
+    {
+        return Err(SlashActionError::PathDenied("private diff path".into()));
+    }
 
     // Git's binary marker is not a reviewable text patch. Surface an explicit
     // bounded binary result so approval/rendering cannot mistake it for text.
@@ -413,6 +550,13 @@ fn diff_value_at_inner(
     if !untracked && relative.as_deref().is_none_or(|target| target.is_dir()) && !process_truncated
     {
         for target in &status.untracked {
+            if control.is_some_and(|control| control.remote)
+                && target
+                    .strip_prefix(&workspace)
+                    .is_ok_and(crate::tools::credential_path)
+            {
+                continue;
+            }
             let target_name = Path::new(".").join(
                 target
                     .strip_prefix(&workspace)
@@ -440,8 +584,8 @@ fn diff_value_at_inner(
                 diff.push('\n');
             }
             diff.push_str(&section);
-            if section_truncated || diff.len() > MAX_SLASH_DIFF_BYTES {
-                let (bounded, _) = bound_text(diff);
+            if section_truncated || diff.len() > max_diff_bytes {
+                let (bounded, _) = bound_text_at(diff, max_diff_bytes);
                 diff = bounded;
                 process_truncated = true;
                 break;
@@ -459,8 +603,14 @@ fn diff_value_at_inner(
         )));
     }
     check_diff(control)?;
-    let (diff, bounded_truncated) = bound_text(crate::security::redact_text(&diff, &[]));
-    let truncated = process_truncated || bounded_truncated;
+    let (diff, bounded_truncated) =
+        bound_text_at(crate::security::redact_text(&diff, &[]), max_diff_bytes);
+    let truncated = process_truncated
+        || bounded_truncated
+        || max_diff_bytes > MAX_SLASH_DIFF_BYTES
+            && (status.text.contains(DIFF_TRUNCATION_MARKER)
+                || relative.as_deref().is_none_or(|target| target.is_dir())
+                    && status.untracked.len() >= MAX_UNTRACKED_DIFF_FILES);
     let relative_display = relative
         .as_deref()
         .map(|absolute| {
@@ -598,6 +748,110 @@ pub fn attachment_for_path(
         url: None,
         file_id: None,
     })
+}
+
+/// Bounded immediate children only, using the same path policy as attachments.
+pub fn prompt_files_at(workspace_root: &Path, path: &str) -> Result<Value, SlashActionError> {
+    prompt_files_with_limit(workspace_root, path, 64, false)
+}
+
+pub(crate) fn remote_prompt_files_at(
+    workspace_root: &Path,
+    path: &str,
+) -> Result<Value, SlashActionError> {
+    prompt_files_with_limit(workspace_root, path, 64, true)
+}
+
+pub(crate) fn prompt_files_catalog_at(
+    workspace_root: &Path,
+    path: &str,
+) -> Result<Value, SlashActionError> {
+    prompt_files_with_limit(workspace_root, path, 2048, true)
+}
+
+fn prompt_files_with_limit(
+    workspace_root: &Path,
+    path: &str,
+    limit: usize,
+    remote: bool,
+) -> Result<Value, SlashActionError> {
+    if remote && crate::tools::credential_path(Path::new(path)) {
+        return Err(SlashActionError::PathDenied(
+            "private workspace path".into(),
+        ));
+    }
+    if Path::new(path).components().any(|part| matches!(part, Component::Normal(name) if name.to_str().is_none_or(|name| name.starts_with('.')))) {
+        return Err(SlashActionError::PathDenied(path.into()));
+    }
+    let workspace = canonical_workspace(workspace_root)?;
+    let directory = resolve_relative(&workspace, path, false)?;
+    if !directory.is_dir() {
+        return Err(SlashActionError::PathDenied(path.into()));
+    }
+    let relative = directory
+        .strip_prefix(&workspace)
+        .map_err(|_| SlashActionError::PathDenied(path.into()))?;
+    let current = if relative.as_os_str().is_empty() {
+        ".".to_owned()
+    } else {
+        relative
+            .to_str()
+            .ok_or_else(|| SlashActionError::PathDenied(path.into()))?
+            .to_owned()
+    };
+    if crate::security::redact_text(&current, &[]) != current {
+        return Err(SlashActionError::PathDenied(path.into()));
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+    let mut entries = std::collections::BTreeMap::new();
+    let mut truncated = false;
+    for (index, entry) in fs::read_dir(&directory)
+        .map_err(SlashActionError::Metadata)?
+        .enumerate()
+    {
+        if index >= 2048 || std::time::Instant::now() >= deadline {
+            truncated = true;
+            break;
+        }
+        let entry = entry.map_err(SlashActionError::Metadata)?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if name.starts_with('.')
+            || name.chars().any(char::is_control)
+            || crate::security::redact_text(name, &[]) != name
+        {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(entry.path()).map_err(SlashActionError::Metadata)?;
+        if metadata.file_type().is_symlink() || (!metadata.is_file() && !metadata.is_dir()) {
+            continue;
+        }
+        let child = relative.join(name);
+        let Some(child) = child.to_str().filter(|value| value.len() <= 4096) else {
+            continue;
+        };
+        if remote && crate::tools::credential_path(Path::new(child)) {
+            continue;
+        }
+        let kind = if metadata.is_dir() {
+            "directory"
+        } else {
+            "file"
+        };
+        entries.insert(
+            (!metadata.is_dir(), name.to_owned()),
+            json!({"name":name,"path":child,"kind":kind,
+            "size_bytes":if metadata.is_file() { Some(metadata.len()) } else { None },
+            "attachable":metadata.is_file() && metadata.len() <= MAX_ATTACHMENT_BYTES as u64}),
+        );
+        if entries.len() > limit {
+            entries.pop_last();
+            truncated = true;
+        }
+    }
+    Ok(
+        json!({"path":current,"entries":entries.into_values().collect::<Vec<_>>(),"truncated":truncated}),
+    )
 }
 
 fn workspace_root() -> Result<PathBuf, SlashActionError> {
@@ -765,6 +1019,32 @@ struct GitStatus {
     untracked: Vec<PathBuf>,
 }
 
+fn literal_git_path(path: &Path) -> std::ffi::OsString {
+    let mut value = std::ffi::OsString::from(":(literal)");
+    value.push(path);
+    value
+}
+
+fn remote_git_policy(command: &mut Command) {
+    command
+        .env_remove("GIT_LITERAL_PATHSPECS")
+        .env_remove("GIT_NOGLOB_PATHSPECS")
+        .env_remove("GIT_GLOB_PATHSPECS")
+        .env_remove("GIT_ICASE_PATHSPECS");
+}
+
+fn private_git_exclusions(command: &mut Command) {
+    // Filter at Git's pathspec boundary, not by parsing and hiding patch text.
+    // Exclude both a component itself and every descendant of that component.
+    for name in crate::tools::CREDENTIAL_NAMES
+        .iter()
+        .chain(crate::tools::CREDENTIAL_GLOBS)
+    {
+        command.arg(format!(":(exclude,glob,icase)**/{name}"));
+        command.arg(format!(":(exclude,glob,icase)**/{name}/**"));
+    }
+}
+
 fn git_status(
     workspace: &Path,
     path: Option<&Path>,
@@ -781,7 +1061,16 @@ fn git_status(
         .env_remove("GIT_GLOB_PATHSPECS")
         .env_remove("GIT_ICASE_PATHSPECS")
         // An explicit workspace filename is not a glob or pathspec directive.
-        .arg("--literal-pathspecs")
+        .arg(if control.is_some_and(|control| control.remote) {
+            "--no-literal-pathspecs"
+        } else {
+            "--literal-pathspecs"
+        })
+        .args(if control.is_some_and(|control| control.remote) {
+            &["-c", "status.renames=false"][..]
+        } else {
+            &[]
+        })
         .stdout(Stdio::piped())
         // Diagnostics are intentionally discarded: retaining stderr would
         // create a second untrusted pipe that could deadlock or grow while a
@@ -790,16 +1079,36 @@ fn git_status(
         // List files inside entirely new directories: normal mode collapses
         // them into directory records, which cannot produce a file diff. Git
         // applies ignore rules; the existing read and admission caps still apply.
-        .args(["status", "--porcelain=v1", "--untracked-files=all", "--"]);
+        // Porcelain v1 forces repository-root paths, even when reviewing an in-place child tab.
+        .args([
+            "-c",
+            "status.relativePaths=true",
+            "status",
+            "--short",
+            "--untracked-files=all",
+            "--",
+        ]);
+    let remote = control.is_some_and(|control| control.remote);
+    if remote {
+        remote_git_policy(&mut command);
+    }
     if let Some(path) = path {
         let relative = path
             .strip_prefix(workspace)
             .map_err(|_| SlashActionError::PathDenied(path_display(path)))?;
-        command.arg(if relative.as_os_str().is_empty() {
+        let relative = if relative.as_os_str().is_empty() {
             Path::new(".")
         } else {
             relative
+        };
+        command.arg(if remote {
+            literal_git_path(relative)
+        } else {
+            relative.as_os_str().to_owned()
         });
+    }
+    if remote {
+        private_git_exclusions(&mut command);
     }
     if let Some(control) = control {
         let (bytes, status, truncated) =
@@ -945,16 +1254,38 @@ fn git_diff_process(
         // glob/case modes, which Git rejects when combined with literal mode.
         .env_remove("GIT_GLOB_PATHSPECS")
         .env_remove("GIT_ICASE_PATHSPECS")
-        .arg("--literal-pathspecs")
+        .arg(if control.is_some_and(|control| control.remote) {
+            "--no-literal-pathspecs"
+        } else {
+            "--literal-pathspecs"
+        })
+        .args(if control.is_some_and(|control| control.remote) {
+            &["-c", "diff.renames=false"][..]
+        } else {
+            &[]
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .args(args);
+    let remote = control.is_some_and(|control| control.remote)
+        && args.first() == Some(&"diff")
+        && !args.contains(&"--no-index");
+    if remote {
+        remote_git_policy(&mut command);
+    }
     if let Some(path) = extra_path {
-        command.arg(path);
+        command.arg(if remote {
+            literal_git_path(path)
+        } else {
+            path.as_os_str().to_owned()
+        });
+    }
+    if remote {
+        private_git_exclusions(&mut command);
     }
     if let Some(control) = control {
         let (mut bytes, status, truncated) =
-            read_controlled_git(&mut command, MAX_SLASH_DIFF_BYTES, control)?;
+            read_controlled_git(&mut command, control.max_diff_bytes, control)?;
         if truncated {
             bytes.extend_from_slice(DIFF_TRUNCATION_MARKER.as_bytes());
         }
@@ -997,11 +1328,11 @@ fn git_diff_process(
     ))
 }
 
-fn bound_text(mut text: String) -> (String, bool) {
-    if text.len() <= MAX_SLASH_DIFF_BYTES {
+fn bound_text_at(mut text: String, limit: usize) -> (String, bool) {
+    if text.len() <= limit {
         return (text, false);
     }
-    let mut end = MAX_SLASH_DIFF_BYTES.saturating_sub(DIFF_TRUNCATION_MARKER.len());
+    let mut end = limit.saturating_sub(DIFF_TRUNCATION_MARKER.len());
     while end > 0 && !text.is_char_boundary(end) {
         end -= 1;
     }
@@ -1094,6 +1425,146 @@ mod attachment_identity_tests {
     use super::*;
     #[cfg(unix)]
     use crate::{core::TurnInputRequest, session::SessionStore, tools::ToolContext};
+
+    #[test]
+    fn remote_file_listing_omits_private_paths_without_changing_local_discovery() {
+        let root = tempfile::tempdir().unwrap();
+        for name in [
+            "note.txt",
+            "credentials.json",
+            "AUTH.JSON",
+            "private.pem",
+            "KEY.KEY",
+            "cert.p12",
+            "id_rsa",
+        ] {
+            fs::write(root.path().join(name), "fixture").unwrap();
+        }
+        fs::create_dir(root.path().join("credentials")).unwrap();
+        let local = prompt_files_at(root.path(), ".").unwrap();
+        assert_eq!(local["entries"].as_array().unwrap().len(), 8);
+        let remote = remote_prompt_files_at(root.path(), ".").unwrap();
+        assert_eq!(remote["entries"].as_array().unwrap().len(), 1);
+        assert_eq!(remote["entries"][0]["name"], "note.txt");
+        let paged = prompt_files_catalog_at(root.path(), ".").unwrap();
+        assert_eq!(paged, remote);
+        assert!(remote_prompt_files_at(root.path(), "credentials").is_err());
+        assert!(prompt_files_at(root.path(), "credentials").is_ok());
+    }
+
+    #[test]
+    fn plain_queue_text_uses_native_reference_and_unicode_whitespace_boundaries() {
+        for text in [
+            "",
+            "  ",
+            "\u{85}\u{a0}",
+            "/help",
+            "\u{85}/skill:test",
+            "\u{a0}!command",
+            "@",
+            "@\"unfinished",
+            "use @file.txt",
+            "use\n@file",
+            "use\u{85}@file",
+            "use\u{a0}@file",
+            "\u{4e2d} @file",
+            "x\0y",
+        ] {
+            assert!(plain_queue_input(text).is_err(), "{text:?}");
+        }
+        for text in [
+            "plain text",
+            "\u{4e2d}\u{6587}",
+            "a@example.invalid",
+            "(@file)",
+            "inline /skill:test",
+            "inline !command",
+            "x\u{1c}@literal",
+            "\u{1f600}@literal",
+        ] {
+            assert!(plain_queue_input(text).is_ok(), "{text:?}");
+        }
+        assert!(plain_queue_input(&"x".repeat(65536)).is_ok());
+        assert!(plain_queue_input(&"x".repeat(65537)).is_err());
+        assert!(plain_queue_input(&"\u{4e2d}".repeat(21845)).is_ok());
+        assert!(plain_queue_input(&"\u{4e2d}".repeat(21846)).is_err());
+    }
+
+    #[test]
+    fn shared_prompt_reference_parser_preserves_quotes_boundaries_and_utf8_offsets() {
+        let text = "\u{4e2d} mail@example.org @\"file name.txt\" @\"a\\\"b.txt\" @plain.txt";
+        let references = prompt_file_references(text).unwrap();
+        assert_eq!(references.len(), 3);
+        assert_eq!(
+            references
+                .iter()
+                .map(|entry| entry.2.as_str())
+                .collect::<Vec<_>>(),
+            vec!["file name.txt", "a\"b.txt", "plain.txt"]
+        );
+        for (start, end, _, closed) in references {
+            assert!(closed);
+            assert!(text.is_char_boundary(start) && text.is_char_boundary(end));
+            assert!(text[start..end].starts_with('@'));
+        }
+        assert!(!prompt_file_references("@\"unfinished").unwrap()[0].3);
+        assert_eq!(prompt_file_references("@").unwrap()[0].2, "");
+    }
+
+    #[test]
+    fn shared_prompt_reference_parser_enforces_exact_count_and_path_caps() {
+        assert_eq!(
+            prompt_file_references(&"@file ".repeat(8)).unwrap().len(),
+            8
+        );
+        assert!(prompt_file_references(&"@file ".repeat(9)).is_err());
+        assert_eq!(
+            prompt_file_references(&format!("@{}", "x".repeat(4096))).unwrap()[0]
+                .2
+                .len(),
+            4096
+        );
+        assert!(prompt_file_references(&format!("@{}", "x".repeat(4097))).is_err());
+    }
+
+    #[test]
+    fn shared_prompt_attachment_resolution_requires_complete_workspace_references() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("file name.txt"), "content").unwrap();
+        let mut agent = Agent::with_echo(
+            crate::session::SessionStore::open_in_workspace(
+                root.path().join("session.jsonl"),
+                root.path(),
+            )
+            .unwrap(),
+        );
+        agent.set_attachment_workspace(crate::tools::ToolContext::new(root.path()).unwrap());
+        assert_eq!(
+            prompt_attachments(&agent, "read @\"file name.txt\"").unwrap()[0]
+                .path
+                .as_deref(),
+            Some("file name.txt")
+        );
+        for text in [
+            "read @",
+            "read @\"unfinished",
+            "read @../outside.txt",
+            "read @/etc/passwd",
+            "read @missing.txt",
+        ] {
+            assert!(prompt_attachments(&agent, text).is_err(), "{text}");
+        }
+        assert!(
+            prompt_attachments(&agent, "/skill @missing.txt")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            prompt_attachments(&agent, "mail@example.org")
+                .unwrap()
+                .is_empty()
+        );
+    }
 
     #[test]
     fn normalized_relative_attachment_remains_a_native_path() {
@@ -1291,6 +1762,82 @@ mod diff_identity_tests {
         git(root.path(), &["config", "user.email", "diff@example.test"]);
         git(root.path(), &["commit", "--allow-empty", "-qm", "initial"]);
         root
+    }
+
+    #[test]
+    fn remote_private_exclusions_preserve_literal_names_and_unborn_head() {
+        for committed in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let root = directory.path();
+            git(root, &["init", "-q"]);
+            fs::write(root.join("credentials.json"), "OPAQUE_PRIVATE_BASELINE\n").unwrap();
+            fs::write(root.join(".editorconfig"), "ORDINARY_DOTFILE\n").unwrap();
+            for name in [
+                "selected[ab].txt",
+                "selecteda.txt",
+                ":(glob)*.txt",
+                "neighbor.txt",
+                r"note\report.txt",
+            ] {
+                fs::write(root.join(name), "before\n").unwrap();
+            }
+            git(root, &["add", "."]);
+            if committed {
+                git(
+                    root,
+                    &[
+                        "-c",
+                        "user.name=Fixture",
+                        "-c",
+                        "user.email=fixture@example.invalid",
+                        "commit",
+                        "-qm",
+                        "seed",
+                    ],
+                );
+            }
+            fs::write(root.join("credentials.json"), "OPAQUE_PRIVATE_WORKTREE\n").unwrap();
+            fs::write(root.join("new.pem"), "OPAQUE_PRIVATE_UNTRACKED\n").unwrap();
+            fs::write(root.join("selecteda.txt"), "WRONG_GLOB_NEIGHBOR\n").unwrap();
+            fs::write(root.join("neighbor.txt"), "WRONG_MAGIC_NEIGHBOR\n").unwrap();
+            for name in ["selected[ab].txt", ":(glob)*.txt", r"note\report.txt"] {
+                fs::write(root.join(name), "EXPECTED_EXACT_PATH\n").unwrap();
+                let value = remote_diff_value_at_with_cancel(root, name, || false).unwrap();
+                let text = value.to_string();
+                assert!(text.contains("EXPECTED_EXACT_PATH"), "{name}: {text}");
+                assert!(!text.contains("WRONG_"), "{name}: {text}");
+                assert!(!text.contains("OPAQUE_PRIVATE"), "{name}: {text}");
+            }
+            let value = remote_diff_value_at_with_cancel(root, ".", || false).unwrap();
+            assert!(!value.to_string().contains("OPAQUE_PRIVATE"));
+            assert!(!value.to_string().contains("credentials.json"));
+            assert!(!value.to_string().contains("new.pem"));
+            let value = remote_diff_value_at_with_cancel(root, ".editorconfig", || false).unwrap();
+            assert_eq!(value["path"], ".editorconfig");
+            assert!(remote_diff_value_at_with_cancel(root, "credentials.json", || false).is_err());
+        }
+    }
+
+    #[test]
+    fn remote_private_exclusions_override_inherited_pathspec_modes() {
+        for variable in [
+            "GIT_LITERAL_PATHSPECS",
+            "GIT_NOGLOB_PATHSPECS",
+            "GIT_GLOB_PATHSPECS",
+            "GIT_ICASE_PATHSPECS",
+        ] {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .env(variable, "1")
+                .args(["--exact", "slash_actions::diff_identity_tests::remote_private_exclusions_preserve_literal_names_and_unborn_head", "--nocapture"])
+                .output().unwrap();
+            assert!(
+                output.status.success(),
+                "{variable}: {} {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        }
     }
 
     fn collision(tracked: bool) {
@@ -1777,6 +2324,27 @@ fn read_controlled_git(
     use std::os::{fd::AsRawFd, unix::process::CommandExt};
     control.check()?;
     command.process_group(0).stdin(Stdio::null());
+    // A bounded review must not invoke repository fsmonitor hooks or inherit another Git root.
+    for key in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
+    ] {
+        command.env_remove(key);
+    }
+    command
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_COUNT", "3")
+        .env("GIT_CONFIG_KEY_0", "core.fsmonitor")
+        .env("GIT_CONFIG_VALUE_0", "false")
+        .env("GIT_CONFIG_KEY_1", "core.hooksPath")
+        .env("GIT_CONFIG_VALUE_1", "/dev/null")
+        .env("GIT_CONFIG_KEY_2", "color.ui")
+        .env("GIT_CONFIG_VALUE_2", "false");
     struct OwnedGit(std::process::Child);
     impl Drop for OwnedGit {
         fn drop(&mut self) {
@@ -1890,6 +2458,8 @@ mod diff_cancel_tests {
                 let control = DiffControl {
                     cancelled: &check,
                     deadline: Instant::now() + Duration::from_secs(5),
+                    remote: false,
+                    max_diff_bytes: MAX_SLASH_DIFF_BYTES,
                 };
                 read_controlled_git(&mut command, 64, &control)
             });
@@ -1918,6 +2488,8 @@ mod diff_cancel_tests {
         let control = DiffControl {
             cancelled: &not_cancelled,
             deadline: Instant::now() + Duration::from_millis(80),
+            remote: false,
+            max_diff_bytes: MAX_SLASH_DIFF_BYTES,
         };
         let mut command = Command::new("/bin/sleep");
         command.arg("30").stdout(Stdio::piped());
@@ -1930,6 +2502,8 @@ mod diff_cancel_tests {
         let control = DiffControl {
             cancelled: &not_cancelled,
             deadline: Instant::now() + Duration::from_secs(2),
+            remote: false,
+            max_diff_bytes: MAX_SLASH_DIFF_BYTES,
         };
         let mut command = Command::new("/usr/bin/yes");
         command.stdout(Stdio::piped());

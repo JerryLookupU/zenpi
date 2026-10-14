@@ -1,0 +1,231 @@
+{
+  "schema_version": "stage2-emulator-camera/v1",
+  "passed": true,
+  "failure": null,
+  "whole_item_accepted": false,
+  "emulator_imagefile_camera_verified": true,
+  "production_scanner_to_pinned_tls_verified": true,
+  "physical_camera_scan_verified": false,
+  "physical_phone_lan_verified": false,
+  "direct_lan_verified": false,
+  "adb_reverse_used": false,
+  "emulator_host_network_verified": true,
+  "transport": "emulator_host_alias",
+  "bidirectional_sync_verified": true,
+  "foreground_replay_verified": true,
+  "deep_idle_cache_foreground_resume_verified": true,
+  "sync_evidence": {
+    "session_id": "session-1791136724575-43397-0",
+    "provider_requests": 3,
+    "provider_prompt": "STAGE2_PHYSICAL_ANDROID_PROMPT",
+    "provider_answer": "STAGE2_PHYSICAL_DESKTOP_ANSWER",
+    "provider_prompts": [
+      "STAGE2_PHYSICAL_DESKTOP_LOCAL_PROMPT",
+      "STAGE2_PHYSICAL_DESKTOP_BACKGROUND_PROMPT",
+      "STAGE2_PHYSICAL_ANDROID_PROMPT"
+    ],
+    "provider_answers": [
+      "STAGE2_PHYSICAL_DESKTOP_LOCAL_ANSWER",
+      "STAGE2_PHYSICAL_DESKTOP_BACKGROUND_ANSWER",
+      "STAGE2_PHYSICAL_DESKTOP_ANSWER"
+    ],
+    "original_prefix_sha256": "100e47158ba115439c298ea4121b73ea29366c504758b1850aa5473bea870e1c",
+    "preserved_prefix_sha256": "100e47158ba115439c298ea4121b73ea29366c504758b1850aa5473bea870e1c",
+    "appended_turns": [
+      {
+        "id": "turn-1791136761809-2",
+        "role": "user",
+        "content": "STAGE2_PHYSICAL_DESKTOP_LOCAL_PROMPT"
+      },
+      {
+        "id": "assistant-1791136761842-4",
+        "role": "assistant",
+        "content": "STAGE2_PHYSICAL_DESKTOP_LOCAL_ANSWER"
+      },
+      {
+        "id": "turn-1791136763130-5",
+        "role": "user",
+        "content": "STAGE2_PHYSICAL_DESKTOP_BACKGROUND_PROMPT"
+      },
+      {
+        "id": "assistant-1791136763168-7",
+        "role": "assistant",
+        "content": "STAGE2_PHYSICAL_DESKTOP_BACKGROUND_ANSWER"
+      },
+      {
+        "id": "turn-1791136772213-8",
+        "role": "user",
+        "content": "STAGE2_PHYSICAL_ANDROID_PROMPT"
+      },
+      {
+        "id": "assistant-1791136772231-10",
+        "role": "assistant",
+        "content": "STAGE2_PHYSICAL_DESKTOP_ANSWER"
+      }
+    ],
+    "admissions": [
+      {
+        "device_id": "61dfb6b67e0a823851dcad9fe0894a88b2773470c90530d594e18f911e04ee54",
+        "execution_subtab": {
+          "id": "67bf262eb929d4ded7c4fffeae823f806df6e317f3fe89231a69bf604c8b5caf",
+          "kind": "main",
+          "root": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-emulator-qr-6_oacir6/workspace"
+        },
+        "fingerprint": "8bccf74a7cbdd865a2261e99b1552d695b92a29ac5bb48baece069803085d135",
+        "request_id": "e4c91a4f-a6be-4749-957d-5c95554f8820",
+        "result": {
+          "job_id": "3",
+          "project_id": "50360287e63ebdaf77767af3350b88654f9ec40d9cd6f722c870563fd50f1ad3",
+          "request_id": "e4c91a4f-a6be-4749-957d-5c95554f8820",
+          "session_id": "session-1791136724575-43397-0"
+        },
+        "state": "accepted",
+        "type": "remote_prompt_admission_v1"
+      }
+    ],
+    "bindings": [
+      {
+        "device_id": "61dfb6b67e0a823851dcad9fe0894a88b2773470c90530d594e18f911e04ee54",
+        "fingerprint": "8bccf74a7cbdd865a2261e99b1552d695b92a29ac5bb48baece069803085d135",
+        "project_id": "50360287e63ebdaf77767af3350b88654f9ec40d9cd6f722c870563fd50f1ad3",
+        "request_id": "e4c91a4f-a6be-4749-957d-5c95554f8820",
+        "session_id": "session-1791136724575-43397-0"
+      }
+    ],
+    "progress": [
+      {
+        "device_id": "61dfb6b67e0a823851dcad9fe0894a88b2773470c90530d594e18f911e04ee54",
+        "project_id": "50360287e63ebdaf77767af3350b88654f9ec40d9cd6f722c870563fd50f1ad3",
+        "request_id": "e4c91a4f-a6be-4749-957d-5c95554f8820",
+        "session_id": "session-1791136724575-43397-0",
+        "state": "running",
+        "type": "remote_prompt_progress_v1"
+      },
+      {
+        "device_id": "61dfb6b67e0a823851dcad9fe0894a88b2773470c90530d594e18f911e04ee54",
+        "project_id": "50360287e63ebdaf77767af3350b88654f9ec40d9cd6f722c870563fd50f1ad3",
+        "request_id": "e4c91a4f-a6be-4749-957d-5c95554f8820",
+        "session_id": "session-1791136724575-43397-0",
+        "state": "succeeded",
+        "type": "remote_prompt_progress_v1"
+      }
+    ]
+  },
+  "replay_evidence": {
+    "background_event_cursor": "4",
+    "recovered_event_cursor": "6",
+    "replay_session_id": "session-1791136724575-43397-0"
+  },
+  "device_id": "61dfb6b67e0a823851dcad9fe0894a88b2773470c90530d594e18f911e04ee54",
+  "project_id": "50360287e63ebdaf77767af3350b88654f9ec40d9cd6f722c870563fd50f1ad3",
+  "callback_steps": [
+    "read_control_grant_completed",
+    "desktop_update_started",
+    "desktop_update_committed"
+  ],
+  "provider_requests": 3,
+  "failure_stage": null,
+  "prerequisite_diagnostics": null,
+  "wifi_association_setup": "owned_emulator_debug_su",
+  "provider_prompts": [
+    "STAGE2_PHYSICAL_DESKTOP_LOCAL_PROMPT",
+    "STAGE2_PHYSICAL_DESKTOP_BACKGROUND_PROMPT",
+    "STAGE2_PHYSICAL_ANDROID_PROMPT"
+  ],
+  "provider_answers": [
+    "STAGE2_PHYSICAL_DESKTOP_LOCAL_ANSWER",
+    "STAGE2_PHYSICAL_DESKTOP_BACKGROUND_ANSWER",
+    "STAGE2_PHYSICAL_DESKTOP_ANSWER"
+  ],
+  "journal_turns": [
+    {
+      "role": "user",
+      "content": "Reply with the fixture transcript"
+    },
+    {
+      "role": "assistant",
+      "content": "STAGE2_ANDROID_REAL_PROVIDER_TRANSCRIPT"
+    },
+    {
+      "role": "user",
+      "content": "STAGE2_PHYSICAL_DESKTOP_LOCAL_PROMPT"
+    },
+    {
+      "role": "assistant",
+      "content": "STAGE2_PHYSICAL_DESKTOP_LOCAL_ANSWER"
+    },
+    {
+      "role": "user",
+      "content": "STAGE2_PHYSICAL_DESKTOP_BACKGROUND_PROMPT"
+    },
+    {
+      "role": "assistant",
+      "content": "STAGE2_PHYSICAL_DESKTOP_BACKGROUND_ANSWER"
+    },
+    {
+      "role": "user",
+      "content": "STAGE2_PHYSICAL_ANDROID_PROMPT"
+    },
+    {
+      "role": "assistant",
+      "content": "STAGE2_PHYSICAL_DESKTOP_ANSWER"
+    }
+  ],
+  "serial": "emulator-5586",
+  "avd": "ZenpiStage2Api34",
+  "android_api": 34,
+  "expected_android_api": 34,
+  "endpoint": {
+    "address": "10.0.2.2:64751",
+    "fingerprint": "50a768ec2c86b8ffb4f44fbcff7b03270a068257527035128304dad62a6eee34"
+  },
+  "safety_code_input": "automated emulator-only input; not manual operator confirmation",
+  "camera_fixture_orientation": "landscape imagefile input on owned emulator",
+  "camera_fixture_placement": {
+    "width": 1280,
+    "height": 960,
+    "qr_center_x": 340,
+    "qr_center_y": 480
+  },
+  "camera_fixture_sha256": "07dab4a19eebd2ebd555d128ef0399d263a3260d1714ad30513d5746aee322a1",
+  "harness_inputs": {
+    "tools/stage2_emulator_qr_smoke.py": "dd086088ae6898a3e05ef940006a7ced265ad0fd4c6728cb312393a4908b5797",
+    "tools/stage2_desktop_android_smoke.py": "ab8f9798ea684087a10dcf027e49542ab5ab6e21ebcc542a39f324e3fd8d7eaa",
+    "tools/stage2_android_pair_smoke.py": "d66cf0c32a25cbb256aa6b19b4b2fd05d8ef6fb0f6c69dd77c3e4ca088b64d81",
+    "tools/stage2_instrumentation.py": "e2bb3ffa6b6a310ce73e440b040c4633150bc4b9b6c48e0f58c90e4d3ffdc082",
+    "tools/decode_terminal_qr.swift": "0182a27ddefe4565da427d5c65874f97329c21a016dc778935693d11e9349a1f",
+    "tools/stage2_host_smoke.py": "cc1dd2e360261b68c09e5263349e59db92fce3a45531b8c3b68f02c262ed97ac",
+    "tools/stage2_physical_qr_android_smoke.py": "476a2b9cf0e45637ece119c328d2d7b7900a91f1ab52b6c91629780119f0a076"
+  },
+  "completed_tests": [
+    "zenpi.EmulatorQrHostTest#terminalQrCameraFramesPairWithPinnedProductionHost"
+  ],
+  "android_build_provenance": {
+    "path": "android/app/build/stage2-device-build.json",
+    "sha256": "ef91e83c008d9dac97ff6ddc235f8f80ae7b8328b0fedd95691eaf50276b2743",
+    "inputs_sha256": "14ed2cd7551d1d5cc2b230f8c67984b257a1e74fc4c7ab8b31fdf7aefe55c178",
+    "artifacts": {
+      "android/app/build/outputs/apk/debug/app-debug.apk": "128965999cab812c6da897dddc585ca6bd1d084530dd58ed83e55276cbc93cda",
+      "android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk": "d6a2ba401c03a72cf7c8a9355f8b25275054cd4390f8d84d86daf33cc81635c2"
+    }
+  },
+  "host_build_provenance": {
+    "path": "target/stage2-host-build-debug.json",
+    "sha256": "e0ee28a261be78132cf0ed6c0fffff3d831b0819e3e3ed436dee41fb532d4724",
+    "inputs_sha256": "9aa1b19a756f3a031cf5925c3b241e95bb18a1781627a44749d62a2a33028086",
+    "artifact": {
+      "path": "target/debug/zenpi",
+      "sha256": "c93f6d6385f31c092b3abaf34a6e5f959d041ad9a1e671aacdf69add23da63bd"
+    }
+  },
+  "screenshot": {
+    "path": "Docs/quality/stage2_android2unix/emulator-camera-api34-empty-subtabs-20261005.png",
+    "sha256": "26ccefc4ffde15c5ad76902fca1992d909d64392f0c7022136c361fe6ab00f06"
+  },
+  "instrumentation": {
+    "path": "Docs/quality/stage2_android2unix/emulator-camera-api34-empty-subtabs-20261005.instrumentation.txt",
+    "sha256": "481775ef6d819964db1a8063ffc2c43b98054c4501fa9167b0074c4fff1a0b57"
+  },
+  "started_at_unix": 1791136723.716046,
+  "finished_at_unix": 1791136783.7578151
+}

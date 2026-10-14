@@ -87,6 +87,20 @@ fn wait_for_pending(
     panic!("approval request did not become pending");
 }
 
+fn remote_actor(
+    request: &zenpi::approval::ApprovalRequest,
+    session: &str,
+) -> zenpi::approval::RemoteApprovalActor {
+    zenpi::approval::RemoteApprovalActor {
+        device_id: "a".repeat(64),
+        request_id: "remote-answer".into(),
+        fingerprint: "b".repeat(64),
+        project_id: "c".repeat(64),
+        session_id: session.into(),
+        request_digest: request.digest().unwrap(),
+    }
+}
+
 #[test]
 fn tui_approval_owner_rejects_missing_coordinator() {
     let directory = tempdir().unwrap();
@@ -111,6 +125,237 @@ fn tui_approval_owner_rejects_missing_coordinator() {
                 .text
                 .contains("no tool registry or approval coordinator")
     }));
+}
+
+#[test]
+fn digest_fenced_one_shot_answers_use_existing_audit_before_tool_boundary() {
+    for decision in [ApprovalDecision::Allow, ApprovalDecision::Deny] {
+        let workspace = tempdir().unwrap();
+        let mut agent = configured_agent(workspace.path());
+        let session_id = agent.session().session_id().to_owned();
+        let coordinator = agent.approval_coordinator().unwrap();
+        let (tx, rx) = mpsc::sync_channel(1);
+        let worker = thread::spawn(move || {
+            let result = agent.process(TurnInputRequest::new("write it"));
+            tx.send((agent, result)).unwrap();
+        });
+        let request = wait_for_pending(&coordinator);
+        assert!(
+            coordinator
+                .respond_with_digest(
+                    ApprovalResponse {
+                        request_id: request.request_id.clone(),
+                        decision,
+                        remember: false,
+                        message: None
+                    },
+                    &"0".repeat(64)
+                )
+                .is_err()
+        );
+        assert!(!workspace.path().join("note.txt").exists());
+        for field in [
+            "device",
+            "request",
+            "fingerprint",
+            "project",
+            "session",
+            "digest",
+        ] {
+            let mut actor = remote_actor(&request, &session_id);
+            match field {
+                "device" => actor.device_id.clear(),
+                "request" => actor.request_id = "bad\n".into(),
+                "fingerprint" => actor.fingerprint.clear(),
+                "project" => actor.project_id.clear(),
+                "session" => actor.session_id.clear(),
+                _ => actor.request_digest = "f".repeat(64),
+            }
+            assert!(
+                coordinator
+                    .respond_remote(
+                        ApprovalResponse {
+                            request_id: request.request_id.clone(),
+                            decision,
+                            remember: false,
+                            message: None
+                        },
+                        &request.digest().unwrap(),
+                        actor
+                    )
+                    .is_err()
+            );
+            assert!(coordinator.is_pending(&request.request_id));
+        }
+        coordinator
+            .respond_remote(
+                ApprovalResponse {
+                    request_id: request.request_id.clone(),
+                    decision,
+                    remember: false,
+                    message: None,
+                },
+                &request.digest().unwrap(),
+                remote_actor(&request, &session_id),
+            )
+            .unwrap();
+        let (agent, result) = rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        result.unwrap();
+        worker.join().unwrap();
+        assert_eq!(
+            workspace.path().join("note.txt").exists(),
+            decision == ApprovalDecision::Allow
+        );
+        if decision == ApprovalDecision::Allow {
+            assert_eq!(
+                std::fs::read_to_string(workspace.path().join("note.txt")).unwrap(),
+                "approved"
+            );
+        }
+        let event = agent
+            .session()
+            .events()
+            .iter()
+            .find(|event| {
+                event["type"] == "approval_resolved" && event["request_id"] == request.request_id
+            })
+            .unwrap();
+        assert_eq!(event["remember"], false);
+        assert_eq!(event["decision"], serde_json::to_value(decision).unwrap());
+        assert_eq!(
+            event["remote"],
+            serde_json::to_value(remote_actor(&request, &session_id)).unwrap()
+        );
+    }
+}
+
+#[test]
+fn simultaneous_local_and_remote_answers_have_one_winner_and_exact_actor_audit() {
+    for _ in 0..8 {
+        let workspace = tempdir().unwrap();
+        let mut agent = configured_agent(workspace.path());
+        let session_id = agent.session().session_id().to_owned();
+        let coordinator = agent.approval_coordinator().unwrap();
+        let worker = thread::spawn(move || {
+            let result = agent.process(TurnInputRequest::new("race"));
+            (agent, result)
+        });
+        let request = wait_for_pending(&coordinator);
+        let actor = remote_actor(&request, &session_id);
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let response = |decision| ApprovalResponse {
+            request_id: request.request_id.clone(),
+            decision,
+            remember: false,
+            message: None,
+        };
+        let local = {
+            let gate = barrier.clone();
+            let coordinator = coordinator.clone();
+            let answer = response(ApprovalDecision::Deny);
+            thread::spawn(move || {
+                gate.wait();
+                coordinator.respond(answer).is_ok()
+            })
+        };
+        let remote = {
+            let gate = barrier.clone();
+            let coordinator = coordinator.clone();
+            let answer = response(ApprovalDecision::Allow);
+            let actor = actor.clone();
+            let digest = request.digest().unwrap();
+            thread::spawn(move || {
+                gate.wait();
+                coordinator.respond_remote(answer, &digest, actor).is_ok()
+            })
+        };
+        barrier.wait();
+        let local_won = local.join().unwrap();
+        let remote_won = remote.join().unwrap();
+        assert_ne!(local_won, remote_won);
+        let (agent, result) = worker.join().unwrap();
+        result.unwrap();
+        assert_eq!(workspace.path().join("note.txt").exists(), remote_won);
+        let records: Vec<_> = agent
+            .session()
+            .events()
+            .iter()
+            .filter(|event| event["type"] == "approval_resolved")
+            .collect();
+        assert_eq!(records.len(), 1);
+        if remote_won {
+            assert_eq!(records[0]["remote"], serde_json::to_value(actor).unwrap());
+        } else {
+            assert!(records[0].get("remote").is_none());
+        }
+    }
+}
+
+#[test]
+fn remote_actor_is_retracted_on_audit_failure_even_without_local_reveal() {
+    use zenpi::{
+        approval::{ApprovalCoordinator, ApprovalRequest, PersistApprovalError},
+        tools::{ToolOrigin, ToolSideEffect},
+    };
+    let coordinator = ApprovalCoordinator::default();
+    let request = ApprovalRequest {
+        request_id: "pending".into(),
+        turn_id: "turn".into(),
+        call_id: "call".into(),
+        tool: "write_file".into(),
+        side_effect: ToolSideEffect::WorkspaceWrite,
+        arguments: serde_json::json!({}),
+        preview: None,
+        origin: ToolOrigin::AgentTool,
+        policy_digest: None,
+        lease_id: None,
+    };
+    let worker = {
+        let coordinator = coordinator.clone();
+        let request = request.clone();
+        thread::spawn(move || {
+            coordinator.request_response(request, &mut ApprovalPolicy::default(), &|| false)
+        })
+    };
+    for _ in 0..500 {
+        if coordinator.is_pending("pending") {
+            break;
+        }
+        thread::sleep(Duration::from_millis(2));
+    }
+    assert!(coordinator.is_pending("pending"));
+    let digest = request.digest().unwrap();
+    let actor = remote_actor(&request, "session");
+    coordinator
+        .respond_remote(
+            ApprovalResponse {
+                request_id: "pending".into(),
+                decision: ApprovalDecision::Allow,
+                remember: false,
+                message: None,
+            },
+            &digest,
+            actor.clone(),
+        )
+        .unwrap();
+    worker.join().unwrap().unwrap();
+    assert_eq!(coordinator.accepted("pending").unwrap().remote, Some(actor));
+    assert!(matches!(
+        coordinator.persist_accepted("pending", |_| Err::<(), _>("storage failure")),
+        Err(PersistApprovalError::Persistence(_))
+    ));
+    assert!(coordinator.accepted("pending").is_none());
+    assert!(coordinator.is_pending("pending"));
+    assert_eq!(coordinator.pending_summaries(16).unwrap()[0].digest, digest);
+    coordinator
+        .respond(ApprovalResponse {
+            request_id: "pending".into(),
+            decision: ApprovalDecision::Deny,
+            remember: false,
+            message: None,
+        })
+        .unwrap();
+    assert!(coordinator.accepted("pending").unwrap().remote.is_none());
 }
 
 #[test]

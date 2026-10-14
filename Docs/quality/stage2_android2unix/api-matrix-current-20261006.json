@@ -1,0 +1,132 @@
+{
+  "apis": [
+    31,
+    34,
+    35
+  ],
+  "artifacts": {
+    "target/debug/zenpi": "e94ce4b0c77e182932cbe425489c2a6e148f8d6ec8424cf6621a3af67c5ec1e5",
+    "android/app/build/outputs/apk/debug/app-debug.apk": "363f4ad92d946bff1033b54c238d5be4abd317335ce505aff3542a1598c334de",
+    "android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk": "128362dc54402e9f2342ac8a1eead342838d62c6f8c3f14c6752fa902d3639dc"
+  },
+  "emulator_lifecycle_matrix_verified": true,
+  "transport_route": "emulator_host_alias",
+  "direct_host_interface_matrix_verified": false,
+  "emulator_host_network_matrix_verified": true,
+  "physical_phone_lan_verified": false,
+  "camera_scanning_verified": false,
+  "whole_item_accepted": false,
+  "receipts": [
+    {
+      "path": "Docs/quality/stage2_android2unix/desktop-api31-worktree-hostalias-scrollfix-retry-20261006.json",
+      "sha256": "d90183fbf035cab2d52eff5d0db666c356ea92b26e6eb91dd18e1b98bfe1df63"
+    },
+    {
+      "path": "Docs/quality/stage2_android2unix/desktop-api34-worktree-hostalias-scrollfix-retry-20261006.json",
+      "sha256": "5e38b5b9fb2255a6ad399c2f8565be8b7c7c3516437b7e7a1ceb8a5593bf306c"
+    },
+    {
+      "path": "Docs/quality/stage2_android2unix/desktop-api35-worktree-hostalias-scrollfix-retry2-20261006.json",
+      "sha256": "ac33e62d6436171d6ff02f35b809b32617842a52268b9b549fc2d42f0712d89b"
+    },
+    {
+      "path": "Docs/quality/stage2_android2unix/headless-api31-worktree-hostalias-current-20261006.json",
+      "sha256": "285bc6966e1a0d0f26393a235aface84bca178be6f2ac1b1b9118e0edf540fa0"
+    },
+    {
+      "path": "Docs/quality/stage2_android2unix/headless-api34-worktree-hostalias-scrollfix-20261006.json",
+      "sha256": "301a9e4f6dd3122e29dd9ec7e4863acc452cbda0391278b2605f62e3d364ae9f"
+    },
+    {
+      "path": "Docs/quality/stage2_android2unix/headless-api35-worktree-hostalias-scrollfix-20261006.json",
+      "sha256": "6517915c5d37ba053c3110b4fd59144b800928342b620a3441353a675abaec51"
+    }
+  ],
+  "saved_assets": [
+    {
+      "path": "Docs/quality/stage2_android2unix/desktop-api31-worktree-hostalias-scrollfix-retry-20261006.png",
+      "sha256": "4c597ad25be4d8f17267e3c16f1e193650cc5f8bb5a4d290619bcf993753dccd"
+    },
+    {
+      "path": "Docs/quality/stage2_android2unix/desktop-api34-worktree-hostalias-scrollfix-retry-20261006.png",
+      "sha256": "bd82747a1a58596d2d1d9f896a6d637ada27c841f7d922df63d39ecedb23a961"
+    },
+    {
+      "path": "Docs/quality/stage2_android2unix/desktop-api35-worktree-hostalias-scrollfix-retry2-20261006.png",
+      "sha256": "02356ee1677650d9bb0d9abd12ad41b609c50d4776fd8666ef2d0775c027860b"
+    },
+    {
+      "path": "Docs/quality/stage2_android2unix/headless-api31-worktree-hostalias-current-20261006.png",
+      "sha256": "9b830f07cb17aaeae1f5076ac91954ad42b3dba90d6c35041416e585c890b05a"
+    },
+    {
+      "path": "Docs/quality/stage2_android2unix/headless-api31-worktree-hostalias-current-20261006.diff.png",
+      "sha256": "51ecbbd57107ba13b79f7671170b15b616498818a54f7ffb3c286d872237d315"
+    },
+    {
+      "path": "Docs/quality/stage2_android2unix/headless-api31-worktree-hostalias-current-20261006.stream.png",
+      "sha256": "cb6e371cfbc8c651529d87f21d47f7b125d560cc8c045725e945520f7da7a924"
+    },
+    {
+      "path": "Docs/quality/stage2_android2unix/headless-api31-worktree-hostalias-current-20261006.files.png",
+      "sha256": "62dab1ac7baf42874e4bff19571fa705b17abde8c95e5dc9247773ac6668f75c"
+    },
+    {
+      "path": "Docs/quality/stage2_android2unix/headless-api31-worktree-hostalias-current-20261006.resources.png",
+      "sha256": "eea9ae962b55c3fc439859a0c4bdce9e585860c0f665f4eaea01ca2fd48dc6ec"
+    },
+    {
+      "path": "Docs/quality/stage2_android2unix/headless-api31-worktree-hostalias-current-20261006.selection.png",
+      "sha256": "294d9640ac7e4096171896c994c092302b662b397cdc07ac612b12e1e2a4bd6c"
+    },
+    {
+      "path": "Docs/quality/stage2_android2unix/headless-api34-worktree-hostalias-scrollfix-20261006.png",
+      "sha256": "c36ba1b0e50a5d718b5d6d62534fb4423d4c7792d931bd9f414bd3651f9e2bfc"
+    },
+    {
+      "path": "Docs/quality/stage2_android2unix/headless-api34-worktree-hostalias-scrollfix-20261006.diff.png",
+      "sha256": "3b0dca2f86f14227e735eeb09a1b59d65cc6e1c5defbd2e103d40196e1dcea3c"
+    },
+    {
+      "path": "Docs/quality/stage2_android2unix/headless-api34-worktree-hostalias-scrollfix-20261006.stream.png",
+      "sha256": "dd0afbbbbf1536e2457b56335ecc8117ec1c8725c0904beca830acd11394d239"
+    },
+    {
+      "path": "Docs/quality/stage2_android2unix/headless-api34-worktree-hostalias-scrollfix-20261006.files.png",
+      "sha256": "c1891945c29209cc6fc5e4376194b2aba20c46429770359a312045c379a264f2"
+    },
+    {
+      "path": "Docs/quality/stage2_android2unix/headless-api34-worktree-hostalias-scrollfix-20261006.resources.png",
+      "sha256": "c4bb5a661d067c30de6930a5406a41729cb5df2f6280a698fc438ed69ab8c67a"
+    },
+    {
+      "path": "Docs/quality/stage2_android2unix/headless-api34-worktree-hostalias-scrollfix-20261006.selection.png",
+      "sha256": "94c118dbb8d1496f159017d225c95660f7d4f7f7080225e055c6f56b1b775fdb"
+    },
+    {
+      "path": "Docs/quality/stage2_android2unix/headless-api35-worktree-hostalias-scrollfix-20261006.png",
+      "sha256": "03626c404849e5f53fafcf287c8319e529ed3ef28a6a6822ebc0a1c9a51095b3"
+    },
+    {
+      "path": "Docs/quality/stage2_android2unix/headless-api35-worktree-hostalias-scrollfix-20261006.diff.png",
+      "sha256": "0ea3c1d0de4598836b823188574bbc33908d07fed380f7fb4f709011f74b9f04"
+    },
+    {
+      "path": "Docs/quality/stage2_android2unix/headless-api35-worktree-hostalias-scrollfix-20261006.stream.png",
+      "sha256": "86fde07646c0d198afb14c4f37ced555202600e457aa7c4de30ef715ad174f30"
+    },
+    {
+      "path": "Docs/quality/stage2_android2unix/headless-api35-worktree-hostalias-scrollfix-20261006.files.png",
+      "sha256": "6d79681610495f7b0a9a079222e05d213e11c28fb2583e01c1214ebb518ce50d"
+    },
+    {
+      "path": "Docs/quality/stage2_android2unix/headless-api35-worktree-hostalias-scrollfix-20261006.resources.png",
+      "sha256": "1c88b2511b9ab1f3127eb569da750e076a0c2485e0b655648dfe166498412614"
+    },
+    {
+      "path": "Docs/quality/stage2_android2unix/headless-api35-worktree-hostalias-scrollfix-20261006.selection.png",
+      "sha256": "7d6faf347ecb5974d6280c6580076d7dcc1f31afea425643727419a6bf6c1cd3"
+    }
+  ],
+  "validator_sha256": "07d7836cb8f9cd8867a06b586e09eccc61c975ac06e77c9cab452b7643d668d4"
+}

@@ -417,6 +417,13 @@ impl SessionStore {
     /// it. Read-only hosts such as `session list` and `session inspect` use
     /// this path so observation cannot mutate a journal as a side effect.
     pub fn open_existing(path: impl AsRef<Path>) -> Result<Self, SessionError> {
+        Self::open_existing_bounded(path, MAX_SESSION_BYTES)
+    }
+
+    pub(crate) fn open_existing_bounded(
+        path: impl AsRef<Path>,
+        max_bytes: usize,
+    ) -> Result<Self, SessionError> {
         let path = path.as_ref();
         let metadata = session_path_metadata(path)?;
         if !metadata.is_some_and(|metadata| metadata.is_file()) {
@@ -424,7 +431,7 @@ impl SessionStore {
                 "inspection source is not an existing session file".into(),
             ));
         }
-        Self::open_with_options(path, false, None)
+        Self::open_with_limit(path, false, None, max_bytes.min(MAX_SESSION_BYTES))
     }
 
     /// Open an existing, structurally valid journal for continued writes.
@@ -518,6 +525,15 @@ impl SessionStore {
         writable: bool,
         workspace: Option<&Path>,
     ) -> Result<Self, SessionError> {
+        Self::open_with_limit(path, writable, workspace, MAX_SESSION_BYTES)
+    }
+
+    fn open_with_limit(
+        path: impl AsRef<Path>,
+        writable: bool,
+        workspace: Option<&Path>,
+        max_bytes: usize,
+    ) -> Result<Self, SessionError> {
         let path = path.as_ref().to_path_buf();
         if path.as_os_str().is_empty() {
             return Err(SessionError::EmptyPath);
@@ -539,7 +555,7 @@ impl SessionStore {
         // probe closes the common replacement race, while O_NOFOLLOW in
         // `read_session_bytes` handles the final open atomically on Unix.
         let _ = session_path_metadata(&path)?;
-        let bytes = match read_session_bytes(&path) {
+        let bytes = match read_session_bytes_with_limit(&path, max_bytes) {
             Ok(bytes) => bytes,
             Err(ReadSessionError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
                 Vec::new()
@@ -547,7 +563,7 @@ impl SessionStore {
             Err(ReadSessionError::Io(error)) => return Err(error.into()),
             Err(ReadSessionError::LimitExceeded { actual }) => {
                 return Err(SessionError::LimitExceeded {
-                    max: MAX_SESSION_BYTES,
+                    max: max_bytes,
                     actual,
                 });
             }
@@ -888,6 +904,7 @@ impl SessionStore {
                 .expect("tree was prepared")
                 .commit_turn(entry);
         }
+        crate::remote::wakeup::notify(self.session_id());
         Ok(())
     }
 
@@ -1217,6 +1234,7 @@ impl SessionStore {
         self.append_json(&json!({ "kind": "event", "event": &event }))?;
         self.event_values.push(event);
         self.events += 1;
+        crate::remote::wakeup::notify(self.session_id());
         Ok(())
     }
 
@@ -2198,13 +2216,20 @@ enum ReadSessionError {
 }
 
 fn read_session_bytes(path: &Path) -> Result<Vec<u8>, ReadSessionError> {
+    read_session_bytes_with_limit(path, MAX_SESSION_BYTES)
+}
+
+fn read_session_bytes_with_limit(
+    path: &Path,
+    max_bytes: usize,
+) -> Result<Vec<u8>, ReadSessionError> {
     let mut options = OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
     options.custom_flags(libc::O_NOFOLLOW);
     let file = options.open(path).map_err(ReadSessionError::Io)?;
     let metadata = file.metadata().map_err(ReadSessionError::Io)?;
-    if metadata.len() > MAX_SESSION_BYTES as u64 {
+    if metadata.len() > max_bytes as u64 {
         return Err(ReadSessionError::LimitExceeded {
             actual: metadata.len(),
         });
@@ -2212,12 +2237,12 @@ fn read_session_bytes(path: &Path) -> Result<Vec<u8>, ReadSessionError> {
     // Do not reserve the entire journal size up front. Near the 256 MiB
     // admission cap this otherwise creates a large instantaneous allocation
     // before the bounded reader has established that the input is usable.
-    let initial_capacity = metadata.len().min(8 * 1024 * 1024) as usize;
+    let initial_capacity = metadata.len().min(max_bytes.min(8 * 1024 * 1024) as u64) as usize;
     let mut bytes = Vec::with_capacity(initial_capacity);
-    file.take((MAX_SESSION_BYTES as u64).saturating_add(1))
+    file.take((max_bytes as u64).saturating_add(1))
         .read_to_end(&mut bytes)
         .map_err(ReadSessionError::Io)?;
-    if bytes.len() > MAX_SESSION_BYTES {
+    if bytes.len() > max_bytes {
         return Err(ReadSessionError::LimitExceeded {
             actual: bytes.len() as u64,
         });
@@ -4088,6 +4113,33 @@ fn validate_mailbox_transition(
 #[cfg(test)]
 mod new_session_audit_recovery_tests {
     use super::*;
+
+    #[test]
+    fn bounded_readonly_open_admits_exact_bytes_and_refuses_one_fewer_without_mutation() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("bounded.jsonl");
+        let mut session = SessionStore::open_in_workspace(&path, root.path()).unwrap();
+        session
+            .append_event(json!({"type":"bounded-evidence","text":"payload"}))
+            .unwrap();
+        let identity = session.session_id().to_owned();
+        drop(session);
+        let before = fs::read(&path).unwrap();
+        assert_eq!(
+            SessionStore::open_existing_bounded(&path, before.len())
+                .unwrap()
+                .session_id(),
+            identity
+        );
+        assert!(
+            matches!(SessionStore::open_existing_bounded(&path, before.len() - 1), Err(SessionError::LimitExceeded { max, actual }) if max == before.len() - 1 && actual == before.len() as u64)
+        );
+        assert!(SessionStore::open_existing_bounded(&path, 0).is_err());
+        assert_eq!(fs::read(&path).unwrap(), before);
+        let absent = root.path().join("absent.jsonl");
+        assert!(SessionStore::open_existing_bounded(&absent, before.len()).is_err());
+        assert!(!absent.exists());
+    }
 
     #[test]
     fn duplicate_startup_audit_allows_next_append_without_rewriting_history() {

@@ -463,7 +463,19 @@ mod tests {
         };
         let mut client = TcpStream::connect(address).unwrap();
         client.write_all(b"GET /auth/callback?").unwrap();
-        server.pump(&input).unwrap();
+        // A successful connect/write does not make nonblocking accept/read
+        // immediately ready. Observe the partial request before expiring it.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            server.pump(&input).unwrap();
+            if server.connections.len() == 1
+                && server.connections[0].bytes == b"GET /auth/callback?"
+            {
+                break;
+            }
+            assert!(Instant::now() < deadline, "partial request not received");
+            std::thread::sleep(Duration::from_millis(2));
+        }
         assert_eq!(server.connections.len(), 1);
         server.connections[0].deadline = Instant::now();
         server.pump(&input).unwrap();
@@ -471,14 +483,23 @@ mod tests {
         assert!(input.take().unwrap().is_none());
         let mut client = TcpStream::connect(address).unwrap();
         client.write_all(&vec![b'x'; MAX_REQUEST + 1]).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(1);
+        client.set_nonblocking(true).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut response = Vec::new();
+        let mut buffer = [0_u8; 1024];
         loop {
             server.pump(&input).unwrap();
-            if server.connections.is_empty() {
-                break;
+            match client.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(length) => response.extend_from_slice(&buffer[..length]),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => (),
+                Err(error) => panic!("oversized request response failed: {error}"),
             }
-            assert!(Instant::now() < deadline);
+            assert!(Instant::now() < deadline, "oversized request not rejected");
+            std::thread::sleep(Duration::from_millis(2));
         }
+        assert!(response.starts_with(b"HTTP/1.1 413 Result\r\n"));
+        assert!(server.connections.is_empty());
         assert!(input.take().unwrap().is_none());
     }
 

@@ -1,0 +1,103 @@
+{
+  "schema_version": "stage2-catalog-ui-regression/v1",
+  "passed": true,
+  "verified_at_unix": 1791138208.353926,
+  "serial": "emulator-5584",
+  "android_api": 35,
+  "build_provenance": {
+    "path": "android/app/build/stage2-device-build.json",
+    "sha256": "c862bc2dc23bdb8ba61456ee66e81dfa74c3fedd0f493e134a9d3d82fdfded6a",
+    "inputs_sha256": "c657e28ce1c6e005438e55e5cacf88fc37dc35a1b4a29883f4533fcf5ee6e08f",
+    "artifacts": {
+      "android/app/build/outputs/apk/debug/app-debug.apk": "46ceae6cc632eb864fb85be5960d5720f677f94d05bfc4d135856d08c625c553",
+      "android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk": "4f38d5ca63f25816b0a3ee48371edbe0e61b1bdea9f28138b378851c56b59746"
+    }
+  },
+  "installed_apks": {
+    "app.zenpi.android": "46ceae6cc632eb864fb85be5960d5720f677f94d05bfc4d135856d08c625c553",
+    "app.zenpi.android.test": "4f38d5ca63f25816b0a3ee48371edbe0e61b1bdea9f28138b378851c56b59746"
+  },
+  "runs": [
+    {
+      "viewport": "portrait",
+      "size_px": [
+        320,
+        640
+      ],
+      "completed_tests": [
+        "zenpi.ResourceCatalogScreenTest#pagingControlsNavigateWithoutReplacingDraftOrSending",
+        "zenpi.ResourceCatalogScreenTest#reloadRequiresAdvertisedControlAndIsDisabledOfflineOrDuringPendingWrite",
+        "zenpi.ResourceCatalogScreenTest#resourcePrependsDraftArgumentsWithoutSendingAndStaleOrOfflineChoicesAreDisabled",
+        "zenpi.WorkspaceFilesScreenTest#filePagingIsReadOnlyAndOfflineOrLoadingCannotNavigate",
+        "zenpi.WorkspaceFilesScreenTest#selectedHostFileInsertsQuotedReferenceWithoutSendingAndDirectoriesNavigate"
+      ],
+      "instrumentation": {
+        "path": "Docs/quality/stage2_android2unix/android-api35-catalog-final-portrait-20261005.instrumentation.txt",
+        "sha256": "a55ef3836264ceb5980c2f47b85cbbdd9af10b64962358c61183bf93d8ab02fc"
+      },
+      "screenshots": [
+        {
+          "path": "Docs/quality/stage2_android2unix/android-api35-files-final-portrait-20261005.png",
+          "sha256": "43980bf18b0a0ef01c4973dde9a428397014555552a211c802416df2d36008ab",
+          "dimensions": [
+            320,
+            640
+          ]
+        },
+        {
+          "path": "Docs/quality/stage2_android2unix/android-api35-resources-final-portrait-20261005.png",
+          "sha256": "098d0f82926866471bbcc9afa12293529c8b9936deb80431776bb1b1feb2c9fd",
+          "dimensions": [
+            320,
+            640
+          ]
+        }
+      ]
+    },
+    {
+      "viewport": "wide",
+      "size_px": [
+        640,
+        320
+      ],
+      "completed_tests": [
+        "zenpi.ResourceCatalogScreenTest#pagingControlsNavigateWithoutReplacingDraftOrSending",
+        "zenpi.ResourceCatalogScreenTest#reloadRequiresAdvertisedControlAndIsDisabledOfflineOrDuringPendingWrite",
+        "zenpi.ResourceCatalogScreenTest#resourcePrependsDraftArgumentsWithoutSendingAndStaleOrOfflineChoicesAreDisabled",
+        "zenpi.WorkspaceFilesScreenTest#filePagingIsReadOnlyAndOfflineOrLoadingCannotNavigate",
+        "zenpi.WorkspaceFilesScreenTest#selectedHostFileInsertsQuotedReferenceWithoutSendingAndDirectoriesNavigate"
+      ],
+      "instrumentation": {
+        "path": "Docs/quality/stage2_android2unix/android-api35-catalog-final-wide-20261005.instrumentation.txt",
+        "sha256": "0ca2616187b33fe0d4ea36625393332a8f3422fc612b1a1bd86235edcde11326"
+      },
+      "screenshots": [
+        {
+          "path": "Docs/quality/stage2_android2unix/android-api35-files-final-wide-20261005.png",
+          "sha256": "074c37e27911528033d8b61d586bc2be898688bc850d7601f3c61a79ab1f9a09",
+          "dimensions": [
+            640,
+            320
+          ]
+        },
+        {
+          "path": "Docs/quality/stage2_android2unix/android-api35-resources-final-wide-20261005.png",
+          "sha256": "6b23e945ee19483c5b97fcbc5b3769d670e877c2ad3c57a4e10f6d6ba0cc03bd",
+          "dimensions": [
+            640,
+            320
+          ]
+        }
+      ]
+    }
+  ],
+  "pagination_visible_after_list_scroll_verified": true,
+  "new_page_scroll_reset_verified": true,
+  "draft_preserved_no_send_verified": true,
+  "read_only_offline_loading_and_invalid_scope_fences_verified": true,
+  "viewport_scope": "320x640 and owned emulator wm size 640x320 at density 160; not Activity rotation recreation acceptance",
+  "physical_camera_verified": false,
+  "direct_physical_lan_verified": false,
+  "whole_item_accepted": false,
+  "scope": "Five named catalog UI tests per viewport only, not full connected suite"
+}

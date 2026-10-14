@@ -1,0 +1,39 @@
+{
+  "passed": false,
+  "android_api": 35,
+  "expected_android_api": 35,
+  "scope": "production desktop/Android regression interrupted before final acceptance",
+  "failure": "Initial API 35 instrumentation exceeded 120 seconds; command invite redacted after failure-evidence privacy audit. Original failed outcome and artifact hashes preserved.",
+  "artifacts": {
+    "target/debug/zenpi": "f59f8cb78b9464bb6409ff1e5350cc90b3ef122fa1cf05795109a9012ca2d1b0",
+    "android/app/build/outputs/apk/debug/app-debug.apk": "d95d962091898f853d15e9887c45a72ca4f9e5f979dba4261a8636f98af4a4a4",
+    "android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk": "4a10dac0f2e1a9c35b276b25b641846e17b0c478002c655ea2ab804687e27da0"
+  },
+  "harness_sha256": "25c2beea0948b38dbcc627b8618bcb75f439b482aee232a0fc3dc2f51cbee16d",
+  "started_at_unix": 1790894022.217388,
+  "finished_at_unix": 1790894144.8961349,
+  "integration_state": "provisional uncommitted worktree; no item acceptance",
+  "device_registry": {
+    "version": 1,
+    "host_fingerprint": "223f521fca0770f81028a058b5e6b779fdc01945049879ce1f24c861ed189f9e",
+    "devices": [
+      {
+        "id": "d7f67f018b40e2009992f1d9a16ffc16b7c74db4b71a1e8d5f48fc16016e62b1",
+        "name": "Android-emulator-test",
+        "public_key": "BPD2h_XWgUlj0Vu-YkxGITu-JnSF050ehcD5ubDJnS9NnYcv9QeFKv731eOYj_zkgdbepYRecLUpRzxucCIg3e8",
+        "created_at": 1790894030,
+        "revision": 4,
+        "revoked": false,
+        "capabilities": [
+          "read",
+          "control"
+        ],
+        "projects": [
+          "92a4615488217ba9544d78ef2fe2373bc6aac06e268764bbf3266634e308ef45",
+          "b52bb60d185b357345ee3660e30528bcd9631cd5421eea010220b7491aff368b"
+        ]
+      }
+    ]
+  },
+  "instrumentation_outputs": []
+}

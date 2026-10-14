@@ -5,10 +5,10 @@ schema_version: execution-gantt/stage2
 source_path: Docs/stage2_android2unix_blueprint.md
 spec_path: Docs/stage2_android2unix_spec.md
 projection_authority: false
-generated_at: '2026-09-20T02:03:21+08:00'
-source_sha256: bdfc159aa77b37420c81e9843678042b82192f9a0c78b5001ee7a907a83e9a7d
-spec_sha256: 6eaef18f8613ce978159df741f689d3898723dfdb2edd5649dec27925aecbde9
-unclaimed: 35
+generated_at: '2026-10-04T18:56:22+08:00'
+source_sha256: f47dc136879fb2489885edbb212f4fbb1c443da2a4ecf1df66dd75b19de922b8
+spec_sha256: 403e6339b0318a420d93600fc52926acf6a9e46ec899bd9a9edb03c235190a28
+unclaimed: 36
 self_tested: 0
 master_accepted: 0
 unscheduled_policy: visible without invented calendar dates
@@ -22,7 +22,7 @@ unscheduled_policy: visible without invented calendar dates
 |---|---:|
 | master accepted | 0 |
 | worker self-tested | 0 |
-| unfinished | 35 |
+| unfinished | 36 |
 
 ## Dependency Gantt
 
@@ -40,6 +40,7 @@ gantt
     S2-011 Implement opt-in TLS/TCP listener lifecycle for `zenpi  :S2-011, 4, 1s
     S2-012 Add QR invite, host identity and pinned-key pairing :S2-012, 5, 1s
     S2-013 Add device registry, project ACL and revocation :S2-013, 6, 1s
+    S2-021 Render a full-screen desktop TUI QR pairing view for `z :S2-021, 6, 1s
     S2-014 Adapt owned headless streams to the network host :S2-014, 7, 1s
     S2-015 Define host-owned workspace control API :S2-015, 8, 1s
     S2-016 Move layer-2 tabs into a host-owned stable-ID domain :S2-016, 9, 1s
@@ -78,38 +79,39 @@ gantt
 
 | ID | State | Depends on | Claim/owner | Startup/live | Handoff/integration/repair | Scheduling note |
 |---|---|---|---|---|---|---|
-| S2-001 | unclaimed | — | unclaimed | not_started | none | unscheduled; estimate is not a calendar date |
-| S2-002 | unclaimed | S2-001 | unclaimed | not_started | none | unscheduled; estimate is not a calendar date |
-| S2-003 | unclaimed | S2-001 | unclaimed | not_started | none | unscheduled; estimate is not a calendar date |
-| S2-010 | unclaimed | S2-003 | unclaimed | not_started | none | unscheduled; estimate is not a calendar date |
-| S2-011 | unclaimed | S2-010 | unclaimed | not_started | none | unscheduled; estimate is not a calendar date |
-| S2-012 | unclaimed | S2-011 | unclaimed | not_started | none | unscheduled; estimate is not a calendar date |
-| S2-013 | unclaimed | S2-012 | unclaimed | not_started | none | unscheduled; estimate is not a calendar date |
-| S2-014 | unclaimed | S2-003,S2-010,S2-013 | unclaimed | not_started | none | unscheduled; estimate is not a calendar date |
-| S2-015 | unclaimed | S2-003,S2-014 | unclaimed | not_started | none | unscheduled; estimate is not a calendar date |
-| S2-016 | unclaimed | S2-015 | unclaimed | not_started | none | unscheduled; estimate is not a calendar date |
-| S2-017 | unclaimed | S2-016 | unclaimed | not_started | none | unscheduled; estimate is not a calendar date |
-| S2-018 | unclaimed | S2-016 | unclaimed | not_started | none | unscheduled; estimate is not a calendar date |
-| S2-019 | unclaimed | S2-014,S2-015,S2-017,S2-018 | unclaimed | not_started | none | unscheduled; estimate is not a calendar date |
-| S2-020 | unclaimed | S2-014,S2-019 | unclaimed | not_started | none | unscheduled; estimate is not a calendar date |
-| S2-030 | unclaimed | S2-003 | unclaimed | not_started | none | unscheduled; estimate is not a calendar date |
-| S2-031 | unclaimed | S2-012,S2-030 | unclaimed | not_started | none | unscheduled; estimate is not a calendar date |
-| S2-032 | unclaimed | S2-010,S2-012,S2-030,S2-031 | unclaimed | not_started | none | unscheduled; estimate is not a calendar date |
-| S2-033 | unclaimed | S2-020,S2-032 | unclaimed | not_started | none | unscheduled; estimate is not a calendar date |
-| S2-034 | unclaimed | S2-015,S2-033 | unclaimed | not_started | none | unscheduled; estimate is not a calendar date |
-| S2-035 | unclaimed | S2-017,S2-018,S2-034 | unclaimed | not_started | none | unscheduled; estimate is not a calendar date |
-| S2-036 | unclaimed | S2-019,S2-020,S2-033 | unclaimed | not_started | none | unscheduled; estimate is not a calendar date |
-| S2-037 | unclaimed | S2-013,S2-030 | unclaimed | not_started | none | unscheduled; estimate is not a calendar date |
-| S2-038 | unclaimed | S2-032,S2-033 | unclaimed | not_started | none | unscheduled; estimate is not a calendar date |
-| S2-050 | unclaimed | S2-003,S2-010,S2-020 | unclaimed | not_started | none | unscheduled; estimate is not a calendar date |
-| S2-051 | unclaimed | S2-011,S2-014,S2-019,S2-020 | unclaimed | not_started | none | unscheduled; estimate is not a calendar date |
-| S2-052 | unclaimed | S2-012,S2-013,S2-020 | unclaimed | not_started | none | unscheduled; estimate is not a calendar date |
-| S2-053 | unclaimed | S2-020,S2-038,S2-051 | unclaimed | not_started | none | unscheduled; estimate is not a calendar date |
-| S2-054 | unclaimed | S2-019,S2-034,S2-035,S2-036,S2-051 | unclaimed | not_started | none | unscheduled; estimate is not a calendar date |
-| S2-055 | unclaimed | S2-037,S2-038,S2-053 | unclaimed | not_started | none | unscheduled; estimate is not a calendar date |
-| S2-056 | unclaimed | S2-016,S2-037,S2-038 | unclaimed | not_started | none | unscheduled; estimate is not a calendar date |
-| S2-070 | unclaimed | S2-051,S2-052,S2-054,S2-056 | unclaimed | not_started | none | unscheduled; estimate is not a calendar date |
-| S2-071 | unclaimed | S2-030,S2-037,S2-038,S2-055 | unclaimed | not_started | none | unscheduled; estimate is not a calendar date |
-| S2-072 | unclaimed | S2-052,S2-054,S2-055,S2-070,S2-071 | unclaimed | not_started | none | unscheduled; estimate is not a calendar date |
-| S2-073 | unclaimed | S2-054,S2-055,S2-070,S2-071,S2-072 | unclaimed | not_started | none | unscheduled; estimate is not a calendar date |
-| S2-099 | unclaimed | S2-070,S2-071,S2-072,S2-073 | unclaimed | not_started | none | unscheduled; estimate is not a calendar date |
+| S2-001 | unclaimed | — | unclaimed | not_started | none | runtime=unclaimed; estimate is not a calendar date |
+| S2-002 | unclaimed | S2-001 | unclaimed | not_started | none | runtime=unclaimed; estimate is not a calendar date |
+| S2-003 | unclaimed | S2-001 | unclaimed | not_started | none | runtime=unclaimed; estimate is not a calendar date |
+| S2-010 | unclaimed | S2-003 | unclaimed | not_started | none | runtime=unclaimed; estimate is not a calendar date |
+| S2-011 | unclaimed | S2-010 | unclaimed | not_started | none | runtime=unclaimed; estimate is not a calendar date |
+| S2-012 | unclaimed | S2-011 | unclaimed | not_started | none | runtime=unclaimed; estimate is not a calendar date |
+| S2-013 | unclaimed | S2-012 | unclaimed | not_started | none | runtime=unclaimed; estimate is not a calendar date |
+| S2-021 | unclaimed | S2-011,S2-012 | unclaimed | not_started | none | runtime=unclaimed; estimate is not a calendar date |
+| S2-014 | unclaimed | S2-003,S2-010,S2-013 | unclaimed | not_started | none | runtime=unclaimed; estimate is not a calendar date |
+| S2-015 | unclaimed | S2-003,S2-014 | unclaimed | not_started | none | runtime=unclaimed; estimate is not a calendar date |
+| S2-016 | unclaimed | S2-015 | unclaimed | not_started | none | runtime=unclaimed; estimate is not a calendar date |
+| S2-017 | unclaimed | S2-016 | unclaimed | not_started | none | runtime=unclaimed; estimate is not a calendar date |
+| S2-018 | unclaimed | S2-016 | unclaimed | not_started | none | runtime=unclaimed; estimate is not a calendar date |
+| S2-019 | unclaimed | S2-014,S2-015,S2-017,S2-018 | unclaimed | not_started | none | runtime=unclaimed; estimate is not a calendar date |
+| S2-020 | unclaimed | S2-014,S2-019 | unclaimed | not_started | none | runtime=unclaimed; estimate is not a calendar date |
+| S2-030 | unclaimed | S2-003 | unclaimed | not_started | none | runtime=unclaimed; estimate is not a calendar date |
+| S2-031 | unclaimed | S2-012,S2-030 | unclaimed | not_started | none | runtime=unclaimed; estimate is not a calendar date |
+| S2-032 | unclaimed | S2-010,S2-012,S2-030,S2-031 | unclaimed | not_started | none | runtime=unclaimed; estimate is not a calendar date |
+| S2-033 | unclaimed | S2-020,S2-032 | unclaimed | not_started | none | runtime=unclaimed; estimate is not a calendar date |
+| S2-034 | unclaimed | S2-015,S2-033 | unclaimed | not_started | none | runtime=unclaimed; estimate is not a calendar date |
+| S2-035 | unclaimed | S2-017,S2-018,S2-034 | unclaimed | not_started | none | runtime=unclaimed; estimate is not a calendar date |
+| S2-036 | unclaimed | S2-019,S2-020,S2-033 | unclaimed | not_started | none | runtime=unclaimed; estimate is not a calendar date |
+| S2-037 | unclaimed | S2-013,S2-030 | unclaimed | not_started | none | runtime=unclaimed; estimate is not a calendar date |
+| S2-038 | unclaimed | S2-032,S2-033 | unclaimed | not_started | none | runtime=unclaimed; estimate is not a calendar date |
+| S2-050 | unclaimed | S2-003,S2-010,S2-020 | unclaimed | not_started | none | runtime=unclaimed; estimate is not a calendar date |
+| S2-051 | unclaimed | S2-011,S2-014,S2-019,S2-020 | unclaimed | not_started | none | runtime=unclaimed; estimate is not a calendar date |
+| S2-052 | unclaimed | S2-012,S2-013,S2-020 | unclaimed | not_started | none | runtime=unclaimed; estimate is not a calendar date |
+| S2-053 | unclaimed | S2-020,S2-038,S2-051 | unclaimed | not_started | none | runtime=unclaimed; estimate is not a calendar date |
+| S2-054 | unclaimed | S2-019,S2-034,S2-035,S2-036,S2-051 | unclaimed | not_started | none | runtime=unclaimed; estimate is not a calendar date |
+| S2-055 | unclaimed | S2-037,S2-038,S2-053 | unclaimed | not_started | none | runtime=unclaimed; estimate is not a calendar date |
+| S2-056 | unclaimed | S2-016,S2-037,S2-038 | unclaimed | not_started | none | runtime=unclaimed; estimate is not a calendar date |
+| S2-070 | unclaimed | S2-051,S2-052,S2-054,S2-056 | unclaimed | not_started | none | runtime=unclaimed; estimate is not a calendar date |
+| S2-071 | unclaimed | S2-030,S2-037,S2-038,S2-055 | unclaimed | not_started | none | runtime=unclaimed; estimate is not a calendar date |
+| S2-072 | unclaimed | S2-052,S2-054,S2-055,S2-070,S2-071 | unclaimed | not_started | none | runtime=unclaimed; estimate is not a calendar date |
+| S2-073 | unclaimed | S2-054,S2-055,S2-070,S2-071,S2-072 | unclaimed | not_started | none | runtime=unclaimed; estimate is not a calendar date |
+| S2-099 | unclaimed | S2-070,S2-071,S2-072,S2-073 | unclaimed | not_started | none | runtime=unclaimed; estimate is not a calendar date |

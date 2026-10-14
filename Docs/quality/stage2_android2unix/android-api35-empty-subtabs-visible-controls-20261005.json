@@ -1,0 +1,38 @@
+{
+  "schema_version": "stage2-focused-ui-regression/v1",
+  "passed": true,
+  "serial": "emulator-5584",
+  "android_api": 35,
+  "verified_at_unix": 1791136723.485569,
+  "build_provenance": {
+    "path": "android/app/build/stage2-device-build.json",
+    "sha256": "ef91e83c008d9dac97ff6ddc235f8f80ae7b8328b0fedd95691eaf50276b2743",
+    "inputs_sha256": "14ed2cd7551d1d5cc2b230f8c67984b257a1e74fc4c7ab8b31fdf7aefe55c178",
+    "artifacts": {
+      "android/app/build/outputs/apk/debug/app-debug.apk": "128965999cab812c6da897dddc585ca6bd1d084530dd58ed83e55276cbc93cda",
+      "android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk": "d6a2ba401c03a72cf7c8a9355f8b25275054cd4390f8d84d86daf33cc81635c2"
+    }
+  },
+  "installed_apks": {
+    "app.zenpi.android": "128965999cab812c6da897dddc585ca6bd1d084530dd58ed83e55276cbc93cda",
+    "app.zenpi.android.test": "d6a2ba401c03a72cf7c8a9355f8b25275054cd4390f8d84d86daf33cc81635c2"
+  },
+  "completed_tests": [
+    "zenpi.SubtabScreenTest#invalidActiveScopeDoesNotCrashAndScannerResetFenceConcurrency",
+    "zenpi.SubtabScreenTest#offlineCacheShowsSecondaryTabsWithoutMutationControls",
+    "zenpi.SubtabScreenTest#selectionMoveAndRenameUseStableIdsAndRequireConfirmedName",
+    "zenpi.SubtabScreenTest#unknownWriteDisablesAllSecondaryActions",
+    "zenpi.TerminalHistoryScreenTest#retainedHistoryHasExplicitNavigationRefreshAndOfflineFences"
+  ],
+  "instrumentation": {
+    "path": "Docs/quality/stage2_android2unix/android-api35-empty-subtabs-visible-controls-20261005.instrumentation.txt",
+    "sha256": "81e50ca6de5ffd65086dae37e7b1c708bbd5d56eb284265124fcbc17473120db"
+  },
+  "empty_subtab_crash_fenced_verified": true,
+  "invalid_authority_controls_hidden_verified": true,
+  "healthy_scope_recovery_verified": true,
+  "physical_camera_verified": false,
+  "physical_lan_verified": false,
+  "whole_blueprint_accepted": false,
+  "scope": "Five named connected UI tests only; not full connected suite or physical LAN acceptance"
+}

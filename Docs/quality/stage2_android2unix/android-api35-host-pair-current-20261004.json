@@ -1,0 +1,108 @@
+{
+  "scope": "production Rust host / Android pinned TLS + Compose states via direct LAN when --lan-ip is selected, otherwise adb reverse; authorized snapshot when explicitly selected",
+  "camera_scanning_verified": false,
+  "lan_reachability_verified": false,
+  "transport_route": "adb_reverse",
+  "adb_reverse_used": true,
+  "lan_interface_tls_verified": false,
+  "physical_lan_peer_verified": false,
+  "device_registration_verified": false,
+  "session_sync_verified": false,
+  "authorized_snapshot_verified": false,
+  "ungranted_project_hidden_verified": false,
+  "snapshot_reconnect_verified": false,
+  "snapshot_compose_render_verified": false,
+  "host_revocation_reconnect_refused_verified": false,
+  "live_events_verified": false,
+  "snapshot_screenshot": null,
+  "host_argv": [
+    "/Users/mac/Github/zenpi/target/debug/zenpi",
+    "host",
+    "pair",
+    "--bind",
+    "127.0.0.1:0",
+    "--plain",
+    "--duration-seconds",
+    "120",
+    "--identity",
+    "/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-android-pair-drm2e16f/identity.json",
+    "--workspace",
+    "/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-android-pair-drm2e16f/workspace",
+    "--session",
+    "/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-android-pair-drm2e16f/session.jsonl"
+  ],
+  "host_cwd": "/Users/mac/Github/zenpi",
+  "provider_seed": {
+    "argv": [
+      "/Users/mac/Github/zenpi/target/debug/zenpi",
+      "--mode",
+      "headless",
+      "--session",
+      "/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-android-pair-drm2e16f/session.jsonl"
+    ],
+    "cwd": "/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-android-pair-drm2e16f/workspace",
+    "exit_code": 0,
+    "stdout_sha256": "d278ce855a2567600b6892b267b8a30e68cb317aae51d5a42cb4ea053d9e7d0b",
+    "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "provider_requests": 1
+  },
+  "environment_names": [
+    "NO_PROXY",
+    "ZENPI_HOME",
+    "no_proxy"
+  ],
+  "requirement": {
+    "schema_version": "stage2-selector/v1",
+    "active": true,
+    "activated_by": "master",
+    "activated_at": "2026-10-01T19:16:06+0800",
+    "blueprint": "Docs/stage2_android2unix_blueprint.md",
+    "specification": "Docs/stage2_android2unix_spec.md",
+    "requirement_digest": "ed1a4929891359db183cf56c8a5b908183a52a095eda118522a2ec6aad4378ac",
+    "spec_digest": "403e6339b0318a420d93600fc52926acf6a9e46ec899bd9a9edb03c235190a28",
+    "target_repo": "/Users/mac/Github/zenpi",
+    "target_baseline": "current-worktree-with-user-changes",
+    "run_id": "zenpi-stage2-android2unix-20261001"
+  },
+  "baseline_revision": "1a8ff1acf72e0816fad503a05df2b1d18e07361b",
+  "integration_state": "uncommitted worktree, provisional evidence, no item acceptance",
+  "related_items": [
+    "S2-013",
+    "S2-014",
+    "S2-030",
+    "S2-034",
+    "S2-036",
+    "S2-037"
+  ],
+  "started_at_unix": 1791129577.533612,
+  "finished_at_unix": 1791129627.180001,
+  "serial": "emulator-5584",
+  "android_api": "35",
+  "passed": false,
+  "instrumentation_exit_code": 0,
+  "instrumentation_stdout_sha256": "920e919638233672a16da4c18124609f87998517f8e4da36d34de7b143d05876",
+  "instrumentation_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "artifacts": {
+    "target/debug/zenpi": "c93f6d6385f31c092b3abaf34a6e5f959d041ad9a1e671aacdf69add23da63bd",
+    "android/app/build/outputs/apk/debug/app-debug.apk": "e772573d5d3eae0484634f60e760a1d4a5ae049227c1100157ca97aa83953d27",
+    "android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk": "51bfa628beb71803279ad422bcb2e36f4acc9d7fa2ce5be42dc99f33b394469f"
+  },
+  "android_build_provenance": {
+    "path": "android/app/build/stage2-device-build.json",
+    "sha256": "652884e7d10c0b19b81f5dd11601836e42bec5248bd7934125315ed90ea8aab5",
+    "inputs_sha256": "a0c9d0941c70b4d72875e7e41bf31c0117b955997be66d9c807515d01eb8ac93",
+    "artifacts": {
+      "android/app/build/outputs/apk/debug/app-debug.apk": "e772573d5d3eae0484634f60e760a1d4a5ae049227c1100157ca97aa83953d27",
+      "android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk": "51bfa628beb71803279ad422bcb2e36f4acc9d7fa2ce5be42dc99f33b394469f"
+    }
+  },
+  "host_build_provenance": {
+    "path": "target/stage2-host-build-debug.json",
+    "sha256": "60866496fde445d0409f9b4eb2a2cbb9c3310e9b9ea2db3dc70661568e63b22b",
+    "inputs_sha256": "9aa1b19a756f3a031cf5925c3b241e95bb18a1781627a44749d62a2a33028086",
+    "artifact": {
+      "path": "target/debug/zenpi",
+      "sha256": "c93f6d6385f31c092b3abaf34a6e5f959d041ad9a1e671aacdf69add23da63bd"
+    }
+  }
+}

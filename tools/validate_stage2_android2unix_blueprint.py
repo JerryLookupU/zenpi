@@ -13,6 +13,7 @@ import hashlib
 import json
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -63,6 +64,15 @@ def header(text: str) -> dict[str, Any]:
 
 def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def requirement_digest(items: dict[str, dict[str, Any]]) -> str:
+    """Digest the stable requirement shape, excluding mutable checkbox marks."""
+    payload = [
+        [item["id"], item["title"], item["layer"], list(item["depends"]), list(item["owned"])]
+        for item in sorted(items.values(), key=lambda value: value["id"])
+    ]
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
 
 
 def rel_safe(value: str) -> bool:
@@ -185,6 +195,59 @@ def parse_gantt(text: str) -> tuple[dict[str, Any], dict[str, tuple[str, tuple[s
     return gh, rows
 
 
+def validate_receipts(root: Path, items: dict[str, dict[str, Any]], spec_digest: str) -> None:
+    receipts = root / "Docs/quality/stage2_android2unix/receipts"
+    expected_requirement = requirement_digest(items)
+    if any(item["mark"] == "x" for item in items.values()) and receipts.is_symlink():
+        raise BlueprintError("strict acceptance refuses a symlink receipts directory")
+    for item_id, item in items.items():
+        if item["mark"] != "x":
+            continue
+        if any(items[dep]["mark"] != "x" for dep in item["depends"]):
+            raise BlueprintError(f"{item_id}: accepted item has unfinished dependencies")
+        commands = [cmd for cmd in re.findall(r"`([^`]+)`", item["fields"]["Validators"])
+                    if not cmd.startswith("G-")]
+        valid = False
+        # Failed attempts remain durable evidence, but only a matching successful
+        # Master receipt can justify an accepted checkbox.
+        for path in sorted(receipts.glob(f"{item_id}-*.json")):
+            if path.is_symlink() or path.stat().st_size > 2 * 1024 * 1024:
+                continue
+            try:
+                receipt = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(receipt, dict):
+                    continue
+                run_id = receipt.get("run_id")
+                if not isinstance(run_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", run_id) \
+                        or path.name != f"{item_id}-{run_id}.json" \
+                        or receipt.get("item_id") != item_id or receipt.get("passed") is not True \
+                        or receipt.get("requirement_digest") != expected_requirement \
+                        or receipt.get("specification_digest") != spec_digest \
+                        or receipt.get("source_paths") != list(item["owned"]):
+                    continue
+                if any(not isinstance(receipt.get(key), str) or not HEX.fullmatch(receipt[key])
+                       for key in ("baseline_digest", "patch_sha256")):
+                    continue
+                timestamp = datetime.fromisoformat(receipt["integrated_at"])
+                if timestamp.tzinfo is None:
+                    continue
+                results = receipt.get("commands")
+                if not commands or not isinstance(results, list) or len(results) != len(commands):
+                    continue
+                if any(not isinstance(result, dict) or result.get("argv") != command
+                       or type(result.get("exit_code")) is not int or result["exit_code"] != 0
+                       or any(not isinstance(result.get(stream), str) or not HEX.fullmatch(result[stream])
+                              for stream in ("stdout_sha256", "stderr_sha256"))
+                       for command, result in zip(commands, results)):
+                    continue
+                valid = True
+                break
+            except (OSError, UnicodeError, ValueError, KeyError, TypeError):
+                continue
+        if not valid:
+            raise BlueprintError(f"{item_id}: strict acceptance requires a matching successful Master receipt")
+
+
 def validate(root: Path = ROOT, strict: bool = False) -> dict[str, Any]:
     root = root.resolve()
     bp_path, sp_path, gantt_path = (root / p for p in (BLUEPRINT, SPEC, GANTT))
@@ -211,18 +274,19 @@ def validate(root: Path = ROOT, strict: bool = False) -> dict[str, Any]:
         if state != state_map[item["mark"]] or set(deps) != set(item["depends"]):
             raise BlueprintError(f"Gantt state/dependency mismatch for {item_id}")
     selector = root / "Docs/execution/stage2_android2unix_active_requirement.json"
+    if not selector.is_file():
+        raise BlueprintError("missing active requirement selector")
+    value = json.loads(selector.read_text(encoding="utf-8"))
+    if value.get("schema_version") != "stage2-selector/v1" or value.get("active") is not True:
+        raise BlueprintError("invalid Stage 2 selector")
+    if value.get("blueprint") != str(BLUEPRINT) or value.get("specification") != str(SPEC):
+        raise BlueprintError("selector points at wrong Stage 2 files")
+    if value.get("requirement_digest") != requirement_digest(items):
+        raise BlueprintError("selector requirement digest is stale")
+    if value.get("spec_digest") != digest(sp_path):
+        raise BlueprintError("selector specification digest is stale")
     if strict:
-        if not selector.is_file():
-            raise BlueprintError("strict validation requires active requirement selector")
-        value = json.loads(selector.read_text(encoding="utf-8"))
-        if value.get("schema_version") != "stage2-selector/v1" or value.get("active") is not True:
-            raise BlueprintError("invalid Stage 2 selector")
-        if value.get("blueprint") != str(BLUEPRINT) or value.get("specification") != str(SPEC):
-            raise BlueprintError("selector points at wrong Stage 2 files")
-        receipts = root / "Docs/quality/stage2_android2unix/receipts"
-        unfinished = [item_id for item_id, item in items.items() if item["mark"] != "x"]
-        if not unfinished and not receipts.is_dir():
-            raise BlueprintError("strict completion requires receipts")
+        validate_receipts(root, items, digest(sp_path))
     counts = {"[ ]": sum(item["mark"] == " " for item in items.values()), "[_]": sum(item["mark"] == "_" for item in items.values()), "[x]": sum(item["mark"] == "x" for item in items.values())}
     return {"ok": True, "blueprint": str(BLUEPRINT), "specification": str(SPEC), "gantt": str(GANTT), "items": len(items), "counts": counts, "strict": strict}
 

@@ -25,11 +25,24 @@ const MAX_CATALOGUE_BYTES: usize = 4 * 1024 * 1024;
 pub struct PromptTemplate {
     pub name: String,
     pub description: String,
+    #[serde(skip)]
+    description_explicit: bool,
     pub argument_hint: Option<String>,
     pub content: String,
     pub source: PathBuf,
     pub source_hash: String,
     pub scope: SkillScope,
+}
+
+impl PromptTemplate {
+    /// Remote metadata must not expose the local body's first-line fallback.
+    pub fn remote_description(&self) -> &str {
+        if self.description_explicit {
+            &self.description
+        } else {
+            ""
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -429,19 +442,22 @@ fn read_template(
             path.display()
         )));
     }
-    let description = string_field(&metadata, "description")?
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| {
-            let first = body
-                .lines()
-                .find(|line| !line.trim().is_empty())
-                .unwrap_or_default();
-            let mut short = first.chars().take(60).collect::<String>();
-            if first.chars().count() > 60 {
-                short.push_str("...");
-            }
-            short
-        });
+    let declared_description =
+        string_field(&metadata, "description")?.filter(|value| !value.is_empty());
+    let description_explicit = declared_description
+        .as_ref()
+        .is_some_and(|value| !value.trim().is_empty());
+    let description = declared_description.unwrap_or_else(|| {
+        let first = body
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or_default();
+        let mut short = first.chars().take(60).collect::<String>();
+        if first.chars().count() > 60 {
+            short.push_str("...");
+        }
+        short
+    });
     let argument_hint = string_field(&metadata, "argument-hint")?.filter(|value| !value.is_empty());
     if description.len() > 4096 || argument_hint.as_ref().is_some_and(|hint| hint.len() > 1024) {
         return Err(TemplateError::Invalid(
@@ -452,6 +468,7 @@ fn read_template(
     Ok(PromptTemplate {
         name: name.into(),
         description,
+        description_explicit,
         argument_hint,
         content: body.into(),
         source: path.into(),

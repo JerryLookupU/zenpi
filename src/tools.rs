@@ -412,27 +412,30 @@ pub(crate) fn private_output_path(path: &Path) -> bool {
     })
 }
 
-fn credential_path(path: &Path) -> bool {
+pub(crate) const CREDENTIAL_NAMES: &[&str] = &[
+    ".git",
+    ".zenpi",
+    ".ssh",
+    ".aws",
+    ".azure",
+    ".config",
+    ".codex",
+    ".claude",
+    ".netrc",
+    ".npmrc",
+    "credentials",
+    "credentials.json",
+    "auth.json",
+    "id_rsa",
+    "id_ed25519",
+    ".env",
+];
+pub(crate) const CREDENTIAL_GLOBS: &[&str] = &[".env.*", "*.pem", "*.key", "*.p12"];
+
+pub(crate) fn credential_path(path: &Path) -> bool {
     path.components().any(|component| {
         let name = component.as_os_str().to_string_lossy().to_ascii_lowercase();
-        matches!(
-            name.as_str(),
-            ".git"
-                | ".zenpi"
-                | ".ssh"
-                | ".aws"
-                | ".azure"
-                | ".config"
-                | ".codex"
-                | ".claude"
-                | ".netrc"
-                | ".npmrc"
-                | "credentials"
-                | "credentials.json"
-                | "auth.json"
-                | "id_rsa"
-                | "id_ed25519"
-        ) || name == ".env"
+        CREDENTIAL_NAMES.contains(&name.as_str())
             || name.starts_with(".env.")
             || name.ends_with(".pem")
             || name.ends_with(".key")
@@ -819,6 +822,27 @@ impl ToolContext {
 
     pub fn workspace_root(&self) -> &Path {
         &self.workspace_root
+    }
+
+    /// Rebind ordinary host tools without transferring a worker gate or active raw capture.
+    pub(crate) fn for_workspace(&self, root: &Path) -> Result<Self, ToolError> {
+        if self.blueprint_gate.is_some()
+            || self.origin == ToolOrigin::BlueprintWorker
+            || self.output_capture.is_some()
+        {
+            return Err(ToolError::InvalidCall(
+                "tool workspace cannot change under a worker grant or output capture".into(),
+            ));
+        }
+        let canonical = ToolContext::new(root)?.workspace_root;
+        if canonical != root {
+            return Err(ToolError::InvalidCall(
+                "execution workspace is no longer canonical".into(),
+            ));
+        }
+        let mut next = self.clone();
+        next.workspace_root = canonical;
+        Ok(next)
     }
 
     pub fn origin(&self) -> ToolOrigin {

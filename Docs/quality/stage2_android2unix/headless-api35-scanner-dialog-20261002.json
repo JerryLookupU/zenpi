@@ -1,0 +1,61 @@
+{
+  "scope": "production non-TUI Rust host / Android composer and saved prompt recovery after actual process death",
+  "passed": true,
+  "direct_host_interface_verified": true,
+  "adb_reverse_used": false,
+  "camera_scanning_verified": false,
+  "physical_phone_lan_verified": false,
+  "terminal_qr_decode_verified": false,
+  "android_composer_provider_turn_verified": true,
+  "encrypted_pending_prompt_process_recovery_verified": true,
+  "concurrent_authenticated_android_reads_verified": true,
+  "durable_android_cursor_ack_checkpoint_verified": true,
+  "android_host_diff_ui_read_only_verified": true,
+  "exact_retry_without_provider_replay_verified": true,
+  "provider_requests": 2,
+  "listener_expiry_closed_verified": true,
+  "artifacts": {
+    "target/debug/zenpi": "f59f8cb78b9464bb6409ff1e5350cc90b3ef122fa1cf05795109a9012ca2d1b0",
+    "android/app/build/outputs/apk/debug/app-debug.apk": "6641c59b6ea518203e365c790ba79638b5f01ff8be573f109db3c47ca7184503",
+    "android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk": "ed06fc527f19455fb42fc02e6ba3bd026c60b82000597b2bd175bbb8eb88c665",
+    "tools/stage2_headless_android_smoke.py": "fe142f22076d3023faa01096d65d62d280ed563837e8d0332666920d4a568023"
+  },
+  "android_api": "35",
+  "serial": "emulator-5580",
+  "expected_android_api": 35,
+  "started_at_unix": 1790895419.640324,
+  "finished_at_unix": 1790895475.725387,
+  "failure": null,
+  "command_evidence": {
+    "path": "Docs/quality/stage2_android2unix/headless-api35-scanner-dialog-20261002.commands.json",
+    "sha256": "f35c02c28692a747ab830a6e45a12090fe87541be7026bdc1f5d98947acb2eac"
+  },
+  "process_evidence": {
+    "killed_pid": "4105",
+    "committed_request_id": "865f6a6b-ca71-479e-8ad3-b7a114e7c203",
+    "pending_command_recovered_in_distinct_process": true,
+    "recovery_exit_code": 0
+  },
+  "screenshot": {
+    "path": "Docs/quality/stage2_android2unix/headless-api35-scanner-dialog-20261002.png",
+    "sha256": "d1296aad8332b03293520935a5f06400aacf0ab67aa103d5534756f346792959"
+  },
+  "diff_screenshot": {
+    "path": "Docs/quality/stage2_android2unix/headless-api35-scanner-dialog-20261002.diff.png",
+    "sha256": "50ee76d88088b10f02d3956f30eec3895a0de904064dbdbbfcc0150daac762e1"
+  },
+  "requirement": {
+    "schema_version": "stage2-selector/v1",
+    "active": true,
+    "activated_by": "master",
+    "activated_at": "2026-10-01T19:16:06+0800",
+    "blueprint": "Docs/stage2_android2unix_blueprint.md",
+    "specification": "Docs/stage2_android2unix_spec.md",
+    "requirement_digest": "9887f784c944db898610e136dca2774496abb2f80b3e5a8fdd6a0b32659e009d",
+    "spec_digest": "403e6339b0318a420d93600fc52926acf6a9e46ec899bd9a9edb03c235190a28",
+    "target_repo": "/Users/mac/Github/zenpi",
+    "target_baseline": "current-worktree-with-user-changes",
+    "run_id": "zenpi-stage2-android2unix-20261001"
+  },
+  "integration_state": "uncommitted provisional evidence; no whole-item acceptance"
+}

@@ -2,8 +2,10 @@
 """Generate the read-only same-prefix Stage 2 Gantt projection."""
 from __future__ import annotations
 
+import argparse
 import datetime as dt
 import hashlib
+import json
 import os
 import re
 import tempfile
@@ -15,6 +17,15 @@ BP = ROOT / "Docs/stage2_android2unix_blueprint.md"
 SPEC = ROOT / "Docs/stage2_android2unix_spec.md"
 OUT = ROOT / "Docs/stage2_android2unix_gantt.md"
 ROW = re.compile(r"^- \[([ _x])\] \*\*(S2-[0-9]{3})\*\* — (.*?)；layer `([^`]+)` \| (.*)$")
+
+STARTUP_LIVE = {
+    "reserved": "starting", "materialized": "starting", "tmux_started": "starting",
+    "goal_pasted": "starting", "request_leased": "submitted", "goal_submitted": "submitted",
+    "authenticated_live": "live", "turn_running": "live", "handoff_ready": "terminal",
+}
+HANDOFF = {
+    "handoff_ready": "handoff_pending", "accepted": "integrated", "repair": "repair_pending",
+}
 
 
 def atomic(path: Path, content: str) -> None:
@@ -59,7 +70,23 @@ def depth(item_map: dict[str, dict[str, object]], item_id: str, visiting: set[st
     return 1 + max(depth(item_map, dep, visiting | {item_id}) for dep in deps)
 
 
-def main() -> None:
+def runtime_states(path: Path | None) -> dict:
+    if not path:
+        return {}
+    if not path.is_file():
+        return {}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--runtime-state", type=Path, default=None)
+    args = parser.parse_args(argv)
+    runtime = runtime_states(args.runtime_state)
     rows = items()
     item_map = {str(row["id"]): row for row in rows}
     depths = {item_id: depth(item_map, item_id) for item_id in item_map}
@@ -121,7 +148,12 @@ def main() -> None:
     for row in rows:
         state = "master_accepted" if row["mark"] == "x" else "self_tested" if row["mark"] == "_" else "unclaimed"
         deps = ",".join(row["depends"]) or "—"
-        lines.append(f"| {row['id']} | {state} | {deps} | unclaimed | not_started | none | unscheduled; estimate is not a calendar date |")
+        live = runtime.get(str(row["id"])) if isinstance(runtime.get(str(row["id"])), dict) else None
+        runtime_state = str(live.get("runtime")) if live else "unclaimed"
+        owner = str(live.get("owner", "unclaimed")) if live and live.get("owner") else "unclaimed"
+        startup_live = STARTUP_LIVE.get(runtime_state, "terminal" if row["mark"] in {"x", "_"} else "not_started")
+        handoff = HANDOFF.get(runtime_state, "integrated" if row["mark"] == "x" else "handoff_pending" if row["mark"] == "_" else "none")
+        lines.append(f"| {row['id']} | {state} | {deps} | {owner} | {startup_live} | {handoff} | runtime={runtime_state}; estimate is not a calendar date |")
     lines.append("")
     atomic(OUT, "\n".join(lines))
     print(f"generated {OUT.relative_to(ROOT)} ({len(rows)} items, source {bp_sha})")

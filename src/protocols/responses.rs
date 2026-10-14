@@ -1009,8 +1009,13 @@ fn validate_responses_terminal(payload: &Value, strict: bool) -> Result<(), Back
 
 #[cfg(test)]
 mod tests {
-    use super::extract_responses_content;
+    use super::{encode_request, extract_responses_content};
+    use crate::{
+        backend::{AttachmentKind, CompletionRequest, InputAttachment, RequestAttachment},
+        core::{Turn, TurnRole},
+    };
     use serde_json::json;
+    use sha2::Digest;
 
     #[test]
     fn responses_output_text_variants_are_extracted() {
@@ -1030,6 +1035,106 @@ mod tests {
             }))
             .unwrap(),
             "first second"
+        );
+    }
+
+    #[test]
+    fn host_selected_template_fixture_expands_literal_arguments_into_exact_responses_text() {
+        let root = tempfile::tempdir().unwrap();
+        let template = "---\ndescription: Stage2 selected template\n---\nSTAGE2_HOST_TEMPLATE_BODY\n$ARGUMENTS\n";
+        let command =
+            "/zz-stage2-review STAGE2_HEADLESS_ANDROID_SECOND literal $1 $(touch never-created)";
+        let path = root.path().join("zz-stage2-review.md");
+        std::fs::write(&path, template).unwrap();
+        let templates = crate::prompt_templates::PromptTemplates::load(
+            &root.path().join("empty"),
+            root.path(),
+            &[],
+            || false,
+        )
+        .unwrap();
+        let expansion = templates.expand(command, || false).unwrap().unwrap();
+        assert_eq!(expansion.name, "zz-stage2-review");
+        assert_eq!(
+            expansion.source_hash,
+            format!("{:x}", sha2::Sha256::digest(template.as_bytes()))
+        );
+        let turns = vec![Turn::new("second", TurnRole::User, expansion.content)];
+        let wire = encode_request(
+            &CompletionRequest::new("second", &turns, None, &[]),
+            "gpt-5.2-2025-12-11",
+            Some("low"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            wire["input"][0]["content"],
+            "STAGE2_HOST_TEMPLATE_BODY\nSTAGE2_HEADLESS_ANDROID_SECOND literal $1 $(touch never-created)"
+        );
+        assert!(!wire.to_string().contains("/zz-stage2-review"));
+        assert!(!wire.to_string().contains("input_file"));
+        assert_eq!(wire["model"], "gpt-5.2-2025-12-11");
+        assert_eq!(wire["reasoning"], json!({"effort":"low"}));
+        assert!(!root.path().join("never-created").exists());
+    }
+
+    #[test]
+    fn host_file_picker_wire_is_exact_and_does_not_attach_to_the_next_text_turn() {
+        let text = "STAGE2_HEADLESS_ANDROID_FIRST @\"documents/fixture note.txt\"";
+        let bytes = b"STAGE2_HOST_ATTACHMENT_PAYLOAD\n";
+        let turns = vec![Turn::new("first", TurnRole::User, text)];
+        let attachments = vec![RequestAttachment {
+            turn_id: "first".into(),
+            input: InputAttachment {
+                kind: AttachmentKind::File,
+                mime_type: "text/plain".into(),
+                path: Some("documents/fixture note.txt".into()),
+                url: None,
+                file_id: None,
+            },
+            filename: Some("fixture note.txt".into()),
+            data: Some(bytes.to_vec()),
+            size_bytes: Some(bytes.len() as u64),
+            sha256: None,
+        }];
+        let first = encode_request(
+            &CompletionRequest::new("first", &turns, None, &[]).with_attachments(&attachments),
+            "gpt-5.2",
+            Some("high"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            first["input"][0]["content"],
+            json!([
+                {"type":"input_text","text":text},
+                {"type":"input_file","filename":"fixture note.txt","file_data":"data:text/plain;base64,U1RBR0UyX0hPU1RfQVRUQUNITUVOVF9QQVlMT0FECg=="}
+            ])
+        );
+        assert_eq!(first["model"], "gpt-5.2");
+        assert_eq!(first["reasoning"], json!({"effort":"high"}));
+        let mut history = turns;
+        history.push(Turn::new(
+            "answer",
+            TurnRole::Assistant,
+            "STAGE2_HEADLESS_ANDROID_FIRST_DONE",
+        ));
+        history.push(Turn::new(
+            "second",
+            TurnRole::User,
+            "STAGE2_HEADLESS_ANDROID_SECOND",
+        ));
+        let second = encode_request(
+            &CompletionRequest::new("second", &history, None, &[]),
+            "fixture",
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(!second.to_string().contains("input_file"));
+        assert_eq!(
+            second["input"][2]["content"],
+            "STAGE2_HEADLESS_ANDROID_SECOND"
         );
     }
 }

@@ -1,0 +1,115 @@
+{
+  "scope": "production non-TUI Rust host / Android composer and saved prompt recovery after actual process death",
+  "passed": true,
+  "direct_host_interface_verified": false,
+  "adb_reverse_used": true,
+  "camera_scanning_verified": false,
+  "physical_phone_lan_verified": false,
+  "terminal_qr_decode_verified": false,
+  "android_composer_provider_turn_verified": true,
+  "encrypted_pending_prompt_process_recovery_verified": true,
+  "concurrent_authenticated_android_reads_verified": true,
+  "concurrent_authenticated_android_read_count": 3,
+  "production_listener_connection_cap": 4,
+  "durable_android_cursor_ack_checkpoint_verified": true,
+  "running_provider_foreground_preview_and_reattach_verified": true,
+  "background_android_writes_fenced_verified": true,
+  "background_android_reads_fenced_verified": true,
+  "android_host_diff_ui_read_only_verified": true,
+  "android_host_file_picker_provider_attachment_verified": true,
+  "android_host_resource_pages_template_provider_verified": true,
+  "android_model_reasoning_selection_provider_verified": true,
+  "exact_retry_without_provider_replay_verified": true,
+  "provider_requests": 2,
+  "listener_expiry_closed_verified": true,
+  "artifacts": {
+    "target/debug/zenpi": "c93f6d6385f31c092b3abaf34a6e5f959d041ad9a1e671aacdf69add23da63bd",
+    "android/app/build/outputs/apk/debug/app-debug.apk": "2267dfddf3d2c2e00c3876b17cb55a5041fc5478cc03f0145e4aa1f6409986a5",
+    "android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk": "82ba3ce2c6c129c85cde0f846eb49174ce3d9ff09aa6e4d2da336b700988e2fb",
+    "tools/stage2_headless_android_smoke.py": "23a8b23079fbabe7814ac2808c63262a520dc08eb78a35cba6528886dc653436"
+  },
+  "android_build_provenance": {
+    "path": "android/app/build/stage2-device-build.json",
+    "sha256": "4df97d45a9580d4a138fec97a616b739ff1b0c893933bef84314f1c26b55d898",
+    "inputs_sha256": "7e2b99c348afc3d636a53d904a8a7c03a7f237d729ea19149293649dd4d5c8d7",
+    "artifacts": {
+      "android/app/build/outputs/apk/debug/app-debug.apk": "2267dfddf3d2c2e00c3876b17cb55a5041fc5478cc03f0145e4aa1f6409986a5",
+      "android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk": "82ba3ce2c6c129c85cde0f846eb49174ce3d9ff09aa6e4d2da336b700988e2fb"
+    }
+  },
+  "host_build_provenance": {
+    "path": "target/stage2-host-build-debug.json",
+    "sha256": "799da8bf05a9985887961153c65257f5e6325e5a1875b3259c6e7c8b94d889b9",
+    "inputs_sha256": "9aa1b19a756f3a031cf5925c3b241e95bb18a1781627a44749d62a2a33028086",
+    "artifact": {
+      "path": "target/debug/zenpi",
+      "sha256": "c93f6d6385f31c092b3abaf34a6e5f959d041ad9a1e671aacdf69add23da63bd"
+    }
+  },
+  "android_api": "35",
+  "serial": "emulator-5584",
+  "expected_android_api": 35,
+  "started_at_unix": 1791131117.140748,
+  "finished_at_unix": 1791131208.2998111,
+  "failure": null,
+  "command_evidence": {
+    "path": "Docs/quality/stage2_android2unix/headless-api35-journal-schema-20261005.commands.json",
+    "sha256": "34e418ea30274fa21a4a23069c49e5ac6fcd3bb4ff9e10d8b879b22f86cf7286"
+  },
+  "process_evidence": {
+    "killed_pid": "4040",
+    "committed_request_id": "8c4eee04-ebd1-4645-9a5c-c1730d3bfba6",
+    "pending_command_recovered_in_distinct_process": true,
+    "recovery_exit_code": 0
+  },
+  "screenshot": {
+    "path": "Docs/quality/stage2_android2unix/headless-api35-journal-schema-20261005.png",
+    "sha256": "6fe4f604fbfcb8ec7a2651ff047b6e5a6023dc60aa33cfd87832c4490a277602"
+  },
+  "diff_screenshot": {
+    "path": "Docs/quality/stage2_android2unix/headless-api35-journal-schema-20261005.diff.png",
+    "sha256": "9c327a37167c2bf341d317626da3e3cfa76f7592de7e4c3f797b40973f003dea"
+  },
+  "files_screenshot": {
+    "path": "Docs/quality/stage2_android2unix/headless-api35-journal-schema-20261005.files.png",
+    "sha256": "5dfda4d4a29bc2a798d8ec4ed21e40b861e9cf2e06d0b83630bf6325c80cc5bf"
+  },
+  "resources_screenshot": {
+    "path": "Docs/quality/stage2_android2unix/headless-api35-journal-schema-20261005.resources.png",
+    "sha256": "028ed286621a94e427671734857db11f5bb23e1f8c15e03bdee4ff60d56e9368"
+  },
+  "selection_screenshot": {
+    "path": "Docs/quality/stage2_android2unix/headless-api35-journal-schema-20261005.selection.png",
+    "sha256": "3a70eeed93b0148a774b2b8e40b6aeb3d07b1203cdb95f50e61029ed9f3004de"
+  },
+  "stream_screenshot": {
+    "path": "Docs/quality/stage2_android2unix/headless-api35-journal-schema-20261005.stream.png",
+    "sha256": "72b1731b81d3502bd2142fa8b9ac6b3ac430814ee1aa923cfac67d1601e7ac28"
+  },
+  "running_stream_evidence": {
+    "events": [
+      "provider_preview_flushed",
+      "headless_running_stream_verified",
+      "headless_background_writes_fenced_verified",
+      "headless_background_reads_fenced_verified",
+      "headless_running_stream_resumed_verified",
+      "provider_completed_flushed"
+    ],
+    "failure": null,
+    "verified": true
+  },
+  "requirement": {
+    "schema_version": "stage2-selector/v1",
+    "active": true,
+    "activated_by": "master",
+    "activated_at": "2026-10-01T19:16:06+0800",
+    "blueprint": "Docs/stage2_android2unix_blueprint.md",
+    "specification": "Docs/stage2_android2unix_spec.md",
+    "requirement_digest": "ed1a4929891359db183cf56c8a5b908183a52a095eda118522a2ec6aad4378ac",
+    "spec_digest": "403e6339b0318a420d93600fc52926acf6a9e46ec899bd9a9edb03c235190a28",
+    "target_repo": "/Users/mac/Github/zenpi",
+    "target_baseline": "current-worktree-with-user-changes",
+    "run_id": "zenpi-stage2-android2unix-20261001"
+  },
+  "integration_state": "uncommitted provisional evidence; no whole-item acceptance"
+}

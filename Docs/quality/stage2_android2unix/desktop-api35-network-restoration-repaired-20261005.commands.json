@@ -1,0 +1,382 @@
+{
+  "prompt_bindings": [
+    {
+      "device_id": "59b3629ccc5ff96511038c63089c3fa8ad04917f3202024290cebaa9eb5375ad",
+      "fingerprint": "6ca167cbdf8a931accf867b4cafd6f0d9587dff48f42aa1e3a07a178d9b28c28",
+      "operation": "terminal_input",
+      "project_id": "0bb2f1892f0788312d73da8705218a646bd6d9c8e460859842d9fd7588c7efa1",
+      "request_id": "2e99b061-e9d5-4c1e-bebd-705d4291df9c",
+      "session_id": "session-1791139953032-48830-0"
+    },
+    {
+      "device_id": "59b3629ccc5ff96511038c63089c3fa8ad04917f3202024290cebaa9eb5375ad",
+      "fingerprint": "d38b0b91c5421c8984dcd575f46fabec8ea0cb21f48bfd19b206db54d70cf60d",
+      "operation": "terminal_open",
+      "project_id": "0bb2f1892f0788312d73da8705218a646bd6d9c8e460859842d9fd7588c7efa1",
+      "request_id": "07889b85-d4eb-407d-bf9e-a18f918515cf",
+      "session_id": "session-1791139953032-48830-0"
+    },
+    {
+      "device_id": "59b3629ccc5ff96511038c63089c3fa8ad04917f3202024290cebaa9eb5375ad",
+      "fingerprint": "bc31cd256c2035942fc9af3530c2c13efc476f041eb7de01d31a8aac36143ebf",
+      "operation": "terminal_input",
+      "project_id": "0bb2f1892f0788312d73da8705218a646bd6d9c8e460859842d9fd7588c7efa1",
+      "request_id": "a0c33168-58be-41b3-87a1-b6be6850cc30",
+      "session_id": "session-1791139953032-48830-0"
+    },
+    {
+      "device_id": "59b3629ccc5ff96511038c63089c3fa8ad04917f3202024290cebaa9eb5375ad",
+      "fingerprint": "7c77ca5143fa089603108af28f3a0f8859e2c39c32d8a4dac432159a218e8ad7",
+      "operation": "terminal_input",
+      "project_id": "0bb2f1892f0788312d73da8705218a646bd6d9c8e460859842d9fd7588c7efa1",
+      "request_id": "bbac7f41-4c8b-485b-a8d0-ec4f4807b1dd",
+      "session_id": "session-1791139953032-48830-0"
+    },
+    {
+      "device_id": "59b3629ccc5ff96511038c63089c3fa8ad04917f3202024290cebaa9eb5375ad",
+      "fingerprint": "d04d8bba373a90efb4653ed2ae1a0601293751115c43e83089000fdec44e59d6",
+      "operation": "terminal_open",
+      "project_id": "0bb2f1892f0788312d73da8705218a646bd6d9c8e460859842d9fd7588c7efa1",
+      "request_id": "8cb95a8b-dfa0-448f-9aee-f1489521c261",
+      "session_id": "session-1791139953032-48830-0"
+    },
+    {
+      "device_id": "59b3629ccc5ff96511038c63089c3fa8ad04917f3202024290cebaa9eb5375ad",
+      "fingerprint": "e90c17e638fb29bb442e11e698b6b031f77d8970316af3e0c4799af60f67e898",
+      "operation": "terminal_input",
+      "project_id": "0bb2f1892f0788312d73da8705218a646bd6d9c8e460859842d9fd7588c7efa1",
+      "request_id": "1a8b15d1-3f35-4e22-a6d2-efc412ba1516",
+      "session_id": "session-1791139953032-48830-0"
+    },
+    {
+      "device_id": "59b3629ccc5ff96511038c63089c3fa8ad04917f3202024290cebaa9eb5375ad",
+      "fingerprint": "6b99e59d48baf750ba1d7e6160d3240913725db403b3c0a718287de6aaeef48f",
+      "project_id": "0bb2f1892f0788312d73da8705218a646bd6d9c8e460859842d9fd7588c7efa1",
+      "request_id": "ea62b86e-c399-4dd3-ae2b-2c13d345fb6a",
+      "session_id": "session-1791139953032-48830-0"
+    },
+    {
+      "device_id": "59b3629ccc5ff96511038c63089c3fa8ad04917f3202024290cebaa9eb5375ad",
+      "fingerprint": "fe2c20faffe9e56ebf5d101ba7f493f765986daf8d393e88db6737a35a96096e",
+      "project_id": "0bb2f1892f0788312d73da8705218a646bd6d9c8e460859842d9fd7588c7efa1",
+      "request_id": "8385a255-4fd2-4ea9-8622-57fb618d52aa",
+      "session_id": "session-1791139953032-48830-0"
+    },
+    {
+      "device_id": "59b3629ccc5ff96511038c63089c3fa8ad04917f3202024290cebaa9eb5375ad",
+      "fingerprint": "5b2dc94b6925c39b13e19070c7e7e0ae0d5b2f1cfbed8fa84d544e26271190f5",
+      "project_id": "0bb2f1892f0788312d73da8705218a646bd6d9c8e460859842d9fd7588c7efa1",
+      "request_id": "530b177f-5c81-4588-88ac-1175a580dfc3",
+      "session_id": "session-1791139953032-48830-0"
+    },
+    {
+      "device_id": "59b3629ccc5ff96511038c63089c3fa8ad04917f3202024290cebaa9eb5375ad",
+      "fingerprint": "06528113f92aa75c00f725d88e34f41213aa2078e050413891b1fe04ae0f7d26",
+      "project_id": "0bb2f1892f0788312d73da8705218a646bd6d9c8e460859842d9fd7588c7efa1",
+      "request_id": "4d17ae43-0fdb-48b9-856b-fcd05da3c2ab",
+      "session_id": "session-1791139953032-48830-0"
+    }
+  ],
+  "prompt_admissions": [
+    {
+      "device_id": "59b3629ccc5ff96511038c63089c3fa8ad04917f3202024290cebaa9eb5375ad",
+      "execution_subtab": {
+        "id": "57166877340c7a15b17f91c86736b23804c683854909af30a0795f7257a04d33",
+        "kind": "main",
+        "root": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-_5jutfx0/workspace"
+      },
+      "fingerprint": "6b99e59d48baf750ba1d7e6160d3240913725db403b3c0a718287de6aaeef48f",
+      "request_id": "ea62b86e-c399-4dd3-ae2b-2c13d345fb6a",
+      "result": null,
+      "state": "reserved",
+      "type": "remote_prompt_admission_v1"
+    },
+    {
+      "device_id": "59b3629ccc5ff96511038c63089c3fa8ad04917f3202024290cebaa9eb5375ad",
+      "execution_subtab": {
+        "id": "57166877340c7a15b17f91c86736b23804c683854909af30a0795f7257a04d33",
+        "kind": "main",
+        "root": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-_5jutfx0/workspace"
+      },
+      "fingerprint": "6b99e59d48baf750ba1d7e6160d3240913725db403b3c0a718287de6aaeef48f",
+      "request_id": "ea62b86e-c399-4dd3-ae2b-2c13d345fb6a",
+      "result": {
+        "job_id": "2",
+        "project_id": "0bb2f1892f0788312d73da8705218a646bd6d9c8e460859842d9fd7588c7efa1",
+        "request_id": "ea62b86e-c399-4dd3-ae2b-2c13d345fb6a",
+        "session_id": "session-1791139953032-48830-0"
+      },
+      "state": "accepted",
+      "type": "remote_prompt_admission_v1"
+    },
+    {
+      "device_id": "59b3629ccc5ff96511038c63089c3fa8ad04917f3202024290cebaa9eb5375ad",
+      "execution_subtab": {
+        "id": "57166877340c7a15b17f91c86736b23804c683854909af30a0795f7257a04d33",
+        "kind": "main",
+        "root": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-_5jutfx0/workspace"
+      },
+      "fingerprint": "fe2c20faffe9e56ebf5d101ba7f493f765986daf8d393e88db6737a35a96096e",
+      "request_id": "8385a255-4fd2-4ea9-8622-57fb618d52aa",
+      "result": null,
+      "state": "reserved",
+      "type": "remote_prompt_admission_v1"
+    },
+    {
+      "device_id": "59b3629ccc5ff96511038c63089c3fa8ad04917f3202024290cebaa9eb5375ad",
+      "execution_subtab": {
+        "id": "57166877340c7a15b17f91c86736b23804c683854909af30a0795f7257a04d33",
+        "kind": "main",
+        "root": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-_5jutfx0/workspace"
+      },
+      "fingerprint": "fe2c20faffe9e56ebf5d101ba7f493f765986daf8d393e88db6737a35a96096e",
+      "request_id": "8385a255-4fd2-4ea9-8622-57fb618d52aa",
+      "result": {
+        "job_id": "3",
+        "project_id": "0bb2f1892f0788312d73da8705218a646bd6d9c8e460859842d9fd7588c7efa1",
+        "request_id": "8385a255-4fd2-4ea9-8622-57fb618d52aa",
+        "session_id": "session-1791139953032-48830-0"
+      },
+      "state": "accepted",
+      "type": "remote_prompt_admission_v1"
+    },
+    {
+      "device_id": "59b3629ccc5ff96511038c63089c3fa8ad04917f3202024290cebaa9eb5375ad",
+      "execution_subtab": {
+        "id": "57166877340c7a15b17f91c86736b23804c683854909af30a0795f7257a04d33",
+        "kind": "main",
+        "root": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-_5jutfx0/workspace"
+      },
+      "fingerprint": "5b2dc94b6925c39b13e19070c7e7e0ae0d5b2f1cfbed8fa84d544e26271190f5",
+      "request_id": "530b177f-5c81-4588-88ac-1175a580dfc3",
+      "result": null,
+      "state": "reserved",
+      "type": "remote_prompt_admission_v1"
+    },
+    {
+      "device_id": "59b3629ccc5ff96511038c63089c3fa8ad04917f3202024290cebaa9eb5375ad",
+      "execution_subtab": {
+        "id": "57166877340c7a15b17f91c86736b23804c683854909af30a0795f7257a04d33",
+        "kind": "main",
+        "root": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-_5jutfx0/workspace"
+      },
+      "fingerprint": "5b2dc94b6925c39b13e19070c7e7e0ae0d5b2f1cfbed8fa84d544e26271190f5",
+      "request_id": "530b177f-5c81-4588-88ac-1175a580dfc3",
+      "result": {
+        "job_id": "4",
+        "project_id": "0bb2f1892f0788312d73da8705218a646bd6d9c8e460859842d9fd7588c7efa1",
+        "request_id": "530b177f-5c81-4588-88ac-1175a580dfc3",
+        "session_id": "session-1791139953032-48830-0"
+      },
+      "state": "accepted",
+      "type": "remote_prompt_admission_v1"
+    },
+    {
+      "device_id": "59b3629ccc5ff96511038c63089c3fa8ad04917f3202024290cebaa9eb5375ad",
+      "execution_subtab": {
+        "id": "0ae713868b7cc4197099ec23e0c96e72b33f2777326beca0a7aab9bf966ae6a0",
+        "kind": "in_place",
+        "root": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-_5jutfx0/workspace/directory-one"
+      },
+      "fingerprint": "06528113f92aa75c00f725d88e34f41213aa2078e050413891b1fe04ae0f7d26",
+      "request_id": "4d17ae43-0fdb-48b9-856b-fcd05da3c2ab",
+      "result": null,
+      "state": "reserved",
+      "type": "remote_prompt_admission_v1"
+    },
+    {
+      "device_id": "59b3629ccc5ff96511038c63089c3fa8ad04917f3202024290cebaa9eb5375ad",
+      "execution_subtab": {
+        "id": "0ae713868b7cc4197099ec23e0c96e72b33f2777326beca0a7aab9bf966ae6a0",
+        "kind": "in_place",
+        "root": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-_5jutfx0/workspace/directory-one"
+      },
+      "fingerprint": "06528113f92aa75c00f725d88e34f41213aa2078e050413891b1fe04ae0f7d26",
+      "request_id": "4d17ae43-0fdb-48b9-856b-fcd05da3c2ab",
+      "result": {
+        "job_id": "7",
+        "project_id": "0bb2f1892f0788312d73da8705218a646bd6d9c8e460859842d9fd7588c7efa1",
+        "request_id": "4d17ae43-0fdb-48b9-856b-fcd05da3c2ab",
+        "session_id": "session-1791139953032-48830-0"
+      },
+      "state": "accepted",
+      "type": "remote_prompt_admission_v1"
+    }
+  ],
+  "progress": [
+    "running",
+    "succeeded",
+    "running",
+    "failed",
+    "running",
+    "cancelled",
+    "running",
+    "succeeded"
+  ],
+  "terminal_admissions": [
+    {
+      "device_id": "59b3629ccc5ff96511038c63089c3fa8ad04917f3202024290cebaa9eb5375ad",
+      "fingerprint": "6ca167cbdf8a931accf867b4cafd6f0d9587dff48f42aa1e3a07a178d9b28c28",
+      "operation": "terminal_input",
+      "request_id": "2e99b061-e9d5-4c1e-bebd-705d4291df9c",
+      "result": null,
+      "state": "reserved",
+      "type": "remote_terminal_admission_v1"
+    },
+    {
+      "device_id": "59b3629ccc5ff96511038c63089c3fa8ad04917f3202024290cebaa9eb5375ad",
+      "fingerprint": "6ca167cbdf8a931accf867b4cafd6f0d9587dff48f42aa1e3a07a178d9b28c28",
+      "operation": "terminal_input",
+      "request_id": "2e99b061-e9d5-4c1e-bebd-705d4291df9c",
+      "result": {
+        "accepted_bytes": 5,
+        "project_id": "0bb2f1892f0788312d73da8705218a646bd6d9c8e460859842d9fd7588c7efa1",
+        "request_id": "2e99b061-e9d5-4c1e-bebd-705d4291df9c",
+        "session_id": "session-1791139953032-48830-0",
+        "subtab_id": "57166877340c7a15b17f91c86736b23804c683854909af30a0795f7257a04d33",
+        "subtab_revision": 3,
+        "terminal_id": "572330a60e45add69c117530b96c32c3eb0a9c8ee632d39eb7d6b14abfe712f5"
+      },
+      "state": "succeeded",
+      "type": "remote_terminal_admission_v1"
+    },
+    {
+      "device_id": "59b3629ccc5ff96511038c63089c3fa8ad04917f3202024290cebaa9eb5375ad",
+      "fingerprint": "d38b0b91c5421c8984dcd575f46fabec8ea0cb21f48bfd19b206db54d70cf60d",
+      "operation": "terminal_open",
+      "request_id": "07889b85-d4eb-407d-bf9e-a18f918515cf",
+      "result": null,
+      "state": "reserved",
+      "type": "remote_terminal_admission_v1"
+    },
+    {
+      "device_id": "59b3629ccc5ff96511038c63089c3fa8ad04917f3202024290cebaa9eb5375ad",
+      "fingerprint": "d38b0b91c5421c8984dcd575f46fabec8ea0cb21f48bfd19b206db54d70cf60d",
+      "operation": "terminal_open",
+      "request_id": "07889b85-d4eb-407d-bf9e-a18f918515cf",
+      "result": {
+        "project_id": "0bb2f1892f0788312d73da8705218a646bd6d9c8e460859842d9fd7588c7efa1",
+        "request_id": "07889b85-d4eb-407d-bf9e-a18f918515cf",
+        "session_id": "session-1791139953032-48830-0",
+        "subtab_id": "57166877340c7a15b17f91c86736b23804c683854909af30a0795f7257a04d33",
+        "subtab_revision": 3,
+        "terminal_id": "694e3d7ecf95b4c2c107987a18e1dd3dc9b062430522cffc7cce0a3038e4f7be"
+      },
+      "state": "succeeded",
+      "type": "remote_terminal_admission_v1"
+    },
+    {
+      "device_id": "59b3629ccc5ff96511038c63089c3fa8ad04917f3202024290cebaa9eb5375ad",
+      "fingerprint": "bc31cd256c2035942fc9af3530c2c13efc476f041eb7de01d31a8aac36143ebf",
+      "operation": "terminal_input",
+      "request_id": "a0c33168-58be-41b3-87a1-b6be6850cc30",
+      "result": null,
+      "state": "reserved",
+      "type": "remote_terminal_admission_v1"
+    },
+    {
+      "device_id": "59b3629ccc5ff96511038c63089c3fa8ad04917f3202024290cebaa9eb5375ad",
+      "fingerprint": "bc31cd256c2035942fc9af3530c2c13efc476f041eb7de01d31a8aac36143ebf",
+      "operation": "terminal_input",
+      "request_id": "a0c33168-58be-41b3-87a1-b6be6850cc30",
+      "result": {
+        "accepted_bytes": 77,
+        "project_id": "0bb2f1892f0788312d73da8705218a646bd6d9c8e460859842d9fd7588c7efa1",
+        "request_id": "a0c33168-58be-41b3-87a1-b6be6850cc30",
+        "session_id": "session-1791139953032-48830-0",
+        "subtab_id": "57166877340c7a15b17f91c86736b23804c683854909af30a0795f7257a04d33",
+        "subtab_revision": 3,
+        "terminal_id": "694e3d7ecf95b4c2c107987a18e1dd3dc9b062430522cffc7cce0a3038e4f7be"
+      },
+      "state": "succeeded",
+      "type": "remote_terminal_admission_v1"
+    },
+    {
+      "device_id": "59b3629ccc5ff96511038c63089c3fa8ad04917f3202024290cebaa9eb5375ad",
+      "fingerprint": "7c77ca5143fa089603108af28f3a0f8859e2c39c32d8a4dac432159a218e8ad7",
+      "operation": "terminal_input",
+      "request_id": "bbac7f41-4c8b-485b-a8d0-ec4f4807b1dd",
+      "result": null,
+      "state": "reserved",
+      "type": "remote_terminal_admission_v1"
+    },
+    {
+      "device_id": "59b3629ccc5ff96511038c63089c3fa8ad04917f3202024290cebaa9eb5375ad",
+      "fingerprint": "7c77ca5143fa089603108af28f3a0f8859e2c39c32d8a4dac432159a218e8ad7",
+      "operation": "terminal_input",
+      "request_id": "bbac7f41-4c8b-485b-a8d0-ec4f4807b1dd",
+      "result": {
+        "accepted_bytes": 5,
+        "project_id": "0bb2f1892f0788312d73da8705218a646bd6d9c8e460859842d9fd7588c7efa1",
+        "request_id": "bbac7f41-4c8b-485b-a8d0-ec4f4807b1dd",
+        "session_id": "session-1791139953032-48830-0",
+        "subtab_id": "57166877340c7a15b17f91c86736b23804c683854909af30a0795f7257a04d33",
+        "subtab_revision": 3,
+        "terminal_id": "694e3d7ecf95b4c2c107987a18e1dd3dc9b062430522cffc7cce0a3038e4f7be"
+      },
+      "state": "succeeded",
+      "type": "remote_terminal_admission_v1"
+    },
+    {
+      "device_id": "59b3629ccc5ff96511038c63089c3fa8ad04917f3202024290cebaa9eb5375ad",
+      "fingerprint": "d04d8bba373a90efb4653ed2ae1a0601293751115c43e83089000fdec44e59d6",
+      "operation": "terminal_open",
+      "request_id": "8cb95a8b-dfa0-448f-9aee-f1489521c261",
+      "result": null,
+      "state": "reserved",
+      "type": "remote_terminal_admission_v1"
+    },
+    {
+      "device_id": "59b3629ccc5ff96511038c63089c3fa8ad04917f3202024290cebaa9eb5375ad",
+      "fingerprint": "d04d8bba373a90efb4653ed2ae1a0601293751115c43e83089000fdec44e59d6",
+      "operation": "terminal_open",
+      "request_id": "8cb95a8b-dfa0-448f-9aee-f1489521c261",
+      "result": {
+        "project_id": "0bb2f1892f0788312d73da8705218a646bd6d9c8e460859842d9fd7588c7efa1",
+        "request_id": "8cb95a8b-dfa0-448f-9aee-f1489521c261",
+        "session_id": "session-1791139953032-48830-0",
+        "subtab_id": "57166877340c7a15b17f91c86736b23804c683854909af30a0795f7257a04d33",
+        "subtab_revision": 3,
+        "terminal_id": "643ee8b6efc3906d958cfcd56822ebed8204a61d9d710de79210d458c19730f7"
+      },
+      "state": "succeeded",
+      "type": "remote_terminal_admission_v1"
+    },
+    {
+      "device_id": "59b3629ccc5ff96511038c63089c3fa8ad04917f3202024290cebaa9eb5375ad",
+      "fingerprint": "e90c17e638fb29bb442e11e698b6b031f77d8970316af3e0c4799af60f67e898",
+      "operation": "terminal_input",
+      "request_id": "1a8b15d1-3f35-4e22-a6d2-efc412ba1516",
+      "result": null,
+      "state": "reserved",
+      "type": "remote_terminal_admission_v1"
+    },
+    {
+      "device_id": "59b3629ccc5ff96511038c63089c3fa8ad04917f3202024290cebaa9eb5375ad",
+      "fingerprint": "e90c17e638fb29bb442e11e698b6b031f77d8970316af3e0c4799af60f67e898",
+      "operation": "terminal_input",
+      "request_id": "1a8b15d1-3f35-4e22-a6d2-efc412ba1516",
+      "result": {
+        "accepted_bytes": 83,
+        "project_id": "0bb2f1892f0788312d73da8705218a646bd6d9c8e460859842d9fd7588c7efa1",
+        "request_id": "1a8b15d1-3f35-4e22-a6d2-efc412ba1516",
+        "session_id": "session-1791139953032-48830-0",
+        "subtab_id": "57166877340c7a15b17f91c86736b23804c683854909af30a0795f7257a04d33",
+        "subtab_revision": 3,
+        "terminal_id": "643ee8b6efc3906d958cfcd56822ebed8204a61d9d710de79210d458c19730f7"
+      },
+      "state": "succeeded",
+      "type": "remote_terminal_admission_v1"
+    }
+  ],
+  "terminal_file_sha256": {
+    "android-terminal-owned.txt": "ab04889f503258871bdbd0a572662bfa979d7b1d1219b8a6494d61fc533c28d4",
+    "android-terminal-reopened.txt": "ef227e7e40d5c4f971532cbf0531de59b03c8a08cca3ff120a0c1e168a673181"
+  },
+  "terminal_exit_reopen_verified": true,
+  "worktree_checks": [],
+  "worktree_id": null,
+  "directory_stress_verified": true,
+  "directory_execution_verified": false,
+  "prompt_binding_verified": false
+}

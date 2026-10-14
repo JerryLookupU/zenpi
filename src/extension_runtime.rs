@@ -111,6 +111,9 @@ enum HookResult {
 }
 
 impl ExtensionRuntime {
+    pub(crate) fn has_loaded_extensions(&self) -> bool {
+        !self.catalog.loaded.is_empty()
+    }
     /// Every fallible candidate step happens while the old runtime stays live.
     pub fn prepare(
         root: &Path,
@@ -120,6 +123,32 @@ impl ExtensionRuntime {
     ) -> Result<Self, ToolError> {
         let catalog = ExtensionCatalog::load(root)
             .map_err(|e| ToolError::InvalidDefinition(e.to_string()))?;
+        Self::prepare_catalog(root, workspace, session_id, catalog, cancelled)
+    }
+
+    /// A workspace change does not discover or grant newly installed extensions.
+    pub(crate) fn prepare_workspace(
+        &self,
+        workspace: &Path,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Self, ToolError> {
+        self.lease.check()?;
+        Self::prepare_catalog(
+            &self.root,
+            workspace,
+            &self.lease.identity.session_id,
+            self.catalog.clone(),
+            cancelled,
+        )
+    }
+
+    fn prepare_catalog(
+        root: &Path,
+        workspace: &Path,
+        session_id: &str,
+        catalog: ExtensionCatalog,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Self, ToolError> {
         let runtime = Self {
             root: root.into(),
             workspace: workspace.into(),

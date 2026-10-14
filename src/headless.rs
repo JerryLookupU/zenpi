@@ -4574,6 +4574,7 @@ fn run_async_stdio<R: io::Read + Send + 'static, W: Write>(
                             Ok(AsyncProcessResult::Turn(ProcessResult {
                                 submission,
                                 assistant,
+                                worker_history_evidence: None,
                             }))
                         }
                         AsyncTurn::Reissue {
@@ -4604,6 +4605,7 @@ fn run_async_stdio<R: io::Read + Send + 'static, W: Write>(
                             Ok(AsyncProcessResult::Turn(ProcessResult {
                                 submission,
                                 assistant,
+                                worker_history_evidence: None,
                             }))
                         }
                         AsyncTurn::UserShell(input) => {
@@ -6018,6 +6020,7 @@ where
                     if session_open && response.success {
                         request_to_job.clear();
                         let agent = shared.lock().map_err(|_| event_mailbox_headless_error())?;
+                        pool.refresh_owner_control(&project.project_id, &agent);
                         replay.emission_project = pool.context(&project.project_id).cloned();
                         if let Some(id) = &id {
                             replay.request_projects.insert(
@@ -6624,6 +6627,7 @@ where
             }) {
                 Ok(()) => {
                     agent.take_events();
+                    pool.refresh_owner_control(&project.project_id, &agent);
                     replay.emission_project = Some(pool.active_context().clone());
                     if let Some(id) = &id {
                         replay

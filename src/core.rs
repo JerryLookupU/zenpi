@@ -651,6 +651,126 @@ fn publish_output_progress(
 }
 
 impl Agent {
+    /// Keep the session owner and policy; change only this request's host-selected tool root.
+    pub fn with_tool_workspace<R>(
+        &mut self,
+        root: &Path,
+        run: impl FnOnce(&mut Self) -> R,
+    ) -> Result<R, AgentError> {
+        self.with_tool_workspace_cancelable(root, &|| false, run)
+    }
+
+    pub fn with_tool_workspace_cancelable<R>(
+        &mut self,
+        root: &Path,
+        cancelled: &dyn Fn() -> bool,
+        run: impl FnOnce(&mut Self) -> R,
+    ) -> Result<R, AgentError> {
+        if self.phase != AgentPhase::Idle
+            || self.input_port.has_pending()
+            || self.input_port.is_preparing()
+        {
+            return Err(AgentError::NotIdle);
+        }
+        if cancelled() {
+            return Err(BackendError::Cancelled.into());
+        }
+        let old = self
+            .tools
+            .as_ref()
+            .ok_or_else(|| {
+                AgentError::InvalidTurn("execution workspace requires host tools".into())
+            })?
+            .context
+            .clone();
+        if old.workspace_root() == root {
+            return Ok(run(self));
+        }
+        let next = old
+            .for_workspace(root)
+            .map_err(|error| AgentError::InvalidTurn(error.to_string()))?;
+        // Prepare both generations before revoking the original. Restoration
+        // cannot depend on another fallible initialize after a tool has run.
+        let extension_scope = if let Some(runtime) = self
+            .extensions
+            .as_ref()
+            .filter(|runtime| runtime.has_loaded_extensions())
+        {
+            let tools = self.tools.as_ref().expect("validated tools");
+            if tools.worker_binding.is_some() {
+                return Err(AgentError::InvalidTurn(
+                    "worker cannot rebind extension authority".into(),
+                ));
+            }
+            let selected = runtime
+                .prepare_workspace(root, cancelled)
+                .map_err(extension_agent_error)?;
+            let restored = runtime
+                .prepare_workspace(old.workspace_root(), cancelled)
+                .map_err(extension_agent_error)?;
+            let mut base = (*tools.registry).clone();
+            base.remove_extension_tools(&runtime.tool_names());
+            let mut selected_registry = base.clone();
+            selected.register_tools(&mut selected_registry)?;
+            restored.register_tools(&mut base)?;
+            if cancelled() {
+                return Err(BackendError::Cancelled.into());
+            }
+            self.session.append_event(serde_json::json!({
+                "type":"extensions_workspace_selected",
+                "workspace_root":root,
+                "generation":selected.lease().identity().generation,
+                "restore_generation":restored.lease().identity().generation,
+            }))?;
+            Some((
+                (selected, std::sync::Arc::new(selected_registry)),
+                (restored, std::sync::Arc::new(base)),
+            ))
+        } else {
+            None
+        };
+        struct Restore<'a> {
+            agent: &'a mut Agent,
+            context: Option<ToolContext>,
+            extensions: Option<(
+                crate::extension_runtime::ExtensionRuntime,
+                std::sync::Arc<ToolRegistry>,
+            )>,
+        }
+        impl Drop for Restore<'_> {
+            fn drop(&mut self) {
+                if let (Some(runtime), Some(context)) =
+                    (self.agent.tools.as_mut(), self.context.take())
+                {
+                    runtime.context = context;
+                }
+                if let Some(candidate) = self.extensions.take() {
+                    // Closing the Agent inside the request must remain terminal.
+                    if self.agent.phase != AgentPhase::Closed {
+                        if let Err(error) = self.agent.session.append_event(serde_json::json!({
+                            "type":"extensions_workspace_restored",
+                            "generation":candidate.0.lease().identity().generation,
+                        })) {
+                            self.agent.extension_errors(vec![error.to_string()]);
+                        }
+                        self.agent
+                            .publish_extensions(candidate, "request_workspace_restored");
+                    }
+                }
+            }
+        }
+        self.tools.as_mut().expect("validated tools").context = next;
+        let restore_extensions = extension_scope.map(|(selected, restored)| {
+            self.publish_extensions(selected, "request_workspace");
+            restored
+        });
+        let guard = Restore {
+            agent: self,
+            context: Some(old),
+            extensions: restore_extensions,
+        };
+        Ok(run(guard.agent))
+    }
     /// Install a request-scoped live tool consumer. Restoration also occurs on
     /// errors and unwinding, so a subsequent job cannot inherit an old mailbox.
     pub fn with_live_tool_events<R>(
@@ -1354,6 +1474,13 @@ impl Agent {
         self.model.as_deref()
     }
 
+    pub fn validate_model_choice(&self, model: &str) -> Result<(), AgentError> {
+        self.backend.validate_model(Some(model))?;
+        self.backend
+            .validate_history_model(&self.selected_history()?, Some(model))?;
+        Ok(())
+    }
+
     /// The complete, versioned selection this owner is running.
     ///
     /// Built from the running backend rather than from the journal, so a host
@@ -1382,9 +1509,11 @@ impl Agent {
         if self.phase == AgentPhase::Closed {
             return Err(AgentError::Closed);
         }
-        if self.phase == AgentPhase::Running {
+        if self.phase != AgentPhase::Idle {
             return Err(AgentError::NotIdle);
         }
+        self.connection_change_fence()
+            .map_err(|_| AgentError::NotIdle)?;
         self.backend.validate_model(model.as_deref())?;
         self.backend
             .validate_history_model(&self.selected_history()?, model.as_deref())?;
@@ -1433,6 +1562,68 @@ impl Agent {
             .map_or(0, |record| record.sequence)
     }
 
+    /// Change only this owner's model, retaining its backend and effort.
+    pub fn select_model(
+        &mut self,
+        model: String,
+        expected_selection_revision: u64,
+    ) -> Result<ConnectionSelectionOutcome, AgentError> {
+        if self.phase == AgentPhase::Closed {
+            return Err(AgentError::Closed);
+        }
+        let reject =
+            |code, detail: String| Ok(ConnectionSelectionOutcome::Rejected { code, detail });
+        if self.phase != AgentPhase::Idle {
+            return reject(
+                ConnectionRejectCode::ConnectionBusy,
+                "the owner is running a turn".into(),
+            );
+        }
+        if let Err(detail) = self.connection_change_fence() {
+            return reject(ConnectionRejectCode::ConnectionBusy, detail);
+        }
+        if expected_selection_revision != self.selection_revision() {
+            return reject(
+                ConnectionRejectCode::ConnectionStale,
+                "the selection revision changed".into(),
+            );
+        }
+        if let Err(error) = self.backend.validate_model(Some(&model)) {
+            return reject(ConnectionRejectCode::ConnectionInvalid, error.to_string());
+        }
+        if let Err(error) = self
+            .backend
+            .validate_history_model(&self.selected_history()?, Some(&model))
+        {
+            return reject(ConnectionRejectCode::ConnectionInvalid, error.to_string());
+        }
+        let descriptor = match self.backend.model_descriptor(Some(&model)) {
+            Ok(Some(descriptor)) => descriptor,
+            Ok(None) => {
+                return reject(
+                    ConnectionRejectCode::ConnectionInvalid,
+                    "model selection requires a registry-bound provider".into(),
+                );
+            }
+            Err(error) => {
+                return reject(ConnectionRejectCode::ConnectionInvalid, error.to_string());
+            }
+        };
+        let snapshot = Self::selection_snapshot_for(
+            self.backend.as_ref(),
+            &self.profile_hint(),
+            Some(model),
+            self.backend.reasoning_effort().map(str::to_owned),
+            Some(&descriptor),
+        )?;
+        self.session.append_event(snapshot.event())?;
+        self.model = snapshot.model.clone();
+        Ok(ConnectionSelectionOutcome::Applied {
+            selection_revision: self.selection_revision(),
+            snapshot: Box::new(snapshot),
+        })
+    }
+
     /// Everything that must be settled before the running connection may
     /// change.
     ///
@@ -1469,7 +1660,7 @@ impl Agent {
         }
         // A submitted ticket has not taken the owner lock yet, so `Idle` alone
         // does not mean nothing is scheduled against the running connection.
-        if self.input_port.has_pending() {
+        if self.input_port.has_pending() || self.input_port.is_preparing() {
             return Err("host input is queued but not yet serviced".into());
         }
         Ok(())
@@ -1645,6 +1836,8 @@ impl Agent {
         if self.phase != AgentPhase::Idle {
             return Err(AgentError::NotIdle);
         }
+        self.connection_change_fence()
+            .map_err(|_| AgentError::NotIdle)?;
         self.backend
             .validate_reasoning_effort(self.model.as_deref(), effort.as_deref())?;
         let descriptor = self
@@ -1667,6 +1860,85 @@ impl Agent {
 
     pub fn reasoning_effort(&self) -> Option<&str> {
         self.backend.reasoning_effort()
+    }
+
+    pub fn reasoning_choices(&self) -> Result<Vec<Option<String>>, AgentError> {
+        let Some(descriptor) = self.backend.model_descriptor(self.model.as_deref())? else {
+            return Ok(Vec::new());
+        };
+        let mut choices = Vec::new();
+        if self
+            .backend
+            .validate_reasoning_effort(self.model.as_deref(), None)
+            .is_ok()
+        {
+            choices.push(None);
+        }
+        for level in descriptor.reasoning_levels {
+            let value = serde_json::to_value(level)
+                .map_err(|error| AgentError::InvalidTurn(error.to_string()))?;
+            if let Some(effort) = value.as_str()
+                && self
+                    .backend
+                    .validate_reasoning_effort(self.model.as_deref(), Some(effort))
+                    .is_ok()
+            {
+                choices.push(Some(effort.to_owned()));
+            }
+        }
+        Ok(choices)
+    }
+
+    pub fn select_reasoning(
+        &mut self,
+        effort: Option<String>,
+        expected_selection_revision: u64,
+    ) -> Result<ConnectionSelectionOutcome, AgentError> {
+        if self.phase == AgentPhase::Closed {
+            return Err(AgentError::Closed);
+        }
+        let reject =
+            |code, detail: String| Ok(ConnectionSelectionOutcome::Rejected { code, detail });
+        if self.phase != AgentPhase::Idle {
+            return reject(
+                ConnectionRejectCode::ConnectionBusy,
+                "the owner is running a turn".into(),
+            );
+        }
+        if let Err(detail) = self.connection_change_fence() {
+            return reject(ConnectionRejectCode::ConnectionBusy, detail);
+        }
+        if expected_selection_revision != self.selection_revision() {
+            return reject(
+                ConnectionRejectCode::ConnectionStale,
+                "the selection revision changed".into(),
+            );
+        }
+        if let Err(error) = self
+            .backend
+            .validate_reasoning_effort(self.model.as_deref(), effort.as_deref())
+        {
+            return reject(ConnectionRejectCode::ConnectionInvalid, error.to_string());
+        }
+        let descriptor = self
+            .backend
+            .model_descriptor(self.model.as_deref())?
+            .ok_or_else(|| {
+                AgentError::InvalidTurn("reasoning settings require a model registry".into())
+            })?;
+        let snapshot = Self::selection_snapshot_for(
+            self.backend.as_ref(),
+            &self.profile_hint(),
+            self.model.clone(),
+            effort.clone(),
+            Some(&descriptor),
+        )?;
+        self.session.append_event(snapshot.event())?;
+        self.backend.commit_reasoning_effort(effort);
+        Ok(ConnectionSelectionOutcome::Applied {
+            selection_revision: self.selection_revision(),
+            snapshot: Box::new(snapshot),
+        })
     }
 
     fn selected_model_for_session(
@@ -1818,6 +2090,7 @@ impl Agent {
     pub fn model_status(&self) -> Result<Value, AgentError> {
         let active = self.backend.model_descriptor(self.model.as_deref())?;
         Ok(serde_json::json!({
+            "model": self.model.as_deref().or_else(|| self.backend.model()),
             "active": active, "capabilities": self.backend.model_capabilities(self.model.as_deref())?,
             "budget": self.context_budget(), "catalog": self.backend.model_catalog(),
             "registry_bound": active.is_some(), "reasoning_effort": self.backend.reasoning_effort(),
@@ -1951,7 +2224,7 @@ impl Agent {
             sequential: false,
             context,
             policy,
-            approval: ApprovalCoordinator::new(),
+            approval: ApprovalCoordinator::for_session(self.session.session_id()),
             approval_policy: ApprovalPolicy::default()
                 .with_remembered_events(self.session.events()),
             configured_approval_policy: ApprovalPolicy::default(),
@@ -1969,7 +2242,7 @@ impl Agent {
                 sequential: false,
                 context,
                 policy: SideEffectPolicy::read_only(),
-                approval: ApprovalCoordinator::new(),
+                approval: ApprovalCoordinator::for_session(self.session.session_id()),
                 approval_policy: ApprovalPolicy::default()
                     .with_remembered_events(self.session.events()),
                 configured_approval_policy: ApprovalPolicy::default(),
@@ -3601,12 +3874,14 @@ impl Agent {
                     &cancelled,
                 )?;
                 coordinator.persist_accepted(&response.request_id, |accepted| {
-                    self.session.append_event(serde_json::json!({
+                    let mut event = serde_json::json!({
                         "type": "approval_resolved", "request_id": accepted.request.request_id,
                         "turn_id": operation_id, "call_id": operation_id, "tool": "user_shell",
                         "origin": "user_shell", "policy_digest": policy_digest,
                         "decision": accepted.response.decision, "remember": accepted.response.remember,
-                    }))
+                    });
+                    accepted.annotate_remote(&mut event);
+                    self.session.append_event(event)
                 }).map_err(|error| match error {
                     crate::approval::PersistApprovalError::Approval(error) => AgentError::Approval(error),
                     crate::approval::PersistApprovalError::Persistence(error) => AgentError::Session(error),
@@ -5462,7 +5737,7 @@ impl Agent {
                 Err(error) => return Err(error.into()),
             };
             coordinator.persist_accepted(&response.request_id, |accepted| {
-                self.session.append_event(serde_json::json!({
+                let mut event = serde_json::json!({
                     "type": "approval_resolved",
                     "request_id": accepted.request.request_id,
                     "turn_id": accepted.request.turn_id,
@@ -5484,7 +5759,9 @@ impl Agent {
                     "remember": accepted.response.remember,
                     "source": crate::approval::HOST_ANSWER_SOURCE,
                     "execution": evidence,
-                }))
+                });
+                accepted.annotate_remote(&mut event);
+                self.session.append_event(event)
             }).map_err(|error| match error {
                 crate::approval::PersistApprovalError::Approval(error) => AgentError::Approval(error),
                 crate::approval::PersistApprovalError::Persistence(error) => AgentError::Session(error),
@@ -6042,11 +6319,13 @@ impl Agent {
             Ok(ProcessResult {
                 submission,
                 assistant,
+                worker_history_evidence: None,
             })
         } else {
             Ok(ProcessResult {
                 submission,
                 assistant: None,
+                worker_history_evidence: None,
             })
         }
     }
@@ -6070,6 +6349,7 @@ impl Agent {
         Ok(ProcessResult {
             submission,
             assistant,
+            worker_history_evidence: None,
         })
     }
 
@@ -6250,6 +6530,15 @@ impl Agent {
         path: impl Into<PathBuf>,
         commit: impl FnOnce(&SessionStore) -> Result<(), AgentError>,
     ) -> Result<(), AgentError> {
+        self.resume_session_with_commit_cancelled(path, &|| false, commit)
+    }
+
+    pub(crate) fn resume_session_with_commit_cancelled(
+        &mut self,
+        path: impl Into<PathBuf>,
+        cancelled: &dyn Fn() -> bool,
+        commit: impl FnOnce(&SessionStore) -> Result<(), AgentError>,
+    ) -> Result<(), AgentError> {
         if self.phase == AgentPhase::Closed {
             return Err(AgentError::Closed);
         }
@@ -6275,7 +6564,7 @@ impl Agent {
         }
         drop(inspected);
         let replacement = SessionStore::open_existing_writable(path)?;
-        self.replace_session_with_commit(replacement, &|| false, |replacement| commit(replacement))
+        self.replace_session_with_commit(replacement, cancelled, |replacement| commit(replacement))
     }
 
     fn replace_session_with_commit(
@@ -6329,6 +6618,9 @@ impl Agent {
         self.output_store = crate::tool_output::SessionOutputStore::default();
         self.session = replacement;
         if let Some(runtime) = self.tools.as_mut() {
+            runtime
+                .approval
+                .bind_notification_session(self.session.session_id());
             runtime.approval_policy = runtime
                 .configured_approval_policy
                 .with_remembered_events(self.session.events());
@@ -6416,6 +6708,7 @@ impl Agent {
 pub struct ProcessResult {
     pub submission: TurnSubmission,
     pub assistant: Option<Turn>,
+    pub(crate) worker_history_evidence: Option<crate::remote::worker::HistoryEvidence>,
 }
 
 fn admit_provider_send(
@@ -6572,6 +6865,7 @@ pub enum RunMode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CliOptions {
+    pub host_pair: Option<crate::host_pair::HostPairOptions>,
     pub mode: RunMode,
     pub session: PathBuf,
     /// `-s NAME|ID`: resolve a cached session by operator name or session id
@@ -6638,6 +6932,7 @@ pub enum CliCommand {
 impl Default for CliOptions {
     fn default() -> Self {
         Self {
+            host_pair: None,
             mode: RunMode::Tui,
             session: SessionStore::default_path(),
             session_ref: None,
@@ -7042,6 +7337,14 @@ where
 {
     let mut options = CliOptions::default();
     let mut args = args.into_iter().map(Into::into).peekable();
+    if args.peek().is_some_and(|argument| argument == "host") {
+        args.next();
+        if args.next().as_deref() != Some("pair") {
+            return Err(ZenpiError::arguments("host requires pair"));
+        }
+        options.host_pair = Some(crate::host_pair::HostPairOptions::parse(args)?);
+        return Ok(options);
+    }
     if args.peek().is_some_and(|argument| {
         matches!(
             argument.as_str(),
@@ -7603,6 +7906,9 @@ fn backend_from_effective(
 
 fn print_help() {
     println!(
+        "zenpi host pair [--bind IP:PORT] [--advertise IP] [--identity PATH] [--duration-seconds 1..300] [--plain] [--workspace PATH --session PATH [--desktop | --list-projects]] [--list-devices [--json] | --revoke-device ID | --grant-device-read ID --project ID ... | --grant-device-control ID --project ID ... | --grant-device-approval ID --project ID ... | --grant-device-control-approval ID --project ID ...]"
+    );
+    println!(
         "zenpi [--mode tui|headless] [--session PATH | -s NAME|ID] [--auto] [--max-tool-iterations N] [--backend openai|anthropic|google] [--profile NAME] [--model NAME]"
     );
     println!("zenpi config import-codex [--profile NAME]");
@@ -7629,6 +7935,9 @@ fn print_help() {
 /// Binary entry point shared with tests and embedders.
 pub fn run() -> Result<(), ZenpiError> {
     let options = parse_args(env::args().skip(1))?;
+    if let Some(pair) = options.host_pair {
+        return crate::host_pair::run(pair);
+    }
     if options.help {
         print_help();
         return Ok(());
@@ -8477,7 +8786,7 @@ mod extension_resume_commit_tests {
 name = "fixture"
 version = "1.0.0"
 api_version = 2
-executable = "plugin.py"
+executable = "plugin.sh"
 hooks = ["session_start", "session_close"]
 hook_timeout_ms = 1000
 [permissions]
@@ -8490,17 +8799,14 @@ input_schema = {type="object"}
 "#,
         )
         .unwrap();
-        fs::write(fixture.join("plugin.py"), r#"#!/usr/bin/python3
-import json,sys
-r=json.loads(sys.stdin.readline()); p=r['params']; method=r['method']
-with open('events','a') as f:
-    f.write(json.dumps({'kind':p.get('hook',method),'capability':r['capability']})+'\n')
-if method=='initialize': result={'api_version':2,'hooks':p['hooks'],'tools':[t['name'] for t in p['tools']]}
-elif method=='tools/call': result={'echo':p['arguments']}
-else: result={'action':'continue'}
-print(json.dumps({'jsonrpc':'2.0','id':r['id'],'capability':r['capability'],'result':result}))
-"#).unwrap();
-        fs::set_permissions(fixture.join("plugin.py"), fs::Permissions::from_mode(0o700)).unwrap();
+        let executable = std::env::current_exe().unwrap();
+        let quoted = executable.to_str().unwrap().replace('\'', "'\"'\"'");
+        // Keep a real process/pipe boundary; route libtest chatter away from
+        // the extension protocol just as the integration extension fixture does.
+        fs::write(fixture.join("plugin.sh"), format!(
+            "#!/bin/sh\nexec '{quoted}' --ignored --exact core::extension_resume_commit_tests::resume_extension_process --nocapture --test-threads=1 3>&1 1>/dev/null\n"
+        )).unwrap();
+        fs::set_permissions(fixture.join("plugin.sh"), fs::Permissions::from_mode(0o700)).unwrap();
         // This test exercises session and real extension processes; no model turn runs.
         let mut agent = Agent::with_echo(
             SessionStore::open_in_workspace(root.join("old.jsonl"), root).unwrap(),
@@ -8510,26 +8816,7 @@ print(json.dumps({'jsonrpc':'2.0','id':r['id'],'capability':r['capability'],'res
             ToolContext::new(root).unwrap(),
             SideEffectPolicy::all_builtins(),
         );
-        let mut configured = false;
-        for attempt in 0..3 {
-            match agent.configure_extensions(&extensions, || false) {
-                Ok(()) => {
-                    configured = true;
-                    break;
-                }
-                Err(AgentError::Tool(crate::tools::ToolError::CommandTimeout(_)))
-                    if attempt < 2 =>
-                {
-                    // The fixture launches a real interpreter; under a busy
-                    // parallel test runner startup can consume the one-second
-                    // hook budget. Retry only this transient class and keep
-                    // all manifest/policy failures fail-fast.
-                    std::thread::sleep(std::time::Duration::from_millis(25));
-                }
-                Err(error) => panic!("extension fixture setup failed: {error}"),
-            }
-        }
-        assert!(configured, "extension fixture never initialized");
+        agent.configure_extensions(&extensions, || false).unwrap();
         let old_lease = agent.extension_lease().unwrap();
         let old_id = agent.session.session_id().to_owned();
         let old_registry = agent.tools.as_ref().unwrap().registry.clone();
@@ -8616,6 +8903,50 @@ print(json.dumps({'jsonrpc':'2.0','id':r['id'],'capability':r['capability'],'res
                 .execute(&runtime.context, runtime.policy, call()),
             crate::tools::ToolResult::Success { .. }
         ));
+    }
+
+    #[test]
+    #[ignore = "real extension subprocess selected by the parent resume test"]
+    fn resume_extension_process() {
+        use std::io::{BufRead, Write};
+        use std::os::fd::FromRawFd;
+        assert_eq!(std::env::var("ZENPI_EXTENSION_NAME").unwrap(), "fixture");
+        // SAFETY: the fixture shell uniquely owns the duplicated protocol FD.
+        assert_ne!(unsafe { libc::fcntl(3, libc::F_GETFD) }, -1);
+        let mut output = unsafe { fs::File::from_raw_fd(3) };
+        let mut line = String::new();
+        std::io::stdin().lock().read_line(&mut line).unwrap();
+        let request: Value = serde_json::from_str(&line).unwrap();
+        let params = &request["params"];
+        let method = request["method"].as_str().unwrap();
+        let mut journal = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("events")
+            .unwrap();
+        writeln!(
+            journal,
+            "{}",
+            serde_json::json!({
+                "kind":params["hook"].as_str().unwrap_or(method), "capability":request["capability"]
+            })
+        )
+        .unwrap();
+        journal.flush().unwrap();
+        let result = match method {
+            "initialize" => serde_json::json!({"api_version":2,"hooks":params["hooks"],
+                "tools":params["tools"].as_array().unwrap().iter().map(|tool|tool["name"].clone()).collect::<Vec<_>>()}),
+            "tools/call" => serde_json::json!({"echo":params["arguments"]}),
+            _ => serde_json::json!({"action":"continue"}),
+        };
+        writeln!(
+            output,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":request["id"],
+            "capability":request["capability"],"result":result})
+        )
+        .unwrap();
+        output.flush().unwrap();
     }
 }
 

@@ -17,6 +17,7 @@ import json
 import os
 import pathlib
 import platform
+import resource
 import statistics
 import signal
 import subprocess
@@ -74,9 +75,13 @@ def timed_process(
     command: list[str], *, env: dict[str, str], payload: str,
     observation: dict[str, Any] | None = None, timeout: float = 5,
 ) -> tuple[subprocess.CompletedProcess[str], int]:
-    """Run one binary under the platform time(1) RSS collector."""
+    """Run one binary with platform-appropriate peak-RSS accounting."""
     if sys.platform == "darwin":
-        wrapped = ["/usr/bin/time", "-l", *command]
+        # macOS `/usr/bin/time -l` can fail its sysctl diagnostics in the
+        # restricted runner and masks the child's exit code. Use the direct
+        # child with wait4 accounting instead; this preserves the exact
+        # product return code and still measures the same child RSS.
+        wrapped = list(command)
         marker = "maximum resident set size"
         multiplier = 1
     elif sys.platform.startswith("linux"):
@@ -88,9 +93,12 @@ def timed_process(
     observation = observation if observation is not None else {}
     observation.update(
         argv=wrapped, cwd=str(ROOT), started_at=dt.datetime.now(dt.timezone.utc).isoformat(),
-        pid_scope='time(1) wrapper/process-group leader; not the zenpi child PID',
+        pid_scope=('direct child process; not the zenpi child PID'
+                   if sys.platform == "darwin"
+                   else 'time(1) wrapper/process-group leader; not the zenpi child PID'),
         phase_scope='parent observations, not internal product phase attribution',
     )
+    rss_before = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
     started = time.perf_counter_ns()
     child = subprocess.Popen(
         wrapped, cwd=ROOT, env=env, stdin=subprocess.PIPE,
@@ -124,6 +132,7 @@ def timed_process(
     if timed_out:
         raise subprocess.TimeoutExpired(wrapped, timeout, output=stdout, stderr=stderr)
     rss = None
+    rss_source = "time"
     for line in process.stderr.splitlines():
         if marker in line:
             fields = line.replace(":", " ").split()
@@ -132,7 +141,17 @@ def timed_process(
                 rss = numbers[-1] * multiplier
                 break
     if rss is None:
-        raise RuntimeError(f"could not parse peak RSS from time(1): {process.stderr!r}")
+        # macOS 15 can deny /usr/bin/time's sysctl lookup inside a restricted
+        # runner even though the child completed and wait4 retained usage.
+        # Keep the same parent-observation scope and use the kernel's reaped
+        # child accounting rather than turning an environment diagnostic into
+        # a product failure. Linux reports KiB; Darwin reports bytes.
+        usage = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+        if usage <= 0:
+            raise RuntimeError(f"could not parse peak RSS from time(1): {process.stderr!r}")
+        rss = int(max(usage, rss_before)) * (1024 if sys.platform.startswith("linux") else 1)
+        rss_source = "getrusage_children_fallback"
+    observation["rss_source"] = rss_source
     # Keep diagnostics from the measured child separate from the RSS wrapper.
     # Normal benchmark exits are silent apart from time(1), but a failure still
     # returns the complete stderr below for diagnosis.

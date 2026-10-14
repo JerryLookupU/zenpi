@@ -1,0 +1,54 @@
+{
+  "scope": "production non-TUI Rust host / Android composer and saved prompt recovery after actual process death",
+  "passed": true,
+  "direct_host_interface_verified": true,
+  "adb_reverse_used": false,
+  "camera_scanning_verified": false,
+  "physical_phone_lan_verified": false,
+  "terminal_qr_decode_verified": false,
+  "android_composer_provider_turn_verified": true,
+  "encrypted_pending_prompt_process_recovery_verified": true,
+  "concurrent_authenticated_android_reads_verified": true,
+  "exact_retry_without_provider_replay_verified": true,
+  "provider_requests": 2,
+  "listener_expiry_closed_verified": true,
+  "artifacts": {
+    "target/debug/zenpi": "e00015d3c7a0be0c4686bce3111e4ab98f8ee8ca16399daf1b60bbf64bccb431",
+    "android/app/build/outputs/apk/debug/app-debug.apk": "dafdf2f1fc981f793c6e1c829f39a9e118403c1961e2f160fb943dc64d08dfaf",
+    "android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk": "96120db6279f576f753297fb18ac9684ecce76d7a4c3288ae44dc96e0ffa2567",
+    "tools/stage2_headless_android_smoke.py": "28a5ed18e1d25b3fb93c4a0e529453172f794a44f8a3fbe2b2c165c8aa62b189"
+  },
+  "android_api": "36",
+  "serial": "emulator-5580",
+  "started_at_unix": 1790891061.11639,
+  "finished_at_unix": 1790891117.215701,
+  "failure": null,
+  "command_evidence": {
+    "path": "Docs/quality/stage2_android2unix/headless-android-registry-contention-20261002.commands.json",
+    "sha256": "1053fd06287a08c454ee5eb66feec2603af87d5c8450fae5360522f4b66169e3"
+  },
+  "process_evidence": {
+    "killed_pid": "7453",
+    "committed_request_id": "3d1d3c9b-e4f7-4147-97c0-7d1a5b4703f3",
+    "pending_command_recovered_in_distinct_process": true,
+    "recovery_exit_code": 0
+  },
+  "screenshot": {
+    "path": "Docs/quality/stage2_android2unix/headless-android-registry-contention-20261002.png",
+    "sha256": "ec52f581af0a9d2ca46ffe99f1780ebf5ff636b7b1d4dcc5224080f4be82a245"
+  },
+  "requirement": {
+    "schema_version": "stage2-selector/v1",
+    "active": true,
+    "activated_by": "master",
+    "activated_at": "2026-10-01T19:16:06+0800",
+    "blueprint": "Docs/stage2_android2unix_blueprint.md",
+    "specification": "Docs/stage2_android2unix_spec.md",
+    "requirement_digest": "9887f784c944db898610e136dca2774496abb2f80b3e5a8fdd6a0b32659e009d",
+    "spec_digest": "403e6339b0318a420d93600fc52926acf6a9e46ec899bd9a9edb03c235190a28",
+    "target_repo": "/Users/mac/Github/zenpi",
+    "target_baseline": "current-worktree-with-user-changes",
+    "run_id": "zenpi-stage2-android2unix-20261001"
+  },
+  "integration_state": "uncommitted provisional evidence; no whole-item acceptance"
+}

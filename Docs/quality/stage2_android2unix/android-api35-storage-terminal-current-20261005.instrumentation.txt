@@ -1,0 +1,141 @@
+INSTRUMENTATION_STATUS: class=zenpi.ForegroundStoreTest
+INSTRUMENTATION_STATUS: current=1
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=6
+INSTRUMENTATION_STATUS: stream=
+zenpi.ForegroundStoreTest:
+INSTRUMENTATION_STATUS: test=replacedForegroundWritesCannotPublishOrRemoveKeysAtFinalAdmission
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: zenpi_phase=foreground_storage_final_admission_fenced_verified
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.ForegroundStoreTest
+INSTRUMENTATION_STATUS: current=1
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=6
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=replacedForegroundWritesCannotPublishOrRemoveKeysAtFinalAdmission
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.ForegroundStoreTest
+INSTRUMENTATION_STATUS: current=2
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=6
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=cancelledForegroundWritesCannotPublishAfterWaitingForStorage
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: zenpi_phase=foreground_storage_wait_cancellation_fenced_verified
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.ForegroundStoreTest
+INSTRUMENTATION_STATUS: current=2
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=6
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=cancelledForegroundWritesCannotPublishAfterWaitingForStorage
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.PairingCancelTest
+INSTRUMENTATION_STATUS: current=3
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=6
+INSTRUMENTATION_STATUS: stream=
+zenpi.PairingCancelTest:
+INSTRUMENTATION_STATUS: test=firstPairingCancelReconcilesAnAlreadyOwnedCredentialSave
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: zenpi_phase=first_pair_cancel_saved_host_restored_verified
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.PairingCancelTest
+INSTRUMENTATION_STATUS: current=3
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=6
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=firstPairingCancelReconcilesAnAlreadyOwnedCredentialSave
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.PairingCancelTest
+INSTRUMENTATION_STATUS: current=4
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=6
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=networkLossPairingReconcilesAnAlreadyOwnedCredentialSave
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: zenpi_phase=network_pair_saved_host_restored_verified
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.PairingCancelTest
+INSTRUMENTATION_STATUS: current=4
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=6
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=networkLossPairingReconcilesAnAlreadyOwnedCredentialSave
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.PairingCancelTest
+INSTRUMENTATION_STATUS: current=5
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=6
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=backgroundPairingReconcilesAnAlreadyOwnedCredentialSave
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: zenpi_phase=background_pair_saved_host_restored_verified
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.PairingCancelTest
+INSTRUMENTATION_STATUS: current=5
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=6
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=backgroundPairingReconcilesAnAlreadyOwnedCredentialSave
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.TerminalControlScreenTest
+INSTRUMENTATION_STATUS: current=6
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=6
+INSTRUMENTATION_STATUS: stream=
+zenpi.TerminalControlScreenTest:
+INSTRUMENTATION_STATUS: test=terminalInputInterruptAndResizeUseTheHostControlAtNarrowWidth
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.TerminalControlScreenTest
+INSTRUMENTATION_STATUS: current=6
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=6
+INSTRUMENTATION_STATUS: stack=java.lang.AssertionError: Failed to assert the following: (is not enabled)
+Reason: Expected exactly '1' node but could not find any node that satisfies: (ContentDescription = 'Open desktop terminal' (ignoreCase: false))
+
+	at androidx.compose.ui.test.SemanticsNodeInteraction.fetchOneOrThrow(SemanticsNodeInteraction.kt:178)
+	at androidx.compose.ui.test.SemanticsNodeInteraction.fetchOneOrThrow$default(SemanticsNodeInteraction.kt:150)
+	at androidx.compose.ui.test.SemanticsNodeInteraction.fetchSemanticsNode(SemanticsNodeInteraction.kt:84)
+	at androidx.compose.ui.test.AssertionsKt.assert(Assertions.kt:263)
+	at androidx.compose.ui.test.AssertionsKt.assert$default(Assertions.kt:255)
+	at androidx.compose.ui.test.AssertionsKt.assertIsNotEnabled(Assertions.kt:63)
+	at zenpi.TerminalControlScreenTest.terminalInputInterruptAndResizeUseTheHostControlAtNarrowWidth(TerminalControlScreenTest.kt:127)
+
+INSTRUMENTATION_STATUS: stream=
+Error in terminalInputInterruptAndResizeUseTheHostControlAtNarrowWidth(zenpi.TerminalControlScreenTest):
+java.lang.AssertionError: Failed to assert the following: (is not enabled)
+Reason: Expected exactly '1' node but could not find any node that satisfies: (ContentDescription = 'Open desktop terminal' (ignoreCase: false))
+
+	at androidx.compose.ui.test.SemanticsNodeInteraction.fetchOneOrThrow(SemanticsNodeInteraction.kt:178)
+	at androidx.compose.ui.test.SemanticsNodeInteraction.fetchOneOrThrow$default(SemanticsNodeInteraction.kt:150)
+	at androidx.compose.ui.test.SemanticsNodeInteraction.fetchSemanticsNode(SemanticsNodeInteraction.kt:84)
+	at androidx.compose.ui.test.AssertionsKt.assert(Assertions.kt:263)
+	at androidx.compose.ui.test.AssertionsKt.assert$default(Assertions.kt:255)
+	at androidx.compose.ui.test.AssertionsKt.assertIsNotEnabled(Assertions.kt:63)
+	at zenpi.TerminalControlScreenTest.terminalInputInterruptAndResizeUseTheHostControlAtNarrowWidth(TerminalControlScreenTest.kt:127)
+
+INSTRUMENTATION_STATUS: test=terminalInputInterruptAndResizeUseTheHostControlAtNarrowWidth
+INSTRUMENTATION_STATUS_CODE: -2
+INSTRUMENTATION_RESULT: stream=
+
+Time: 15.802
+There was 1 failure:
+1) terminalInputInterruptAndResizeUseTheHostControlAtNarrowWidth(zenpi.TerminalControlScreenTest)
+java.lang.AssertionError: Failed to assert the following: (is not enabled)
+Reason: Expected exactly '1' node but could not find any node that satisfies: (ContentDescription = 'Open desktop terminal' (ignoreCase: false))
+
+	at androidx.compose.ui.test.SemanticsNodeInteraction.fetchOneOrThrow(SemanticsNodeInteraction.kt:178)
+	at androidx.compose.ui.test.SemanticsNodeInteraction.fetchOneOrThrow$default(SemanticsNodeInteraction.kt:150)
+	at androidx.compose.ui.test.SemanticsNodeInteraction.fetchSemanticsNode(SemanticsNodeInteraction.kt:84)
+	at androidx.compose.ui.test.AssertionsKt.assert(Assertions.kt:263)
+	at androidx.compose.ui.test.AssertionsKt.assert$default(Assertions.kt:255)
+	at androidx.compose.ui.test.AssertionsKt.assertIsNotEnabled(Assertions.kt:63)
+	at zenpi.TerminalControlScreenTest.terminalInputInterruptAndResizeUseTheHostControlAtNarrowWidth(TerminalControlScreenTest.kt:127)
+
+FAILURES!!!
+Tests run: 6,  Failures: 1
+
+
+INSTRUMENTATION_CODE: -1

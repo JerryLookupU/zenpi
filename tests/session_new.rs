@@ -319,6 +319,36 @@ fn running_request_rejects_new_without_cancelling_old_work_then_allows_retry() {
 }
 
 #[test]
+fn committed_new_session_wakes_other_workspace_subscribers_without_repeating_on_retry() {
+    let root = tempdir().unwrap();
+    let child = root.path().join("child");
+    fs::create_dir(&child).unwrap();
+    let mut wire = Wire::new(agent(root.path()));
+    let initial = wire.project("initial", json!({"action":"list"}))["project"].clone();
+    let opened = wire.project("child", json!({"action":"open","cwd":child}));
+    assert_eq!(opened["success"], true, "{opened}");
+    let child_signal =
+        zenpi::remote::wakeup::watch(opened["project"]["session_id"].as_str().unwrap()).unwrap();
+    let selected = wire.project(
+        "initial-again",
+        json!({"action":"select","id":initial["project_id"]}),
+    );
+    assert_eq!(selected["success"], true);
+    let observed = child_signal.revision();
+    let created = wire.command("new-on-initial", "/new");
+    assert_eq!(created["success"], true, "{created}");
+    assert_ne!(child_signal.revision(), observed);
+    let observed = child_signal.revision();
+    assert_eq!(wire.command("new-on-initial", "/new"), created);
+    assert_eq!(child_signal.revision(), observed);
+    assert_eq!(
+        wire.project("final", json!({"action":"list"}))["project"]["session_id"],
+        created["data"]["new_session_id"]
+    );
+    wire.finish();
+}
+
+#[test]
 fn failed_owner_checkpoint_preserves_old_session_and_removes_candidate() {
     let root = tempdir().unwrap();
     let initial = agent(root.path());

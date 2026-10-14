@@ -162,6 +162,10 @@ fn catalogue_discovery_frontmatter_source_and_nonrecursive_expansion() {
     assert_eq!(set.templates().count(), 2);
     let template = set.get("review").unwrap();
     assert_eq!(template.description, "first line\nsecond line\n");
+    assert_eq!(template.remote_description(), "first line\nsecond line\n");
+    let plain = set.get("plain").unwrap();
+    assert_eq!(plain.description, "日本語 first line");
+    assert_eq!(plain.remote_description(), "");
     assert_eq!(template.argument_hint.as_deref(), Some("<target>"));
     assert_eq!(template.scope, SkillScope::User);
     assert_eq!(template.source_hash.len(), 64);
@@ -173,6 +177,70 @@ fn catalogue_discovery_frontmatter_source_and_nonrecursive_expansion() {
         assert!(set.expand(unmatched, || false).unwrap().is_none());
     }
     assert!(!temp.path().join("marker").exists());
+}
+
+#[test]
+fn remote_description_requires_loader_verified_explicit_metadata_and_keeps_local_fallback() {
+    let temp = tempdir().unwrap();
+    for (name, source) in [
+        ("plain", "PRIVATE_BODY_FIRST_LINE\nnext body"),
+        ("empty", "---\ndescription: ''\n---\nPRIVATE_EMPTY_BODY\n"),
+        (
+            "whitespace",
+            "---\ndescription: '   '\n---\nPRIVATE_WHITESPACE_BODY\n",
+        ),
+        (
+            "absent",
+            "---\nargument-hint: '<target>'\n---\nPRIVATE_ABSENT_BODY\n",
+        ),
+        (
+            "explicit",
+            "\u{feff}---\r\ndescription: 'Public label'\r\n---\r\nPRIVATE_EXPLICIT_BODY\r\n",
+        ),
+    ] {
+        put(temp.path(), &format!("prompts/{name}.md"), source);
+    }
+    let set = PromptTemplates::load(
+        &temp.path().join("none"),
+        &temp.path().join("prompts"),
+        &[],
+        || false,
+    )
+    .unwrap();
+    for name in ["plain", "empty", "absent"] {
+        let item = set.get(name).unwrap();
+        assert!(item.description.starts_with("PRIVATE_"));
+        assert_eq!(item.remote_description(), "");
+        assert_eq!(
+            set.expand(&format!("/{name}"), || false)
+                .unwrap()
+                .unwrap()
+                .content,
+            item.content
+        );
+    }
+    assert_eq!(
+        set.get("explicit").unwrap().remote_description(),
+        "Public label"
+    );
+    assert_eq!(set.get("whitespace").unwrap().description, "   ");
+    assert_eq!(set.get("whitespace").unwrap().remote_description(), "");
+    let item = set.get("explicit").unwrap();
+    let serialized = serde_json::to_value(item).unwrap();
+    assert!(
+        !serialized
+            .as_object()
+            .unwrap()
+            .contains_key("description_explicit")
+    );
+    let restored: zenpi::prompt_templates::PromptTemplate =
+        serde_json::from_value(serialized).unwrap();
+    assert_eq!(restored.description, "Public label");
+    assert_eq!(restored.remote_description(), "");
+    let mut forged = serde_json::to_value(item).unwrap();
+    forged["description_explicit"] = serde_json::json!(true);
+    let restored: zenpi::prompt_templates::PromptTemplate = serde_json::from_value(forged).unwrap();
+    assert_eq!(restored.remote_description(), "");
 }
 
 #[test]

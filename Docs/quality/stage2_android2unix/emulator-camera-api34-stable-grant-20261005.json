@@ -1,0 +1,86 @@
+{
+  "schema_version": "stage2-emulator-camera/v1",
+  "passed": false,
+  "failure": "CalledProcessError: emulator camera workflow incomplete",
+  "whole_item_accepted": false,
+  "emulator_imagefile_camera_verified": false,
+  "production_scanner_to_pinned_tls_verified": false,
+  "physical_camera_scan_verified": false,
+  "physical_phone_lan_verified": false,
+  "direct_lan_verified": false,
+  "adb_reverse_used": false,
+  "emulator_host_network_verified": false,
+  "transport": "emulator_host_alias",
+  "bidirectional_sync_verified": false,
+  "foreground_replay_verified": false,
+  "sync_evidence": null,
+  "replay_evidence": null,
+  "device_id": null,
+  "project_id": "43995bfaa6cb7c68ab80eb73a7b094542945cc956fc670f36b2b4a5dbb6c50d1",
+  "callback_steps": [],
+  "provider_requests": 0,
+  "provider_prompts": [],
+  "provider_answers": [],
+  "journal_turns": [
+    {
+      "role": "user",
+      "content": "Reply with the fixture transcript"
+    },
+    {
+      "role": "assistant",
+      "content": "STAGE2_ANDROID_REAL_PROVIDER_TRANSCRIPT"
+    }
+  ],
+  "serial": "emulator-5584",
+  "avd": "ZenpiStage2Api34",
+  "android_api": 34,
+  "expected_android_api": 34,
+  "endpoint": {
+    "address": "10.0.2.2:65044",
+    "fingerprint": "4379df67827e08cb28626e6e6185b2a337b076cdee77f35c60ea3aab282be10c"
+  },
+  "safety_code_input": "automated emulator-only input; not manual operator confirmation",
+  "camera_fixture_orientation": "landscape imagefile input on owned emulator",
+  "camera_fixture_placement": {
+    "width": 1280,
+    "height": 960,
+    "qr_center_x": 340,
+    "qr_center_y": 480
+  },
+  "camera_fixture_sha256": "db928ee810ace0bdd35377ae122c58b588c156e24d60cb82917bdf7f2da75f1a",
+  "harness_inputs": {
+    "tools/stage2_emulator_qr_smoke.py": "9138824ed798da44d1e5e5a10c14b46cecedac80723722f35917973f57b46d28",
+    "tools/stage2_desktop_android_smoke.py": "ab8f9798ea684087a10dcf027e49542ab5ab6e21ebcc542a39f324e3fd8d7eaa",
+    "tools/stage2_android_pair_smoke.py": "d66cf0c32a25cbb256aa6b19b4b2fd05d8ef6fb0f6c69dd77c3e4ca088b64d81",
+    "tools/stage2_instrumentation.py": "e2bb3ffa6b6a310ce73e440b040c4633150bc4b9b6c48e0f58c90e4d3ffdc082",
+    "tools/decode_terminal_qr.swift": "0182a27ddefe4565da427d5c65874f97329c21a016dc778935693d11e9349a1f",
+    "tools/stage2_host_smoke.py": "cc1dd2e360261b68c09e5263349e59db92fce3a45531b8c3b68f02c262ed97ac",
+    "tools/stage2_physical_qr_android_smoke.py": "476a2b9cf0e45637ece119c328d2d7b7900a91f1ab52b6c91629780119f0a076"
+  },
+  "completed_tests": [],
+  "android_build_provenance": {
+    "path": "android/app/build/stage2-device-build.json",
+    "sha256": "bc90d8943708ca690f8d00c535ae0f83e3d4efc0ef474f510bae787d7ea9e923",
+    "inputs_sha256": "8cd4e790de4e00fc3cb2d68dde2200a57df5b601dbe8b767b34147a2186be8dc",
+    "artifacts": {
+      "android/app/build/outputs/apk/debug/app-debug.apk": "2267dfddf3d2c2e00c3876b17cb55a5041fc5478cc03f0145e4aa1f6409986a5",
+      "android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk": "ae6854884a36b0bbbdab6f3c2008cae9ad847047938d96aeb482544055bab99b"
+    }
+  },
+  "host_build_provenance": {
+    "path": "target/stage2-host-build-debug.json",
+    "sha256": "799da8bf05a9985887961153c65257f5e6325e5a1875b3259c6e7c8b94d889b9",
+    "inputs_sha256": "9aa1b19a756f3a031cf5925c3b241e95bb18a1781627a44749d62a2a33028086",
+    "artifact": {
+      "path": "target/debug/zenpi",
+      "sha256": "c93f6d6385f31c092b3abaf34a6e5f959d041ad9a1e671aacdf69add23da63bd"
+    }
+  },
+  "screenshot": null,
+  "instrumentation": {
+    "path": "Docs/quality/stage2_android2unix/emulator-camera-api34-stable-grant-20261005.instrumentation.txt",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "started_at_unix": 1791134858.146963,
+  "finished_at_unix": 1791134880.814155
+}

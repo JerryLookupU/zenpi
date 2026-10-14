@@ -9,7 +9,7 @@
 
 ## 1. RTK 先行规则
 
-已核查本机 `rtk 0.49.0`、Rust `1.96.1`；项目 MSRV 仍为1.88，不因本机编译器升级最低要求。
+已核查本机 `rtk 0.50.0`、Rust `1.98.0`；项目 MSRV 仍为1.88，不因本机编译器升级最低要求。
 本机帮助与 [RTK v0.49.0 固定源码](https://github.com/rtk-ai/rtk/tree/b1c0dc00649c50fbe8930f849c800d4d6ca12091) 为执行依据。
 上游默认分支是 develop；[核验时 README](https://github.com/rtk-ai/rtk/blob/b748a5f75563f410103551689097650be7210d99/README.md) 仅作背景，不自动升级或安装 hook。
 `No hook installed` 提示不影响显式调用；本任务不运行 rtk init、不修改用户全局配置。
