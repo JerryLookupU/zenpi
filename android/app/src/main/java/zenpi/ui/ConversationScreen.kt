@@ -31,6 +31,7 @@ import androidx.compose.material.icons.outlined.AccountTree
 import androidx.compose.material.icons.outlined.ArrowDropDown
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.OpenInFull
+import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -47,12 +48,12 @@ import androidx.compose.material3.TooltipDefaults
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -71,35 +72,37 @@ import androidx.compose.ui.unit.dp
 import zenpi.pairing.ModelReadPolicy
 import zenpi.pairing.PairingPhase
 import zenpi.pairing.PairingState
+import zenpi.pairing.PromptControlPolicy
 import zenpi.pairing.TranscriptReadPolicy
 import zenpi.transport.HostProjection
 import zenpi.transport.RemoteProject
 import zenpi.transport.RemoteToolCall
 import zenpi.transport.RemoteTurn
-import zenpi.ui.dialogs.FilesDialog
-import zenpi.ui.dialogs.ModelDialog
-import zenpi.ui.dialogs.ResourcesDialog
+import zenpi.ui.nav.Route
 
 /**
  * The main screen for an authorized host: a top bar (switcher, Agent/Arch mode, worktree and
  * model chips), the conversation as a reverse [LazyColumn] that sticks to the newest turn and
- * its streaming row, and the bottom-pinned [Composer]. [header] holds the session controls that
- * have no secondary page yet; it scrolls in as the oldest list item.
+ * its streaming row and message statuses, and the bottom-pinned [ApprovalPanel] bar and [Composer]. The
+ * chip row ends with the session actions that open the secondary pages ([onRoute]); [header] (the host
+ * and device controls when the switcher is inline) scrolls in as the oldest list item.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ConversationScreen(scope: ScreenScope, projection: HostProjection, prompt: Draft, actions: PairingActions,
-    navigation: @Composable () -> Unit, onOpenSwitcher: () -> Unit, header: @Composable ColumnScope.() -> Unit) {
+fun ConversationScreen(scope: ScreenScope, projection: HostProjection, prompt: Draft, workspaceUi: WorkspaceUiState, actions: PairingActions,
+    navigation: @Composable () -> Unit, onOpenSwitcher: () -> Unit, onRoute: (Route) -> Unit, status: @Composable () -> Unit,
+    header: @Composable ColumnScope.() -> Unit) {
     val state = scope.state
     val selected = scope.selected
     val list = rememberLazyListState()
     val composer = projection.projects.any { it.id == projection.selectedId && it.promptControl }
     Scaffold(contentWindowInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal),
-        topBar = { ConversationTopBar(scope, projection, actions, navigation, onOpenSwitcher) },
+        topBar = { ConversationTopBar(scope, projection, workspaceUi, actions, navigation, onOpenSwitcher, onRoute, status) },
         bottomBar = {
             // The keyboard lifts the composer, and shrinks the list above it, whether or not a composer is shown.
             Surface(tonalElevation = if (composer) 3.dp else 0.dp) {
                 Column(Modifier.navigationBarsPadding().imePadding()) {
+                    ApprovalPanel(scope, actions)
                     // Scrollable so a 5-line draft at a large font never pushes the composer off a small screen.
                     if (composer) Column(Modifier.heightIn(max = 280.dp).verticalScroll(rememberScrollState())
                         .padding(horizontal = 12.dp, vertical = 8.dp)) {
@@ -110,17 +113,20 @@ fun ConversationScreen(scope: ScreenScope, projection: HostProjection, prompt: D
         }) { padding ->
         ConversationList(state, projection, selected, list, padding, actions, header)
     }
-    if (state.modelOpen) ModelDialog(state, projection, selected, actions)
-    if (state.resourcesOpen) ResourcesDialog(state, selected, prompt, actions)
-    if (state.filesOpen) FilesDialog(state, prompt, actions)
+    if (state.modelOpen) ModelSheet(state, projection, selected, actions)
+    if (state.resourcesOpen) CommandPalette(scope, prompt, workspaceUi, actions)
+    if (state.filesOpen) FilePalette(state, prompt, actions)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ConversationTopBar(scope: ScreenScope, projection: HostProjection, actions: PairingActions,
-    navigation: @Composable () -> Unit, onOpenSwitcher: () -> Unit) {
+private fun ConversationTopBar(scope: ScreenScope, projection: HostProjection, workspaceUi: WorkspaceUiState, actions: PairingActions,
+    navigation: @Composable () -> Unit, onOpenSwitcher: () -> Unit, onRoute: (Route) -> Unit, status: @Composable () -> Unit) {
     Surface { Column(Modifier.padding(bottom = 4.dp)) {
-        TopAppBar(title = { Text(scope.selected?.title ?: "Zenpi", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+        TopAppBar(title = { Column {
+            Text(scope.selected?.title ?: "Zenpi", maxLines = 1, overflow = TextOverflow.Ellipsis)
+            scope.selected?.sessionName?.let { Text(it, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+        } },
             navigationIcon = navigation, windowInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -143,7 +149,9 @@ private fun ConversationTopBar(scope: ScreenScope, projection: HostProjection, a
                     contentDescription = "Inspect host model"; model?.let { stateDescription = it }; role = Role.Button
                     if (modelEnabled) onClick { actions.model(); true } else disabled()
                 })
+            SessionToolbar(scope, projection, workspaceUi, actions, onRoute)
         }
+        Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) { status() }
     } }
 }
 
@@ -172,6 +180,7 @@ private fun ConversationList(state: PairingState, projection: HostProjection, se
     LaunchedEffect(newest) { if (follow) list.scrollToItem(0) }
     LazyColumn(Modifier.fillMaxSize().padding(padding).testTag("conversation"), state = list, reverseLayout = true,
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        if (selected?.promptStatuses?.isNotEmpty() == true) item(key = "statuses", contentType = "statuses") { PromptStatuses(state, projection, selected, actions) }
         if (live) item(key = "live", contentType = "live") { LiveStreams(selected) }
         val turns = projection.turns
         itemsIndexed(turns.asReversed(), key = { index, turn -> "turn-${turns.size - 1 - index}-${turn.id}" }, contentType = { _, _ -> "turn" }) { _, turn ->
@@ -249,4 +258,27 @@ private fun LiveStreams(selected: RemoteProject?) {
             MarkdownText(text, Modifier.testTag("desktop-live-text").semantics(mergeDescendants = true) {})
         }
     }
+}
+
+private val activePromptStates = setOf("accepted", "running")
+
+/** Status of the messages sent to the selected session, with a cancel for each running one. */
+@Composable
+private fun PromptStatuses(state: PairingState, projection: HostProjection, selected: RemoteProject?, actions: ConversationActions) {
+    Column { projection.projects.find { it.id == projection.selectedId }?.promptStatuses?.forEach { status ->
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text(status.requestId.take(8), style = MaterialTheme.typography.labelSmall)
+            Text(when (status.state) { "accepted" -> "Message accepted"; "running" -> "Message running"
+                "succeeded" -> "Message succeeded"; "failed" -> when(status.failureCode){
+                    "invalid_request"->"Message input rejected";"busy"->"Message owner busy";"resource_limit"->"Message limit reached"
+                    "unauthorized","revoked_device"->"Message access denied";else->"Message failed"}; "cancelled" -> "Message cancelled"
+                else -> "Message result unknown" }, style = MaterialTheme.typography.labelMedium,
+                modifier=Modifier.weight(1f).padding(horizontal=8.dp),maxLines=2,overflow=TextOverflow.Ellipsis)
+            if (status.state in activePromptStates && selected?.promptControl == true) {
+                IconButton(onClick = { actions.cancelPrompt(status.requestId) }, enabled = PromptControlPolicy.active(state, status.requestId)) {
+                    Icon(Icons.Outlined.Stop, contentDescription = "Cancel message ${status.requestId}")
+                }
+            }
+        }
+    } }
 }

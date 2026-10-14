@@ -193,10 +193,10 @@ class PairingScreenTest {
         assertEquals(listOf(null, "project"), selections)
         compose.runOnIdle { state = state.copy(pendingWorkspace = zenpi.transport.WorkspaceCommand.create(projection, "project", "workspace_select")) }
         compose.onNodeWithText("Scan QR").assertDoesNotExist()
-        compose.onNodeWithText("Retry same request").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Retry same request").assertIsDisplayed()
         compose.runOnIdle { state = state.copy(phase = PairingPhase.CONNECTED, pendingWorkspace = null,
             projection = projection.copy(snapshotReplaced = true)) }
-        compose.onNodeWithTag("synchronization-status").performScrollTo().assertTextEquals("Snapshot replaced")
+        compose.onNodeWithTag("synchronization-status").assertTextEquals("Snapshot replaced")
         compose.runOnIdle { state = state.copy(projection = projection.copy(hasMoreEvents = true)) }
         compose.onNodeWithTag("synchronization-status").assertTextEquals("Catching up")
         compose.runOnIdle { state = state.copy(phase = PairingPhase.OFFLINE) }

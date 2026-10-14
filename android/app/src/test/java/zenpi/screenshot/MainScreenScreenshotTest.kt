@@ -12,6 +12,7 @@ import zenpi.pairing.PairingState
 import zenpi.security.PairedHost
 import zenpi.transport.HostProjection
 import zenpi.transport.RemoteApproval
+import zenpi.transport.RemoteApprovalPreview
 import zenpi.transport.RemoteProject
 import zenpi.transport.RemotePromptStatus
 import zenpi.transport.RemoteSubtab
@@ -45,6 +46,16 @@ object Fixtures {
             "4", false, "9", workspaceOwner = "f".repeat(64), workspaceRevision = "3",
             subtabs = RemoteSubtabs("zenpi", "2", main, listOf(RemoteSubtab(main, "main", "main", 1),
                 RemoteSubtab(worktree, "wt-a", "worktree", 2)), true, worktreeControl = true, concurrencyControl = true)))
+
+    /** Two approvals queued on the selected project; the head carries a diff preview. */
+    val queued: List<RemoteApproval> = listOf(
+        RemoteApproval("approval-1", "zenpi", "s-zenpi", "turn-2", "call-2", "edit_file", "workspace_write", "agent_tool", "c".repeat(64),
+            RemoteApprovalPreview("src/remote/subscription.rs", "@@ -41,3 +41,4 @@ fn reconnect\n     let mut cursor = state.cursor;\n" +
+                "-    let events = subscription.resume(None)?;\n+    let events = subscription.resume(Some(cursor))?;\n+    cursor = events.last_cursor();\n" +
+                "     Ok(events)\n", changed = true, truncated = false, redacted = false, withheld = false)),
+        RemoteApproval("approval-2", "zenpi", "s-zenpi", "turn-2", "call-3", "bash", "command_execution", "agent_tool", "d".repeat(64)))
+    val queuedState: PairingState = connected.copy(projection = connected.projection!!.copy(projects = connected.projection!!.projects.map {
+        if (it.id == "zenpi") it.copy(pendingApprovals = queued) else it }))
 }
 
 @RunWith(ParameterizedRobolectricTestRunner::class)

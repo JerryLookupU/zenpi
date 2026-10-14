@@ -57,7 +57,9 @@ enum class ComposerMode {
 
 /**
  * Bottom-pinned message composer: send / steer / stop on one button, `ImeAction.Send` on the
- * keyboard. The draft is the caller's [Draft] (saveable, so it survives rotation).
+ * keyboard. The draft is the caller's [Draft] (saveable, so it survives rotation). Typing `/` into an
+ * empty message opens the [CommandPalette], typing `@` at a word start opens the [FilePalette]; the two
+ * leading buttons open them too.
  */
 @Composable
 fun Composer(state: PairingState, projection: HostProjection, prompt: Draft, actions: PairingActions) {
@@ -82,7 +84,18 @@ fun Composer(state: PairingState, projection: HostProjection, prompt: Draft, act
         if (active == null && projection.subtabs != null) IconButton(onClick = { actions.files(".") }, enabled = FileReadPolicy.browse(state)) {
             Icon(Icons.Outlined.AttachFile, contentDescription = "Attach host file")
         }
-        OutlinedTextField(text, { if (it.toByteArray().size <= 65536) prompt.value = it }, label = { Text(if (active == null) "Message" else "Steer") },
+        OutlinedTextField(text, { next ->
+            if (next.toByteArray().size <= 65536) {
+                val before = prompt.value
+                prompt.value = next
+                // `/` opens the command palette and `@` the file picker; steering text is never a command.
+                if (active == null) when (PaletteTrigger.of(before, next)) {
+                    PaletteTrigger.COMMANDS -> if (ResourceReadPolicy.browse(state)) actions.resources(-1)
+                    PaletteTrigger.FILES -> if (projection.subtabs != null && FileReadPolicy.browse(state)) actions.files(".")
+                    null -> Unit
+                }
+            }
+        }, label = { Text(if (active == null) "Message" else "Steer") },
             modifier = Modifier.weight(1f).testTag("prompt-composer"), maxLines = 5,
             enabled = if (active == null) PromptControlPolicy.send(state) else PromptControlPolicy.active(state, active.requestId),
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),

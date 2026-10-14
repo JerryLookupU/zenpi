@@ -31,6 +31,7 @@ class TerminalControlScreenTest {
             PairingScreen(state.value, {}, {}, {}, onTerminalInput = { inputs += it }, onTerminalResize = { rows, cols -> sizes += rows to cols },
                 onOpenDesktopTerminal = { opened++ })
         } } }
+        compose.onNodeWithContentDescription("Desktop terminal").performScrollTo().performClick()
         compose.onNodeWithTag("terminal-viewport").performScrollTo()
         val layouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
         compose.onNodeWithTag("desktop-terminal").performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult) { it(layouts) }
@@ -42,11 +43,16 @@ class TerminalControlScreenTest {
         compose.runOnIdle { state.value = state.value.copy(projection = projection.copy(projects = listOf(
             project.copy(terminal = terminal.copy(text = terminal.text + "\nNEW_ROW"))))) }
         compose.waitForIdle(); assertTrue(horizontal().value() > 0)
-        compose.onNodeWithTag("terminal-input").performScrollTo().performTextInput("pwd")
-        compose.onNodeWithContentDescription("Send terminal input").performScrollTo().performClick()
+        compose.onNodeWithTag("terminal-input").performTextInput("pwd")
+        compose.onNodeWithContentDescription("Send terminal input").performClick()
         compose.onNodeWithContentDescription("Interrupt terminal").performScrollTo().performClick()
+        // Rows and columns come from the visible viewport (it shrinks while the keyboard is up), not from the host's size.
+        fun fit(): Pair<Int, Int> = compose.onNodeWithTag("terminal-fit", useUnmergedTree = true).onChild().fetchSemanticsNode()
+            .config[androidx.compose.ui.semantics.SemanticsProperties.Text].single().text.split('×').map(String::toInt).let { it[0] to it[1] }
+        val first = fit()
         compose.onNodeWithContentDescription("Resize terminal").performScrollTo().performClick()
-        compose.runOnIdle { assertEquals(listOf("pwd\r", "\u0003"), inputs); assertEquals(listOf(33 to 91), sizes) }
+        compose.runOnIdle { assertEquals(listOf("pwd\r", "\u0003"), inputs); assertEquals(listOf(first), sizes) }
+        assertTrue(first.first in 1..512 && first.second in 1..512 && first != (33 to 91))
         for (key in TerminalKey.entries) {
             compose.onNodeWithContentDescription("Terminal keys").performScrollTo().performClick()
             compose.onNodeWithText(key.label).performScrollTo().performClick()
@@ -62,16 +68,13 @@ class TerminalControlScreenTest {
         compose.runOnIdle { state.value = state.value.copy(resetting = true) }
         compose.onNodeWithText("Backspace").assertDoesNotExist()
         compose.runOnIdle { state.value = state.value.copy(resetting = false) }
-        compose.onNodeWithText("Rows").performScrollTo().performTextReplacement("41")
-        compose.runOnIdle { state.value = state.value.copy(projection = projection.copy(projects = listOf(
-            project.copy(terminal = terminal.copy(text = "output only"))))) }
-        compose.onNodeWithContentDescription("Resize terminal").performScrollTo().performClick()
-        compose.runOnIdle { assertEquals(41 to 91, sizes.last()) }
+        // A host-side size change does not move the viewport fit.
         compose.runOnIdle { state.value = state.value.copy(projection = projection.copy(projects = listOf(
             project.copy(terminal = terminal.copy(size = TerminalSize(25, 82)))))) }
+        val second = fit()
         compose.onNodeWithContentDescription("Resize terminal").performScrollTo().performClick()
-        compose.runOnIdle { assertEquals(25 to 82, sizes.last()) }
-        compose.onNodeWithTag("terminal-input").performScrollTo().performTextInput("old draft")
+        compose.runOnIdle { assertEquals(second, sizes.last()) }
+        compose.onNodeWithTag("terminal-input").performTextInput("old draft")
         compose.runOnIdle { state.value = state.value.copy(projection = projection.copy(projects = listOf(
             project.copy(terminal = terminal.copy(text = "new output"))))) }
         compose.onNodeWithTag("terminal-input").assertTextContains("old draft")
@@ -91,7 +94,7 @@ class TerminalControlScreenTest {
         compose.onNodeWithContentDescription("Interrupt terminal").assertIsNotEnabled()
         compose.onNodeWithContentDescription("Resize terminal").assertIsNotEnabled()
         compose.runOnIdle { state.value = connected }
-        compose.onNodeWithContentDescription("Send terminal input").performScrollTo().performClick()
+        compose.onNodeWithContentDescription("Send terminal input").performClick()
         compose.runOnIdle {
             assertEquals(listOf("pwd\r", "\u0003", "new command\r"), inputs)
             state.value = state.value.copy(projection = revised.copy(projects = revised.projects.map { it.copy(terminalControl = false) })) }
@@ -119,7 +122,7 @@ class TerminalControlScreenTest {
         }
         val closed = projection.copy(projects = listOf(project.copy(terminal = null, terminalControl = false, terminalOpenControl = true)))
         compose.runOnIdle { state.value = PairingState(phase = PairingPhase.CONNECTED, projection = closed) }
-        compose.onNodeWithContentDescription("Open desktop terminal").performScrollTo().assertIsEnabled().performClick()
+        compose.onNodeWithContentDescription("Open desktop terminal").assertIsEnabled().performClick()
         compose.runOnIdle { assertEquals(1, opened) }
         for (bad in listOf(state.value.copy(resetRequired = true), state.value.copy(resetting = true), state.value.copy(pendingRevoke = "pending"),
             state.value.copy(projection = closed.copy(subtabs = invalidTabs)),
@@ -136,11 +139,11 @@ class TerminalControlScreenTest {
         compose.onNodeWithContentDescription("Open desktop terminal").assertDoesNotExist()
         val exited = projection.copy(projects = listOf(project.copy(terminal = terminal.copy(running = false), terminalOpenControl = true)))
         compose.runOnIdle { state.value = PairingState(phase = PairingPhase.CONNECTED, projection = exited) }
-        compose.onNodeWithText("Terminal exited").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Terminal exited").assertIsDisplayed()
         compose.onNodeWithTag("desktop-terminal").assertExists()
         compose.onNodeWithTag("terminal-input").assertDoesNotExist()
         compose.onNodeWithContentDescription("Resize terminal").assertDoesNotExist()
-        compose.onNodeWithContentDescription("Open desktop terminal").performScrollTo().performClick()
+        compose.onNodeWithContentDescription("Open desktop terminal").performClick()
         compose.runOnIdle { assertEquals(2, opened) }
         compose.runOnIdle { state.value = PairingState(phase = PairingPhase.CONNECTED, projection = closed.copy(
             projects = listOf(project.copy(terminal = null, terminalOpenControl = false)))) }

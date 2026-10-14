@@ -355,7 +355,7 @@ class HeadlessHostTest {
             delay(400)
             assertEquals(PairingPhase.OFFLINE, model.state.value.phase)
             assertEquals(seed, model.state.value.projection)
-            compose.onNodeWithText("Retry same request").performScrollTo().performClick()
+            compose.onNodeWithText("Retry same request").performClick()
             repeat(100) {
                 if (model.state.value.pendingWorkspace != null || model.state.value.phase != PairingPhase.CONNECTED
                     || model.state.value.projection?.turns?.none { it.content.contains("STAGE2_HEADLESS_ANDROID_SECOND_DONE") } != false) delay(100)

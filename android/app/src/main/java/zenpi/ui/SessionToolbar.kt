@@ -3,21 +3,21 @@ package zenpi.ui
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.MenuBook
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.Checklist
 import androidx.compose.material.icons.outlined.Difference
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.PlainTooltip
 import androidx.compose.material3.Text
 import androidx.compose.material3.TooltipBox
 import androidx.compose.material3.TooltipDefaults
 import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.text.style.TextOverflow
 import zenpi.pairing.DiffReadPolicy
 import zenpi.pairing.FileReadPolicy
 import zenpi.pairing.PairingPhase
@@ -25,16 +25,20 @@ import zenpi.pairing.ResourceReadPolicy
 import zenpi.pairing.SessionCatalogReadPolicy
 import zenpi.pairing.SessionHistoryReadPolicy
 import zenpi.transport.HostProjection
+import zenpi.ui.nav.Route
 
 private val activePromptStates = setOf("accepted", "running")
 
-/** The selected session's toolbar; project and worktree switching live in [SwitcherDrawer]. */
+/**
+ * The selected session's actions, at the end of the top bar's chip row: the Sessions, Diff, Tasks and
+ * Terminal pages ([onRoute] for the navigation-only ones), conversation history, rename and new
+ * session. Project and worktree switching live in [SwitcherDrawer].
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SessionToolbar(scope: ScreenScope, projection: HostProjection, workspaceUi: WorkspaceUiState, actions: PairingActions) {
+fun SessionToolbar(scope: ScreenScope, projection: HostProjection, workspaceUi: WorkspaceUiState, actions: PairingActions, onRoute: (Route) -> Unit) {
     val state = scope.state
     val selected = scope.selected
-    selected?.sessionName?.let { Text(it, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis) }
     TooltipBox(positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(), tooltip = { PlainTooltip { Text("Sessions") } }, state = rememberTooltipState()) {
         IconButton(onClick = { actions.sessions(-1) }, enabled = SessionCatalogReadPolicy.browse(state)) { Icon(Icons.Outlined.History, contentDescription = "Browse sessions") }
     }
@@ -65,6 +69,18 @@ fun SessionToolbar(scope: ScreenScope, projection: HostProjection, workspaceUi: 
     if (selected?.diffAvailable == true) {
         IconButton(onClick = { actions.diff(".") }, enabled = DiffReadPolicy.browse(state)) {
             Icon(Icons.Outlined.Difference, contentDescription = "Review diff")
+        }
+    }
+    if (selected != null) {
+        TooltipBox(positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+            tooltip = { PlainTooltip { Text("Worktree tasks") } }, state = rememberTooltipState()) {
+            IconButton(onClick = { onRoute(Route.TASKS) }) { Icon(Icons.Outlined.Checklist, contentDescription = "Worktree tasks") }
+        }
+    }
+    if (selected != null && (selected.terminal != null || selected.terminalOpenControl)) {
+        TooltipBox(positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+            tooltip = { PlainTooltip { Text("Desktop terminal") } }, state = rememberTooltipState()) {
+            IconButton(onClick = { onRoute(Route.TERMINAL) }) { Icon(Icons.Outlined.Terminal, contentDescription = "Desktop terminal") }
         }
     }
     if (selected != null && (!selected.promptControl || selected.promptStatuses.any { it.state in activePromptStates })) {

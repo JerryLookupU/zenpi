@@ -120,4 +120,27 @@ class WorkspaceFilesScreenTest {
         compose.onNode(hasSetTextAction()).assertTextContains("@\"file name.txt\"", substring = true)
         assertTrue(sends.isEmpty()); assertFalse(state.value.filesOpen)
     }
+    @Test fun atTypedInTheComposerOpensTheFilePickerAndTheChosenFileReplacesIt() {
+        val tab = "b".repeat(64)
+        val projection = HostProjection(listOf(RemoteProject("project", "Project", "session", promptControl = true)),
+            "project", "session", "idle", emptyList(), "1", false, "0",
+            subtabs = RemoteSubtabs("project", "1", tab, listOf(RemoteSubtab(tab, "main", "main", 1)), false))
+        val files = WorkspaceFiles("project", "session", tab, "1", ".", listOf(WorkspaceFile("docs", "docs", true, null, false),
+            WorkspaceFile("file name.txt", "file name.txt", false, "5", true)), false)
+        val state = mutableStateOf(PairingState(phase = PairingPhase.CONNECTED, projection = projection))
+        val paths = mutableListOf<String>(); val sends = mutableListOf<String>()
+        compose.setContent { MaterialTheme { PairingScreen(state.value, {}, {}, {},
+            onFiles = { paths.add(it); state.value = state.value.copy(filesOpen = true, files = files) },
+            onCloseFiles = { state.value = state.value.copy(filesOpen = false, files = null) }, onPrompt = { sends.add(it) }) } }
+        compose.onNodeWithTag("prompt-composer").performTextInput("compare ")
+        compose.onNodeWithTag("prompt-composer").performTextInput("@")
+        compose.waitForIdle()
+        assertEquals(listOf("."), paths)
+        compose.onNodeWithText("docs").performClick()
+        compose.runOnIdle { assertEquals(listOf(".", "docs"), paths) }
+        compose.onNodeWithText("file name.txt").performClick()
+        compose.onNodeWithTag("workspace-files-list").assertDoesNotExist()
+        compose.onNodeWithTag("prompt-composer").assertTextContains("compare @\"file name.txt\"")
+        compose.runOnIdle { assertTrue(sends.isEmpty()) }
+    }
 }

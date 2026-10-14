@@ -12,9 +12,12 @@ import androidx.compose.ui.semantics.SemanticsNode
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.junit4.ComposeContentTestRule
+import androidx.compose.ui.test.isRoot
 import androidx.compose.ui.test.onRoot
+import com.github.takahirom.roborazzi.ExperimentalRoborazziApi
 import com.github.takahirom.roborazzi.RoborazziOptions
 import com.github.takahirom.roborazzi.captureRoboImage
+import com.github.takahirom.roborazzi.captureScreenRoboImage
 import org.junit.Assert.assertTrue
 import org.junit.rules.TestWatcher
 import org.junit.runner.Description
@@ -58,14 +61,20 @@ fun ComposeContentTestRule.captureGolden(name: String, portrait: Portrait) {
     onRoot().captureRoboImage("src/test/resources/golden/${name}_$portrait.png", roborazziOptions = options)
 }
 
+/** Whole-screen golden, including popups such as bottom sheets, which live in their own windows. */
+@OptIn(ExperimentalRoborazziApi::class)
+fun captureScreenGolden(name: String, portrait: Portrait) {
+    captureScreenRoboImage("src/test/resources/golden/${name}_$portrait.png", roborazziOptions = options)
+}
+
 /**
  * Fails when any on-screen node straddles the left or right window edge. Content of horizontally
  * scrollable containers (tab rows) is exempt, and nodes wholly off-screen (a closed drawer) are not
- * clipped, they are hidden.
+ * clipped, they are hidden. Every window is checked (the screen and any popup such as a bottom sheet).
  */
 fun ComposeContentTestRule.assertNoHorizontalClipping() {
-    val root = onRoot(useUnmergedTree = true).fetchSemanticsNode()
-    val width = root.size.width.toFloat()
+    val roots = onAllNodes(isRoot(), useUnmergedTree = true).fetchSemanticsNodes()
+    val width = roots.maxOf { it.size.width }.toFloat()
     val clipped = mutableListOf<String>()
     fun visit(node: SemanticsNode) {
         if (node.config.getOrNull(SemanticsProperties.HorizontalScrollAxisRange) != null) return
@@ -77,6 +86,6 @@ fun ComposeContentTestRule.assertNoHorizontalClipping() {
         }
         node.children.forEach(::visit)
     }
-    visit(root)
+    roots.forEach(::visit)
     assertTrue("horizontally clipped in a ${width}px window: $clipped", clipped.isEmpty())
 }

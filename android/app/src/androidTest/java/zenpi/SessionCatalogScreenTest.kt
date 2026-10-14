@@ -79,7 +79,7 @@ class SessionCatalogScreenTest {
         compose.onNodeWithContentDescription("Resume session current").assertIsNotEnabled()
         compose.onNodeWithText("1 matches").assertExists()
         compose.onNodeWithText("Mailbox api_key=<redacted>").assertExists()
-        compose.onNodeWithTag("session-search").performTextInput("history")
+        compose.onNodeWithTag("session-search").performTextReplacement("history")
         compose.onNodeWithContentDescription("Search sessions").performClick()
         compose.runOnIdle { assertEquals(listOf("history"), searches) }
         compose.onNodeWithContentDescription("Resume session history").performClick()
@@ -108,14 +108,17 @@ class SessionCatalogScreenTest {
             compose.onNodeWithContentDescription("Search sessions").assertIsEnabled()
         }
         for (blocked in listOf(healthy.copy(scanInProgress = true), healthy.copy(resetting = true), healthy.copy(resetRequired = true),
-            healthy.copy(projection = projection.copy(projects = listOf(project, project.copy(sessionId = "foreign")))),
-            healthy.copy(projection = projection.copy(projects = emptyList())))) {
+            healthy.copy(projection = projection.copy(projects = listOf(project, project.copy(sessionId = "foreign")))))) {
             compose.runOnIdle { state.value = blocked }
             compose.onNodeWithContentDescription("Next sessions page").assertIsNotEnabled()
             compose.onNodeWithContentDescription("Refresh sessions").assertIsNotEnabled()
             compose.onNodeWithContentDescription("Search sessions").assertIsNotEnabled()
             compose.onNodeWithTag("session-search").assertIsNotEnabled()
         }
+        // Without any project there is no session to page through: the Sessions page is not shown at all.
+        compose.runOnIdle { state.value = healthy.copy(projection = projection.copy(projects = emptyList())) }
+        compose.onNodeWithContentDescription("Next sessions page").assertDoesNotExist()
+        compose.onNodeWithTag("session-search").assertDoesNotExist()
         compose.runOnIdle { state.value = healthy.copy(sessionsError = "changed") }
         compose.onNodeWithContentDescription("Next sessions page").assertIsNotEnabled()
         compose.onNodeWithContentDescription("Refresh sessions").assertIsEnabled()

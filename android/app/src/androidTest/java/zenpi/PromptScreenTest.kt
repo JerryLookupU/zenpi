@@ -101,7 +101,8 @@ class PromptScreenTest {
             subtabs = RemoteSubtabs("project", "7", tab, listOf(RemoteSubtab(tab, "main", "main", 1)), false))
         val state = mutableStateOf(PairingState(phase = PairingPhase.CONNECTED, projection = live))
         compose.setContent { MaterialTheme { PairingScreen(state.value, {}, {}, {}) } }
-        compose.onNodeWithTag("desktop-terminal").performScrollTo().assertTextEquals("PTY_VISIBLE")
+        compose.onNodeWithContentDescription("Desktop terminal").performScrollTo().performClick()
+        compose.onNodeWithTag("desktop-terminal").assertTextEquals("PTY_VISIBLE")
         val encoded = ProjectionCacheCodec.encode(live)
         assertFalse(encoded.toString().contains("PTY_VISIBLE"))
         val cached = ProjectionCacheCodec.decode(encoded)
