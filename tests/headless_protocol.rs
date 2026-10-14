@@ -2639,3 +2639,301 @@ fn headless_connection_selection_requires_and_checks_the_revision() {
     assert!(records.iter().any(|record| record["id"] == "q"));
     assert_eq!(agent.selection_revision(), 0);
 }
+
+/// Holds the first provider call open until the test releases it, so the
+/// host is provably busy while follow-up prompts are admitted.
+struct GatedPromptBackend {
+    calls: AtomicUsize,
+    started: mpsc::SyncSender<()>,
+    release: Mutex<mpsc::Receiver<()>>,
+}
+
+impl Backend for GatedPromptBackend {
+    crate::support::controlled_local_backend!();
+    fn complete(&self, _: CompletionRequest<'_>) -> Result<Completion, BackendError> {
+        Ok(Completion::text("unused"))
+    }
+
+    fn complete_with_control(
+        &self,
+        _: CompletionRequest<'_>,
+        cancelled: &dyn Fn() -> bool,
+        _: &mut dyn FnMut(ProviderEvent) -> Result<(), BackendError>,
+    ) -> Result<Completion, BackendError> {
+        if self.calls.fetch_add(1, Ordering::AcqRel) == 0 {
+            let _ = self.started.send(());
+            let release = self.release.lock().unwrap();
+            loop {
+                if cancelled() {
+                    return Err(BackendError::Cancelled);
+                }
+                if release.recv_timeout(Duration::from_millis(5)).is_ok() {
+                    break;
+                }
+            }
+        }
+        Ok(Completion::text("gated answer"))
+    }
+
+    fn name(&self) -> &str {
+        "gated-prompt-fixture"
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn async_start_if_idle_is_rejected_at_admission_while_a_slow_prompt_runs() {
+    let (started_tx, started_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::channel();
+    let backend = GatedPromptBackend {
+        calls: AtomicUsize::new(0),
+        started: started_tx,
+        release: Mutex::new(release_rx),
+    };
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("start-if-idle.jsonl");
+    let agent = Agent::new(SessionStore::open(&path).unwrap(), Box::new(backend));
+    let (mut writer, reader) = std::os::unix::net::UnixStream::pair().unwrap();
+    let output = SharedWriter::default();
+    let captured = output.clone();
+    let host =
+        thread::spawn(move || zenpi::headless::run_async_streams(agent, reader, output).unwrap());
+    writeln!(
+        writer,
+        "{}",
+        serde_json::json!({"schema_version":2,"type":"prompt","id":"slow","text":"take a while"})
+    )
+    .unwrap();
+    started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    writeln!(
+        writer,
+        "{}",
+        serde_json::json!({"schema_version":2,"type":"prompt","id":"idle-only","text":"only if idle","mode":"start_if_idle"})
+    )
+    .unwrap();
+    writeln!(
+        writer,
+        "{}",
+        serde_json::json!({"schema_version":2,"type":"prompt","id":"stale","text":"stale turn","expected_turn_id":"turn-that-is-not-active"})
+    )
+    .unwrap();
+    // Both refusals must arrive while the first provider call is still held
+    // open: admission, not eventual execution, decides them.
+    wait_for_output(&captured, "\"id\":\"stale\"");
+    wait_for_output(&captured, "\"id\":\"idle-only\"");
+    let records = json_lines(&captured.0.lock().unwrap());
+    assert!(
+        !records
+            .iter()
+            .any(|record| record["id"] == "slow" && record["type"] == "response"),
+        "slow prompt finished before the refusals were checked: {records:?}"
+    );
+    for (id, code) in [
+        ("idle-only", "not_idle"),
+        ("stale", "expected_turn_mismatch"),
+    ] {
+        let responses: Vec<_> = records
+            .iter()
+            .filter(|record| record["id"] == id && record["type"] == "response")
+            .collect();
+        assert_eq!(responses.len(), 1, "{id}: {records:?}");
+        assert_eq!(responses[0]["success"], false);
+        assert_eq!(responses[0]["code"], code);
+        assert!(
+            !records
+                .iter()
+                .any(|record| record["id"] == id && record["type"] == "request_queued"),
+            "{id} was queued instead of refused"
+        );
+    }
+    release_tx.send(()).unwrap();
+    wait_for_output(&captured, "gated answer");
+    writeln!(
+        writer,
+        "{}",
+        serde_json::json!({"schema_version":2,"type":"shutdown","id":"stop"})
+    )
+    .unwrap();
+    drop(writer);
+    host.join().unwrap();
+    let records = json_lines(&captured.0.lock().unwrap());
+    let slow = records
+        .iter()
+        .find(|record| record["id"] == "slow" && record["type"] == "response")
+        .expect("slow prompt terminal response");
+    assert_eq!(slow["success"], true);
+    let session = SessionStore::open(&path).unwrap();
+    assert!(
+        session
+            .turns()
+            .iter()
+            .all(|turn| turn.content != "only if idle" && turn.content != "stale turn"),
+        "a refused prompt reached the journal"
+    );
+}
+
+/// Shared state for the causal-order fixture: the writer stalls on the first
+/// provider delta so the whole tool round and the following text are produced
+/// while the host cannot drain, i.e. they are all pending in one tick.
+#[derive(Default)]
+struct CausalGate {
+    writer_blocked: std::sync::atomic::AtomicBool,
+    produced_after_tool: std::sync::atomic::AtomicBool,
+    release_writer: std::sync::atomic::AtomicBool,
+}
+
+fn wait_for_gate(flag: &std::sync::atomic::AtomicBool) -> bool {
+    for _ in 0..1000 {
+        if flag.load(Ordering::Acquire) {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    false
+}
+
+struct CausalToolBackend {
+    calls: AtomicUsize,
+    gate: Arc<CausalGate>,
+}
+
+impl Backend for CausalToolBackend {
+    crate::support::controlled_local_backend!();
+    fn complete(&self, _: CompletionRequest<'_>) -> Result<Completion, BackendError> {
+        Ok(Completion::text("unused"))
+    }
+
+    fn complete_with_control(
+        &self,
+        _: CompletionRequest<'_>,
+        _: &dyn Fn() -> bool,
+        sink: &mut dyn FnMut(ProviderEvent) -> Result<(), BackendError>,
+    ) -> Result<Completion, BackendError> {
+        if self.calls.fetch_add(1, Ordering::AcqRel) == 0 {
+            sink(ProviderEvent::TextDelta {
+                delta: "before tool".into(),
+            })?;
+            if !wait_for_gate(&self.gate.writer_blocked) {
+                return Err(BackendError::Transport("writer gate never closed".into()));
+            }
+            let mut completion = Completion::text("");
+            completion.tool_calls.push(ToolCall {
+                id: "progress-call".into(),
+                name: "run_command".into(),
+                arguments: serde_json::json!({
+                    "command": "printf 'progress-line\\n'",
+                    "timeout_ms": 5000
+                }),
+            });
+            return Ok(completion);
+        }
+        sink(ProviderEvent::TextDelta {
+            delta: "after tool".into(),
+        })?;
+        self.gate.produced_after_tool.store(true, Ordering::Release);
+        Ok(Completion::text("after tool"))
+    }
+
+    fn name(&self) -> &str {
+        "causal-tool-fixture"
+    }
+}
+
+#[derive(Clone)]
+struct CausalGateWriter {
+    bytes: Arc<Mutex<Vec<u8>>>,
+    gate: Arc<CausalGate>,
+}
+
+impl Write for CausalGateWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.bytes.lock().unwrap().extend_from_slice(bytes);
+        let needle = b"\"delta\":\"before tool\"";
+        if bytes.windows(needle.len()).any(|window| window == needle)
+            && !self.gate.writer_blocked.swap(true, Ordering::AcqRel)
+        {
+            wait_for_gate(&self.gate.release_writer);
+        }
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn async_tool_events_precede_text_produced_after_the_tool_round() {
+    let gate = Arc::new(CausalGate::default());
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("causal-order.jsonl");
+    let mut agent = Agent::new(
+        SessionStore::open(&path).unwrap(),
+        Box::new(CausalToolBackend {
+            calls: AtomicUsize::new(0),
+            gate: Arc::clone(&gate),
+        }),
+    );
+    agent.set_tools(
+        ToolRegistry::with_all_builtins().unwrap(),
+        ToolContext::new(directory.path()).unwrap(),
+        SideEffectPolicy::all_builtins(),
+    );
+    agent.set_approval_policy(ApprovalPolicy {
+        mode: ApprovalMode::TrustedWorkspace,
+        trusted_tools: vec!["run_command".into()],
+        ..Default::default()
+    });
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let output = CausalGateWriter {
+        bytes: Arc::clone(&captured),
+        gate: Arc::clone(&gate),
+    };
+    let (mut writer, reader) = std::os::unix::net::UnixStream::pair().unwrap();
+    let host =
+        thread::spawn(move || zenpi::headless::run_async_streams(agent, reader, output).unwrap());
+    writeln!(
+        writer,
+        "{}",
+        serde_json::json!({"schema_version":2,"type":"prompt","id":"causal","text":"run a tool"})
+    )
+    .unwrap();
+    let produced = wait_for_gate(&gate.produced_after_tool);
+    gate.release_writer.store(true, Ordering::Release);
+    assert!(produced, "fixture never produced its post-tool text");
+    writeln!(
+        writer,
+        "{}",
+        serde_json::json!({"schema_version":2,"type":"shutdown","id":"stop"})
+    )
+    .unwrap();
+    drop(writer);
+    host.join().unwrap();
+
+    let records = json_lines(&captured.lock().unwrap());
+    let position = |predicate: &dyn Fn(&Value) -> bool| {
+        records
+            .iter()
+            .position(|record| record["type"] == "event" && predicate(&record["event"]))
+    };
+    let after_text = position(&|event| event["delta"] == "after tool")
+        .unwrap_or_else(|| panic!("missing post-tool delta: {records:?}"));
+    for kind in ["tool_call", "tool_progress", "tool_result"] {
+        let index = position(&|event| event["type"] == kind)
+            .unwrap_or_else(|| panic!("missing {kind}: {records:?}"));
+        assert!(
+            index < after_text,
+            "{kind} (line {index}) was emitted after text produced later (line {after_text}): {records:?}"
+        );
+    }
+    let sequences: Vec<u64> = records
+        .iter()
+        .filter(|record| record["type"] == "event")
+        .map(|record| record["sequence"].as_u64().unwrap())
+        .collect();
+    assert!(
+        sequences.windows(2).all(|pair| pair[0] < pair[1]),
+        "event sequence is not strictly increasing: {sequences:?}"
+    );
+}

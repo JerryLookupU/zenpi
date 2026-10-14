@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-241",
+  "claim_id": "ZE-241@blueprint-4.0.0",
+  "from": "worker",
+  "to": "master",
+  "summary": "Misordering reproduced first, then fixed. Each request mailbox (AsyncEventBuffer) now stamps every provider and agent/tool event with a monotonic production order at push time; take_ordered() merges the two bounded queues by that order, and a single drain_job_mailbox writes them (used by both the per-tick drain and the Completed path), replacing the admission -> provider -> live-tool -> remaining-agent batches. Per-tick drains iterate jobs sorted by runtime job ID instead of HashMap order. Separate provider/agent byte and count budgets, priority eviction and event_dropped markers are unchanged.",
+  "changed_files": [
+    "src/headless.rs",
+    "tests/headless_protocol.rs"
+  ],
+  "diff_stat": "2 files changed, 449 insertions(+), 288 deletions(-)",
+  "commands_run": [
+    "cargo test --locked --test headless_protocol async_tool_events_precede",
+    "cargo test --locked --lib headless",
+    "cargo test --locked --test headless_protocol --test headless_domain_owner --test headless_event_budget --test headless_input_shutdown --test headless_project_workspace",
+    "cargo test --locked --test remote_headless --test remote_headless_commands --test core_session",
+    "cargo test --locked --test core_session user_shell_preserves -- --test-threads=1",
+    "cargo test --locked --test remote_headless --test remote_headless_commands",
+    "cargo fmt --all",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo clippy --locked --all-targets --all-features -- -D warnings"
+  ],
+  "validation_result": {
+    "reproduction_before_fix": "FAILED as expected on afedd88 (pre-fix): async_tool_events_precede_text_produced_after_the_tool_round reported 'tool_call (line 5) was emitted after text produced later (line 4)'; wire order was text_delta(before tool), text_delta(after tool), tool_call, tool_progress x3, tool_result, assistant_message",
+    "validator_tool_progress_before_later_text": "pass after fix: tool_call, tool_progress and tool_result all precede the post-tool text_delta; event sequences strictly increasing",
+    "unit_mailbox_order": "pass: mailbox_drains_provider_and_tool_events_in_production_order and adapted budget/admission tests (21 lib headless tests)",
+    "headless_suites": "pass (protocol 47, domain_owner, event_budget, input_shutdown, project_workspace)",
+    "core_session": "pass; user_shell_preserves_nonzero_signal_and_cancellation_evidence failed once under parallel load (not headless code), passed with --test-threads=1",
+    "remote_headless": "pass",
+    "remote_headless_commands": "pass",
+    "fmt": "pass",
+    "clippy": "pass",
+    "clippy_all_features": "pass"
+  },
+  "notes": "Reproduction is deterministic: the test's output writer blocks on the first provider delta so the tool round and the following text are all pending in one drain tick. Admission ordering is preserved by production order (TurnAccepted/TurnRejected are pushed right after Agent::submit, before any provider event), so the take_admission/admission_prefix_len special case was removed. Non-live AgentEvents collected by agent.take_events() at job end still appear after the provider trace, as before. No new unwrap/expect/panic in non-test code (one existing .expect in the agent-event writer moved into write_agent_event_line; the provider writer's two .expect calls were removed), no unsafe, no new Arc<Mutex>.",
+  "created_at": "2026-10-14T13:18:19Z",
+  "digest": "bb80ad3accf53d4215fcdf7a56ac7aec57c0ea0e2ba6578ae7c5a3546d383464"
+}

@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-242",
+  "claim_id": "ZE-242@blueprint-4.0.0",
+  "from": "worker",
+  "to": "master",
+  "summary": "Headless lifecycle: (1) SIGTERM installs a one-shot sigaction handler (SA_RESTART|SA_RESETHAND) that only sets an AtomicBool; the async host loop observes it as an implicit shutdown (stop reading, emergency-cancel approvals, SHUTDOWN_GRACE, runtime shutdown), so in-flight work gets its terminal response, a shutdown ack {closing,drained} is written, the WAL is closed and the process exits 0. (2) EOF drain is bounded: HeadlessOptions.eof_drain (default 600s; ZENPI_HEADLESS_EOF_DRAIN_SECS or --eof-drain-secs N) after which the runtime is shut down and admitted work is cancelled with a terminal response. (3) Close hooks of owners still held by a detached job run on the cleanup thread, which the host now waits on (bounded, 10s) before returning. (4) A non-blocking flock EWOULDBLOCK maps to SessionError::Locked (code session_locked); the WAL open retry keys on it, and both the host and the CLI startup path emit a v2 JSONL error frame with code session_locked on stdout and exit non-zero with 'session_locked' on stderr. New public API: HeadlessOptions, run_stdio_owned_with, run_async_streams_with, install_termination_handler, write_startup_error, SessionError::code.",
+  "changed_files": [
+    "src/core.rs",
+    "src/headless.rs",
+    "src/session.rs",
+    "tests/headless_lifecycle.rs"
+  ],
+  "diff_stat": "4 files changed, 678 insertions(+), 23 deletions(-)",
+  "commands_run": [
+    "cargo build --locked --features dev-fixtures",
+    "sh /tmp/ze24x/oneshot.sh target/debug/zenpi  # printf '{\"version\":2,\"id\":\"p1\",\"type\":\"prompt\",\"message\":\"hi\"}\\n' | zenpi --mode headless --auto --backend echo --session <tmp>; echo exit=$?",
+    "sh /tmp/ze24x/locked.sh target/debug/zenpi  # holder on a fifo, second zenpi on the same --session",
+    "cargo test --locked --test headless_lifecycle",
+    "cargo test --locked --features dev-fixtures --test headless_lifecycle",
+    "cargo test --locked --no-fail-fast --tests",
+    "cargo test --locked --test stage1_extension_hooks -- --test-threads=1",
+    "cargo test --locked --test core_session -- --test-threads=1",
+    "cargo test --locked --lib existing_terminal_projects_only_matching -- --test-threads=1",
+    "cargo test --locked --lib -- rejected_resume_commit_keeps_old_extension --test-threads=1",
+    "cargo fmt --all",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo clippy --locked --all-targets --all-features -- -D warnings",
+    "python3 tools/check_modes.py",
+    "git diff -U0 origin/main -- 'src/*.rs' 'src/**/*.rs' | grep -E '^\\+.*#!?\\[allow\\((dead_code|unused)'"
+  ],
+  "validation_result": {
+    "validator_sigterm_mid_turn": "pass: sigterm_mid_turn_writes_terminal_response_and_leaves_a_clean_wal (real binary, provider request held open by a stalling HTTP fixture; after kill -TERM: prompt response backend_cancelled, shutdown ack success/drained, exit 0, every WAL reservation has a terminal entry, session journal has no recovery warnings)",
+    "validator_one_shot_pipe": "pass: printf prompt | zenpi --mode headless --auto --backend echo exits 0 with the prompt response as the last line (manual run and one_shot_pipe_exits_zero_after_the_terminal_response under --features dev-fixtures)",
+    "validator_session_locked": "pass: second_process_on_an_owned_session_exits_with_session_locked (second process exits non-zero, one stdout frame code=session_locked, stderr contains session_locked; holder keeps working and exits 0 on EOF). Before the change the second process printed 'session I/O: Resource temporarily unavailable (os error 35)'",
+    "eof_drain_bound": "pass: eof_drain_deadline_cancels_a_wedged_turn_with_a_terminal_response (eof_drain=300ms, wedged provider cancelled with backend_cancelled)",
+    "full_test_suite": "138 test binaries; all pass except load-flaky ones that pass on rerun with --test-threads=1: stage1_extension_hooks (9, extension hook timing), core_session user_shell_preserves_nonzero_signal_and_cancellation_evidence, lib tui::local_remote_preview_tests::existing_terminal_projects_only_matching_live_session_and_root, lib core::extension_resume_commit_tests::rejected_resume_commit_keeps_old_extension_live_until_successful_retry (CommandTimeout under load)",
+    "headless_suites": "pass (headless_protocol, headless_domain_owner, headless_event_budget, headless_input_shutdown, headless_project_workspace, headless_lifecycle)",
+    "remote_headless": "pass",
+    "remote_headless_commands": "pass",
+    "fmt": "pass",
+    "clippy": "pass",
+    "clippy_all_features": "pass",
+    "check_modes": "pass",
+    "no_new_allow_dead_code_unused": "pass"
+  },
+  "notes": "unsafe: sigaction install in src/headless.rs (install_termination_handler) and libc::kill in tests/headless_lifecycle.rs both carry // SAFETY: comments; the pre-existing flock call in src/session.rs lock_exclusive gained one. No new non-test unwrap/expect/panic, no new Arc<Mutex>. core.rs changes are CLI wiring only: --eof-drain-secs flag, handler install, a run()/run_host() split so a startup session_locked error is reported as a JSONL frame for headless clients. The one-shot validator already passed before this change; it is now covered by a test. SIGTERM after an explicit shutdown is already pending is a no-op; the handler is SA_RESETHAND so a second SIGTERM kills immediately. EOF drain default is 600s so long one-shot turns are not cut short. A binary started under parallel test load can take several seconds to reach its provider call, so the lifecycle tests use 60s bounds.",
+  "created_at": "2026-10-14T13:52:24Z",
+  "digest": "1febcf4c16a687704c2ca18f68292fd91adc622452edef3a2da7d503a1deda70"
+}

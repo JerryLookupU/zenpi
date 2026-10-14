@@ -112,6 +112,20 @@ pub enum SessionError {
     InvalidRecord(String),
     #[error("new session candidate retained: {0}")]
     CandidateRetained(String),
+    /// The session file (or its transport WAL) is exclusively locked by
+    /// another live zenpi process.
+    #[error("session_locked: the session is open in another live zenpi process")]
+    Locked,
+}
+
+impl SessionError {
+    /// Stable machine-readable code for errors a host reports verbatim.
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::Locked => "session_locked",
+            _ => "session_error",
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1899,8 +1913,16 @@ fn lock_exclusive(file: &File) -> Result<(), SessionError> {
     #[cfg(unix)]
     {
         use std::os::fd::AsRawFd;
+        // SAFETY: `file` is a live descriptor borrowed for the whole call;
+        // `flock` neither retains nor closes it.
         if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-            return Err(io::Error::last_os_error().into());
+            let error = io::Error::last_os_error();
+            // A non-blocking exclusive flock only fails with EWOULDBLOCK when
+            // another open file description holds the lock: a live owner.
+            if error.kind() == io::ErrorKind::WouldBlock {
+                return Err(SessionError::Locked);
+            }
+            return Err(error.into());
         }
         Ok(())
     }

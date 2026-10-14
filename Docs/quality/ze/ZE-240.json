@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-240",
+  "claim_id": "ZE-240@blueprint-4.0.0",
+  "from": "worker",
+  "to": "master",
+  "summary": "Async production host now decides prompt mode/expected_turn_id at admission against its active-jobs map: start_if_idle while a prompt/steer job (or deferred steer) exists for the project is refused immediately with retryable not_idle; an expected_turn_id that differs from the active job's published turn ID is refused immediately with expected_turn_mismatch; a prompt with mode=steer (no attachments) while a turn runs takes the same cancel-and-reissue PendingSteer path as the steer command (responses echo command 'prompt'). Idle cases still defer to Agent::submit.",
+  "changed_files": [
+    "src/headless.rs",
+    "tests/headless_protocol.rs"
+  ],
+  "diff_stat": "2 files changed, 237 insertions(+), 26 deletions(-)",
+  "commands_run": [
+    "cargo test --locked --test headless_protocol start_if_idle",
+    "cargo test --locked --test headless_protocol --test headless_domain_owner --test headless_event_budget --test headless_input_shutdown --test headless_project_workspace",
+    "cargo test --locked --lib headless",
+    "cargo test --locked --test remote_headless --test remote_headless_commands --test core_session",
+    "cargo test --locked --test remote_headless_commands production_plain_host -- --test-threads=1",
+    "cargo fmt --all",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo clippy --locked --all-targets --all-features -- -D warnings"
+  ],
+  "validation_result": {
+    "validator_run_async_streams_start_if_idle": "pass: async_start_if_idle_is_rejected_at_admission_while_a_slow_prompt_runs (fails on origin/main: response never arrives while the slow prompt is held open)",
+    "headless_suites": "pass (protocol 46, domain_owner, event_budget, input_shutdown, project_workspace)",
+    "lib_headless": "pass (20)",
+    "core_session": "pass",
+    "remote_headless": "pass",
+    "remote_headless_commands": "pass; production_plain_host_routes_authenticated_tls_prompt_to_the_provider failed once under parallel load, passed rerun with --test-threads=1",
+    "fmt": "pass",
+    "clippy": "pass",
+    "clippy_all_features": "pass"
+  },
+  "notes": "No new unwrap/expect/panic in non-test code, no unsafe, no new Arc<Mutex>. Default mode start_or_steer while busy is unchanged (still queues), because many clients rely on back-to-back prompts queueing; only explicit mode=steer is routed to the steer path. Note: Cargo has no 'remote' feature; remote tests run in the default build.",
+  "created_at": "2026-10-14T13:09:27Z",
+  "digest": "003aa27fa0fa9d7e2f9dbaadf0ca0f55d14b954abd175ddb4208edee26181b40"
+}
