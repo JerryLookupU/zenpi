@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-230",
+  "claim_id": "ZE-230@blueprint-4.0.0",
+  "from": "worker",
+  "to": "master",
+  "summary": "Base system prompt (src/system_prompt.rs): pi-style role + per-tool usage guide stating caps, pagination and truncation rules (read_file max_bytes cap + line-range continuation, read_tool_output offset paging, run_command artifact hint, list/search/find caps); one Environment line (cwd, UTC date, OS-arch); AGENTS.md discovery with per-directory CLAUDE.md fallback over global $ZENPI_HOME then workspace root (.git ancestor) down to cwd, merged global -> root -> cwd under '## <path>' headers with a 64 KiB total cap (truncation marker, later files omitted); unreadable/non-UTF-8/non-regular files skipped with AgentEvent::Warning; SYSTEM.md replaces and APPEND_SYSTEM.md appends (project .zenpi/ nearest-first, then global). Agent prepends the prompt (built once per turn) to request instructions, so it counts toward the context budget; agents without a tool workspace send none.",
+  "changed_files": [
+    "src/core.rs",
+    "src/lib.rs",
+    "src/system_prompt.rs",
+    "tests/system_prompt.rs"
+  ],
+  "diff_stat": "4 files changed, 731 insertions(+), 1 deletion(-)",
+  "commands_run": [
+    "cargo fmt --all",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo clippy --locked --all-targets --all-features -- -D warnings",
+    "cargo test --locked --test system_prompt --test core_session --test stage1_prompt_resources --test stage1_skill_md --test stage1_resource_host --test skills --test backend --test stage1_gemini --test headless_protocol --test headless_project_workspace --test remote_headless_commands --test governance",
+    "cargo test --locked --test core_session -- --test-threads=1",
+    "cargo test --locked --lib"
+  ],
+  "validation_result": {
+    "fmt": "clean",
+    "clippy_default": "clean",
+    "clippy_all_features": "clean",
+    "tests": {
+      "system_prompt": "9 passed",
+      "core_session": "41 passed with --test-threads=1 (user_shell_preserves_nonzero_signal_and_cancellation_evidence failed once under parallel load; timing-sensitive shell test, passes serially)",
+      "stage1_prompt_resources": "13 passed",
+      "stage1_skill_md": "21 passed, 2 ignored",
+      "request_snapshot_suites (backend, stage1_gemini, stage1_resource_host, skills, headless_protocol, headless_project_workspace, remote_headless_commands, governance)": "all passed",
+      "lib": "454 passed, 2 failed in parallel run; both pass with --test-threads=1 (extension_resume_commit known host exec stall per ZE-260; tui existing_terminal_projects PTY 5s deadline, passed 3/3 serial reruns)"
+    },
+    "validators": {
+      "nested_fixture_merge_order_and_headers": "pass (context_files_merge_global_then_root_then_cwd_with_headers)",
+      "claude_md_fallback": "pass",
+      "over_cap_truncation": "pass",
+      "unreadable_file_skipped_with_event": "pass (non-UTF-8 and permission-denied)",
+      "instructions_count_toward_token_budget": "pass",
+      "tool_guide_offset_continuation_hint": "pass"
+    }
+  },
+  "notes": "Global dir is set from ProjectPaths.root ($ZENPI_HOME) for project owners; bare Agent embedders opt in via Agent::set_system_prompt_home. Prompt is built once per turn so the base text stays byte-stable across tool iterations. Builds used a private CARGO_TARGET_DIR.",
+  "created_at": "2026-10-14T15:16:55Z",
+  "digest": "2aff7a2bfc5671b691fd7e31d54b9a48c37c076acdb24cac38e3f377051c2d5b"
+}

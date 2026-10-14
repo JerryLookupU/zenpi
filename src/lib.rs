@@ -45,6 +45,7 @@ pub mod skills;
 pub mod slash;
 pub mod slash_actions;
 pub mod sync;
+pub mod system_prompt;
 pub mod tool_output;
 pub mod tool_runtime;
 pub mod tools;

@@ -628,6 +628,9 @@ pub struct Agent {
     worker_budget: Option<crate::governance::WorkerBudgetLedger>,
     worker_admission_operation: Option<String>,
     live_owners: crate::session::LiveSessionRegistry,
+    /// Global zenpi directory probed for `AGENTS.md`/`SYSTEM.md` (ZE-230).
+    /// Project owners use `$ZENPI_HOME`; bare embedders opt in explicitly.
+    system_prompt_home: Option<PathBuf>,
 }
 
 /// ZS1-187: identical repeated calls allowed per turn before the excess is
@@ -949,6 +952,7 @@ impl Agent {
             worker_budget: None,
             worker_admission_operation: None,
             live_owners: crate::session::LiveSessionRegistry::default(),
+            system_prompt_home: None,
         };
         for operation in recovered {
             agent.events.push(AgentEvent::Error {
@@ -1119,6 +1123,7 @@ impl Agent {
             agent.restore_model_selection()?;
         }
         agent.project_overrides = overrides;
+        agent.system_prompt_home = Some(paths.root.clone());
         agent.set_tools_with_resources(registry, context, SideEffectPolicy::all_builtins())?;
         agent.restore_resources(resource_paths, || false)?;
         agent.configure_extensions(&paths.extensions, || false)?;
@@ -2288,6 +2293,35 @@ impl Agent {
             worker_binding: None,
             doom_loop_counts: std::collections::BTreeMap::new(),
         });
+    }
+
+    /// Select the global directory whose `AGENTS.md`/`CLAUDE.md`,
+    /// `SYSTEM.md` and `APPEND_SYSTEM.md` join the base system prompt.
+    pub fn set_system_prompt_home(&mut self, home: Option<PathBuf>) {
+        self.system_prompt_home = home;
+    }
+
+    /// Base prompt, environment line and context files for the current tool
+    /// workspace (ZE-230), followed by a newline separator. Agents without a
+    /// workspace send no base prompt. Skipped files surface as warnings.
+    fn build_system_prompt(&mut self, definitions: &[crate::tools::ToolDefinition]) -> String {
+        let Some(runtime) = self.tools.as_ref() else {
+            return String::new();
+        };
+        let built = crate::system_prompt::build(&crate::system_prompt::PromptInputs {
+            cwd: runtime.context.workspace_root(),
+            global_dir: self.system_prompt_home.as_deref(),
+            tools: definitions,
+            date: crate::system_prompt::today_utc(),
+        });
+        for message in built.diagnostics {
+            emit_tool_event(
+                &mut self.events,
+                self.live_tool_sink.as_ref(),
+                AgentEvent::Warning { message },
+            );
+        }
+        format!("{}\n", built.text)
     }
 
     pub fn set_attachment_workspace(&mut self, context: ToolContext) {
@@ -4949,6 +4983,7 @@ impl Agent {
         let max_input_continuations = crate::input_queue::InputQueueLimits::default().max_pending;
         let mut input_continuations = 0;
         let mut tool_iterations = 0;
+        let mut system_prompt: Option<String> = None;
         for _iteration in 0..=max_iterations.saturating_add(max_input_continuations) {
             self.input_boundary(&gate, false, is_cancelled())?;
             if is_cancelled() {
@@ -5002,8 +5037,12 @@ impl Agent {
                         .join("\n")
                 })
                 .unwrap_or_default();
+            if system_prompt.is_none() {
+                system_prompt = Some(self.build_system_prompt(&definitions));
+            }
             let mut instructions = format!(
-                "{}\n{}\n{}\n{}",
+                "{}{}\n{}\n{}\n{}",
+                system_prompt.as_deref().unwrap_or_default(),
                 self.turn_skills().effective_instructions(),
                 crate::persona::instructions(self.persona()),
                 resource_text,
