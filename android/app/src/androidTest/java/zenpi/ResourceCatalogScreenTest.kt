@@ -151,4 +151,26 @@ class ResourceCatalogScreenTest {
         compose.onNodeWithContentDescription("Refresh host resources").assertIsNotEnabled()
         compose.onNodeWithContentDescription("Browse host resources").assertIsNotEnabled()
     }
+    @Test fun slashTypedInTheComposerOpensThePaletteWithResourcesAndMarkedDesktopCommands() {
+        val projection = HostProjection(listOf(RemoteProject("project", "Project", "session", promptControl = true)),
+            "project", "session", "idle", emptyList(), "1", false, "0")
+        val catalog = ResourceCatalog("project", "session", "2", listOf(
+            RemoteResource("research", "skill", "/skill:research", "Find sources", true)), false, "a".repeat(64))
+        val state = mutableStateOf(PairingState(phase = PairingPhase.CONNECTED, projection = projection))
+        val offsets = mutableListOf<Int>(); val sends = mutableListOf<String>()
+        compose.setContent { MaterialTheme { PairingScreen(state.value, {}, {}, {},
+            onResources = { offsets.add(it); state.value = state.value.copy(resourcesOpen = true, resources = catalog) },
+            onCloseResources = { state.value = state.value.copy(resourcesOpen = false) }, onPrompt = { sends.add(it) }) } }
+        compose.onNodeWithTag("prompt-composer").performTextInput("/")
+        compose.waitForIdle()
+        assertEquals(listOf(-1), offsets)
+        compose.onNodeWithTag("desktop-command-yolo").performScrollTo().assertIsNotEnabled().assertTextContains("Desktop only", substring = true)
+        compose.onNodeWithTag("desktop-command-new").performScrollTo().assertTextContains("New session", substring = true)
+        compose.onNodeWithText("/skill:research").performScrollTo().performClick()
+        compose.onNodeWithTag("resource-catalog-list").assertDoesNotExist()
+        compose.onNodeWithTag("prompt-composer").assertTextContains("/skill:research ")
+        // A slash typed after other text is just text.
+        compose.onNodeWithTag("prompt-composer").performTextInput("a/b")
+        compose.runOnIdle { assertEquals(listOf(-1), offsets); assertTrue(sends.isEmpty()) }
+    }
 }

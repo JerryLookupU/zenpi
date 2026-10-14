@@ -79,8 +79,6 @@ import zenpi.transport.RemoteProject
 import zenpi.transport.RemoteToolCall
 import zenpi.transport.RemoteTurn
 import zenpi.ui.nav.Route
-import zenpi.ui.dialogs.FilesDialog
-import zenpi.ui.dialogs.ResourcesDialog
 
 /**
  * The main screen for an authorized host: a top bar (switcher, Agent/Arch mode, worktree and
@@ -116,8 +114,8 @@ fun ConversationScreen(scope: ScreenScope, projection: HostProjection, prompt: D
         ConversationList(state, projection, selected, list, padding, actions, header)
     }
     if (state.modelOpen) ModelSheet(state, projection, selected, actions)
-    if (state.resourcesOpen) ResourcesDialog(state, selected, prompt, actions)
-    if (state.filesOpen) FilesDialog(state, prompt, actions)
+    if (state.resourcesOpen) CommandPalette(scope, prompt, workspaceUi, actions)
+    if (state.filesOpen) FilePalette(state, prompt, actions)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
