@@ -258,7 +258,7 @@ fn builtin_snippet(name: &str) -> Option<String> {
             "List one workspace directory (max_entries default 64, cap {MAX_LIST_ENTRIES}); not recursive. Use find for recursive listings."
         ),
         "search_text" => format!(
-            "Search file contents (literal by default; regex/glob/context opt-in). Returns at most max_matches (cap {MAX_SEARCH_MATCHES}); narrow path, glob or query when results are capped."
+            "Search file contents with ripgrep; the query is a regex by default (literal=true for fixed strings; glob/context optional). Returns at most max_matches (cap {MAX_SEARCH_MATCHES}); narrow path, glob or query when results are capped."
         ),
         "find" => "Find workspace files by glob. Returns at most limit paths (default 100, cap 256); narrow the pattern or path when capped.".to_owned(),
         "write_file" => format!(

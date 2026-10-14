@@ -1,8 +1,9 @@
-//! Explicit advanced search backed by an already-installed ripgrep. No tool
-//! download, shell-language execution, persistent index or extra service.
+//! Search backed by an already-installed ripgrep: one `rg --json` run per
+//! `search_text` call. No tool download, shell-language execution, persistent
+//! index or extra service.
 use crate::tools::{SupervisedChild, ToolError};
 use serde_json::{Value, json};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -11,9 +12,8 @@ use std::time::{Duration, Instant};
 
 const MAX_PIPE_BYTES: usize = 256 * 1024;
 const MAX_STDERR_BYTES: usize = 8192;
-const MAX_FILES: usize = 256;
-const FILES_PER_CHILD: usize = 16;
-pub const MAX_SEARCH_CHUNKS: usize = MAX_FILES.div_ceil(FILES_PER_CHILD);
+/// Upper bound on paths one `find` call returns.
+const MAX_FIND_RESULTS: usize = 256;
 const MAX_FILE_BYTES: u64 = 1024 * 1024;
 const MAX_DEPTH: usize = 64;
 const MAX_LINE_BYTES: usize = 2048;
@@ -62,6 +62,9 @@ impl SearchBackend {
         self.executable.is_some()
     }
 
+    /// Search `target` with exactly one ripgrep child. Reading stops (and the
+    /// child is killed) once `max_matches` matches and their trailing context
+    /// are collected, or when the stdout byte cap is reached.
     pub fn search(
         &self,
         workspace: &Path,
@@ -70,147 +73,109 @@ impl SearchBackend {
         cancel: &dyn Fn() -> bool,
     ) -> Result<Value, ToolError> {
         options.validate()?;
-        let deadline = Instant::now() + MAX_DURATION;
-        let mut reasons = BTreeSet::new();
-        // Validate regex even when an empty directory has no eligible files.
-        if options.regex {
-            self.run(
-                workspace,
-                &[
-                    "--json".into(),
-                    "-e".into(),
-                    options.query.clone(),
-                    "-".into(),
-                ],
-                deadline,
-                cancel,
-            )?;
-        }
-        let files = self.files(
+        let root = relative_root(workspace, target)?;
+        let mut args = vec![
+            "--json".into(),
+            // Report NUL-bearing files via the end event's binary_offset
+            // instead of silently skipping them during traversal.
+            "--binary".into(),
+            "--sort".into(),
+            "path".into(),
+            "--max-filesize".into(),
+            MAX_FILE_BYTES.to_string(),
+            "--max-count".into(),
+            options.max_matches.to_string(),
+            "--context".into(),
+            options.context.to_string(),
+        ];
+        args.extend(traversal_args(
             workspace,
-            target,
-            options.glob.as_deref(),
             options.ignore,
             options.hidden,
-            true,
-            deadline,
-            cancel,
-            &mut reasons,
-        )?;
-        let mut matches: Vec<Value> = Vec::new();
-        let mut context: Vec<Value> = Vec::new();
-        let mut searched = 0;
-        for batch in files.chunks(FILES_PER_CHILD) {
-            if matches.len() >= options.max_matches {
-                reasons.insert("match_limit");
-                break;
-            }
-            let mut args = vec![
-                "--json".into(),
-                "--line-number".into(),
-                "--max-filesize".into(),
-                MAX_FILE_BYTES.to_string(),
-                "--context".into(),
-                options.context.to_string(),
-            ];
-            if !options.regex {
-                args.push("--fixed-strings".into());
-            }
-            if !options.case_sensitive {
-                args.push("--ignore-case".into());
-            }
-            args.extend(["-e".into(), options.query.clone(), "--".into()]);
-            args.extend(batch.iter().cloned());
-            let output = self.run(workspace, &args, deadline, cancel)?;
-            searched += batch.len();
-            if output.truncated {
-                reasons.insert("output_bytes");
-            }
-            for line in output.stdout.split(|b| *b == b'\n') {
-                if line.is_empty() {
-                    continue;
-                }
-                let event: Value = match serde_json::from_slice(line) {
-                    Ok(event) => event,
-                    Err(_) if output.truncated => {
-                        reasons.insert("partial_event");
-                        continue;
-                    }
-                    Err(_) => {
-                        return Err(ToolError::InvalidArguments(
-                            "invalid ripgrep JSON output".into(),
-                        ));
-                    }
-                };
-                let kind = event["type"].as_str().unwrap_or("");
-                let binary_end = kind == "end" && event["data"]["binary_offset"].is_u64();
-                if kind != "match" && kind != "context" && !binary_end {
-                    continue;
-                }
-                let Some(path) = event["data"]["path"]["text"].as_str() else {
-                    reasons.insert("non_utf8_path");
-                    continue;
-                };
-                let path = checked_result_path(workspace, path)?;
-                if crate::tool_output::private_output_path_inode(&workspace.join(&path))? {
-                    return Err(ToolError::PathDenied(
-                        "private output inode in search result".into(),
-                    ));
-                }
-                if !batch.contains(&path) {
-                    return Err(ToolError::PathDenied(
-                        "search result outside admitted file batch".into(),
-                    ));
-                }
-                if binary_end {
-                    // rg can publish text matches before reporting the NUL
-                    // offset in its end event. They are not a complete text file.
-                    reasons.insert("binary_content");
-                    matches.retain(|record| record["path"] != path);
-                    context.retain(|record| record["path"] != path);
-                    continue;
-                }
-                let Some(text) = event["data"]["lines"]["text"].as_str() else {
-                    reasons.insert("non_utf8_content");
-                    continue;
-                };
-                let Some(number) = event["data"]["line_number"].as_u64() else {
-                    return Err(ToolError::InvalidArguments(
-                        "ripgrep line number missing".into(),
-                    ));
-                };
-                if text.contains('\0') {
-                    reasons.insert("binary_content");
-                    continue;
-                }
-                let text = text.trim_end_matches(['\r', '\n']);
-                if text.len() > MAX_LINE_BYTES {
-                    reasons.insert("line_bytes");
-                }
-                let record =
-                    json!({"path":path,"line":number,"text":bounded_text(text,MAX_LINE_BYTES)});
-                if kind == "match" {
-                    if matches.len() < options.max_matches {
-                        matches.push(record);
-                    } else {
-                        reasons.insert("match_limit");
-                    }
-                } else if context.len() < options.max_matches.saturating_mul(options.context * 2) {
-                    context.push(record);
-                } else {
-                    reasons.insert("context_limit");
-                }
-            }
-            // The pipe cap may have interrupted this batch. Do not pretend
-            // later batches turn the resulting partial search into complete.
-            if output.truncated {
-                break;
+            MAX_DEPTH,
+        ));
+        if !options.regex {
+            args.push("--fixed-strings".into());
+        }
+        if !options.case_sensitive {
+            args.push("--ignore-case".into());
+        }
+        if let Some(glob) = &options.glob {
+            args.extend(["--glob".into(), glob.clone()]);
+            // A positive rg glob also whitelists hidden files (and, as in
+            // pi, gitignored ones). Keep hidden=false authoritative.
+            if !options.hidden {
+                args.extend(["--glob".into(), "!.*".into()]);
             }
         }
+        // Exclusions follow the caller glob: with rg the later glob wins.
+        args.extend(exclusion_args());
+        args.extend([
+            "-e".into(),
+            options.query.clone(),
+            "--".into(),
+            root.clone(),
+        ]);
+        let mut collector = Collector {
+            workspace,
+            root: PathBuf::from(&root),
+            options,
+            matches: Vec::new(),
+            context: Vec::new(),
+            reasons: BTreeSet::new(),
+            admitted: BTreeMap::new(),
+            last_match: None,
+            files_searched: None,
+        };
+        let mut pending: Vec<u8> = Vec::new();
+        let outcome = self.run(
+            workspace,
+            &args,
+            Instant::now() + MAX_DURATION,
+            cancel,
+            &mut |chunk| {
+                pending.extend_from_slice(chunk);
+                let mut consumed = 0;
+                let mut stop = false;
+                while let Some(offset) = pending[consumed..].iter().position(|b| *b == b'\n') {
+                    let line = &pending[consumed..consumed + offset];
+                    consumed += offset + 1;
+                    if !line.is_empty() && collector.event(line)? {
+                        stop = true;
+                        break;
+                    }
+                }
+                pending.drain(..consumed);
+                Ok(stop)
+            },
+        )?;
+        match outcome.end {
+            RunEnd::Truncated => {
+                collector.reasons.insert("output_bytes");
+                if !pending.is_empty() {
+                    collector.reasons.insert("partial_event");
+                }
+            }
+            RunEnd::Stopped => {}
+            // rg exits 2 for unreadable entries after a complete walk; the
+            // summary event proves the search itself ran.
+            RunEnd::Exited(2) if collector.files_searched.is_some() => {
+                collector.reasons.insert("search_errors");
+            }
+            RunEnd::Exited(0 | 1) => {}
+            RunEnd::Exited(_) => return Err(rg_failed(&outcome.stderr)),
+        }
+        let Collector {
+            matches,
+            context,
+            reasons,
+            files_searched,
+            ..
+        } = collector;
         Ok(
-            json!({"query":options.query,"matches":matches,"context":context,"files_visited":searched,
-            "engine":"ripgrep","regex":options.regex,"ignore":options.ignore,"hidden":options.hidden,
-            "max_depth":MAX_DEPTH,"max_file_bytes":MAX_FILE_BYTES,"file_limit":MAX_FILES,
+            json!({"query":options.query,"matches":matches,"context":context,"files_searched":files_searched,
+            "engine":"ripgrep","regex":options.regex,"glob":options.glob,"ignore":options.ignore,"hidden":options.hidden,
+            "max_depth":MAX_DEPTH,"max_file_bytes":MAX_FILE_BYTES,
             "truncated":!reasons.is_empty(),"truncation_reasons":reasons}),
         )
     }
@@ -227,7 +192,7 @@ impl SearchBackend {
         cancel: &dyn Fn() -> bool,
     ) -> Result<Value, ToolError> {
         validate_glob(glob)?;
-        if !(1..=MAX_FILES).contains(&limit) {
+        if !(1..=MAX_FIND_RESULTS).contains(&limit) {
             return Err(ToolError::InvalidArguments(
                 "find limit must be 1..256".into(),
             ));
@@ -239,7 +204,6 @@ impl SearchBackend {
             Some(glob),
             ignore,
             hidden,
-            false,
             Instant::now() + MAX_DURATION,
             cancel,
             &mut reasons,
@@ -261,7 +225,6 @@ impl SearchBackend {
         glob: Option<&str>,
         ignore: bool,
         hidden: bool,
-        content_search: bool,
         deadline: Instant,
         cancel: &dyn Fn() -> bool,
         reasons: &mut BTreeSet<&'static str>,
@@ -269,55 +232,16 @@ impl SearchBackend {
         if let Some(glob) = glob {
             validate_glob(glob)?;
         }
-        if !target.starts_with(workspace) || crate::tools::private_output_path(target) {
-            return Err(ToolError::PathDenied(
-                "search root outside workspace".into(),
-            ));
-        }
-        let target = target
-            .strip_prefix(workspace)
-            .map_err(|_| ToolError::PathDenied("search root outside workspace".into()))?;
-        let target = if target.as_os_str().is_empty() {
-            ".".into()
-        } else {
-            target
-                .to_str()
-                .ok_or_else(|| ToolError::InvalidArguments("non-UTF8 search root".into()))?
-                .to_owned()
-        };
+        let target = relative_root(workspace, target)?;
         let list = |filter: Option<&str>, ignore: bool, max_depth: usize| {
-            let mut args = vec![
-                "--files".into(),
-                "--null".into(),
-                "--max-depth".into(),
-                max_depth.to_string(),
-                "--no-ignore-parent".into(),
-                "--no-ignore-global".into(),
-                "--no-ignore-exclude".into(),
-            ];
-            if !workspace.join(".git").exists() {
-                args.push("--no-require-git".into());
-            }
-            if !ignore {
-                args.push("--no-ignore".into());
-            }
-            if hidden {
-                args.push("--hidden".into());
-            }
+            let mut args = vec!["--files".into(), "--null".into()];
+            args.extend(traversal_args(workspace, ignore, hidden, max_depth));
             if let Some(glob) = filter {
                 args.extend(["--glob".into(), glob.into()]);
             }
-            args.extend([
-                "--glob".into(),
-                "!**/.git/**".into(),
-                // Host-private output is never an ordinary search source,
-                // even with hidden=true, ignore=false or a positive glob.
-                "--iglob".into(),
-                "!**/.zenpi-output-*/**".into(),
-                "--".into(),
-                target.clone(),
-            ]);
-            self.run(workspace, &args, deadline, cancel)
+            args.extend(exclusion_args());
+            args.extend(["--".into(), target.clone()]);
+            self.collect(workspace, &args, deadline, cancel)
         };
         let first = list(None, ignore, MAX_DEPTH)?;
         if first.truncated {
@@ -379,15 +303,11 @@ impl SearchBackend {
             if crate::tool_output::private_output_path_inode(&path)? {
                 continue;
             }
-            if content_search && metadata.len() > MAX_FILE_BYTES {
-                reasons.insert("file_bytes");
-                continue;
-            }
             let canonical = path.canonicalize()?;
             if !canonical.starts_with(workspace) || crate::tools::private_output_path(&canonical) {
                 return Err(ToolError::PathDenied(candidate));
             }
-            if files.len() == MAX_FILES {
+            if files.len() == MAX_FIND_RESULTS {
                 reasons.insert("file_limit");
                 break;
             }
@@ -395,6 +315,29 @@ impl SearchBackend {
         }
         Ok(files)
     }
+    /// Run one bounded ripgrep child and collect stdout (used by `find`).
+    fn collect(
+        &self,
+        workspace: &Path,
+        args: &[String],
+        deadline: Instant,
+        cancel: &dyn Fn() -> bool,
+    ) -> Result<SearchOutput, ToolError> {
+        let mut stdout = Vec::new();
+        let outcome = self.run(workspace, args, deadline, cancel, &mut |chunk| {
+            stdout.extend_from_slice(chunk);
+            Ok(false)
+        })?;
+        let truncated = match outcome.end {
+            RunEnd::Truncated => true,
+            RunEnd::Exited(0 | 1) | RunEnd::Stopped => false,
+            RunEnd::Exited(_) => return Err(rg_failed(&outcome.stderr)),
+        };
+        Ok(SearchOutput { stdout, truncated })
+    }
+    /// Run one ripgrep child, streaming at most `MAX_PIPE_BYTES` of stdout
+    /// into `sink`. The sink returns `true` to stop early; the child's process
+    /// group is then killed and reaped.
     #[cfg(unix)]
     fn run(
         &self,
@@ -402,7 +345,8 @@ impl SearchBackend {
         args: &[String],
         deadline: Instant,
         cancel: &dyn Fn() -> bool,
-    ) -> Result<SearchOutput, ToolError> {
+        sink: &mut dyn FnMut(&[u8]) -> Result<bool, ToolError>,
+    ) -> Result<RunOutcome, ToolError> {
         use std::os::unix::process::CommandExt;
         if cancel() {
             return Err(ToolError::Cancelled);
@@ -412,7 +356,8 @@ impl SearchBackend {
         }
         let executable = self.executable.as_ref().ok_or_else(|| {
             ToolError::Unsupported(
-                "ripgrep is not installed; default literal search remains available".into(),
+                "ripgrep is not installed; literal search without glob/ignore/hidden/context remains available"
+                    .into(),
             )
         })?;
         let mut command = Command::new(executable);
@@ -448,12 +393,11 @@ impl SearchBackend {
             .ok_or_else(|| ToolError::CommandFailed("search stderr missing".into()))?;
         crate::tools::make_pipe_nonblocking(&stdout)?;
         crate::tools::make_pipe_nonblocking(&stderr)?;
-        let mut out = Vec::new();
+        let mut read = 0_usize;
         let mut err = Vec::new();
         let mut out_eof = false;
         let mut err_eof = false;
-        let mut truncated = false;
-        let status = loop {
+        let end = 'supervise: loop {
             if cancel() {
                 return Err(ToolError::Cancelled);
             }
@@ -468,11 +412,13 @@ impl SearchBackend {
                         break;
                     }
                     Ok(n) => {
-                        let keep = n.min(MAX_PIPE_BYTES.saturating_sub(out.len()));
-                        out.extend_from_slice(&buffer[..keep]);
+                        let keep = n.min(MAX_PIPE_BYTES.saturating_sub(read));
+                        read += keep;
+                        if keep > 0 && sink(&buffer[..keep])? {
+                            break 'supervise RunEnd::Stopped;
+                        }
                         if keep < n {
-                            truncated = true;
-                            break;
+                            break 'supervise RunEnd::Truncated;
                         }
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
@@ -495,28 +441,17 @@ impl SearchBackend {
                     Err(e) => return Err(e.into()),
                 }
             }
-            if truncated {
-                break None;
-            }
             if let Some(status) = child.child.try_wait()?
                 && out_eof
                 && err_eof
             {
-                break Some(status);
+                // A signal-terminated child has no code; treat it as failure.
+                break RunEnd::Exited(status.code().unwrap_or(-1));
             }
             std::thread::sleep(Duration::from_millis(2));
         };
         child.cleanup();
-        if !truncated && !status.is_some_and(|status| matches!(status.code(), Some(0 | 1))) {
-            return Err(ToolError::InvalidArguments(format!(
-                "ripgrep failed: {}",
-                bounded_text(&String::from_utf8_lossy(&err), MAX_STDERR_BYTES)
-            )));
-        }
-        Ok(SearchOutput {
-            stdout: out,
-            truncated,
-        })
+        Ok(RunOutcome { end, stderr: err })
     }
     #[cfg(not(unix))]
     fn run(
@@ -525,7 +460,8 @@ impl SearchBackend {
         _: &[String],
         _: Instant,
         _: &dyn Fn() -> bool,
-    ) -> Result<SearchOutput, ToolError> {
+        _: &mut dyn FnMut(&[u8]) -> Result<bool, ToolError>,
+    ) -> Result<RunOutcome, ToolError> {
         Err(ToolError::Unsupported(
             "search process containment is unavailable on this platform".into(),
         ))
@@ -534,6 +470,213 @@ impl SearchBackend {
 struct SearchOutput {
     stdout: Vec<u8>,
     truncated: bool,
+}
+enum RunEnd {
+    /// The child exited on its own with this code (-1 for a signal).
+    Exited(i32),
+    /// The stdout byte cap was reached; the child was killed.
+    Truncated,
+    /// The sink asked to stop; the child was killed.
+    Stopped,
+}
+struct RunOutcome {
+    end: RunEnd,
+    stderr: Vec<u8>,
+}
+fn rg_failed(stderr: &[u8]) -> ToolError {
+    ToolError::InvalidArguments(format!(
+        "ripgrep failed: {}",
+        bounded_text(&String::from_utf8_lossy(stderr), MAX_STDERR_BYTES)
+    ))
+}
+/// Workspace-relative search root argument for ripgrep.
+fn relative_root(workspace: &Path, target: &Path) -> Result<String, ToolError> {
+    if !target.starts_with(workspace) || crate::tools::private_output_path(target) {
+        return Err(ToolError::PathDenied(
+            "search root outside workspace".into(),
+        ));
+    }
+    let target = target
+        .strip_prefix(workspace)
+        .map_err(|_| ToolError::PathDenied("search root outside workspace".into()))?;
+    if target.as_os_str().is_empty() {
+        return Ok(".".into());
+    }
+    target
+        .to_str()
+        .map(str::to_owned)
+        .ok_or_else(|| ToolError::InvalidArguments("non-UTF8 search root".into()))
+}
+/// Traversal flags shared by `find` listings and content search.
+fn traversal_args(workspace: &Path, ignore: bool, hidden: bool, max_depth: usize) -> Vec<String> {
+    let mut args = vec![
+        "--max-depth".into(),
+        max_depth.to_string(),
+        "--no-ignore-parent".into(),
+        "--no-ignore-global".into(),
+        "--no-ignore-exclude".into(),
+    ];
+    if !workspace.join(".git").exists() {
+        args.push("--no-require-git".into());
+    }
+    if !ignore {
+        args.push("--no-ignore".into());
+    }
+    if hidden {
+        args.push("--hidden".into());
+    }
+    args
+}
+/// Host-private output is never an ordinary search source, even with
+/// hidden=true, ignore=false or a positive glob. Must follow caller globs.
+fn exclusion_args() -> [String; 4] {
+    [
+        "--glob".into(),
+        "!**/.git/**".into(),
+        "--iglob".into(),
+        "!**/.zenpi-output-*/**".into(),
+    ]
+}
+/// Incremental consumer of `rg --json` events for one search.
+struct Collector<'a> {
+    workspace: &'a Path,
+    root: PathBuf,
+    options: &'a SearchOptions,
+    matches: Vec<Value>,
+    context: Vec<Value>,
+    reasons: BTreeSet<&'static str>,
+    /// Per-path admission verdicts, checked once per result file.
+    admitted: BTreeMap<String, bool>,
+    /// Path and line of the last admitted match once the limit is reached.
+    last_match: Option<(String, u64)>,
+    files_searched: Option<u64>,
+}
+impl Collector<'_> {
+    /// Consume one complete JSON line. Returns `true` to stop the search.
+    fn event(&mut self, line: &[u8]) -> Result<bool, ToolError> {
+        let event: Value = serde_json::from_slice(line)
+            .map_err(|_| ToolError::InvalidArguments("invalid ripgrep JSON output".into()))?;
+        let kind = event["type"].as_str().unwrap_or("");
+        let data = &event["data"];
+        match kind {
+            "summary" => {
+                self.files_searched = data["stats"]["searches"].as_u64();
+                return Ok(false);
+            }
+            "match" | "context" | "end" => {}
+            _ => return Ok(false),
+        }
+        let binary_end = kind == "end" && data["binary_offset"].is_u64();
+        if kind == "end" && !binary_end {
+            // After the limit, a finished file means the trailing context is
+            // complete; later files may hold more matches.
+            return Ok(self.limit_reached(kind));
+        }
+        let Some(path) = data["path"]["text"].as_str() else {
+            self.reasons.insert("non_utf8_path");
+            return Ok(false);
+        };
+        let path = checked_result_path(self.workspace, path)?;
+        if !self.admit(&path)? {
+            return Ok(false);
+        }
+        if binary_end {
+            // rg can publish text matches before reporting the NUL offset in
+            // its end event. They are not a complete text file.
+            self.reasons.insert("binary_content");
+            self.matches.retain(|record| record["path"] != path);
+            self.context.retain(|record| record["path"] != path);
+            if self.matches.len() < self.options.max_matches {
+                self.last_match = None;
+                return Ok(false);
+            }
+            return Ok(self.limit_reached(kind));
+        }
+        let Some(number) = data["line_number"].as_u64() else {
+            return Err(ToolError::InvalidArguments(
+                "ripgrep line number missing".into(),
+            ));
+        };
+        if kind == "match" && self.last_match.is_some() {
+            return Ok(self.limit_reached(kind));
+        }
+        if kind == "context"
+            && let Some((last_path, last_line)) = &self.last_match
+            && (*last_path != path || number > last_line + self.options.context as u64)
+        {
+            // Leading context of a match beyond the limit.
+            return Ok(false);
+        }
+        let Some(text) = data["lines"]["text"].as_str() else {
+            self.reasons.insert("non_utf8_content");
+            return Ok(false);
+        };
+        if text.contains('\0') {
+            self.reasons.insert("binary_content");
+            return Ok(false);
+        }
+        let text = text.trim_end_matches(['\r', '\n']);
+        if text.len() > MAX_LINE_BYTES {
+            self.reasons.insert("line_bytes");
+        }
+        let record = json!({"path":path,"line":number,"text":bounded_text(text,MAX_LINE_BYTES)});
+        if kind == "match" {
+            self.matches.push(record);
+            if self.matches.len() >= self.options.max_matches {
+                self.last_match = Some((path, number));
+            }
+        } else if self.context.len()
+            < self
+                .options
+                .max_matches
+                .saturating_mul(self.options.context * 2)
+        {
+            self.context.push(record);
+        } else {
+            self.reasons.insert("context_limit");
+        }
+        Ok(false)
+    }
+    /// With the match limit reached, stop at the first event that is not
+    /// trailing context of the last admitted match.
+    fn limit_reached(&mut self, kind: &str) -> bool {
+        if self.last_match.is_none() {
+            return false;
+        }
+        if kind == "match" || kind == "end" {
+            self.reasons.insert("match_limit");
+        }
+        true
+    }
+    /// Per-result safety: inside the search root and workspace, a regular
+    /// non-symlink file, and never a host-private output inode.
+    fn admit(&mut self, path: &str) -> Result<bool, ToolError> {
+        if let Some(admitted) = self.admitted.get(path) {
+            return Ok(*admitted);
+        }
+        if self.root != Path::new(".") && !Path::new(path).starts_with(&self.root) {
+            return Err(ToolError::PathDenied(
+                "search result outside search root".into(),
+            ));
+        }
+        let full = self.workspace.join(path);
+        let metadata = fs::symlink_metadata(&full)?;
+        let admitted = if !metadata.is_file() || metadata.file_type().is_symlink() {
+            self.reasons.insert("non_regular_file");
+            false
+        } else {
+            let canonical = full.canonicalize()?;
+            if !canonical.starts_with(self.workspace)
+                || crate::tools::private_output_path(&canonical)
+            {
+                return Err(ToolError::PathDenied(path.into()));
+            }
+            // Hard-link aliases of private output are skipped, never shown.
+            !crate::tool_output::private_output_path_inode(&full)?
+        };
+        self.admitted.insert(path.into(), admitted);
+        Ok(admitted)
+    }
 }
 #[derive(Debug)]
 pub struct SearchOptions {
@@ -555,7 +698,7 @@ impl SearchOptions {
             || !(1..=100).contains(&self.max_matches)
         {
             return Err(ToolError::InvalidArguments(
-                "advanced search arguments exceed limits".into(),
+                "search arguments exceed limits".into(),
             ));
         }
         if let Some(glob) = &self.glob {
@@ -563,6 +706,13 @@ impl SearchOptions {
         }
         Ok(())
     }
+}
+/// Whether a regex query has no metacharacters, so it matches exactly what
+/// the same text matches as a fixed string.
+pub fn regex_is_literal(query: &str) -> bool {
+    !query.contains([
+        '\\', '.', '+', '*', '?', '(', ')', '|', '[', ']', '{', '}', '^', '$',
+    ])
 }
 fn validate_glob(glob: &str) -> Result<(), ToolError> {
     if glob.is_empty() || glob.len() > 4096 || glob.contains(['\0', '\r', '\n']) {

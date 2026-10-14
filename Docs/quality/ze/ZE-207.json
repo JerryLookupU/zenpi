@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-207",
+  "claim_id": "ZE-207@blueprint-4.0.0",
+  "from": "worker",
+  "to": "master",
+  "summary": "search_text now runs exactly one `rg --json` per call over the target path (flags from options: --glob, --hidden, --no-ignore, --max-depth 64, --max-filesize 1MiB, --context, --ignore-case, --fixed-strings only for literal=true/regex=false, plus --binary/--sort path/--max-count). Query is a regex by default; new `literal` option. Events are streamed and the child is killed once max_matches matches plus their trailing context are collected. Pipe byte cap, truncation reasons and per-result safety (checked_result_path, search-root containment, canonical workspace containment, regular-file check, private output inode skip, binary end-event handling, 2 KiB line cap) are kept. Removed the 256-file listing, 16-file batches, MAX_FILES/FILES_PER_CHILD/MAX_SEARCH_CHUNKS and search_requires_subprocess. The in-process scan is only a literal fallback when ripgrep is unavailable (or under a worker gate, which cannot confine rg). search_process_budget(search_text)=1. The tool description, schema and system_prompt snippet now say regex by default.",
+  "changed_files": [
+    "src/search.rs",
+    "src/tools.rs",
+    "src/system_prompt.rs",
+    "tests/stage1_search.rs",
+    "tests/tools.rs",
+    "Docs/quality/ze/ZE-207.json"
+  ],
+  "diff_stat": "src/search.rs          | 578 +++++++++++++++++++++++++++++++------------------\n src/system_prompt.rs   |   2 +-\n src/tools.rs           |  83 +++----\n tests/stage1_search.rs | 313 ++++++++++++++++++++------\n tests/tools.rs         |   1 +\n 5 files changed, 658 insertions(+), 319 deletions(-)",
+  "commands_run": [
+    "git fetch && git merge --ff-only origin/main",
+    "cargo fmt --all",
+    "cargo fmt --all -- --check",
+    "CARGO_TARGET_DIR=/Users/mac/Github/zenpi/.claude/targets/ze207 CARGO_INCREMENTAL=0 cargo clippy --locked --all-targets -- -D warnings",
+    "CARGO_TARGET_DIR=/Users/mac/Github/zenpi/.claude/targets/ze207 CARGO_INCREMENTAL=0 cargo clippy --locked --all-targets --all-features -- -D warnings",
+    "CARGO_TARGET_DIR=/Users/mac/Github/zenpi/.claude/targets/ze207 CARGO_INCREMENTAL=0 cargo test --locked --test stage1_search",
+    "CARGO_TARGET_DIR=/Users/mac/Github/zenpi/.claude/targets/ze207 CARGO_INCREMENTAL=0 cargo test --locked --test stage1_search -- --test-threads=1",
+    "CARGO_TARGET_DIR=/Users/mac/Github/zenpi/.claude/targets/ze207 CARGO_INCREMENTAL=0 cargo test --locked --test stage1_search --test tools --test tool_result_text --test system_prompt --test governance --test stage1_tool_output --test stage1_tool_batch --test provider_replay",
+    "CARGO_TARGET_DIR=/Users/mac/Github/zenpi/.claude/targets/ze207 CARGO_INCREMENTAL=0 cargo test --locked --lib search",
+    "CARGO_TARGET_DIR=/Users/mac/Github/zenpi/.claude/targets/ze207 CARGO_INCREMENTAL=0 cargo test --locked --no-fail-fast",
+    "CARGO_TARGET_DIR=/Users/mac/Github/zenpi/.claude/targets/ze207 CARGO_INCREMENTAL=0 cargo test --locked --lib existing_terminal_projects_only_matching -- --test-threads=1",
+    "CARGO_TARGET_DIR=/Users/mac/Github/zenpi/.claude/targets/ze207 CARGO_INCREMENTAL=0 cargo test --locked --test stage1_extension_hooks"
+  ],
+  "validation_result": {
+    "status": "pass",
+    "validators": {
+      "glob_match_in_1000th_file_found": "pass: stage1_search::glob_search_finds_a_match_in_the_thousandth_file_with_one_rg_process (1200 files, glob many/*.txt, match in f1000.txt, truncated=false, wrapper logs 1 start)",
+      "single_call_starts_exactly_one_rg": "pass: stage1_search::every_search_call_starts_exactly_one_rg_process (6 option shapes + invalid regex, wrapper via SearchBackend::configured logs N starts for N calls); cumulative_process_budget_is_one_start_per_search_call",
+      "default_query_is_regex": "pass: stage1_search::default_query_is_a_regex_and_literal_option_escapes_it",
+      "literal_option_escapes": "pass: same test (literal=true and regex=false give fixed-string match; literal+regex=true rejected)",
+      "early_stop_on_max_matches": "pass: stage1_search::match_limit_stops_the_single_run_early_and_keeps_trailing_context"
+    },
+    "gates": {
+      "fmt": "pass",
+      "clippy_all_targets": "pass",
+      "clippy_all_features": "pass",
+      "targeted_suites": "pass: stage1_search 25, tools 42, tool_result_text 5, system_prompt 9, governance 22, stage1_tool_output 51, stage1_tool_batch 19, provider_replay 21",
+      "full_cargo_test": "unrelated load flakes only (load avg ~12): lib tui::local_remote_preview_tests::existing_terminal_projects_only_matching_live_session_and_root passes alone; stage1_extension_hooks CommandTimeout(1000) failures also occur on the stashed baseline (A/B via git stash)",
+      "check_modes_py": "not run: needs worktree target/debug/zenpi, which the private-target-dir rule forbids building"
+    }
+  },
+  "notes": [
+    "Deliberate test changes in tests/stage1_search.rs:",
+    "(1) default_search_keeps_original_literal_behavior_without_rg -> without_rg_only_literal_search_falls_back_in_process: needle.* now needs literal=true; a default needle.* and a glob search are Unsupported without rg; a metacharacter-free default query still uses the fallback. The old {regex:true, query:needle} Unsupported assertion was dropped because that query is metacharacter-free.",
+    "(2) regex_glob_ignore_and_context...: matches 2 -> 3. With one rg run a positive --glob selects gitignored files (rg/pi semantics), so src/ignored.rs is now included. hidden=false is still enforced with an appended `--glob !.*`; new assertion that src/.hidden.rs is excluded.",
+    "(3) oversized_binary_and_deep_tree...: the file_bytes reason assertion was replaced with max_file_bytes == 1 MiB. rg --max-filesize skips silently and there is no per-file listing any more.",
+    "(4) search_subprocess_budget_hook_distinguishes_default_literal removed (function removed); cumulative_process_budget...: budget 0/19 -> 1/1 and wrapper starts 4 -> 1.",
+    "(5) live worker gate: the denied search now uses {glob} and a regex-syntax query ({regex:true,query:needle} is metacharacter-free and now falls back in-process). Plain {query:needle} still succeeds.",
+    "(6) actual_agent reservations: default search 0/0/0 -> 1/1/1; regex+glob 19/19/4 -> 1/1/1. Insufficient-budget cap 18 -> 0. headless cap/persisted 19 -> 1.",
+    "(7) pure_depth_cutoff...: search_text no longer reports depth_limit (a depth probe would need a second process). It reports max_depth=64; find still reports depth_limit.",
+    "tests/tools.rs search_is_literal_case_configurable_and_bounded: added literal=true so the test keeps its literal intent.",
+    "Output schema: files_visited/file_limit were replaced by files_searched (from the rg summary; null when stopped early) plus a glob echo. New reasons: search_errors (rg exit 2 after a complete walk). match_limit is reported when the run is stopped at the next file boundary or match after the limit, so it may be conservative when the limit falls exactly on the last match.",
+    "Worker gate (BlueprintWorker) still cannot use rg (no per-path confinement). Calls without rg-only options and without regex metacharacters (or with literal=true) use the in-process scan; others get PolicyDenied as before.",
+    "Not owned, left stale: src/core.rs comment near search_process_budget still mentions validation/listing/batches. The find tool keeps its listing (MAX_FIND_RESULTS=256) and its pre-existing budget of 2, although its empty-result depth probe can start up to 4 rg processes. That is a pre-existing issue, out of scope.",
+    "No new unwrap/expect/panic in non-test code; no unsafe; no Arc<Mutex>; no allow(dead_code|unused).",
+    "origin/main was 827438f at start; it already contains cbf638a."
+  ],
+  "created_at": "2026-10-14T16:17:20Z",
+  "digest": "96c1acddbaeee7450f8c8733ba99ef53d7e07b73f84b4b03f4adea1e6f2eded2"
+}

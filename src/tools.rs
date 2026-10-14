@@ -2190,7 +2190,7 @@ impl Tool for SearchTextTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "search_text".into(),
-            description: "Search literal text by default. Explicit regex/glob/ignore/hidden/context options use installed ripgrep with bounded traversal.".into(),
+            description: "Search file contents with one installed ripgrep run. The query is a regex by default; set literal=true (or regex=false) for a fixed-string search. glob/ignore/hidden/context map to ripgrep flags. Without ripgrep only literal search without glob/ignore/hidden/context is available.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -2198,7 +2198,8 @@ impl Tool for SearchTextTool {
                     "path": { "type": "string", "default": "." },
                     "case_sensitive": { "type": "boolean", "default": true },
                     "max_matches": { "type": "integer", "minimum": 1, "maximum": MAX_SEARCH_MATCHES },
-                    "regex": { "type": "boolean", "default": false },
+                    "regex": { "type": "boolean", "default": true },
+                    "literal": { "type": "boolean", "default": false },
                     "glob": { "type": "string" },
                     "ignore": { "type": "boolean", "default": true },
                     "hidden": { "type": "boolean", "default": false },
@@ -2237,6 +2238,7 @@ impl Tool for SearchTextTool {
                 "case_sensitive",
                 "max_matches",
                 "regex",
+                "literal",
                 "glob",
                 "ignore",
                 "hidden",
@@ -2254,29 +2256,47 @@ impl Tool for SearchTextTool {
             MAX_SEARCH_MATCHES,
         )?;
         let path = context.resolve_existing(requested)?;
-        if search_requires_subprocess(arguments) {
-            if let Some(gate) = context.checked_gate()? {
-                return Err(gate.deny("advanced_search_requires_confined_traversal"));
-            }
-            let options = crate::search::SearchOptions {
-                query: query.into(),
-                regex: optional_bool(arguments, "regex", false)?,
-                glob: arguments
-                    .get("glob")
-                    .map(|_| required_string(arguments, "glob", 4096).map(str::to_owned))
-                    .transpose()?,
-                ignore: optional_bool(arguments, "ignore", true)?,
-                hidden: optional_bool(arguments, "hidden", false)?,
-                context: bounded_usize(arguments, "context", 0, 0, 10)?,
-                case_sensitive,
-                max_matches,
-            };
+        let literal = optional_bool(arguments, "literal", false)?;
+        let regex = optional_bool(arguments, "regex", !literal)?;
+        if literal && regex {
+            return Err(ToolError::InvalidArguments(
+                "literal=true conflicts with regex=true".into(),
+            ));
+        }
+        let options = crate::search::SearchOptions {
+            query: query.into(),
+            regex,
+            glob: arguments
+                .get("glob")
+                .map(|_| required_string(arguments, "glob", 4096).map(str::to_owned))
+                .transpose()?,
+            ignore: optional_bool(arguments, "ignore", true)?,
+            hidden: optional_bool(arguments, "hidden", false)?,
+            context: bounded_usize(arguments, "context", 0, 0, 10)?,
+            case_sensitive,
+            max_matches,
+        };
+        let gate = context.checked_gate()?;
+        if gate.is_none() && context.search_backend.available() {
             return context.search_backend.search(
                 context.workspace_root(),
                 &path.canonical,
                 &options,
                 cancelled,
             );
+        }
+        // Fallback when ripgrep is not installed, or when a worker gate needs
+        // per-path checks ripgrep cannot honor: a literal in-process scan.
+        let ripgrep_only = ["glob", "ignore", "hidden", "context"]
+            .iter()
+            .any(|key| arguments.contains_key(*key));
+        if ripgrep_only || (options.regex && !crate::search::regex_is_literal(query)) {
+            if let Some(gate) = gate {
+                return Err(gate.deny("advanced_search_requires_confined_traversal"));
+            }
+            return Err(ToolError::Unsupported(
+                "ripgrep is not installed; regex/glob/ignore/hidden/context search needs it (set literal=true for a fixed-string search)".into(),
+            ));
         }
         let needle = if case_sensitive {
             query.to_owned()
@@ -2400,27 +2420,14 @@ impl Tool for SearchTextTool {
     }
 }
 
-/// Whether the call opts into the installed-ripgrep path. Before dispatch the
-/// host must reserve search_process_budget from its cumulative Processes ledger;
-/// sequential child execution is not a reusable process-start allowance.
-pub fn search_requires_subprocess(arguments: &Map<String, Value>) -> bool {
-    ["regex", "glob", "ignore", "hidden", "context"]
-        .iter()
-        .any(|key| arguments.contains_key(*key))
-}
-
-/// Conservative total process starts for one built-in call, including regex
-/// validation, ignore/glob listings and every admitted search-file chunk. The
-/// host reserves this before dispatch; unused starts are not refunded.
-pub fn search_process_budget(name: &str, arguments: &Map<String, Value>) -> u64 {
+/// Conservative total process starts for one built-in call. A `search_text`
+/// call starts at most one ripgrep child (none for the in-process fallback);
+/// `find` runs its path listing plus a glob listing. The host reserves this
+/// before dispatch; unused starts are not refunded.
+pub fn search_process_budget(name: &str, _arguments: &Map<String, Value>) -> u64 {
     match name {
         "find" => 2,
-        "search_text" if search_requires_subprocess(arguments) => {
-            crate::search::MAX_SEARCH_CHUNKS as u64
-                + 1
-                + u64::from(arguments.contains_key("glob"))
-                + u64::from(arguments.get("regex").and_then(Value::as_bool) == Some(true))
-        }
+        "search_text" => 1,
         _ => 0,
     }
 }
