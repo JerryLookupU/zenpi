@@ -5,9 +5,9 @@
 
 ```yaml
 source: Docs/Zenpi_Execution_Blueprint_v2.md
-source_sha256: 7a7fc9d7adda2b1643dfa7cea0debdf6c622b7a3a3926f11a0be142ff96b8035
+source_sha256: 2007db12392bd48fc40d85b06a09db3fefd9159b6fcc2c16182d804e8b6225fc
 blueprint_version: 4.0.0
-generated_at: 2026-10-14T23:24:16Z
+generated_at: 2026-10-14T23:31:05Z
 ```
 
 ## Dependency-order view
@@ -127,9 +127,9 @@ gantt
     ZE-532 抽屉收件箱：会话和项目按"需要你 / 运行中 / 空闲"分组，角标等于待审批数 :done, ZE_532, after ZE_518, 1d
     ZE-533 次级页与路由栈：<br>• Sessions：搜索和恢复 <br>• Diff： :done, ZE_533, after ZE_530, 1d
     ZE-534 输入框命令板：输入  /  时弹出底部面板，列出主机端的斜杠命令和资源 输入 :done, ZE_534, after ZE_530 ZE_253, 1d
-    ZE-535 安全与无障碍：<br>• 默认开启  FLAG_SECURE  <br>• 支持 :ZE_535, after ZE_533, 1d
+    ZE-535 安全与无障碍：<br>• 默认开启  FLAG_SECURE  <br>• 支持 :done, ZE_535, after ZE_533, 1d
     section B3
-    ZE-520 remote  feature 开关（默认关闭）：<br>•  cfg  覆盖 :active, ZE_520, after ZE_510 ZE_511 ZE_108, 1d
+    ZE-520 remote  feature 开关（默认关闭）：<br>•  cfg  覆盖 :done, ZE_520, after ZE_510 ZE_511 ZE_108, 1d
     ZE-541 监听器加固：<br>• accept 改为事件驱动，不再每 10 ms 轮询 < :ZE_541, after ZE_513, 1d
     ZE-542 持久认证连接：订阅复用同一条 TLS 会话，空闲时每分钟握手不超过 1 次 订阅 :ZE_542, after ZE_541 ZE_512, 1d
     ZE-543 设备注册表按 mtime 缓存，不再在每一帧都 flock 并解析一遍 撤销仍在 :ZE_543, after ZE_514, 1d
@@ -144,7 +144,7 @@ gantt
 
 ## Monitoring index
 
-Counts: open 12 · self-tested 2 · accepted 99 · total 113
+Counts: open 11 · self-tested 1 · accepted 101 · total 113
 
 | ID | Layer | State | Ready | Depends | Claim | Integration | Est. LOC | Title |
 |---|---|---|---|---|---|---|---:|---|
@@ -250,8 +250,8 @@ Counts: open 12 · self-tested 2 · accepted 99 · total 113
 | ZE-532 | B2 | accepted | no | ZE-518 | ZE-532@blueprint-4.0.0 | accepted | 600 | 抽屉收件箱：会话和项目按"需要你 / 运行中 / 空闲"分组，角标等于待审批数；项目和 worktree 的管理入口移进抽屉 |
 | ZE-533 | B2 | accepted | no | ZE-530 | ZE-533@blueprint-4.0.0 | accepted | 1800 | 次级页与路由栈：<br>• Sessions：搜索和恢复；<br>• Diff：全屏、逐文件、+/- 着色，返回时恢复原滚动位置；<br>• Terminal：按视口计算行列数，按键行在键盘上方，旋转后重新计算；<br>• Tasks；<br>• 模型面板；<br>layer `B2` \| Depends: ZE-530 \| Owned paths: `android/.../ui/nav/`, `android/.../ui/SessionsScreen.kt`, `android/.../ui/DiffScreen.kt`, `android/.../ui/TerminalScreen.kt`, `android/.../ui/TasksScreen.kt`, `android/.../ui/ModelSheet.kt` \| Validators: 原有的 Session、Diff、Terminal、Worker、ModelStatus 屏幕测试迁移后通过；返回栈测试；黄金图 \| Estimated LOC: 1800 |
 | ZE-534 | B2 | accepted | no | ZE-530, ZE-253 | ZE-534@blueprint-4.0.0 | accepted | 450 | 输入框命令板：输入 `/` 时弹出底部面板，列出主机端的斜杠命令和资源；输入 `@` 时弹出文件选择；不支持的桌面专属命令在面板中注明 |
-| ZE-535 | B2 | open | yes | ZE-533 | — | — | 350 | 安全与无障碍：<br>• 默认开启 `FLAG_SECURE`；<br>• 支持深色和动态色；<br>• 同一个图标不再复用于多个功能；<br>• TalkBack 朗读内容不含 UUID，补上标题语义；<br>• release 构建开启 R8；<br>layer `B2` \| Depends: ZE-533 \| Owned paths: `android/.../ui/theme/`, `android/app/src/main/res/`, `android/app/build.gradle.kts` \| Validators: Compose `enableAccessibilityChecks` 通过；release 包能安装并完成配对；深色主题黄金图 \| Estimated LOC: 350 |
-| ZE-520 | B3 | self-tested | yes | ZE-510, ZE-511, ZE-108 | ZE-520@blueprint-4.0.0 | handoff | 300 | `remote` feature 开关（默认关闭）：<br>• `cfg` 覆盖 `src/remote/`、`host_pair`、rcgen、qrcode、`wakeup::notify` 和 `RemoteApprovalActor`；<br>• 去掉 rustls 中未使用的 `tls12`；<br>• 依赖数门按实测收紧；<br>• 核心 crate 永远不引入 tokio；<br>layer `B3` \| Depends: ZE-510, ZE-511, ZE-108 \| Owned paths: `Cargo.toml`, `src/lib.rs`, `src/core.rs`, `src/tui.rs`, `src/session.rs`, `src/approval.rs`, `src/pty_shell.rs`, `src/slash_actions.rs`, `tools/bench_runtime.py` \| Validators: 默认构建中没有 rcgen 和 qrcode；`cargo tree -i tokio` 为空；`cargo clippy --locked --all-targets --features remote -- -D warnings` 通过；G-REMOTE；G-BENCH \| Estimated LOC: 300 |
+| ZE-535 | B2 | accepted | no | ZE-533 | ZE-535@blueprint-4.0.0 | accepted | 350 | 安全与无障碍：<br>• 默认开启 `FLAG_SECURE`；<br>• 支持深色和动态色；<br>• 同一个图标不再复用于多个功能；<br>• TalkBack 朗读内容不含 UUID，补上标题语义；<br>• release 构建开启 R8；<br>layer `B2` \| Depends: ZE-533 \| Owned paths: `android/.../ui/theme/`, `android/app/src/main/res/`, `android/app/build.gradle.kts` \| Validators: Compose `enableAccessibilityChecks` 通过；release 包能安装并完成配对；深色主题黄金图 \| Estimated LOC: 350 |
+| ZE-520 | B3 | accepted | no | ZE-510, ZE-511, ZE-108 | ZE-520@blueprint-4.0.0 | accepted | 300 | `remote` feature 开关（默认关闭）：<br>• `cfg` 覆盖 `src/remote/`、`host_pair`、rcgen、qrcode、`wakeup::notify` 和 `RemoteApprovalActor`；<br>• 去掉 rustls 中未使用的 `tls12`；<br>• 依赖数门按实测收紧；<br>• 核心 crate 永远不引入 tokio；<br>layer `B3` \| Depends: ZE-510, ZE-511, ZE-108 \| Owned paths: `Cargo.toml`, `src/lib.rs`, `src/core.rs`, `src/tui.rs`, `src/session.rs`, `src/approval.rs`, `src/pty_shell.rs`, `src/slash_actions.rs`, `tools/bench_runtime.py` \| Validators: 默认构建中没有 rcgen 和 qrcode；`cargo tree -i tokio` 为空；`cargo clippy --locked --all-targets --features remote -- -D warnings` 通过；G-REMOTE；G-BENCH \| Estimated LOC: 300 |
 | ZE-541 | B3 | open | yes | ZE-513 | — | — | 270 | 监听器加固：<br>• accept 改为事件驱动，不再每 10 ms 轮询；<br>• 每个 IP 只给 1 个未认证连接槽，未认证阶段总时限 5 s；<br>• 为已认证连接预留槽位；<br>layer `B3` \| Depends: ZE-513 \| Owned paths: `src/remote/listener.rs` \| Validators: 有 N 个半开连接时，已认证客户端仍能连上；空闲时每秒唤醒 0 次 \| Estimated LOC: 270 |
 | ZE-542 | B3 | open | no | ZE-541, ZE-512 | — | — | 800 | 持久认证连接：订阅复用同一条 TLS 会话，空闲时每分钟握手不超过 1 次；订阅循环改由 wakeup 驱动，不再每 250 ms 内部调度 4 次 |
 | ZE-543 | B3 | open | yes | ZE-514 | — | — | 150 | 设备注册表按 mtime 缓存，不再在每一帧都 flock 并解析一遍；撤销仍在下一帧生效 |
