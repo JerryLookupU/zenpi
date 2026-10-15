@@ -589,10 +589,16 @@ internal object TranscriptRestorePolicy {
         && sameCursor(previous, selected)
         && previous.turns.none { it.toolCallsOmitted }
 
+    /**
+     * While a turn holds the transcript, an unchanged cursor can still take the workspace listing
+     * (pending approvals included). A subscription catches the transcript up later; a one-shot
+     * read only takes this when the caller opts in with [busyListing] (ZE-544 background reads).
+     */
     fun busyView(previous: HostProjection?, selected: RemoteProject, projects: List<RemoteProject>, listing: JsonObject,
         subtabs: RemoteSubtabs?, subscribe: Boolean, subscriptionAvailable: Boolean, mutation: Boolean,
-        error: Exception): HostProjection {
-        if (!sameCursor(previous, selected) || !subscribe || !subscriptionAvailable || mutation
+        error: Exception, busyListing: Boolean = false): HostProjection {
+        val follows = if (subscribe) subscriptionAvailable else busyListing
+        if (!sameCursor(previous, selected) || !follows || mutation
             || error !is HostRefusedException || error.code != "busy") throw error
         val next = HostProjectionCodec.workspace(requireNotNull(previous).copy(projects = projects, hasMoreEvents = false), listing)
             .copy(subtabs = subtabs)
@@ -710,7 +716,7 @@ class HostClient(private val bindSocket: (Socket, String) -> Unit = { _, _ -> })
         workspaceCommand: WorkspaceCommand? = null, revokeRequestId: String? = null, revokeStatusId: String? = null,
         onRevokeStatus: (Boolean) -> Unit = {},
         onWorkspaceConfirmed: suspend () -> Unit = {}, acknowledgePrevious: Boolean = false,
-        recoverSessionChanges: Boolean = false,
+        recoverSessionChanges: Boolean = false, busyListing: Boolean = false,
         diffPath: String? = null, onDiff: (RemoteDiff) -> Unit = {}, subscribe: Boolean = false,
         transcriptRequest: JsonObject? = null, onTranscript: (JsonObject) -> Unit = {},
         filesRequest: JsonObject? = null, onFiles: (JsonObject) -> Unit = {},
@@ -927,7 +933,7 @@ class HostClient(private val bindSocket: (Socket, String) -> Unit = { _, _ -> })
                                         }).apply { addProperty("project_id", selected.id); addProperty("session_id", selected.sessionId) }
                                         val result = try { exchange(resume) } catch (error: HostRefusedException) {
                                             return@projection TranscriptRestorePolicy.busyView(current, selected, projects, listing, subtabs,
-                                                subscribe, capability?.asBoolean == true, workspaceCommand != null, error)
+                                                subscribe, capability?.asBoolean == true, workspaceCommand != null, error, busyListing)
                                         }
                                         current = HostProjectionCodec.replay(current, projects, selected, received.toList(), result)
                                         if (!current.hasMoreEvents) return@projection HostProjectionCodec.workspace(current, listing).copy(subtabs = subtabs)
@@ -936,7 +942,7 @@ class HostClient(private val bindSocket: (Socket, String) -> Unit = { _, _ -> })
                                 } else {
                                     val snapshot = try { exchange(request("inspect", selected)) } catch (error: HostRefusedException) {
                                         return@projection TranscriptRestorePolicy.busyView(previous, selected, projects, listing, subtabs,
-                                            subscribe, capability?.asBoolean == true, workspaceCommand != null, error)
+                                            subscribe, capability?.asBoolean == true, workspaceCommand != null, error, busyListing)
                                     }
                                     HostProjectionCodec.workspace(HostProjectionCodec.snapshot(projects, selected, snapshot), listing).copy(subtabs = subtabs)
                                 }

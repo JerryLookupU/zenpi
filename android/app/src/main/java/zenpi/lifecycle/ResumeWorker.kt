@@ -60,7 +60,9 @@ class ResumeWorker(context: Context, parameters: WorkerParameters) : CoroutineWo
                 val client = HostClient(LanSocketRouting(applicationContext)::bind)
                 val next = ResumeReadPolicy.read(snapshot.state.projection) { previous ->
                     client.inspect(snapshot.state.host, snapshot.state.projection?.selectedId,
-                        identity, previous = previous, acknowledgePrevious = previous != null, recoverSessionChanges = true)
+                        identity, previous = previous, acknowledgePrevious = previous != null, recoverSessionChanges = true,
+                        // A turn waiting on an approval holds the transcript; the listing still names it.
+                        busyListing = true)
                 }
                 val commitContext = coroutineContext
                 fun current() = zenpi.transport.AuthenticationProof.current(snapshot.state.host.deviceId,

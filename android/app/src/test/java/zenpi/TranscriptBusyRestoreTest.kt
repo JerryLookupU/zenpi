@@ -43,6 +43,19 @@ class TranscriptBusyRestoreTest {
         assertTrue(runCatching { fallback(cached.copy(workspaceOwner = "a".repeat(64), workspaceRevision = "4")) }
             .exceptionOrNull() is zenpi.state.StaleProjectionException)
     }
+    @Test fun backgroundReadOptsIntoTheListingButNeverForAMutation() {
+        // ZE-544: a turn waiting on an approval holds the transcript, so the background read takes
+        // the listing (which carries the pending approval) on the unchanged cursor.
+        val view = TranscriptRestorePolicy.busyView(cached, project, listOf(project), listing, null,
+            subscribe = false, subscriptionAvailable = false, mutation = false,
+            error = HostRefusedException("busy"), busyListing = true)
+        assertEquals(cached.turns, view.turns); assertEquals("7", view.eventSequence); assertEquals("3", view.workspaceRevision)
+        val busy = HostRefusedException("busy")
+        assertSame(busy, runCatching {
+            TranscriptRestorePolicy.busyView(cached, project, listOf(project), listing, null,
+                subscribe = false, subscriptionAvailable = false, mutation = true, error = busy, busyListing = true)
+        }.exceptionOrNull())
+    }
     @Test fun malformedRetainedCursorOrAmbiguousProjectsCannotResumeOrHideBusyRefusal() {
         val plain = cached.copy(turns = listOf(RemoteTurn("turn", "assistant", "text")))
         val invalid = listOf("", "01", "+1", "-1", "1.0", "1e0", "18446744073709551616")
