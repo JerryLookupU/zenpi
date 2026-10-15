@@ -16,6 +16,12 @@ class OwnerCallbackTest {
         }
         // Generous: a slow CI runner may take seconds to start an IO thread.
         suspend fun next() { withTimeout(10_000) { ready.receive() }; requireNotNull(pending.poll()).run() }
+        /** Run owner dispatches until [done]; the count is a scheduler detail. */
+        suspend fun drainUntil(done: () -> Boolean) = withTimeout(10_000) {
+            while (!done()) {
+                if (withTimeoutOrNull(20) { ready.receive() } != null) pending.poll()?.run()
+            }
+        }
     }
     @Test fun ioCallerPublishesOnlyOnOwnerThreadAfterQueuedLocalEdit() = runBlocking {
         val owner = OwnerQueue()
@@ -69,7 +75,7 @@ class OwnerCallbackTest {
                     confirmed = true
                 }
             }
-            owner.next(); owner.next()
+            owner.drainUntil { job.isCompleted }
             val propagated = requireNotNull(runCatching { job.await() }.exceptionOrNull())
             assertEquals(failure.javaClass, propagated.javaClass); assertEquals(failure.message, propagated.message)
             assertSame(failure, generateSequence(propagated) { it.cause }.last())

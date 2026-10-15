@@ -8628,7 +8628,8 @@ pub fn run() -> Result<(), ZenpiError> {
     // fail-closed behaviour (`stable error and exit status`), and anything that
     // is merely broken still propagates as itself rather than as "not logged
     // in".
-    if options.mode == RunMode::Tui {
+    // The dev-fixture echo backend needs no connection, so it skips the gate.
+    if options.mode == RunMode::Tui && !(options.backend_explicit && options.backend == "echo") {
         let paths = crate::config::ConfigPaths::discover()?;
         if let crate::tui::bootstrap::AuthGate::NeedsAuth(reason) =
             crate::tui::bootstrap::auth_gate(&paths, options.profile.as_deref())?

@@ -72,6 +72,14 @@ _ZENPI_ENV_KEYS = {
 }
 
 
+def own_dir(root: Path, name: str) -> Path:
+    """A private directory per session: a project checkpoint is shared by
+    every journal in one directory and names that project's active session."""
+    directory = root / name
+    directory.mkdir(exist_ok=True)
+    return directory
+
+
 def isolated_env(home: Path, **overrides: str) -> dict[str, str]:
     """Retain toolchain variables while excluding host agent credentials/config."""
     env = {key: value for key, value in os.environ.items() if key not in _ZENPI_ENV_KEYS}
@@ -121,12 +129,13 @@ def assert_success(result: subprocess.CompletedProcess[str], context: str) -> No
 
 
 def assert_headless_echo(binary: Path, root: Path) -> Path:
-    session = root / "echo-session.jsonl"
+    session = own_dir(root, "echo-session") / "echo-session.jsonl"
     payload = (
         '{"type":"prompt","id":"p","text":"installed echo works"}\n'
         '{"type":"status","id":"echo-status"}\n'
-        '{"type":"shutdown","id":"echo-shutdown"}\n'
     )
+    # EOF drains the admitted prompt; an explicit `shutdown` is a
+    # cancellation request with a 250 ms grace (src/headless.rs).
     result = run(
         [str(binary), "--mode", "headless", "--backend", "echo", "--session", str(session)],
         input_text=payload,
@@ -134,7 +143,7 @@ def assert_headless_echo(binary: Path, root: Path) -> Path:
     assert_success(result, "installed headless echo")
     records = json_lines(result.stdout)
     responses = {record["id"]: record for record in records if record.get("type") == "response"}
-    for request_id in ("p", "echo-status", "echo-shutdown"):
+    for request_id in ("p", "echo-status"):
         if request_id not in responses or responses[request_id].get("success") is not True:
             raise AssertionError(f"missing successful response for {request_id}: {records!r}")
     assistant = responses["p"].get("data", {}).get("assistant", {})
@@ -149,7 +158,7 @@ def assert_headless_echo(binary: Path, root: Path) -> Path:
 
 
 def assert_resume(binary: Path, session: Path, root: Path) -> None:
-    resumed = root / "resumed-session.jsonl"
+    resumed = own_dir(root, "resumed-session") / "resumed-session.jsonl"
     payload = (
         f'{{"type":"resume","id":"r","path":{json.dumps(str(session))}}}\n'
         '{"type":"status","id":"s"}\n'
@@ -178,22 +187,29 @@ def assert_resume(binary: Path, session: Path, root: Path) -> None:
 
 def assert_resume_reopens_process(binary: Path, session: Path, root: Path) -> None:
     """Prove resume reads a journal written by a prior process."""
-    fresh = root / "fresh-process.jsonl"
+    # A project checkpoint is shared by every journal in a directory and names
+    # the active session, so this flow gets its own directory and home.
+    directory = root / "reopen"
+    directory.mkdir()
+    fresh = directory / "fresh-process.jsonl"
+    env = isolated_env(root / "resume-home")
     first = run(
         [str(binary), "--mode", "headless", "--backend", "echo", "--session", str(fresh)],
         input_text=(
+            # EOF drains the prompt; explicit shutdown would cancel it.
             '{"type":"prompt","id":"first","text":"persist across process"}\n'
-            '{"type":"shutdown","id":"first-done"}\n'
         ),
+        env=env,
     )
     assert_success(first, "first process before resume")
     second = run(
-        [str(binary), "--mode", "headless", "--backend", "echo", "--session", str(root / "second.jsonl")],
+        [str(binary), "--mode", "headless", "--backend", "echo", "--session", str(directory / "second.jsonl")],
         input_text=(
             f'{{"type":"resume","id":"resume","path":{json.dumps(str(fresh))}}}\n'
             '{"type":"status","id":"status"}\n'
             '{"type":"shutdown","id":"done"}\n'
         ),
+        env=env,
     )
     assert_success(second, "second process resume")
     responses = {
@@ -202,7 +218,9 @@ def assert_resume_reopens_process(binary: Path, session: Path, root: Path) -> No
         if record.get("type") == "response" and record.get("id")
     }
     if responses.get("status", {}).get("data", {}).get("session", {}).get("turn_count") != 2:
-        raise AssertionError(f"second process did not recover turns: {responses!r}")
+        raise AssertionError(
+            f"second process did not recover turns: {responses!r}\nfirst process stdout: {first.stdout}"
+        )
 
 
 def assert_headless_slash_owners(binary: Path, root: Path) -> None:
@@ -231,7 +249,7 @@ def assert_headless_slash_owners(binary: Path, root: Path) -> None:
     )
     tracked.write_text("before\nafter\n", encoding="utf-8")
 
-    session = root / "slash-owner-session.jsonl"
+    session = own_dir(root, "slash-owner-session") / "slash-owner-session.jsonl"
     env = isolated_env(root / "slash-user-home")
     first_payload = "\n".join(
         json.dumps(value, separators=(",", ":"))
@@ -396,12 +414,6 @@ def assert_headless_slash_owners(binary: Path, root: Path) -> None:
                 "id": "compact",
                 "text": "/compact",
             },
-            {
-                "schema_version": 2,
-                "type": "command",
-                "id": "resume",
-                "text": "/resume 0",
-            },
             {"schema_version": 2, "type": "shutdown", "id": "shutdown-2"},
         )
     ) + "\n"
@@ -426,6 +438,27 @@ def assert_headless_slash_owners(binary: Path, root: Path) -> None:
         for record in second_records
         if record.get("type") == "response" and record.get("id")
     }
+    # `/resume` while `/compact` still runs is a retryable `agent_busy`, so
+    # it runs in its own process once the compaction is durable.
+    third = run(
+        [str(binary), "--mode", "headless", "--backend", "echo", "--session", str(session)],
+        input_text=json.dumps(
+            {"schema_version": 2, "type": "command", "id": "resume", "text": "/resume 0"},
+            separators=(",", ":"),
+        )
+        + "\n",
+        env=env,
+        cwd=workspace,
+    )
+    assert_success(third, "installed headless resume owner")
+    second_records += json_lines(third.stdout)
+    second_responses.update(
+        {
+            record["id"]: record
+            for record in json_lines(third.stdout)
+            if record.get("type") == "response" and record.get("id")
+        }
+    )
     for request_id in ("compete", "compact", "resume", "shutdown-2"):
         response = second_responses.get(request_id, {})
         if response.get("schema_version") != 2 or response.get("success") is not True:
@@ -472,7 +505,8 @@ def assert_headless_slash_owners(binary: Path, root: Path) -> None:
         and resumed.get("replay_gap") is False
         and resumed.get("truncated") is False
         and resumed.get("replayed") == len(replay)
-        and resumed.get("marker_sequence") == compact.get("next_sequence")
+        # The resuming process journals its own start-up records first.
+        and resumed.get("marker_sequence", -1) >= compact.get("next_sequence")
         and resumed.get("next_sequence") == resumed["marker_sequence"] + 1
     ):
         raise AssertionError(f"installed /resume did not return a durable replay: {resumed!r}")
@@ -541,7 +575,7 @@ def assert_headless_slash_owners(binary: Path, root: Path) -> None:
 
 
 def assert_invalid_inputs(binary: Path, root: Path) -> None:
-    missing_key_session = root / "missing-key.jsonl"
+    missing_key_session = own_dir(root, "missing-key") / "missing-key.jsonl"
     isolated_home = root / "empty-home"
     isolated_home.mkdir()
     env = isolated_env(isolated_home)
@@ -583,7 +617,7 @@ class _MockHandler(BaseHTTPRequestHandler):
         response = (
             "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-user-smoke\",\"model\":\"mock-model\"}}\n\n"
             "data: {\"type\":\"response.output_text.delta\",\"delta\":\"provider works\"}\n\n"
-            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-user-smoke\",\"model\":\"mock-model\",\"usage\":{\"input_tokens\":3,\"output_tokens\":2,\"total_tokens\":5}}}\n\n"
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-user-smoke\",\"model\":\"mock-model\",\"status\":\"completed\",\"usage\":{\"input_tokens\":3,\"output_tokens\":2,\"total_tokens\":5}}}\n\n"
             "data: [DONE]\n"
         ).encode("utf-8")
         self.send_response(200)
@@ -603,7 +637,7 @@ def assert_openai_fixture(binary: Path, root: Path) -> None:
     server.timeout = 10
     server_thread = threading.Thread(target=server.handle_request, daemon=True)
     server_thread.start()
-    session = root / "provider-session.jsonl"
+    session = own_dir(root, "provider-session") / "provider-session.jsonl"
     env = isolated_env(
         root / "provider-home",
         ZENPI_BASE_URL=f"http://127.0.0.1:{server.server_port}/v1",
@@ -612,7 +646,6 @@ def assert_openai_fixture(binary: Path, root: Path) -> None:
     )
     payload = (
         '{"type":"prompt","id":"p","text":"provider prompt"}\n'
-        '{"type":"shutdown","id":"q"}\n'
     )
     result = run(
         [str(binary), "--mode", "headless", "--backend", "openai", "--model", "mock-model", "--session", str(session)],
@@ -649,7 +682,7 @@ def assert_headless_eof_drains_slow_provider(binary: Path, root: Path) -> None:
             time.sleep(0.45)
             response = (
                 'data: {"type":"response.output_text.delta","delta":"eof drained"}\n\n'
-                'data: {"type":"response.completed","response":{"id":"slow-eof"}}\n\n'
+                'data: {"type":"response.completed","response":{"id":"slow-eof","status":"completed"}}\n\n'
                 "data: [DONE]\n"
             ).encode("utf-8")
             self.send_response(200)
@@ -665,7 +698,7 @@ def assert_headless_eof_drains_slow_provider(binary: Path, root: Path) -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), SlowEofHandler)
     server_thread = threading.Thread(target=server.handle_request, daemon=True)
     server_thread.start()
-    session = root / "headless-eof-session.jsonl"
+    session = own_dir(root, "headless-eof-session") / "headless-eof-session.jsonl"
     env = isolated_env(
         root / "headless-eof-home",
         ZENPI_BASE_URL=f"http://127.0.0.1:{server.server_port}/v1",
@@ -705,7 +738,7 @@ def assert_headless_eof_drains_slow_provider(binary: Path, root: Path) -> None:
 
 
 def assert_production_rejects_echo(binary: Path, root: Path) -> None:
-    session = root / "production-echo-must-not-exist.jsonl"
+    session = own_dir(root, "production-echo-must-not-exist") / "production-echo-must-not-exist.jsonl"
     result = run(
         [str(binary), "--mode", "headless", "--backend", "echo", "--session", str(session)],
         input_text='{"type":"shutdown","id":"stop"}\n',
@@ -1092,15 +1125,15 @@ def assert_headless_tool_approval(binary: Path, root: Path) -> None:
             requests.append(body)
             if len(requests) == 1:
                 response = (
-                    'data: {"type":"response.created","response":{"id":"tool-1","model":"mock-model"}}\n\n'
+                    'data: {"type":"response.created","response":{"id":"tool-1","model":"mock-model","status":"completed"}}\n\n'
                     'data: {"type":"response.output_item.done","item":{"type":"function_call","call_id":"write-1","name":"write_file","arguments":"{\\"path\\":\\"approved.txt\\",\\"content\\":\\"written by installed zenpi\\"}"}}\n\n'
-                    'data: {"type":"response.completed","response":{"id":"tool-1","model":"mock-model"}}\n\n'
+                    'data: {"type":"response.completed","response":{"id":"tool-1","model":"mock-model","status":"completed"}}\n\n'
                     "data: [DONE]\n"
                 ).encode("utf-8")
             else:
                 response = (
                     'data: {"type":"response.output_text.delta","delta":"write completed"}\n\n'
-                    'data: {"type":"response.completed","response":{"id":"tool-2","model":"mock-model"}}\n\n'
+                    'data: {"type":"response.completed","response":{"id":"tool-2","model":"mock-model","status":"completed"}}\n\n'
                     "data: [DONE]\n"
                 ).encode("utf-8")
             self.send_response(200)
@@ -1129,7 +1162,7 @@ def assert_headless_tool_approval(binary: Path, root: Path) -> None:
         ZENPI_WIRE_API="responses",
         ZENPI_MODEL="mock-model",
     )
-    session = root / "production-tool-session.jsonl"
+    session = own_dir(root, "production-tool-session") / "production-tool-session.jsonl"
     process = subprocess.Popen(
         [str(binary), "--mode", "headless", "--session", str(session)],
         cwd=workspace,
@@ -1403,7 +1436,7 @@ def strip_ansi(data: bytes) -> bytes:
 
 
 def assert_tui(binary: Path, root: Path) -> None:
-    session = root / "tui-session.jsonl"
+    session = own_dir(root, "tui-session") / "tui-session.jsonl"
     command = [str(binary), "--mode", "tui", "--backend", "echo", "--session", str(session)]
     pid, fd = pty.fork()
     if pid == 0:
@@ -1428,6 +1461,9 @@ def assert_tui(binary: Path, root: Path) -> None:
         fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 18, 72, 0, 0))
         os.kill(pid, signal.SIGWINCH)
         os.write(fd, b"hello from installed tui")
+        # An Enter right after typed text is folded into the paste burst;
+        # a real typist pauses, so wait out the burst window first.
+        time.sleep(0.3)
         os.write(fd, b"\r")
         # Enter synchronously completes the deterministic echo turn. Wait for
         # its journal record so a slow CI host cannot race Ctrl-C with Enter.
@@ -1480,7 +1516,7 @@ def assert_tui_multiline_paste(binary: Path, root: Path) -> None:
     installed binary keeps the embedded newlines, submits the complete text,
     and still restores the alternate screen after the turn.
     """
-    session = root / "tui-multiline-session.jsonl"
+    session = own_dir(root, "tui-multiline-session") / "tui-multiline-session.jsonl"
     command = [str(binary), "--mode", "tui", "--backend", "echo", "--session", str(session)]
     pid, fd = pty.fork()
     if pid == 0:
@@ -1511,6 +1547,9 @@ def assert_tui_multiline_paste(binary: Path, root: Path) -> None:
             b"\x1b[200~first pasted line\nsecond pasted line\nthird pasted line\x1b[201~",
         )
         time.sleep(0.1)
+        # An Enter right after typed text is folded into the paste burst;
+        # a real typist pauses, so wait out the burst window first.
+        time.sleep(0.3)
         os.write(fd, b"\r")
         wait_for_tui_turn(session, fd=fd, output=output)
 
@@ -1549,7 +1588,7 @@ def assert_tui_multiline_paste(binary: Path, root: Path) -> None:
 
 def assert_tui_slash_completion(binary: Path, root: Path) -> None:
     """Prove slash completion is usable through the installed PTY binary."""
-    session = root / "tui-completion-session.jsonl"
+    session = own_dir(root, "tui-completion-session") / "tui-completion-session.jsonl"
     command = [str(binary), "--mode", "tui", "--backend", "echo", "--session", str(session)]
     pid, fd = pty.fork()
     if pid == 0:
@@ -1570,7 +1609,13 @@ def assert_tui_slash_completion(binary: Path, root: Path) -> None:
             raise AssertionError(f"completion TUI did not reach prompt: {bytes(output)!r}")
         # `/doc` + Tab must become `/doctor `, then Enter dispatches the
         # completed local command instead of sending it to the echo backend.
-        os.write(fd, b"/doc\t\r")
+        # Paced like a typist: back-to-back bytes form a paste burst, where
+        # Tab and Enter would be literal input.
+        os.write(fd, b"/doc")
+        time.sleep(0.3)
+        os.write(fd, b"\t")
+        time.sleep(0.3)
+        os.write(fd, b"\r")
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             drain_pty(fd, output, 0.05)
@@ -1578,7 +1623,11 @@ def assert_tui_slash_completion(binary: Path, root: Path) -> None:
             # manufacture a durable model turn. Inspecting the terminal text
             # proves the completed command ran; checking the journal below
             # proves it never fell through to the echo provider.
-            if b'"route":"local"' in strip_ansi(bytes(output)):
+            # The pane wraps the JSON result and the renderer rewrites only
+            # changed cells, so match fields unique to the /doctor result
+            # after dropping layout bytes rather than one contiguous needle.
+            flat = re.sub(rb"\s|\xe2\x94[\x80-\xbf]", b"", strip_ansi(bytes(output)))
+            if b'"local"' in flat and b"supports_websockets" in flat:
                 break
             time.sleep(0.01)
         else:
@@ -1652,7 +1701,7 @@ def assert_tui_interrupt_while_streaming(binary: Path, root: Path) -> None:
                 'data: {"type":"response.output_text.delta","delta":"streaming"}\n\n'
             ).encode()
             tail = (
-                'data: {"type":"response.completed","response":{"id":"slow"}}\n\n'
+                'data: {"type":"response.completed","response":{"id":"slow","status":"completed"}}\n\n'
             ).encode()
             self.send_response(200)
             self.send_header("content-type", "text/event-stream")
@@ -1673,7 +1722,7 @@ def assert_tui_interrupt_while_streaming(binary: Path, root: Path) -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), SlowHandler)
     server_thread = threading.Thread(target=server.handle_request, daemon=True)
     server_thread.start()
-    session = root / "tui-stream-session.jsonl"
+    session = own_dir(root, "tui-stream-session") / "tui-stream-session.jsonl"
     command = [str(binary), "--mode", "tui", "--session", str(session)]
     env = isolated_env(
         root / "tui-stream-home",
@@ -1694,7 +1743,10 @@ def assert_tui_interrupt_while_streaming(binary: Path, root: Path) -> None:
             ready, _, _ = select.select([fd], [], [], 0.1)
             if ready:
                 output.extend(os.read(fd, 65536))
-        os.write(fd, b"slow request\r")
+        os.write(fd, b"slow request")
+        # Pause so Enter submits rather than joining the typed paste burst.
+        time.sleep(0.3)
+        os.write(fd, b"\r")
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline and b"streaming" not in strip_ansi(bytes(output)):
             ready, _, _ = select.select([fd], [], [], 0.1)
