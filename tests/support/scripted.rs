@@ -370,8 +370,13 @@ pub fn sse(wire: OpenAiWireApi, model: &str, reply: &Reply) -> String {
     let (text, call) = match reply {
         Reply::Text(text) => (Some(text.as_str()), None),
         Reply::Call(call) | Reply::TruncatedCall(call) => (None, Some(call)),
+        Reply::TextThenCall(text, call) => (Some(text.as_str()), Some(call)),
         _ => unreachable!("only text and calls are streamed"),
     };
+    assert!(
+        text.is_none() || call.is_none() || matches!(wire, OpenAiWireApi::Responses),
+        "text then call is streamed on the Responses wire only"
+    );
     let truncated = matches!(reply, Reply::TruncatedCall(_));
     let args = call.map(|c| c.arguments.to_string());
     match wire {
@@ -401,9 +406,11 @@ pub fn sse(wire: OpenAiWireApi, model: &str, reply: &Reply) -> String {
         OpenAiWireApi::Responses => {
             let mut events =
                 vec![json!({"type":"response.created","response":{"id":"resp-1","model":model}})];
-            match call {
-                Some(c) => events.push(json!({"type":"response.output_item.done","item":{"type":"function_call","status":"completed","call_id":c.id,"name":c.name,"arguments":args}})),
-                None => events.push(json!({"type":"response.output_text.delta","delta":text})),
+            if let Some(text) = text {
+                events.push(json!({"type":"response.output_text.delta","delta":text}));
+            }
+            if let Some(c) = call {
+                events.push(json!({"type":"response.output_item.done","item":{"type":"function_call","status":"completed","call_id":c.id,"name":c.name,"arguments":args}}));
             }
             events.push(if truncated {
                 json!({"type":"response.incomplete","response":{"id":"resp-1","model":model,"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}})
