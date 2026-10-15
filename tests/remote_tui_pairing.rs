@@ -197,16 +197,13 @@ fn authenticated_stream(
 
 #[cfg(unix)]
 #[test]
-fn committed_tls_write_with_busy_delivery_stays_unknown_and_exact_retry_is_idempotent() {
+fn committed_tls_write_with_refused_delivery_stays_unknown_and_exact_retry_is_idempotent() {
     use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
     use ring::signature::{ECDSA_P256_SHA256_ASN1_SIGNING, EcdsaKeyPair, KeyPair};
-    use std::{
-        os::fd::AsRawFd,
-        sync::{
-            Mutex,
-            atomic::{AtomicBool, Ordering},
-            mpsc,
-        },
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
     };
     use zenpi::remote::{
         auth::{Capability, DeviceRegistry, pairing_proof_message},
@@ -296,16 +293,11 @@ fn committed_tls_write_with_busy_delivery_stays_unknown_and_exact_retry_is_idemp
                 let response = HostAdapter::dispatch_owned(&mut pool, registry, device, request);
                 if !injected && response.execution_state == Some(ExecutionState::Succeeded) {
                     assert_eq!(pool.workspace_revision(), 1);
-                    let lock = std::fs::OpenOptions::new()
-                        .read(true)
-                        .write(true)
-                        .open(identity_path.with_extension("devices.lock"))
-                        .unwrap();
-                    assert_eq!(
-                        unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
-                        0
-                    );
-                    sender.send(lock).unwrap();
+                    // A transiently unreadable registry refuses delivery after the commit.
+                    let path = identity_path.with_extension("devices.json");
+                    let original = std::fs::read(&path).unwrap();
+                    std::fs::write(&path, b"{").unwrap();
+                    sender.send((path, original)).unwrap();
                     injected = true;
                 }
                 response
@@ -326,10 +318,11 @@ fn committed_tls_write_with_busy_delivery_stays_unknown_and_exact_retry_is_idemp
         unknown.execution_state,
         Some(ExecutionState::UnknownOutcome)
     );
-    assert_eq!(unknown.code, Some(ErrorCode::Busy));
+    assert_eq!(unknown.code, Some(ErrorCode::Unauthorized));
     unknown.validate().unwrap();
     drop(stream);
-    drop(receiver.recv_timeout(Duration::from_secs(1)).unwrap());
+    let (path, original) = receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+    std::fs::write(path, original).unwrap();
     let (authenticated, mut stream) = authenticated_stream(&invite, &identity, &key);
     assert_eq!(
         authenticated.execution_state,
@@ -498,12 +491,9 @@ fn production_host_pair_negotiates_and_consumes_invite_over_tls() {
             unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
             0
         );
+        // ZE-543: authentication reads the unchanged registry without the lock.
         let response = authenticate_host(&invite, &identity, &key);
-        assert_eq!(response.execution_state, Some(ExecutionState::Failed));
-        assert_eq!(
-            response.code,
-            Some(zenpi::remote::protocol::ErrorCode::Busy)
-        );
+        assert_eq!(response.execution_state, Some(ExecutionState::Succeeded));
         drop(lock);
     }
     assert_eq!(

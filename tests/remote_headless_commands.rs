@@ -2364,7 +2364,7 @@ fn production_plain_host_routes_authenticated_tls_prompt_to_the_provider() {
 
 #[cfg(unix)]
 #[test]
-fn registry_busy_refuses_read_and_write_without_prompt_reservation_or_submission() {
+fn registry_busy_refuses_writes_without_prompt_reservation_or_submission_but_not_reads() {
     use std::os::fd::AsRawFd;
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
@@ -2406,9 +2406,10 @@ fn registry_busy_refuses_read_and_write_without_prompt_reservation_or_submission
             read.project_id = None;
             read.session_id = None;
         }
+        // ZE-543: reads use the unchanged cached registry without the lock.
         let response = HostAdapter::dispatch_owned(&mut pool, &registry, &device, read);
-        assert_eq!(response.code, Some(ErrorCode::Busy));
-        assert_eq!(response.execution_state, Some(ExecutionState::Failed));
+        assert_eq!(response.code, None);
+        assert_eq!(response.execution_state, Some(ExecutionState::Succeeded));
     }
     assert_eq!(
         HostAdapter::dispatch_owned(&mut pool, &registry, &device, select.clone()).code,

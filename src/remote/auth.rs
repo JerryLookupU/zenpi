@@ -9,6 +9,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, Read, Write},
     path::{Path, PathBuf},
+    sync::Mutex,
     time::{Duration, Instant},
 };
 use thiserror::Error;
@@ -275,6 +276,40 @@ impl DeviceChallenge {
 pub struct DeviceRegistry {
     path: PathBuf,
     fingerprint: String,
+    /// Validated devices keyed by the registry file's stamp. Writers replace the
+    /// file under the lock, so a changed stamp is seen on the very next frame.
+    cache: Mutex<Option<(Stamp, Vec<DeviceRecord>)>>,
+}
+
+/// Identity, size and modification/change times of the registry file: an
+/// atomic replacement or an in-place write changes it.
+type Stamp = [i64; 7];
+
+/// `None` (no stable file identity on this platform): never cache.
+fn stamp(metadata: &fs::Metadata) -> Option<Stamp> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Some([
+            metadata.dev() as i64,
+            metadata.ino() as i64,
+            metadata.size() as i64,
+            metadata.mtime(),
+            metadata.mtime_nsec(),
+            metadata.ctime(),
+            metadata.ctime_nsec(),
+        ])
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        None
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 struct RegistryLock(File);
@@ -333,7 +368,11 @@ impl DeviceRegistry {
         {
             return Err(AuthError::InvalidRegistry);
         }
-        Ok(Self { path, fingerprint })
+        Ok(Self {
+            path,
+            fingerprint,
+            cache: Mutex::new(None),
+        })
     }
     fn lock(&self) -> Result<RegistryLock, AuthError> {
         let parent = self.path.parent().ok_or(AuthError::InvalidRegistry)?;
@@ -364,7 +403,7 @@ impl DeviceRegistry {
         Ok(RegistryLock(file))
     }
     fn load(&self) -> Result<RegistryData, AuthError> {
-        let Some(data) = self.read()? else {
+        let Some((_, data)) = self.read()? else {
             return Ok(RegistryData {
                 version: 1,
                 host_fingerprint: self.fingerprint.clone(),
@@ -375,13 +414,17 @@ impl DeviceRegistry {
         Ok(data)
     }
     /// Parsed, size-bounded registry bytes; `validate` decides whether they belong here.
-    fn read(&self) -> Result<Option<RegistryData>, AuthError> {
+    fn read(&self) -> Result<Option<(Option<Stamp>, RegistryData)>, AuthError> {
+        #[cfg(test)]
+        READS.with(|reads| reads.set(reads.get() + 1));
         let file = match private_open(&self.path, false) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error.into()),
         };
-        if file.metadata()?.len() > MAX_REGISTRY_BYTES {
+        // Stamped before reading: the bytes are never older than their stamp.
+        let metadata = file.metadata()?;
+        if metadata.len() > MAX_REGISTRY_BYTES {
             return Err(AuthError::InvalidRegistry);
         }
         let mut bytes = Vec::new();
@@ -390,7 +433,7 @@ impl DeviceRegistry {
             return Err(AuthError::InvalidRegistry);
         }
         serde_json::from_slice(&bytes)
-            .map(Some)
+            .map(|data| Some((stamp(&metadata), data)))
             .map_err(|_| AuthError::InvalidRegistry)
     }
     fn validate(&self, data: &RegistryData) -> Result<(), AuthError> {
@@ -433,7 +476,7 @@ impl DeviceRegistry {
     /// mismatch still fails closed.
     pub fn migrate_legacy_host(&self, legacy: &str) -> Result<(), AuthError> {
         let _lock = self.lock()?;
-        let Some(mut data) = self.read()? else {
+        let Some((_, mut data)) = self.read()? else {
             return Ok(());
         };
         if data.host_fingerprint == self.fingerprint || data.host_fingerprint != legacy {
@@ -545,9 +588,27 @@ impl DeviceRegistry {
         self.save(&data)?;
         Ok(record)
     }
+    /// Lock-free: writers replace the file atomically under the lock, so an
+    /// unchanged stamp means the cached, validated devices are still current.
     pub fn list(&self) -> Result<Vec<DeviceRecord>, AuthError> {
-        let _lock = self.lock()?;
-        Ok(self.load()?.devices)
+        let probe = match fs::symlink_metadata(&self.path) {
+            Ok(metadata) => stamp(&metadata),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(vec![]),
+            Err(error) => return Err(error.into()),
+        };
+        let mut cache = self.cache.lock().unwrap_or_else(|error| error.into_inner());
+        if let (Some(probe), Some((cached, devices))) = (probe, cache.as_ref())
+            && probe == *cached
+        {
+            return Ok(devices.clone());
+        }
+        *cache = None;
+        let Some((stamp, data)) = self.read()? else {
+            return Ok(vec![]);
+        };
+        self.validate(&data)?;
+        *cache = stamp.map(|stamp| (stamp, data.devices.clone()));
+        Ok(data.devices)
     }
     pub fn lookup(&self, id: &str) -> Result<DeviceRecord, AuthError> {
         self.list()?
@@ -688,6 +749,7 @@ impl DeviceRegistry {
         authorize_record(&record, project, operation)
     }
     /// Hold the same cross-process registry lock used by revoke/grant across a short mutation commit.
+    /// A read cannot be torn by a revoke, so it uses the stamp-checked cache without the lock.
     pub(crate) fn with_authorized_projects<T>(
         &self,
         device: &AuthenticatedDevice,
@@ -695,10 +757,13 @@ impl DeviceRegistry {
         operation: Operation,
         commit: impl FnOnce(&AuthorizedProjects) -> T,
     ) -> Result<T, AuthError> {
-        let _lock = self.lock()?;
-        let record = self
-            .load()?
-            .devices
+        let (_lock, devices) = if operation.is_write() {
+            let lock = self.lock()?;
+            (Some(lock), self.load()?.devices)
+        } else {
+            (None, self.list()?)
+        };
+        let record = devices
             .into_iter()
             .find(|record| record.id == device.id)
             .ok_or(AuthError::Unauthorized)?;
@@ -773,5 +838,48 @@ impl DeviceRegistry {
                 .iter()
                 .any(|project| authorize_record(&record, project, Operation::Prompt).is_ok())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ring::signature::{ECDSA_P256_SHA256_ASN1_SIGNING, EcdsaKeyPair, KeyPair};
+
+    #[test]
+    fn a_thousand_frames_read_the_registry_once_and_revocation_is_next_frame() {
+        let temp = tempfile::tempdir().unwrap();
+        let registry =
+            DeviceRegistry::new(temp.path().join("devices.json"), "a".repeat(64)).unwrap();
+        let random = ring::rand::SystemRandom::new();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &random).unwrap();
+        let key =
+            EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &random)
+                .unwrap();
+        let public = URL_SAFE_NO_PAD.encode(key.public_key().as_ref());
+        let record = registry
+            .register("phone", &public, &["project".into()])
+            .unwrap();
+        let device = AuthenticatedDevice {
+            id: record.id.clone(),
+            revision: record.revision,
+        };
+        READS.with(|reads| reads.set(0));
+        for _ in 0..1000 {
+            assert!(registry.is_current(&device).unwrap());
+            registry
+                .with_authorized_projects(&device, &["project"], Operation::Inspect, |_| ())
+                .unwrap();
+        }
+        assert_eq!(READS.with(|reads| reads.get()), 1);
+        registry.revoke(&record.id).unwrap();
+        assert!(!registry.is_current(&device).unwrap());
+        assert!(
+            registry
+                .authorize(&device, "project", Operation::Prompt)
+                .is_err()
+        );
+        // The revoke's own locked load, then one fresh read for the next frame.
+        assert_eq!(READS.with(|reads| reads.get()), 3);
     }
 }
