@@ -439,6 +439,8 @@ class PairingViewModel @JvmOverloads constructor(application: Application, priva
     @Volatile private var generation = 0
     private val storage = Mutex()
     private var foreground = false
+    /** ZE-544: the approval notification that opened the app, kept for this foreground stint only. */
+    private var notificationTarget: zenpi.lifecycle.ApprovalNotifier.Target? = null
     private var networkAvailable = true
     private var networkRoute: Long? = null
     private var networkObserved = false
@@ -476,6 +478,7 @@ class PairingViewModel @JvmOverloads constructor(application: Application, priva
     }
     private val socketRouting = zenpi.lifecycle.LanSocketRouting(application)
     init {
+        viewModelScope.launch { mutable.collect(::applyNotificationTarget) }
         launchOwned {
             try {
                 val saved = storage.withLock { withContext(Dispatchers.IO) { hostStore.loadState() } }
@@ -1169,6 +1172,7 @@ class PairingViewModel @JvmOverloads constructor(application: Application, priva
         if (foreground == active) return
         foreground = active
         if (mutable.value.resetting || mutable.value.resetRequired) return
+        if (!active) notificationTarget = null
         if (!active && interruptPairing()) return
         if (!active) {
             closeDiff()
@@ -1357,7 +1361,24 @@ class PairingViewModel @JvmOverloads constructor(application: Application, priva
         mutable.value = mutable.value.copy(host = migrated)
         return migrated
     }
-    fun refresh(selectedId: String? = if (mutable.value.selectedProjectUnavailable) null else mutable.value.projection?.selectedId, command: WorkspaceCommand? = null) {
+    /**
+     * ZE-544: a tapped approval notification opens its project's session; a "Deny" / "Allow once"
+     * action decides only when that exact approval (request, worker, digest) is the live queue head.
+     */
+    fun openApproval(target: zenpi.lifecycle.ApprovalNotifier.Target) {
+        notificationTarget = target
+        if (foreground && mutable.value.projection?.selectedId != target.projectId) refresh(target.projectId)
+        applyNotificationTarget(mutable.value)
+    }
+    private fun applyNotificationTarget(state: PairingState) {
+        val target = notificationTarget ?: return
+        if (state.selectedProjectUnavailable) { notificationTarget = null; return }
+        if (!foreground || state.phase !in setOf(PairingPhase.CONNECTED, PairingPhase.ERROR) || state.projection?.selectedId != target.projectId) return
+        notificationTarget = null
+        val head = ApprovalDecisionPolicy.queue(state).firstOrNull() ?: return
+        if (target.decision != null && target.matches(head)) approve(head, target.decision)
+    }
+    fun refresh(selectedId: String? = notificationTarget?.projectId ?: if (mutable.value.selectedProjectUnavailable) null else mutable.value.projection?.selectedId, command: WorkspaceCommand? = null) {
         if (!metadataLoaded || !foreground || mutable.value.scanInProgress || mutable.value.resetting || mutable.value.resetRequired) return
         if (command != null && mutable.value.pendingWorkspace?.envelope != command.envelope) return
         if (command != null || selectedId != mutable.value.projection?.selectedId) closeDiff()

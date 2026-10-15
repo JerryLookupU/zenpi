@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-544",
+  "claim_id": "ZE-544@blueprint-4.0.0",
+  "from": "worker",
+  "to": "master",
+  "summary": "Background approval notifications. AndroidManifest requests POST_NOTIFICATIONS (FOREGROUND_SERVICE and WorkManager's SystemForegroundService stay removed). lifecycle/ResumeWorker.kt: after its bounded read+commit, ResumeWorker calls the new ApprovalNotifier.sync: when the saved project's queue has a head this device may decide (approvalControl and ApprovalProjectionCodec.current) it posts one notification (tag = namespace, id 544) on the IMPORTANCE_HIGH 'Approvals' channel: 'Approve <tool>?' / '<effect> . <project>', VISIBILITY_PRIVATE with a generic public version, onlyAlertOnce, and two actions 'Deny' / 'Allow once' with setAuthenticationRequired(true) (unlock required). Body and actions are immutable activity PendingIntents to MainActivity carrying project, request id, worker session, digest and the decision. While the notification is up the worker follows the host read-only with wakeup-driven subscription pages (ZE-542, one TLS session per 60 s window, nothing acknowledged or committed) for at most 9 min and withdraws (or updates) the notification on the first page batch where the head is gone, so a decision made on the desktop removes it well within 1 s of the host wakeup. MainActivity.onStart withdraws it (the app's approval bar takes over) and asks for POST_NOTIFICATIONS (API 33+) once a paired host is CONNECTED. PairingViewModel.openApproval deep-links to the approval's project (refresh(projectId)) and, for an action, decides only when that exact approval (request, worker, digest) is the live queue head, through the existing approve() / ApprovalDecisionPolicy.decides path; the target lives for one foreground stint. No foreground service, no FCM, no new dependency.",
+  "changed_files": [
+    "Docs/quality/ze/ZE-544.json",
+    "android/app/src/androidTest/java/zenpi/ResumeWorkerTest.kt",
+    "android/app/src/main/AndroidManifest.xml",
+    "android/app/src/main/java/zenpi/MainActivity.kt",
+    "android/app/src/main/java/zenpi/lifecycle/ResumeWorker.kt",
+    "android/app/src/main/java/zenpi/pairing/PairingViewModel.kt",
+    "android/app/src/test/java/zenpi/ApprovalNotifierTest.kt"
+  ],
+  "diff_stat": "7 files changed, 318 insertions(+), 8 deletions(-)",
+  "commands_run": [
+    "git fetch; HEAD == origin/main 2caed90",
+    "cd android && ./gradlew :app:testDebugUnitTest lint verifyRoborazziDebug :app:assembleDebugAndroidTest",
+    "cd android && ./gradlew :app:testDebugUnitTest --tests zenpi.ApprovalNotifierTest",
+    "emulator -avd ZenpiStage2Api35 -no-window (booted, then adb emu kill)",
+    "adb shell am instrument -w -e class zenpi.ResumeWorkerTest#pendingApprovalNotificationIsWithdrawnWithinOneSecondWithoutForegroundService app.zenpi.android.test/androidx.test.runner.AndroidJUnitRunner",
+    "adb shell am instrument -w -e class zenpi.PairingActivityIntentTest,zenpi.ScannerActivityTest,zenpi.ApprovalScreenTest app.zenpi.android.test/androidx.test.runner.AndroidJUnitRunner",
+    "adb shell am start -W -a zenpi.action.APPROVAL -n app.zenpi.android/zenpi.MainActivity (approval extras, unpaired app: no crash)",
+    "python3 merged-manifest check (no FOREGROUND_SERVICE*, no foregroundServiceType / SystemForegroundService, POST_NOTIFICATIONS present, no firebase/c2dm)",
+    "python3 tools/validate_blueprint_v2.py",
+    "cd android && ./gradlew clean"
+  ],
+  "validation_result": {
+    "testDebugUnitTest": "pass (740 tests, 0 failures, 21 skipped; includes new ApprovalNotifierTest 3/3)",
+    "lint": "pass (0 errors, 15 pre-existing warnings, none in changed files)",
+    "verifyRoborazziDebug": "pass (no golden changes)",
+    "ResumeWorkerTest_notification": "pass on ZenpiStage2Api35 (API 35): one notification, IMPORTANCE_HIGH channel, actions Deny / Allow once both authentication-required, content intent set, withdrawn < 1 s after the queue drains; installed package has no foreground-type service, no FOREGROUND_SERVICE permission, requests POST_NOTIFICATIONS",
+    "instrumented_regression": "PairingActivityIntentTest, ScannerActivityTest, ApprovalScreenTest: OK (6 tests)",
+    "no_foreground_service": "pass (merged manifest check + instrumented PackageInfo assertion)",
+    "validate_blueprint_v2": "pass",
+    "emulator": "ZenpiStage2Api35 booted for the instrumented checks and killed afterwards"
+  },
+  "notes": "Deviations / decisions: (1) Owned paths ResumeWorker.kt (ApprovalNotifier lives there) and AndroidManifest.xml; also touched MainActivity.kt (permission request, notification intents, withdrawal on onStart), PairingViewModel.kt (openApproval + applyNotificationTarget, refresh default prefers the notification's project; ~20 lines), the ResumeWorkerTest notification test and a new JVM test ApprovalNotifierTest.kt. (2) 'Deny / Allow once' open the app rather than writing from a broadcast receiver: background writes stay fenced as before, and the decision reuses the foreground approve() guard (queue head, digest, approval control). An action whose approval is no longer the live head does nothing; the user sees the approval bar. The sheet's optional biometric switch is not re-prompted: the action already required a device unlock. (3) Withdrawal within 1 s is delivered by the worker's read-only subscription watch, bounded to 9 min (inside WorkManager's 10 min limit). After that window, on a network failure or under Doze the notification stays until the app is opened (onStart withdraws it) or the next ResumeWorker run; there is no keep-alive beyond the watch. (4) 'Lifecycle check script': the stage-2 validate_stage2_android_lifecycle.py is archived and needs a full 3-API emulator receipt matrix (its imports no longer resolve), and the archived release check's permission allowlist predates USE_BIOMETRIC (ZE-531); the no-foreground-service condition is therefore checked on the merged manifest (same clause as the archived release check: no SystemForegroundService, plus no FOREGROUND_SERVICE* permission and no FCM) and asserted on the installed package inside ResumeWorkerTest. (5) The harness-driven ResumeWorkerTest host method (realWorkManagerReadsSharedHost...) needs the stage-2 host harness arguments and was not run here; the new notification test is standalone. (6) POST_NOTIFICATIONS is requested in context (a paired host is CONNECTED), not at first launch, so pairing flows are not interrupted; below API 33 no runtime request is needed. No Rust changes.",
+  "created_at": "2026-10-15T01:16:40Z",
+  "digest": "f6c708e0b5ebaffee4b97c2a9dde645984ce8bc0235e93d31857c1cbec4f59a4"
+}
