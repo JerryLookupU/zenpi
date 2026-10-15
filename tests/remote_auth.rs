@@ -651,7 +651,7 @@ fn corrupt_registry_symlink_and_identity_rotation_fail_closed() {
 
 #[cfg(unix)]
 #[test]
-fn registry_contention_is_bounded_busy_not_revocation_and_fresh_proof_is_required() {
+fn registry_contention_is_bounded_busy_for_writers_while_frames_read_without_the_lock() {
     use std::os::fd::AsRawFd;
     use std::time::{Duration, Instant};
     use zenpi::remote::{
@@ -689,13 +689,14 @@ fn registry_contention_is_bounded_busy_not_revocation_and_fresh_proof_is_require
         unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
         0
     );
+    // ZE-543: frames read the unchanged registry without taking the lock.
     let start = Instant::now();
-    assert!(matches!(
-        registry.authorize(&device, "project", Operation::Prompt),
-        Err(AuthError::Busy)
-    ));
-    assert!(start.elapsed() >= Duration::from_millis(90));
-    assert!(start.elapsed() < Duration::from_secs(1));
+    assert!(
+        registry
+            .authorize(&device, "project", Operation::Prompt)
+            .is_ok()
+    );
+    assert!(start.elapsed() < Duration::from_millis(90));
     assert_eq!(AuthError::Busy.remote_code(), ErrorCode::Busy);
     assert_eq!(
         AuthError::InvalidRegistry.remote_code(),
@@ -703,10 +704,11 @@ fn registry_contention_is_bounded_busy_not_revocation_and_fresh_proof_is_require
     );
     let mut challenge = DeviceChallenge::new("a".repeat(64)).unwrap();
     let signed = sign(&key, &challenge.proof_message(&record.id));
-    assert!(matches!(
-        challenge.authenticate(&registry, &record.id, &signed),
-        Err(AuthError::Busy)
-    ));
+    assert!(
+        challenge
+            .authenticate(&registry, &record.id, &signed)
+            .is_ok()
+    );
     let mut revoke = Envelope::new(
         Channel::Control,
         Message::Request {
@@ -717,12 +719,16 @@ fn registry_contention_is_bounded_busy_not_revocation_and_fresh_proof_is_require
     revoke.id = Some("revoke".into());
     revoke.required_owner = Some(device.id().into());
     revoke.expected_revision = Some(device.revision());
+    // Writers still serialize on the lock and stay bounded.
+    let start = Instant::now();
     let refused = registry.dispatch_self_revoke(&device, &revoke);
+    assert!(start.elapsed() >= Duration::from_millis(90));
+    assert!(start.elapsed() < Duration::from_secs(1));
     assert_eq!(refused.code, Some(ErrorCode::Busy));
     assert_eq!(refused.execution_state, Some(ExecutionState::Failed));
     assert_eq!(std::fs::read(&path).unwrap(), before);
     drop(lock);
-    // Busy consumes the connection nonce; never reuse it after unlocking.
+    // A connection nonce is single use; never reuse it after unlocking.
     assert!(matches!(
         challenge.authenticate(&registry, &record.id, &signed),
         Err(AuthError::Unauthorized)
@@ -747,7 +753,7 @@ fn registry_contention_is_bounded_busy_not_revocation_and_fresh_proof_is_require
 
 #[cfg(unix)]
 #[test]
-fn short_lock_release_reloads_current_permissions_instead_of_a_cached_grant() {
+fn in_place_commit_under_the_lock_reloads_current_permissions_instead_of_a_cached_grant() {
     use std::os::fd::AsRawFd;
     use std::time::Duration;
     let temp = tempfile::tempdir().unwrap();
@@ -768,19 +774,26 @@ fn short_lock_release_reloads_current_permissions_instead_of_a_cached_grant() {
     let mut changed: serde_json::Value = serde_json::from_slice(&current).unwrap();
     changed["devices"][0]["revoked"] = serde_json::json!(true);
     changed["devices"][0]["revision"] = serde_json::json!(2);
+    // Prime the frame cache with the current grant.
+    assert!(
+        registry
+            .lookup(&record.id)
+            .is_ok_and(|record| !record.revoked)
+    );
     let writer = std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(20));
-        // Explicit fixture models another local owner committing under the shared lock.
+        // Explicit fixture models another local owner committing under the shared lock,
+        // rewriting the same inode in place rather than renaming.
         std::fs::write(&path, serde_json::to_vec(&changed).unwrap()).unwrap();
         drop(lock);
     });
+    writer.join().unwrap();
     let mut challenge = DeviceChallenge::new("a".repeat(64)).unwrap();
     let signed = sign(&key, &challenge.proof_message(&record.id));
     assert!(matches!(
         challenge.authenticate(&registry, &record.id, &signed),
         Err(zenpi::remote::auth::AuthError::Unauthorized)
     ));
-    writer.join().unwrap();
 }
 
 #[test]

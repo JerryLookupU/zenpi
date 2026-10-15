@@ -729,9 +729,12 @@ class HostClient(private val bindSocket: (Socket, String) -> Unit = { _, _ -> })
         val active = SocketLease()
         return coroutineScope {
             val closer = launch(start = CoroutineStart.UNDISPATCHED) { try { awaitCancellation() } finally { active.close() } }
-            val deadline = launch { delay(15_000); active.close() }
+            val scope = this
+            var deadline = launch { delay(15_000); active.close() }
+            // Each subscription page gets the same 15 s watchdog as the opening exchange.
+            fun rearm() { deadline.cancel(); deadline = scope.launch { delay(15_000); active.close() } }
             try {
-                OperationDeadline.run { withContext(Dispatchers.IO) {
+                OperationDeadline.run(if (subscribe) SubscriptionSession.OPERATION_MS else 15_000) { withContext(Dispatchers.IO) {
                     fun current() = AuthenticationProof.current(deviceId, { identity.deviceId }, { ensureActive() })
                     val (hint, raw) = HintDialer.dial(host.hints) { hint, timeout ->
                         val attempt = Socket()
@@ -943,20 +946,26 @@ class HostClient(private val bindSocket: (Socket, String) -> Unit = { _, _ -> })
                             if (!subscribe || workspaceCommand != null || selected == null || initial.hasMoreEvents
                                 || capability?.asBoolean != true || initial.eventSequence == null) return@use initial
                             var streamed = initial
-                            val reducer = SubscriptionReducer(initial, selected)
                             onProjection(streamed)
                             current()
-                            subscriptionPage = { frames, result ->
-                                val next = reducer.accept(frames, result)
-                                if (next != streamed) onProjection(next)
-                                streamed = next
-                            }
-                            exchange(envelope(JsonObject().apply {
-                                addProperty("type", "subscribe"); addProperty("limit", 128); addProperty("duration_ms", 3000)
-                                add("cursor", JsonObject().apply { addProperty("session_id", selected.sessionId)
-                                    addProperty("next_sequence", java.math.BigInteger(requireNotNull(streamed.eventSequence))) })
-                            }).apply { addProperty("project_id", selected.id); addProperty("session_id", selected.sessionId) })
-                            current()
+                            // ZE-542: consecutive pages reuse this TLS session; each page starts a
+                            // fresh reducer from the held projection, as after a reconnect.
+                            val session = SubscriptionSession()
+                            do {
+                                val reducer = SubscriptionReducer(streamed, selected)
+                                subscriptionPage = { frames, result ->
+                                    val next = reducer.accept(frames, result)
+                                    if (next != streamed) onProjection(next)
+                                    streamed = next
+                                }
+                                rearm()
+                                exchange(envelope(JsonObject().apply {
+                                    addProperty("type", "subscribe"); addProperty("limit", 128); addProperty("duration_ms", SubscriptionSession.PAGE_MS)
+                                    add("cursor", JsonObject().apply { addProperty("session_id", selected.sessionId)
+                                        addProperty("next_sequence", java.math.BigInteger(requireNotNull(streamed.eventSequence))) })
+                                }).apply { addProperty("project_id", selected.id); addProperty("session_id", selected.sessionId) })
+                                current()
+                            } while (session.continues())
                             streamed
                         }
                     } finally { try { active.close() } finally { raw.close() } }
@@ -986,4 +995,20 @@ internal object HintDialer {
         }
         throw failure ?: java.io.IOException("No address hint")
     }
+}
+
+/**
+ * ZE-542: a foreground subscription keeps one authenticated TLS session for consecutive
+ * host pages and hands back to the caller (which reconnects after its idle delay) only
+ * once [REUSE_MS] has passed, so an idle phone handshakes at most once a minute.
+ */
+internal class SubscriptionSession(private val clock: () -> Long = System::nanoTime) {
+    companion object {
+        const val PAGE_MS = 3_000
+        const val REUSE_MS = 60_000L
+        /** Opening exchange, the reuse window and one last page, each bounded by the 15 s watchdog. */
+        const val OPERATION_MS = 15_000L + REUSE_MS + 15_000L
+    }
+    private val started = clock()
+    fun continues(): Boolean = clock() - started < REUSE_MS * 1_000_000
 }

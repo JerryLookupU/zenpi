@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-543",
+  "claim_id": "ZE-543@blueprint-4.0.0",
+  "from": "worker",
+  "to": "master",
+  "summary": "DeviceRegistry caches its validated devices keyed by the registry file's stamp (dev, inode, size, mtime, ctime). Every frame-path read (list/lookup/is_current/authorize/controls_any and with_authorized_projects for read operations) stats the file and reuses the cache when the stamp is unchanged, with no flock and no parse; any atomic replace (all zenpi writers) or in-place write changes the stamp, so revocation still takes effect on the next frame. Write operations keep the cross-process lock and a fresh load across their commit.",
+  "changed_files": [
+    "src/remote/auth.rs",
+    "tests/remote_auth.rs",
+    "tests/remote_headless_commands.rs",
+    "tests/remote_tui_pairing.rs",
+    "Docs/quality/ze/ZE-543.json"
+  ],
+  "diff_stat": "5 files changed, 212 insertions(+), 55 deletions(-)",
+  "commands_run": [
+    "cargo fmt --all -- --check",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo clippy --locked --all-targets --all-features -- -D warnings",
+    "cargo clippy --locked --all-targets --features remote -- -D warnings",
+    "git diff -U0 origin/main -- 'src/*.rs' 'src/**/*.rs' | grep -E '^\\+.*#!?\\[allow\\((dead_code|unused)' (no match)",
+    "cargo test --locked --features remote --lib remote::auth",
+    "cargo test --locked --all-features --no-fail-fast --test remote_listener --test remote_subscription --test remote_subscription_tls --test remote_auth --test remote_device_grants --test remote_security --test remote_faults --test remote_concurrency --test remote_android_ack_interop --test remote_android_approval_interop --test remote_android_model_interop --test remote_android_session_interop --test remote_android_terminal_interop --test remote_android_workspace_interop --test remote_android_worktree_interop --test remote_android_interop",
+    "cargo test --locked --all-features --no-fail-fast --test remote_tui_pairing --test remote_headless_commands",
+    "cargo test --locked --all-features --test remote_host_e2e -- --include-ignored",
+    "cargo test --locked --all-features --no-fail-fast"
+  ],
+  "validation_result": {
+    "fmt": "ok",
+    "clippy_default": "ok",
+    "clippy_all_features": "ok",
+    "clippy_remote": "ok",
+    "new_allow_dead_code_or_unused": "none",
+    "validator_1000_frames_one_read": "remote::auth::tests::a_thousand_frames_read_the_registry_once_and_revocation_is_next_frame: 1000 x (is_current + with_authorized_projects(Inspect)) = 1 registry read",
+    "validator_revocation": "same test: revoke then next is_current false and authorize refused (1 fresh read); remote_auth in_place_commit_under_the_lock_reloads_current_permissions_instead_of_a_cached_grant; remote_auth/remote_security/remote_device_grants revocation tests pass",
+    "registry_reads_per_frame_before": "flock + open + parse + validate for is_current per emitted frame and again in with_authorized_projects per dispatch (4 per subscription batch)",
+    "registry_reads_per_frame_after": "one lstat; parse only when the stamp changes",
+    "remote_suites": "all passed",
+    "remote_host_e2e_include_ignored": "7 passed",
+    "full_all_features": "161 test binaries, 0 failed"
+  },
+  "notes": "Changed semantics (deliberate, per the row): read paths no longer take the registry flock, so a held lock no longer makes reads or authentication Busy; only writes (with_authorized_projects for write operations, register/revoke/set_permissions/self-revoke) stay Busy after the bounded 100 ms wait. A read that races a commit is linearised before it. Four existing tests encoded the old read-Busy behaviour and were updated: remote_auth registry_contention_* (reads lock-free, self-revoke still Busy) and short_lock_release_* (now: prime the cache, in-place commit under the lock, next authentication is Unauthorized); remote_headless_commands registry_busy_* (reads succeed, select/prompt still Busy, no submission); remote_tui_pairing committed_tls_write_* now forces the delivery refusal with a transiently unreadable registry instead of a held lock (outcome still unknown_outcome, exact retry still idempotent; code is unauthorized instead of busy) and production_host_pair_* expects authentication to succeed while the lock is held. A reader that catches a non-atomic in-place writer mid-write fails closed (InvalidRegistry, not cached). On non-unix there is no stamp and nothing is cached. The test-only read counter is a cfg(test) thread_local. No new unwrap/expect/panic in non-test code; no new unsafe; one new Mutex (the cache) inside DeviceRegistry, which callers already share through Arc.",
+  "created_at": "2026-10-15T00:26:38Z",
+  "digest": "12a01880aa06999d4e119b2aa8486b893559c590becc2ee59bc7ce925118910d"
+}
