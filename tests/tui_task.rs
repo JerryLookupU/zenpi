@@ -382,6 +382,7 @@ fn esc_and_ctrl_c_respect_idle_draft_and_busy_states() {
     // Busy again: Ctrl-C interrupts too, and the loop stays usable.
     let run2 = start(vec![Reply::Stall]);
     type_text(&run2.events, "second");
+    run2.wait_screen("the draft", |_| run2.prompt().iter().any(|l| l == "second"));
     submit(&run2.events);
     let deadline = Instant::now() + Duration::from_secs(10);
     while !run2.provider.is_stalled() {
@@ -397,6 +398,9 @@ fn esc_and_ctrl_c_respect_idle_draft_and_busy_states() {
 fn esc_with_an_overlay_open_does_not_interrupt_the_turn() {
     let run = start(vec![Reply::Stall]);
     type_text(&run.events, "long job");
+    run.wait_screen("the draft", |_| {
+        run.prompt().iter().any(|l| l == "long job")
+    });
     submit(&run.events);
     let deadline = Instant::now() + Duration::from_secs(10);
     while !run.provider.is_stalled() {
@@ -473,6 +477,7 @@ fn a_folded_paste_submits_its_full_text() {
 fn a_slash_command_round_trips_through_the_real_loop() {
     let run = start(vec![text("unused")]);
     type_text(&run.events, "/help");
+    run.wait_screen("the draft", |_| run.prompt().iter().any(|l| l == "/help"));
     submit(&run.events);
     run.wait_screen("the help output", |text| {
         text.contains("/reload [selection.json]")
