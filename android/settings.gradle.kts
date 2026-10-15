@@ -7,3 +7,5 @@ dependencyResolutionManagement {
 }
 rootProject.name = "ZenpiAndroid"
 include(":app")
+// ZE-591: Macrobenchmark of the conversation (runs against the :app benchmark build type).
+include(":macrobenchmark")
