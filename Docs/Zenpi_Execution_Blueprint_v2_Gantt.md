@@ -5,9 +5,9 @@
 
 ```yaml
 source: Docs/Zenpi_Execution_Blueprint_v2.md
-source_sha256: 0636aea43a8436612b0b4605403ab95d0b0e43b754d96b2d0a2986e162a63c8a
+source_sha256: 193b943955ed98022708687521eab9d20336ff03aa5b270422cd4d858296da77
 blueprint_version: 4.0.0
-generated_at: 2026-10-15T01:03:41Z
+generated_at: 2026-10-15T01:23:29Z
 ```
 
 ## Dependency-order view
@@ -105,8 +105,8 @@ gantt
     ZE-401 二进制级 headless 任务：针对 ZE-104 的假服务器启动  zenp :done, ZE_401, after ZE_400 ZE_236 ZE_240 ZE_242 ZE_303, 1d
     ZE-402 TUI 任务快照，覆盖以下用例：<br>• text→tool→text <br :done, ZE_402, after ZE_250 ZE_251 ZE_252 ZE_254 ZE_255, 1d
     ZE-403 2000 agent 压测  tools/load_agents.py ：<br :done, ZE_403, after ZE_236 ZE_300 ZE_301 ZE_302 ZE_303 ZE_304 ZE_305 ZE_401, 1d
-    ZE-404 CI 门禁：每个 PR 运行 G-RUST、G-TASK 和  G-LOAD(2 :active, ZE_404, after ZE_108 ZE_400 ZE_401 ZE_402 ZE_403, 1d
-    ZE-406 文档收口：<br>• README 和  Docs/Zenpi_Executio :ZE_406, after ZE_100 ZE_404, 1d
+    ZE-404 CI 门禁：每个 PR 运行 G-RUST、G-TASK 和  G-LOAD(2 :done, ZE_404, after ZE_108 ZE_400 ZE_401 ZE_402 ZE_403, 1d
+    ZE-406 文档收口：<br>• README 和  Docs/Zenpi_Executio :active, ZE_406, after ZE_100 ZE_404, 1d
     ZE-999 Master 终验：A、B 两块 全部为  [x]  G-BUILD、G-TES :ZE_999, after ZE_400 ZE_401 ZE_402 ZE_403 ZE_404 ZE_406 ZE_599, 1d
     section B1
     ZE-500 代码入库与 CI 基线：<br>• 提交  android/ 、 src/rem :done, ZE_500, after ZE_100 ZE_108, 1d
@@ -144,7 +144,7 @@ gantt
 
 ## Monitoring index
 
-Counts: open 8 · self-tested 1 · accepted 104 · total 113
+Counts: open 7 · self-tested 1 · accepted 105 · total 113
 
 | ID | Layer | State | Ready | Depends | Claim | Integration | Est. LOC | Title |
 |---|---|---|---|---|---|---|---:|---|
@@ -230,8 +230,8 @@ Counts: open 8 · self-tested 1 · accepted 104 · total 113
 | ZE-401 | A4 | accepted | no | ZE-400, ZE-236, ZE-240, ZE-242, ZE-303 | ZE-401@blueprint-4.0.0 | accepted | 380 | 二进制级 headless 任务：针对 ZE-104 的假服务器启动 `zenpi --mode headless`，覆盖新建文件、bash、审批被拒、取消、杀进程后恢复、`-c` 续接 |
 | ZE-402 | A4 | accepted | no | ZE-250, ZE-251, ZE-252, ZE-254, ZE-255 | ZE-402@blueprint-4.0.0 | accepted | 380 | TUI 任务快照，覆盖以下用例：<br>• text→tool→text；<br>• 跨标签页审批；<br>• 忙、闲、有草稿三种状态下分别按 Esc 和 Ctrl-C；<br>• 浮层打开时按 Esc 不会中断任务；<br>• 粘贴内容里夹带 `\n/exit`、`\n!rm` 时什么也不提交；<br>• 按键 Release 事件不产生任何动作；<br>• 粘贴折叠后再提交；<br>• 斜杠命令走真实 loop 完成往返；<br>layer `A4` \| Depends: ZE-250, ZE-251, ZE-252, ZE-254, ZE-255 \| Owned paths: `tests/tui_task.rs` \| Validators: `cargo test --locked --all-features --test tui_task --test tui_task_tool_order --test tui_approval_focus`（text→tool→text 与跨标签页审批由后两者覆盖） \| Estimated LOC: 380 |
 | ZE-403 | A4 | accepted | no | ZE-236, ZE-300, ZE-301, ZE-302, ZE-303, ZE-304, ZE-305, ZE-401 | ZE-403@blueprint-4.0.0 | accepted | 340 | 2000 agent 压测 `tools/load_agents.py`：<br>• harness 用单个 `selectors`（kqueue）事件循环读取所有 stdout 管道（对应 redis ae）；<br>• 启动前先算 fd 预算（harness ≥ 3N+64，provider ≥ N+64）并上调软限制，不够则直接失败；<br>• 一个脚本化 provider 服务器，N 个 `--no-session` 或独立 session 的 headless 进程，每个任务含一次 `write_file` 和一次 `bash echo`；<br>• 报告 RSS、CPU、唤醒次数、线程数、fd、每轮开销、journal/WAL 成本，以及内核限制（`proc_pidinfo`，无需 root）；<br>• 压测中发现并修复：macOS 上 `sync_data`/`sync_all` 是整盘 `F_FULLFSYNC`，跨 agent 串行，journal、WAL、工具输出和写文件改用 POSIX `fsync`；<br>layer `A4` \| Depends: ZE-236, ZE-300, ZE-301, ZE-302, ZE-303, ZE-304, ZE-305, ZE-401 \| Owned paths: `tools/load_agents.py`, `Docs/quality/load/`, `src/session.rs`, `src/tool_output.rs`, `src/tools.rs` \| Validators: `G-LOAD(2000)` 在 16 核机器上满足 §2.2 的全部阈值，报告存入 `Docs/quality/` \| Estimated LOC: 340 |
-| ZE-404 | A4 | self-tested | yes | ZE-108, ZE-400, ZE-401, ZE-402, ZE-403 | ZE-404@blueprint-4.0.0 | handoff | 60 | CI 门禁：每个 PR 运行 G-RUST、G-TASK 和 `G-LOAD(200)`；nightly 或手动运行 `G-LOAD(2000)` |
-| ZE-406 | A4 | open | no | ZE-100, ZE-404 | — | — | 40 | 文档收口：<br>• README 和 `Docs/Zenpi_Execution_Spec.md` 只描述已验收的能力，列出冻结模块，并以 G-RUST 为准；<br>• v1、Stage 1、Stage 2 移到 `Docs/archive/`，同步修正引用它们的 validator 和 gantt 工具路径；<br>• 把与审计结论矛盾的 learn 笔记标为过期：`session-manager.ts_transform`（恢复语义）和 `tui.ts_transform`（合并重绘）；<br>• 在 `Cargo.toml` 的 crossterm patch 旁边注明上游 issue #1126、#1142；<br>layer `A4` \| Depends: ZE-100, ZE-404 \| Owned paths: `README.md`, `Docs/Zenpi_Execution_Spec.md`, `Docs/archive/`, `tools/`, `Docs/learn/files/pi-mono/`, `Cargo.toml` \| Validators: G-BP；`tools/validate_blueprint.py` 和 `tools/validate_stage1_blueprint.py` 指向归档路径后仍能运行 \| Estimated LOC: 40 |
+| ZE-404 | A4 | accepted | no | ZE-108, ZE-400, ZE-401, ZE-402, ZE-403 | ZE-404@blueprint-4.0.0 | accepted | 60 | CI 门禁：每个 PR 运行 G-RUST、G-TASK 和 `G-LOAD(200)`；nightly 或手动运行 `G-LOAD(2000)` |
+| ZE-406 | A4 | self-tested | yes | ZE-100, ZE-404 | ZE-406@blueprint-4.0.0 | handoff | 40 | 文档收口：<br>• README 和 `Docs/Zenpi_Execution_Spec.md` 只描述已验收的能力，列出冻结模块，并以 G-RUST 为准；<br>• v1、Stage 1、Stage 2 移到 `Docs/archive/`，同步修正引用它们的 validator 和 gantt 工具路径；<br>• 把与审计结论矛盾的 learn 笔记标为过期：`session-manager.ts_transform`（恢复语义）和 `tui.ts_transform`（合并重绘）；<br>• 在 `Cargo.toml` 的 crossterm patch 旁边注明上游 issue #1126、#1142；<br>layer `A4` \| Depends: ZE-100, ZE-404 \| Owned paths: `README.md`, `Docs/Zenpi_Execution_Spec.md`, `Docs/archive/`, `tools/`, `Docs/learn/files/pi-mono/`, `Cargo.toml` \| Validators: G-BP；`tools/validate_blueprint.py` 和 `tools/validate_stage1_blueprint.py` 指向归档路径后仍能运行 \| Estimated LOC: 40 |
 | ZE-999 | A4 | open | no | ZE-400, ZE-401, ZE-402, ZE-403, ZE-404, ZE-406, ZE-599 | — | — | 0 | Master 终验：A、B 两块 全部为 `[x]`；G-BUILD、G-TEST、G-RUST、G-TASK、G-BENCH、`G-LOAD(2000)` 全部通过；Gantt 未过期，handoff 齐全 |
 | ZE-500 | B1 | accepted | no | ZE-100, ZE-108 | ZE-500@blueprint-4.0.0 | accepted | 150 | 代码入库与 CI 基线：<br>• 提交 `android/`、`src/remote/`、`src/host_pair.rs`、`tests/remote_*.rs`、`fuzz/remote_protocol/`；<br>• CI 增加 G-ANDROID，并在 CI 中运行原本 `#[ignore]` 的 8 个 `remote_android_*_interop` 测试；<br>• Stage 2 的执行脚手架（`tools/*stage2*`、`.ops/stage2_android2unix/`）中 CI 用不到的部分，原样移到 `Docs/archive/stage2/`；<br>layer `B1` \| Depends: ZE-100, ZE-108 \| Owned paths: `android/`, `src/remote/`, `src/host_pair.rs`, `tests/remote_*.rs`, `fuzz/remote_protocol/`, `.github/workflows/ci.yml`, `tools/`, `.ops/stage2_android2unix/`, `Docs/archive/stage2/` \| Validators: `git ls-files android src/remote \\| wc -l` > 0；G-REMOTE；G-ANDROID；interop 测试在 CI 中通过 \| Estimated LOC: 150 |
 | ZE-502 | B1 | accepted | no | ZE-500 | ZE-502@blueprint-4.0.0 | accepted | 50 | 接受已有的核心成果：<br>• 主机侧：线协议（frame、envelope v1、严格 JSON）、TLS 1.3 监听与 ALPN、二维码邀请与证书 pin 配对、设备注册表与撤销、owner 路由、事件 cursor、回放与订阅；<br>• Android 侧：`pairing/`、`security/`、`transport/`、`state/`；<br>• 运行原有的测试和 fuzz 语料，结果写进 handoff；<br>layer `B1` \| Depends: ZE-500 \| Owned paths: `src/remote/{frame,protocol,strict_json,listener,lan,pairing,auth,command,host_adapter,events,subscription,transcript,live_text,wakeup}.rs`, `android/app/src/main/java/zenpi/{pairing,security,transport,state}/` \| Validators: G-REMOTE（含 `remote_protocol`、`remote_pairing`、`remote_auth`、`remote_events`、`remote_subscription_tls`、`remote_parity`）；G-ANDROID 的 JVM 部分全部通过 \| Estimated LOC: 50 |
