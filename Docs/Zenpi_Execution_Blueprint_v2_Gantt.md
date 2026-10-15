@@ -5,9 +5,9 @@
 
 ```yaml
 source: Docs/Zenpi_Execution_Blueprint_v2.md
-source_sha256: 996e6ea1e812aba5ed970dd100c699ae06081ac089352682778cf2bdb1c19b79
+source_sha256: c72047d5019345af47a6638cfa0a106dcd14be8ee217cdbee1dbfa842357cd13
 blueprint_version: 4.0.0
-generated_at: 2026-10-15T01:29:16Z
+generated_at: 2026-10-15T02:08:08Z
 ```
 
 ## Dependency-order view
@@ -135,7 +135,7 @@ gantt
     ZE-543 设备注册表按 mtime 缓存，不再在每一帧都 flock 并解析一遍 撤销仍在 :done, ZE_543, after ZE_514, 1d
     ZE-544 后台审批通知：<br>• 申请  POST_NOTIFICATIONS  权限 :done, ZE_544, after ZE_531 ZE_542, 1d
     section B4
-    ZE-590 生产端到端测试： zenpi host serve  配合 ZE-104 的脚本 :active, ZE_590, after ZE_104 ZE_514 ZE_517 ZE_542, 1d
+    ZE-590 生产端到端测试： zenpi host serve  配合 ZE-104 的脚本 :done, ZE_590, after ZE_104 ZE_514 ZE_517 ZE_542, 1d
     ZE-591 Android 体验验收，覆盖以下必做要求：<br>• 审批通知在 2 s 内送 :ZE_591, after ZE_530 ZE_531 ZE_532 ZE_533 ZE_534 ZE_535 ZE_544, 1d
     ZE-592 真机验收：<br>• 一台 API 35 模拟器 <br>• 一台实体手机连实体 :ZE_592, after ZE_590 ZE_591 ZE_516, 1d
     ZE-593 发布：<br>• 签名的 sideload APK， apksigner ver :ZE_593, after ZE_592, 1d
@@ -144,7 +144,7 @@ gantt
 
 ## Monitoring index
 
-Counts: open 5 · self-tested 1 · accepted 107 · total 113
+Counts: open 5 · self-tested 0 · accepted 108 · total 113
 
 | ID | Layer | State | Ready | Depends | Claim | Integration | Est. LOC | Title |
 |---|---|---|---|---|---|---|---:|---|
@@ -256,7 +256,7 @@ Counts: open 5 · self-tested 1 · accepted 107 · total 113
 | ZE-542 | B3 | accepted | no | ZE-541, ZE-512 | ZE-542@blueprint-4.0.0 | accepted | 800 | 持久认证连接：订阅复用同一条 TLS 会话，空闲时每分钟握手不超过 1 次；订阅循环改由 wakeup 驱动，不再每 250 ms 内部调度 4 次 |
 | ZE-543 | B3 | accepted | no | ZE-514 | ZE-543@blueprint-4.0.0 | accepted | 150 | 设备注册表按 mtime 缓存，不再在每一帧都 flock 并解析一遍；撤销仍在下一帧生效 |
 | ZE-544 | B3 | accepted | no | ZE-531, ZE-542 | ZE-544@blueprint-4.0.0 | accepted | 350 | 后台审批通知：<br>• 申请 `POST_NOTIFICATIONS` 权限；<br>• `ResumeWorker` 读到有待审批时，发一条高优先级通知，带"拒绝 / 允许一次"按钮（需要解锁），点击后深链到对应会话；<br>• 审批在别处处理后，1 s 内撤销这条通知；<br>• 不使用前台服务，也不使用 FCM；<br>layer `B3` \| Depends: ZE-531, ZE-542 \| Owned paths: `android/.../lifecycle/ResumeWorker.kt`, `android/app/src/main/AndroidManifest.xml` \| Validators: `ResumeWorkerTest` 中有通知断言；生命周期校验脚本确认没有前台服务 \| Estimated LOC: 350 |
-| ZE-590 | B4 | self-tested | yes | ZE-104, ZE-514, ZE-517, ZE-542 | ZE-590@blueprint-4.0.0 | handoff | 600 | 生产端到端测试：`zenpi host serve` 配合 ZE-104 的脚本化 provider，Kotlin JVM 客户端走真实 TCP，依次完成配对 → prompt → 流式输出 → 审批 → 断线 → 回放，全程零重复、零遗漏 |
+| ZE-590 | B4 | accepted | no | ZE-104, ZE-514, ZE-517, ZE-542 | ZE-590@blueprint-4.0.0 | accepted | 600 | 生产端到端测试：`zenpi host serve` 配合 ZE-104 的脚本化 provider，Kotlin JVM 客户端走真实 TCP，依次完成配对 → prompt → 流式输出 → 审批 → 断线 → 回放，全程零重复、零遗漏 |
 | ZE-591 | B4 | open | yes | ZE-530, ZE-531, ZE-532, ZE-533, ZE-534, ZE-535, ZE-544 | — | — | 500 | Android 体验验收，覆盖以下必做要求：<br>• 审批通知在 2 s 内送达；<br>• 从通知深链进入会话不超过 1 s；<br>• 审批条在任何滚动位置都可见；<br>• 1 万轮对话滚动 p95 ≥ 55 fps（Macrobenchmark）；<br>• 断网 30 s 后重连，零重复、零遗漏，草稿保留；<br>• 离线时 500 ms 内渲染出缓存内容；<br>• 主要操作都在屏幕下方 40% 区域内；<br>layer `B4` \| Depends: ZE-530, ZE-531, ZE-532, ZE-533, ZE-534, ZE-535, ZE-544 \| Owned paths: `android/app/src/androidTest/`, `android/macrobenchmark/` \| Validators: 上述每一条都有对应的 instrumentation 或 Macrobenchmark 断言 \| Estimated LOC: 500 |
 | ZE-592 | B4 | open | no | ZE-590, ZE-591, ZE-516 | — | — | 200 | 真机验收：<br>• 一台 API 35 模拟器；<br>• 一台实体手机连实体局域网：摄像头扫码、prompt、审批、Wi-Fi 断开后恢复、撤销；<br>• 走 Tailscale 叠加网完成一次完整运行；<br>layer `B4` \| Depends: ZE-590, ZE-591, ZE-516 \| Owned paths: `Docs/quality/ze/ZE-592.json` \| Validators: 回执中 `physical_phone_lan_verified=true`，且 `overlay_verified=true` \| Estimated LOC: 200 |
 | ZE-593 | B4 | open | no | ZE-592 | — | — | 150 | 发布：<br>• 签名的 sideload APK，`apksigner verify` 通过，并做安装和升级冒烟测试；<br>• 用户指南精简为只写已验收的能力和离网用法；<br>• 记录 fat LTO 对 G-BUILD 的影响；<br>layer `B4` \| Depends: ZE-592 \| Owned paths: `android/app/build.gradle.kts`, `Docs/stage2_android2unix_user_guide.md`, `Cargo.toml` \| Validators: `apksigner verify`；G-BP \| Estimated LOC: 150 |
