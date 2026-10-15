@@ -154,7 +154,11 @@ jobs:
           mkdir -p Docs/quality/load
           # §2.1 assumes 16 cores; the 4-core runner spreads the same 200
           # tasks over 4 s (the default ramp is N/200 s) to keep per-core load comparable.
-          python3 tools/load_agents.py --agents 200 --ramp 4 --report Docs/quality/load/g-load-200.json
+          # Per-round latency on a shared runner varies 18-630 ms between runs, so
+          # the PR gate keeps a coarse 1 s bound that still catches stalls like
+          # F_FULLFSYNC; the resource checks keep their §2.1 budgets.
+          python3 tools/load_agents.py --agents 200 --ramp 4 --round-overhead-budget-ms 1000 \
+            --report Docs/quality/load/g-load-200.json
 
       - name: Upload Stage 1 host evidence
         if: ${{ always() }}

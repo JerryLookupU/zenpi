@@ -339,6 +339,12 @@ def main() -> int:
         help="seconds over which prompts are sent (default N/200; 0 = lockstep)",
     )
     parser.add_argument("--report", default="")
+    parser.add_argument(
+        "--round-overhead-budget-ms",
+        type=float,
+        default=100.0,
+        help="§2.1 budget; shared CI runners use a coarse bound (latency there is runner noise)",
+    )
     args = parser.parse_args()
     args.binary = str(Path(args.binary).resolve())
     if not Path(args.binary).exists():
@@ -444,7 +450,7 @@ def main() -> int:
         "idle_threads_le_3": idle["threads_max"] <= 3,
         "active_threads_le_5": waiting.get("threads_max", 99) <= 5,
         "fds_le_16": max(idle["fds_max"], waiting.get("fds_max", 0)) <= 16,
-        "round_overhead_p99_le_100ms": tasks["round_overhead_ms_p99"] <= 100,
+        "round_overhead_p99_within_budget": tasks["round_overhead_ms_p99"] <= args.round_overhead_budget_ms,
     }
     report["checks"] = checks
     report["pass"] = all(checks.values())
