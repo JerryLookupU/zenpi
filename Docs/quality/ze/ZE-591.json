@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-591",
+  "claim_id": "ZE-591@blueprint-4.0.0",
+  "from": "worker",
+  "to": "master",
+  "summary": "Android experience acceptance: one device assertion per requirement. android/app/src/androidTest/java/zenpi/ExperienceAcceptanceTest.kt (no host; production AppShell + ZenpiTheme on the device): approvalBarStaysOnScreenAtEveryScrollPositionOfTenThousandTurns (10,000-turn session with a pending approval; scrolled to the newest, turn 5000, the oldest, 5 flings each way, newest again; the bar and its Allow/Deny stay displayed and fully on screen) and primaryActionsSitInTheBottomFortyPercentOfTheScreen (composer, Send, / and @ triggers, approval bar Review/Deny/Allow, sheet Deny/Allow once, Stop while running: top edge in screen coordinates >= 60% of the screen height). android/app/src/androidTest/java/zenpi/HostExperienceTest.kt (production host: zenpi host serve + the shared scripted provider from the new test fixture tests/ze591_android_host.rs, over adb reverse; skipped without the ze591_invite argument; pairs into the production store/key that MainActivity and ResumeWorker use): a_ background approval notification within 2 s of the background read (ResumeWorker) starting; b_ tapping the approval notification shows that session with its approval bar within 1 s (3 taps); c_ 30 s in airplane mode while the desktop answers 3 prompts, then reconnect: the app's turns equal a fresh host snapshot (no duplicate, no gap), each offline prompt once on screen, draft kept. New Gradle module android/macrobenchmark (com.android.test, androidx.benchmark 1.3.4 + uiautomator 2.3.0) against a new :app benchmark build type (release + R8, debug-signed, profileable) whose benchmark-only source set (android/macrobenchmark/fixture: ConversationFixtureActivity with 10,000 turns in the production AppShell, CacheSeedActivity writing MainActivity's encrypted store) never ships in debug/release: ConversationScrollBenchmark (FrameTimingMetric, CompilationMode.None, 5 iterations x 16 flings; asserts p95 >= 55 fps from P95 frameOverrunMs and P95 frameDurationCpuMs <= 1000/55 ms) and OfflineCacheBenchmark (airplane mode, cold process, launch intent -> newest cached turn on screen <= 500 ms). Result: 5 of 7 requirements pass on ZenpiStage2Api35; the approval-notification requirement FAILS on a product defect (below); the deep link passes only with the notification posted by ApprovalNotifier.sync itself, because the background read never posts it.",
+  "changed_files": [
+    "android/app/build.gradle.kts",
+    "android/app/src/androidTest/java/zenpi/ExperienceAcceptanceTest.kt",
+    "android/app/src/androidTest/java/zenpi/HostExperienceTest.kt",
+    "android/build.gradle.kts",
+    "android/macrobenchmark/build.gradle.kts",
+    "android/macrobenchmark/fixture/AndroidManifest.xml",
+    "android/macrobenchmark/fixture/java/zenpi/benchmark/CacheSeedActivity.kt",
+    "android/macrobenchmark/fixture/java/zenpi/benchmark/ConversationFixtureActivity.kt",
+    "android/macrobenchmark/src/main/AndroidManifest.xml",
+    "android/macrobenchmark/src/main/java/zenpi/macrobenchmark/ConversationScrollBenchmark.kt",
+    "android/macrobenchmark/src/main/java/zenpi/macrobenchmark/OfflineCacheBenchmark.kt",
+    "android/settings.gradle.kts",
+    "tests/ze591_android_host.rs",
+    "Docs/quality/ze/ZE-591.json"
+  ],
+  "diff_stat": "14 files changed, 917 insertions(+), 0 deletions(-)",
+  "commands_run": [
+    "git fetch; HEAD == origin/main 3c03291",
+    "CARGO_TARGET_DIR=.claude/targets/ze591 CARGO_INCREMENTAL=0 cargo test --locked --features remote --test ze591_android_host --no-run",
+    "ZE591_PORT=47591 ZE591_SECONDS=1500 cargo test --locked --features remote --test ze591_android_host -- --ignored --nocapture (fixture, background); adb reverse tcp:47591 tcp:47591",
+    "emulator -avd ZenpiStage2Api35 -no-snapshot-save -no-boot-anim -no-audio -no-window -gpu host; adb root; stop goldfish-logcat; adb unroot; svc wifi enable; cmd wifi connect-network AndroidWifi open; wm size reset; wm density reset",
+    "cd android && ./gradlew :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=zenpi.ExperienceAcceptanceTest",
+    "cd android && ./gradlew :app:installDebug :app:installDebugAndroidTest && adb shell pm clear app.zenpi.android && adb shell am instrument -w -r -e ze591_invite '<invite>' -e class zenpi.HostExperienceTest app.zenpi.android.test/androidx.test.runner.AndroidJUnitRunner",
+    "cd android && ./gradlew :macrobenchmark:connectedBenchmarkAndroidTest",
+    "cd android && ./gradlew :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=zenpi.ConversationJankTest (emulator baseline check)",
+    "cd android && ./gradlew :app:testDebugUnitTest lint verifyRoborazziDebug",
+    "rustfmt --edition 2024 tests/ze591_android_host.rs; cargo fmt --all -- --check; cargo clippy --locked --features remote --test ze591_android_host -- -D warnings; python3 tools/check_modes.py",
+    "python3 tools/validate_blueprint_v2.py",
+    "restore: adb reverse --remove-all; svc wifi disable; uninstall test packages; wm size 320x640; wm density 160; adb emu kill; rm -rf .claude/targets/ze591; ./gradlew clean"
+  ],
+  "validation_result": {
+    "device": "ZenpiStage2Api35 (API 35 arm64 emulator, 4 cores, 2 GB, 1080x1920 @420 dpi, 60 Hz, headless -gpu host)",
+    "approval_notification_within_2s": {
+      "status": "FAIL (product defect, not fixed here: outside owned paths)",
+      "assertion": "HostExperienceTest.a_backgroundApprovalNotificationWithinTwoSeconds",
+      "measured": "no notification within 10 s; ResumeWorker ran once and returned RETRY (ENQUEUED after 1 attempt); the same host read as ResumeWorker's fails with 'Host request refused: busy' (the same in every run)",
+      "cause": "while a turn waits for its approval the job thread holds the session owner, and the host refuses resume/inspect transcript reads with busy (src/remote/host_adapter.rs owner.try_lock() for Message::Resume and Inspect); ResumeWorker's read is not a subscription, so HostClient's busy fallback (TranscriptRestorePolicy.busyView, subscribe only) does not apply and the worker retries with 30 s backoff and gives up. The foreground app still sees the queue (its subscription takes the busy view from the workspace listing). ZE-544's own test only exercised ApprovalNotifier.sync without a host.",
+      "posting_part": "ApprovalNotifier.sync -> notification visible in the open shade: 816, 869, 787 ms (b_)"
+    },
+    "deep_link_within_1s": {
+      "status": "PASS (with the notification posted by ApprovalNotifier.sync for the live approval, since the background read cannot post it)",
+      "assertion": "HostExperienceTest.b_notificationDeepLinkShowsTheSessionWithinOneSecond",
+      "measured_ms": [
+        788,
+        698,
+        686
+      ],
+      "detail": "tap in the shade -> MainActivity resumed 117/82/95 ms -> approval bar of that session on screen; selected project and session equal the approval's. The approval's own prompt turn is not shown meanwhile (transcript read busy, same cause as above).",
+      "earlier_runs_ms": "664-806 when the shade had settled; 1681-1864 when the tap landed during the shade's opening animation (MainActivity resumed only after ~1.07 s), so the test waits for the shade to idle before posting"
+    },
+    "approval_bar_visible_at_any_scroll_position": {
+      "status": "PASS",
+      "assertion": "ExperienceAcceptanceTest.approvalBarStaysOnScreenAtEveryScrollPositionOfTenThousandTurns",
+      "measured": "bar top=1500 bottom=1647 of 1920 px at newest, turn 5000, oldest, after 5 flings toward newer, after 5 flings toward older, newest again"
+    },
+    "scroll_10000_turns_p95_at_least_55fps": {
+      "status": "PASS",
+      "assertion": "macrobenchmark ConversationScrollBenchmark.tenThousandTurnConversationScrollsAtP95AtLeast55Fps",
+      "measured": "frames=2404 (5 iterations x 16 flings), frameDurationCpuMs P50 3.24 P90 4.13 P95 4.54 P99 5.51, frameOverrunMs P50 -11.90 P90 -10.25 P95 -9.58 P99 -8.17, p95 = 60.0 fps (display-capped)",
+      "build": "benchmark build type (R8, not debuggable), CompilationMode.None (JIT only, like a fresh sideload)"
+    },
+    "reconnect_after_30s_offline": {
+      "status": "PASS",
+      "assertion": "HostExperienceTest.c_reconnectAfterThirtySecondsOfflineHasNoDuplicateOrMissingTurnAndKeepsTheDraft",
+      "measured": "offline 30001 ms (airplane mode; the desktop ran 3 prompts meanwhile); caught up 1176 ms after Wi-Fi returned (earlier runs 470, 1134 ms); turns 4 -> 10 == fresh host snapshot 10, 0 duplicate ids, 0 missing, each offline prompt once in state and once on screen; composer draft unchanged"
+    },
+    "offline_cached_render_within_500ms": {
+      "status": "PASS",
+      "assertion": "macrobenchmark OfflineCacheBenchmark.offlineColdLaunchRendersTheCachedConversationWithin500Ms",
+      "measured_ms": [
+        322,
+        340,
+        320,
+        333,
+        330
+      ],
+      "detail": "airplane mode, cold process, benchmark build, JIT only; launch intent -> newest of 64 cached turns on screen with the 'Network unavailable' stale label; timeToInitialDisplay median 247 ms"
+    },
+    "primary_actions_in_bottom_40_percent": {
+      "status": "PASS",
+      "assertion": "ExperienceAcceptanceTest.primaryActionsSitInTheBottomFortyPercentOfTheScreen",
+      "measured": "top edge / screen height 1920: composer 86.9%, send 88.5%, / 88.5%, @ 88.5%, bar review 78.1%, bar deny 79.3%, bar allow 79.3%, sheet deny 88.5%, sheet allow once 88.5%, stop 88.5% (threshold >= 60%)"
+    },
+    "testDebugUnitTest": "pass: 740 tests, 0 failures, 0 errors, 21 skipped",
+    "lint": "pass: 0 errors, 16 warnings (15 pre-existing + GradleDependency 'uiautomator 2.4.0 available'; 2.4.0 is not taken: Kotlin 1.9 toolchain)",
+    "verifyRoborazziDebug": "pass (no golden changes)",
+    "rust_fixture": "cargo fmt --all --check pass; clippy --features remote --test ze591_android_host -D warnings pass; check_modes pass",
+    "validate_blueprint_v2": "pass",
+    "emulator_baseline": "ConversationJankTest (ZE-530) 961 frames, 0.31% janky, p95 20.8 ms on the headless emulator; with the emulator window open on macOS it was 64% janky (p50 35 ms) and the scroll macrobenchmark 14 fps, so all frame numbers here are from -no-window"
+  },
+  "notes": "Deviations / decisions: (1) Owned paths are androidTest/ and macrobenchmark/. Outside them: android/settings.gradle.kts (include :macrobenchmark), android/build.gradle.kts (com.android.test plugin version), android/app/build.gradle.kts (benchmark build type initWith(release), debug-signed; its source set points at android/macrobenchmark/fixture so the fixture files live in the owned path and never reach debug/release; androidTestImplementation uiautomator 2.3.0), and tests/ze591_android_host.rs, a #[ignore] Rust test used only as the host fixture (production zenpi host serve + tests/support/scripted FakeServer; no src/ change). (2) 10,000 turns: the live app keeps a 64-turn display tail (HostClient displayTail), so a 10,000-turn conversation exists only through the fixture activity rendering the production AppShell; the bar test uses the same size in-process. (3) The scroll benchmark calls androidx.benchmark's macrobenchmarkWithStartupMode (what MacrobenchmarkRule.measureRepeated calls; RestrictTo, suppressed) because measureRepeated returns no metrics to assert on. p95 fps = 1000 / (refresh period + max(0, P95 frameOverrunMs)). (4) Offline cached render is measured in the benchmark build (Macrobenchmark), not the debug androidTest: on the debug APK the first composition alone skipped 43 frames (~1.07-1.5 s), which says nothing about the shipped build. UiAutomator timings set Configurator.waitForIdleTimeout = 0; its default 500 ms quiet wait otherwise added ~600-900 ms to every on-screen timing. (5) Approval notification: production starts the background read 30 s after onStop with no push (FCM is LATER, blueprint 3.1), so the 2 s is measured from the read's start (ResumeScheduler.enqueue with delay 0). It fails because of the busy refusal described in validation_result; fixing it needs a host or HostClient/ResumeWorker change (e.g. let the background read fall back to the workspace listing on busy, as the subscription does) and belongs to ZE-544's owner, not to this test item. (6) The deep-link test posts the notification with ApprovalNotifier.sync for the approval the foreground app saw, so it measures the tap -> session path independently of (5). (7) Emulator environment (restored afterwards): headless -no-window -gpu host (the macOS window made every frame ~2x slower), goldfish-logcat (serial console logging, ~19% CPU) stopped via adb root, wm size/density override 320x640@160 found on the AVD reset to physical 1080x1920@420 for the runs and put back afterwards, Wi-Fi joined (the app dials only over Wi-Fi/Ethernet) and disabled afterwards; the host is reached on 127.0.0.1 through adb reverse, which keeps working in airplane mode. (8) Emulator caveat: frame timing and launch times come from an emulator with host-translated GL; ZE-592 owns the physical-phone receipt. (9) Estimated 500 LOC; 815 added (HostExperienceTest 314: host pairing, busy/disconnect retries of the desktop-side client and the airplane/Wi-Fi handling are needed to drive the real host).",
+  "created_at": "2026-10-15T03:16:37Z",
+  "digest": "55f612afcd34d6cc2651000bc078114b1020455018f5ca4366686664feaee51d"
+}

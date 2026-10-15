@@ -73,6 +73,17 @@ android {
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
             isDebuggable = false
         }
+        // ZE-591 Macrobenchmark target: the release build (R8, not debuggable) signed with the
+        // debug key, plus the benchmark-only fixture under android/macrobenchmark/fixture/.
+        create("benchmark") {
+            initWith(getByName("release"))
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += "release"
+        }
+    }
+    sourceSets.getByName("benchmark") {
+        java.srcDir("../macrobenchmark/fixture/java")
+        manifest.srcFile("../macrobenchmark/fixture/AndroidManifest.xml")
     }
     packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
 }
@@ -101,5 +112,7 @@ dependencies {
     androidTestImplementation(platform("androidx.compose:compose-bom:2025.05.01"))
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
     androidTestImplementation("androidx.compose.ui:ui-test-junit4-accessibility")
+    // ZE-591: the notification shade and the deep-linked MainActivity are driven through UiAutomator.
+    androidTestImplementation("androidx.test.uiautomator:uiautomator:2.3.0")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

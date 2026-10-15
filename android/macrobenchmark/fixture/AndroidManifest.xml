@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- ZE-591: merged into the :app benchmark build type only (never debug or release). -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
+    <application>
+        <profileable android:shell="true" tools:targetApi="29" />
+        <activity android:name="zenpi.benchmark.ConversationFixtureActivity" android:exported="true" />
+        <activity android:name="zenpi.benchmark.CacheSeedActivity" android:exported="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" android:noHistory="true" />
+    </application>
+</manifest>
