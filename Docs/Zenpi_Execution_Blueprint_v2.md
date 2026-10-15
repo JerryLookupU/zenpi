@@ -320,7 +320,7 @@ python3 tools/check_modes.py &&
 - [x] **ZE-541** — 监听器加固：<br>• accept 改为事件驱动，不再每 10 ms 轮询；<br>• 每个 IP 只给 1 个未认证连接槽，未认证阶段总时限 5 s；<br>• 为已认证连接预留槽位；<br>layer `B3` | Depends: ZE-513 | Owned paths: `src/remote/listener.rs` | Validators: 有 N 个半开连接时，已认证客户端仍能连上；空闲时每秒唤醒 0 次 | Estimated LOC: 270
 - [x] **ZE-542** — 持久认证连接：订阅复用同一条 TLS 会话，空闲时每分钟握手不超过 1 次；订阅循环改由 wakeup 驱动，不再每 250 ms 内部调度 4 次；layer `B3` | Depends: ZE-541, ZE-512 | Owned paths: `src/remote/subscription.rs`, `src/remote/listener.rs`, `android/.../transport/HostClient.kt` | Validators: `RemoteProtocolCorpusTest`；空闲时握手计数 ≤ 1 次/分钟；断开重连后从 cursor 续传 | Estimated LOC: 800
 - [x] **ZE-543** — 设备注册表按 mtime 缓存，不再在每一帧都 flock 并解析一遍；撤销仍在下一帧生效；layer `B3` | Depends: ZE-514 | Owned paths: `src/remote/auth.rs` | Validators: 1000 帧只读取 1 次注册表；撤销测试通过 | Estimated LOC: 150
-- [ ] **ZE-544** — 后台审批通知：<br>• 申请 `POST_NOTIFICATIONS` 权限；<br>• `ResumeWorker` 读到有待审批时，发一条高优先级通知，带"拒绝 / 允许一次"按钮（需要解锁），点击后深链到对应会话；<br>• 审批在别处处理后，1 s 内撤销这条通知；<br>• 不使用前台服务，也不使用 FCM；<br>layer `B3` | Depends: ZE-531, ZE-542 | Owned paths: `android/.../lifecycle/ResumeWorker.kt`, `android/app/src/main/AndroidManifest.xml` | Validators: `ResumeWorkerTest` 中有通知断言；生命周期校验脚本确认没有前台服务 | Estimated LOC: 350
+- [_] **ZE-544** — 后台审批通知：<br>• 申请 `POST_NOTIFICATIONS` 权限；<br>• `ResumeWorker` 读到有待审批时，发一条高优先级通知，带"拒绝 / 允许一次"按钮（需要解锁），点击后深链到对应会话；<br>• 审批在别处处理后，1 s 内撤销这条通知；<br>• 不使用前台服务，也不使用 FCM；<br>layer `B3` | Depends: ZE-531, ZE-542 | Owned paths: `android/.../lifecycle/ResumeWorker.kt`, `android/app/src/main/AndroidManifest.xml` | Validators: `ResumeWorkerTest` 中有通知断言；生命周期校验脚本确认没有前台服务 | Estimated LOC: 350
 
 ### B4 — 验收与发布
 
