@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-542",
+  "claim_id": "ZE-542@blueprint-4.0.0",
+  "from": "worker",
+  "to": "master",
+  "summary": "Host: a subscription page now waits on its session wakeup until the page deadline instead of re-sampling every 250 ms (4 owner dispatches + one wire batch per 250 ms), so an idle page costs its opening and closing batch only; a missing watcher (capacity) keeps the bounded poll. Android: HostClient.inspect keeps the authenticated TLS session for consecutive 3 s subscription pages (fresh reducer per page from the held projection, 15 s watchdog re-armed per page) and returns to PairingViewModel's reconnect loop only after a 60 s reuse window (SubscriptionSession), so an idle phone handshakes at most once a minute; a reconnect resumes from the held cursor as before.",
+  "changed_files": [
+    "src/remote/subscription.rs",
+    "android/app/src/main/java/zenpi/transport/HostClient.kt",
+    "android/app/src/test/java/zenpi/SubscriptionSessionTest.kt",
+    "tests/remote_subscription.rs",
+    "tests/remote_host_e2e.rs",
+    "Docs/quality/ze/ZE-542.json"
+  ],
+  "diff_stat": "6 files changed, 361 insertions(+), 26 deletions(-)",
+  "commands_run": [
+    "cargo fmt --all -- --check",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo clippy --locked --all-targets --all-features -- -D warnings",
+    "cargo clippy --locked --all-targets --features remote -- -D warnings",
+    "git diff -U0 origin/main -- 'src/*.rs' 'src/**/*.rs' | grep -E '^\\+.*#!?\\[allow\\((dead_code|unused)' (no match)",
+    "cargo test --locked --all-features --test remote_subscription idle_page -- --nocapture (A/B: with the wakeup wait disabled vs enabled)",
+    "cargo test --locked --all-features --no-fail-fast --test remote_listener --test remote_subscription --test remote_subscription_tls --test remote_auth --test remote_device_grants --test remote_security --test remote_faults --test remote_concurrency --test remote_android_ack_interop --test remote_android_approval_interop --test remote_android_model_interop --test remote_android_session_interop --test remote_android_terminal_interop --test remote_android_workspace_interop --test remote_android_worktree_interop --test remote_android_interop",
+    "cargo test --locked --all-features --test remote_host_e2e -- --include-ignored",
+    "tools/build_android_interop_classes.sh --run (all 8 remote_android_*interop suites with --ignored against the compiled Kotlin classes)",
+    "cargo test --locked --all-features --no-fail-fast",
+    "cd android && ./gradlew :app:testDebugUnitTest lint verifyRoborazziDebug",
+    "cd android && ./gradlew clean"
+  ],
+  "validation_result": {
+    "fmt": "ok",
+    "clippy_default": "ok",
+    "clippy_all_features": "ok",
+    "clippy_remote": "ok",
+    "new_allow_dead_code_or_unused": "none",
+    "remote_suites": "all passed",
+    "remote_host_e2e_include_ignored": "8 passed (new: production_subscription_pages_share_one_tls_session_and_resume_from_cursor)",
+    "android_interop_ignored_lane": "8 suites passed",
+    "full_all_features": "161 test binaries, 0 failed",
+    "android_gradle": "BUILD SUCCESSFUL; testDebugUnitTest 737 tests, 0 failures; lint ok; verifyRoborazziDebug ok",
+    "validator_RemoteProtocolCorpusTest": "5 passed",
+    "validator_idle_handshakes_per_minute": "SubscriptionSessionTest: idle handshakes >= 60 s apart (<= 10 in 10 min); before: one handshake per 3 s page plus 2 s idle delay (about 12/min)",
+    "validator_resume_from_cursor_after_reconnect": "remote_host_e2e production_subscription_pages_share_one_tls_session_and_resume_from_cursor: 3 consecutive pages on one TLS session, then a new session from the cursor replays nothing; existing remote_subscription cursor tests and Android ReplayTest/ResumeReadPolicyTest pass",
+    "idle_1000ms_page_samples_before": 5,
+    "idle_1000ms_page_samples_after": 2,
+    "idle_3000ms_android_page_before": "13 batches = 52 owner dispatches and 13 wire frames",
+    "idle_3000ms_android_page_after": "2 batches = 8 owner dispatches and 2 wire frames"
+  },
+  "notes": "src/remote/listener.rs (also owned) needed no change: ZE-541's authenticated slots and the existing 30 s per-request / 7 s per-page host deadlines already carry consecutive subscribe requests on one connection. wakeup.rs is unchanged; subscription.rs waits on the signal directly. View changes that never notify the session wakeup are now picked up at the next page (<= 3 s) rather than within 250 ms; durable turns, prompt/worker progress, live text, approvals, terminal and workspace changes all notify today. The Android reuse window is a bounded 60 s rather than unlimited so the connection, OperationDeadline (90 s with subscribe) and the full workspace re-read stay bounded; a user command still cancels the subscription and opens its own connection as before. New file android/app/src/test/java/zenpi/SubscriptionSessionTest.kt (outside the owned path list, test only). tests/remote_host_e2e.rs: authenticated_workspace_list split into authenticated_stream + workspace_list for reuse. No new unwrap/expect/panic in non-test code; no unsafe; no new Arc<Mutex>.",
+  "created_at": "2026-10-15T00:55:09Z",
+  "digest": "8bb8ec17ecc1c5c7b2c32921df22507f0c3540329cf30bbc9aeac8ef44b42605"
+}

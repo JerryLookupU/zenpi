@@ -308,7 +308,14 @@ pub fn serve_with_view(
             return Ok(());
         }
         cursor = next;
-        super::wakeup::wait(wakeup.as_deref(), observed, deadline);
+        // Wakeup-driven: sample again only when the session changes or the page
+        // ends. Without a watcher (capacity), fall back to the bounded poll.
+        match wakeup.as_deref() {
+            Some(signal) => {
+                signal.wait(observed, deadline.saturating_duration_since(Instant::now()));
+            }
+            None => super::wakeup::wait(None, observed, deadline),
+        }
     }
 }
 

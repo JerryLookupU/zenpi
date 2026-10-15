@@ -940,3 +940,68 @@ fn live_text_streams_as_ordered_token_deltas_and_replay_neither_repeats_nor_skip
     assert!(apply_live_deltas(&mut held, &frames).is_empty());
     assert_eq!(held, None);
 }
+
+#[test]
+fn idle_page_samples_only_at_start_and_end_and_a_wakeup_resamples_at_once() {
+    use std::time::{Duration, Instant};
+    fn idle(resume: Envelope) -> Envelope {
+        let mut response = Envelope::new(
+            Channel::Control,
+            Message::Response {
+                result: json!({
+                    "cursor":{"session_id":"idle-wakeup","next_sequence":0}, "wire_frames":[], "snapshot_required":false,"has_more":false
+                }),
+            },
+        );
+        response.id = resume.id;
+        response.execution_state = Some(ExecutionState::Succeeded);
+        response
+    }
+    let mut request = request();
+    if let Message::Subscribe { cursor, .. } = &mut request.payload {
+        cursor.session_id = "idle-wakeup".into();
+    }
+    request.session_id = Some("idle-wakeup".into());
+    let (mut samples, mut batches) = (0, 0);
+    let started = Instant::now();
+    subscription::serve_with_view(
+        &request,
+        idle,
+        || {
+            samples += 1;
+            Ok(None)
+        },
+        |_| {
+            batches += 1;
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert!(started.elapsed() >= Duration::from_millis(1000));
+    // ZE-542: the opening batch and the closing one, not one per 250 ms.
+    eprintln!("idle 1000 ms page: {samples} samples, {batches} batches");
+    assert_eq!((samples, batches), (2, 2));
+
+    let started = Instant::now();
+    let notifier = std::thread::spawn(|| {
+        std::thread::sleep(Duration::from_millis(100));
+        zenpi::remote::wakeup::notify("idle-wakeup");
+    });
+    let (mut samples, mut resampled) = (0, None);
+    subscription::serve_with_view(
+        &request,
+        idle,
+        || {
+            samples += 1;
+            if samples == 2 {
+                resampled = Some(started.elapsed());
+            }
+            Ok(None)
+        },
+        |_| Ok(()),
+    )
+    .unwrap();
+    notifier.join().unwrap();
+    assert_eq!(samples, 3);
+    assert!(resampled.unwrap() < Duration::from_millis(600));
+}

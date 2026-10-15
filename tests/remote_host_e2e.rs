@@ -241,6 +241,31 @@ fn authenticated_workspace_list(
     key: &EcdsaKeyPair,
     device_id: &str,
 ) -> serde_json::Value {
+    workspace_list(&mut authenticated_stream(invite, identity, key, device_id))
+}
+
+fn workspace_list(stream: &mut TlsClient) -> serde_json::Value {
+    let mut list = Envelope::new(
+        Channel::Control,
+        Message::Request {
+            operation: zenpi::remote::protocol::Operation::WorkspaceList,
+            arguments: serde_json::json!({}),
+        },
+    );
+    list.id = Some("workspace-list".into());
+    write_frame(stream, &list).unwrap();
+    let Message::Response { result } = read_frame(stream).unwrap().unwrap().payload else {
+        panic!("workspace list")
+    };
+    result
+}
+
+fn authenticated_stream(
+    invite: &PairingInvite,
+    identity: &HostIdentity,
+    key: &EcdsaKeyPair,
+    device_id: &str,
+) -> TlsClient {
     let mut stream = tls_client(invite, identity);
     write_frame(
         &mut stream,
@@ -287,19 +312,46 @@ fn authenticated_workspace_list(
         read_frame(&mut stream).unwrap().unwrap().execution_state,
         Some(ExecutionState::Succeeded)
     );
-    let mut list = Envelope::new(
-        Channel::Control,
-        Message::Request {
-            operation: zenpi::remote::protocol::Operation::WorkspaceList,
-            arguments: serde_json::json!({}),
-        },
+    stream
+}
+
+/// One subscription page on an open session: (responses, events, final cursor).
+fn subscription_page(
+    stream: &mut TlsClient,
+    listing: &serde_json::Value,
+    page: usize,
+    from: u64,
+) -> (usize, usize, u64) {
+    let mut request = request_from_listing(
+        listing,
+        &format!("e2e-subscribe-{page}"),
+        Operation::Inspect,
+        serde_json::json!({}),
     );
-    list.id = Some("workspace-list".into());
-    write_frame(&mut stream, &list).unwrap();
-    let Message::Response { result } = read_frame(&mut stream).unwrap().unwrap().payload else {
-        panic!("workspace list")
+    request.payload = Message::Subscribe {
+        cursor: EventCursor {
+            session_id: request.session_id.clone().unwrap(),
+            next_sequence: from,
+        },
+        limit: 128,
+        duration_ms: 1000,
     };
-    result
+    write_frame(stream, &request).unwrap();
+    let (mut responses, mut events) = (0, 0);
+    loop {
+        let frame = read_frame(stream).unwrap().unwrap();
+        match &frame.payload {
+            Message::Event { .. } => events += 1,
+            Message::Response { result } => {
+                responses += 1;
+                if result["subscription_done"] == true {
+                    let cursor = result["cursor"]["next_sequence"].as_u64().unwrap();
+                    return (responses, events, cursor);
+                }
+            }
+            _ => panic!("unexpected subscription frame: {frame:?}"),
+        }
+    }
 }
 
 /// Authenticate and issue one request against the production listener. This
@@ -984,6 +1036,93 @@ fn production_attached_workspace_is_controllable_right_after_pairing() {
         .unwrap();
     assert_eq!(mounted["prompt_control"], true);
     assert_eq!(mounted["approval_control"], true);
+}
+
+/// ZE-542: consecutive subscription pages share one TLS session, an idle page
+/// is wakeup-driven (its opening and closing batch only), and a new session
+/// after a disconnect resumes from the cursor without replaying.
+#[test]
+#[ignore = "requires a real production TLS listener and LAN-capable sandbox"]
+fn production_subscription_pages_share_one_tls_session_and_resume_from_cursor() {
+    let temporary = tempfile::tempdir().unwrap();
+    let workspace = temporary.path().join("workspace");
+    let home = temporary.path().join("home");
+    std::fs::create_dir(&workspace).unwrap();
+    std::fs::create_dir(&home).unwrap();
+    std::fs::write(
+        home.join("config.toml"),
+        "backend=\"openai\"\nmodel=\"gpt-4.1\"\nbase_url=\"http://127.0.0.1:9\"\nwire_api=\"responses\"\nrequires_openai_auth=false\nmax_retries=0\n",
+    )
+    .unwrap();
+    let workspace = workspace.canonicalize().unwrap();
+    let session = temporary.path().join("session.jsonl");
+    let mut store = zenpi::session::SessionStore::open_in_workspace(&session, &workspace).unwrap();
+    for index in 0..3 {
+        store
+            .append_turn(zenpi::core::Turn::new(
+                format!("seed-{index}"),
+                zenpi::core::TurnRole::User,
+                "seeded",
+            ))
+            .unwrap();
+    }
+    drop(store);
+    let identity_path = temporary.path().join("identity.json");
+    let child = Command::new(env!("CARGO_BIN_EXE_zenpi"))
+        .args([
+            "host",
+            "pair",
+            "--bind",
+            "127.0.0.1:0",
+            "--duration-seconds",
+            "30",
+            "--identity",
+        ])
+        .arg(&identity_path)
+        .arg("--workspace")
+        .arg(&workspace)
+        .arg("--session")
+        .arg(&session)
+        .env_clear()
+        .env("HOME", &home)
+        .env("ZENPI_HOME", &home)
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let (_child, line) = read_invite_with_timeout(child);
+    let invite = PairingInvite::from_uri(line.trim(), unix_seconds().unwrap()).unwrap();
+    let identity = HostIdentity::load_or_create(&identity_path).unwrap();
+    let random = ring::rand::SystemRandom::new();
+    let document = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &random).unwrap();
+    let key = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, document.as_ref(), &random)
+        .unwrap();
+    let Message::Response { result } = tls_pair(&invite, &identity, &key, "e2e-subscribe").payload
+    else {
+        panic!("pairing response missing");
+    };
+    let device = result["device_id"].as_str().unwrap().to_owned();
+    let mut stream = authenticated_stream(&invite, &identity, &key, &device);
+    let listing = workspace_list(&mut stream);
+    let (responses, seeded, mut cursor) = subscription_page(&mut stream, &listing, 0, 0);
+    assert_eq!((responses, seeded), (2, 3));
+    for page in 1..3 {
+        let started = Instant::now();
+        let (responses, events, next) = subscription_page(&mut stream, &listing, page, cursor);
+        assert!(started.elapsed() >= Duration::from_millis(1000));
+        assert_eq!((responses, events, next), (2, 0, cursor));
+        cursor = next;
+    }
+    drop(stream);
+    let mut stream = authenticated_stream(&invite, &identity, &key, &device);
+    assert_eq!(
+        subscription_page(&mut stream, &listing, 3, cursor),
+        (2, 0, cursor)
+    );
+    let (_, replayed, _) = subscription_page(&mut stream, &listing, 4, 0);
+    assert_eq!(replayed, seeded);
 }
 
 /// Requires a real loopback listener and filesystem/network permissions.
