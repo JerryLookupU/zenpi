@@ -5,11 +5,15 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
+import zenpi.lifecycle.ApprovalNotifier
+import zenpi.pairing.PairingPhase
 import zenpi.pairing.PairingViewModel
 import zenpi.transport.RemoteApproval
 import zenpi.ui.AppShell
@@ -23,6 +27,13 @@ class MainActivity : ComponentActivity() {
         model.scanResult(result.contents,
             missingPermission = result.originalIntent?.getBooleanExtra("MISSING_CAMERA_PERMISSION", false) == true,
             timedOut = result.originalIntent?.getBooleanExtra("TIMEOUT", false) == true)
+    }
+    // ZE-544: background approvals arrive as a notification; asked once a paired host is connected.
+    private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
+    private fun requestNotifications() {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU
+            && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED)
+            notificationPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
     }
     private fun takePairingIntent(incoming: Intent): String? {
         val uri = incoming.dataString
@@ -46,10 +57,13 @@ class MainActivity : ComponentActivity() {
         // Conversations, diffs and approvals stay out of screenshots, screen recording and the recents thumbnail.
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
         if (savedInstanceState == null) uri?.let(model::acceptUri)
+        if (savedInstanceState == null) ApprovalNotifier.target(intent)?.let(model::openApproval)
         setContent {
             ZenpiTheme {
                 val state by model.state.collectAsState()
                 val actions = remember { ViewModelActions(model, ::scan) }
+                val paired = state.host != null && state.phase == PairingPhase.CONNECTED
+                LaunchedEffect(paired) { if (paired) requestNotifications() }
                 AppShell(state, actions)
             }
         }
@@ -58,8 +72,9 @@ class MainActivity : ComponentActivity() {
         val uri = takePairingIntent(intent)
         super.onNewIntent(getIntent())
         uri?.let(model::acceptUri)
+        ApprovalNotifier.target(intent)?.let(model::openApproval)
     }
-    override fun onStart() { super.onStart(); zenpi.lifecycle.ResumeScheduler.cancel(this); network.start(); model.setForeground(true) }
+    override fun onStart() { super.onStart(); zenpi.lifecycle.ResumeScheduler.cancel(this); ApprovalNotifier.cancel(this); network.start(); model.setForeground(true) }
     override fun onStop() { network.stop(); model.setForeground(false); zenpi.lifecycle.ResumeScheduler.enqueue(this); super.onStop() }
 }
 

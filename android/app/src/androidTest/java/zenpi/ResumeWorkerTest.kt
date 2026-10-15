@@ -6,6 +6,7 @@ import androidx.work.WorkManager
 import kotlinx.coroutines.*
 import org.junit.Assert.*
 import org.junit.Test
+import zenpi.lifecycle.ApprovalNotifier
 import zenpi.lifecycle.ResumeScheduler
 import zenpi.security.*
 import zenpi.transport.*
@@ -14,6 +15,36 @@ import java.util.concurrent.TimeUnit
 
 class ResumeWorkerTest {
     private fun hostClient() = HostClient(LanSocketRouting(InstrumentationRegistry.getInstrumentation().targetContext)::bind)
+
+    /** ZE-544: what ResumeWorker posts for a pending approval, and its withdrawal once the queue drains. */
+    @Test fun pendingApprovalNotificationIsWithdrawnWithinOneSecondWithoutForegroundService() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
+        if (android.os.Build.VERSION.SDK_INT >= 33)
+            instrumentation.uiAutomation.grantRuntimePermission(context.packageName, android.Manifest.permission.POST_NOTIFICATIONS)
+        val namespace = "ze544.${System.nanoTime()}"
+        val approval = RemoteApproval("r-544", "p", "s", "t", "c", "bash", "command_execution", "agent_tool", "a".repeat(64))
+        val project = RemoteProject("p", "zenpi", "s", approvalControl = true, pendingApprovals = listOf(approval))
+        val pending = HostProjection(listOf(project), "p", "s", null, emptyList(), null, false)
+        val manager = context.getSystemService(android.app.NotificationManager::class.java)
+        fun posted() = manager.activeNotifications.filter { it.tag == namespace && it.id == ApprovalNotifier.ID }
+        try {
+            assertTrue(ApprovalNotifier.sync(context, namespace, pending))
+            val shown = posted().single().notification
+            assertEquals(android.app.NotificationManager.IMPORTANCE_HIGH, manager.getNotificationChannel(shown.channelId).importance)
+            assertEquals(listOf("Deny", "Allow once"), shown.actions.map { it.title.toString() })
+            assertTrue(shown.actions.all { it.isAuthenticationRequired })
+            assertNotNull(shown.contentIntent)
+            val handled = android.os.SystemClock.elapsedRealtime()
+            assertFalse(ApprovalNotifier.sync(context, namespace, pending.copy(projects = listOf(project.copy(pendingApprovals = emptyList())))))
+            while (posted().isNotEmpty()) { assertTrue(android.os.SystemClock.elapsedRealtime() - handled < 1_000); Thread.sleep(10) }
+        } finally { ApprovalNotifier.cancel(context, namespace) }
+        val info = context.packageManager.getPackageInfo(context.packageName,
+            android.content.pm.PackageManager.PackageInfoFlags.of((android.content.pm.PackageManager.GET_SERVICES or android.content.pm.PackageManager.GET_PERMISSIONS).toLong()))
+        assertTrue(info.services.orEmpty().none { it.foregroundServiceType != 0 || it.name.endsWith("SystemForegroundService") })
+        assertFalse(info.requestedPermissions.orEmpty().any { it.startsWith("android.permission.FOREGROUND_SERVICE") })
+        assertTrue(android.Manifest.permission.POST_NOTIFICATIONS in info.requestedPermissions.orEmpty())
+    }
     @Test fun realWorkManagerReadsSharedHostAndNeverFlushesUnknownWrites() = runBlocking {
         val namespace = requireNotNull(InstrumentationRegistry.getArguments().getString("process_namespace"))
         val context = InstrumentationRegistry.getInstrumentation().targetContext
