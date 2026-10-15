@@ -4,6 +4,8 @@
 //! echo fixture; Android camera and physical-LAN gates live in the Android
 //! harness.
 
+mod support;
+
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use ring::signature::{ECDSA_P256_SHA256_ASN1_SIGNING, EcdsaKeyPair, KeyPair};
 use std::{
@@ -18,6 +20,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+use support::scripted::{FakeServer, Reply, text};
 use zenpi::remote::{
     auth::pairing_proof_message,
     frame::{read_frame, write_frame},
@@ -1323,4 +1326,161 @@ fn production_tailnet_hint_is_advertised_and_reachable() {
         .unwrap();
     let paired = tls_pair(&via_overlay, &identity, &key, "tailnet-phone");
     assert_eq!(paired.execution_state, Some(ExecutionState::Succeeded));
+}
+
+const E2E_PROMPT: &str = "ZE590 write approved.txt";
+const E2E_STREAM: &str = "streamed preview before the approval\n";
+const E2E_FINAL: &str = "ZE590_FINAL approved and written";
+
+/// The Android unit-test JVM classes: the interop lane's exports when present,
+/// otherwise the Gradle task `tools/build_android_interop_classes.sh` runs.
+fn android_jvm() -> (std::ffi::OsString, String) {
+    if let (Some(java), Ok(classpath)) = (
+        std::env::var_os("ZENPI_ANDROID_INTEROP_JAVA"),
+        std::env::var("ZENPI_ANDROID_INTEROP_CLASSPATH"),
+    ) {
+        return (java, classpath);
+    }
+    let android = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("android");
+    let status = Command::new(android.join("gradlew"))
+        .args(["--console=plain", "-q", ":app:writeInteropClasspath"])
+        .current_dir(&android)
+        .stdin(Stdio::null())
+        .status()
+        .expect("android/gradlew needs a JDK 17 and the Android SDK");
+    assert!(status.success(), "building the Android JVM classes failed");
+    let classpath =
+        std::fs::read_to_string(android.join("app/build/interop/classpath.txt")).unwrap();
+    assert!(!classpath.trim().is_empty(), "empty interop classpath");
+    let java = std::env::var_os("JAVA_HOME").map_or_else(
+        || "java".into(),
+        |home| {
+            std::path::Path::new(&home)
+                .join("bin/java")
+                .into_os_string()
+        },
+    );
+    (java, classpath.trim().to_owned())
+}
+
+/// ZE-590: `zenpi host serve` with the ZE-104 scripted provider, driven by the
+/// production Kotlin client (PairingClient + HostClient on a JVM) over real
+/// TCP: pair -> prompt -> streaming output -> approval -> disconnect -> replay.
+/// The phone's final transcript must equal the host's durable journal exactly.
+#[test]
+fn production_serve_and_kotlin_client_pair_prompt_stream_approve_disconnect_replay() {
+    let (java, classpath) = android_jvm();
+    let write = zenpi::tools::ToolCall {
+        id: "ze590-write".into(),
+        name: "write_file".into(),
+        arguments: serde_json::json!({"path":"approved.txt","content":"APPROVED_CONTENT"}),
+    };
+    let provider = FakeServer::start(
+        zenpi::backend::OpenAiWireApi::Responses,
+        [
+            Reply::TextThenCall(E2E_STREAM.into(), write),
+            text(E2E_FINAL),
+        ],
+    );
+    let temporary = tempfile::tempdir().unwrap();
+    let workspace = temporary.path().join("workspace");
+    let home = temporary.path().join("home");
+    std::fs::create_dir(&workspace).unwrap();
+    std::fs::create_dir(&home).unwrap();
+    std::fs::write(
+        home.join("config.toml"),
+        format!(
+            "backend=\"openai\"\nmodel=\"gpt-4.1\"\nbase_url=\"{}\"\nwire_api=\"responses\"\nrequires_openai_auth=false\nmax_retries=0\n",
+            provider.url
+        ),
+    )
+    .unwrap();
+    let workspace = workspace.canonicalize().unwrap();
+    let session = temporary.path().join("session.jsonl");
+    zenpi::session::SessionStore::open_in_workspace(&session, &workspace).unwrap();
+    let child = Command::new(env!("CARGO_BIN_EXE_zenpi"))
+        .args([
+            "host",
+            "serve",
+            "--bind",
+            "127.0.0.1:0",
+            "--duration-seconds",
+            "120",
+            "--identity",
+        ])
+        .arg(temporary.path().join("identity.json"))
+        .arg("--workspace")
+        .arg(&workspace)
+        .arg("--session")
+        .arg(&session)
+        .env_clear()
+        .env("HOME", &home)
+        .env("ZENPI_HOME", &home)
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("NO_PROXY", "127.0.0.1,localhost")
+        .env("no_proxy", "127.0.0.1,localhost")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let (host, invite) = read_invite_with_timeout(child);
+    let output = temporary.path().join("kotlin-client.json");
+    let property = |name: &str, value: &std::ffi::OsStr| {
+        let mut argument = std::ffi::OsString::from(format!("-Dzenpi.e2e.{name}="));
+        argument.push(value);
+        argument
+    };
+    let mut client = ChildGuard(
+        Command::new(java)
+            .arg(property("invite", invite.trim().as_ref()))
+            .arg(property("prompt", E2E_PROMPT.as_ref()))
+            .arg(property("stream", E2E_STREAM.as_ref()))
+            .arg(property("final", E2E_FINAL.as_ref()))
+            .arg(property("workspace", workspace.as_os_str()))
+            .arg(property("journal", session.as_os_str()))
+            .arg(property("output", output.as_os_str()))
+            .args(["-cp", &classpath, "org.junit.runner.JUnitCore"])
+            .arg("zenpi.AndroidRustHostE2eTest")
+            .stdin(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    client.wait_success(Duration::from_secs(120));
+    // JUnitCore also exits 0 for a skipped test; only a real run writes output.
+    let phone: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&output).expect("Kotlin client output")).unwrap();
+    drop(host);
+
+    let journal = zenpi::session::SessionStore::open_existing(&session).unwrap();
+    let durable: Vec<_> = journal
+        .turns()
+        .iter()
+        .map(|turn| serde_json::json!({"id":turn.id,"role":turn.role,"content":turn.content}))
+        .collect();
+    assert_eq!(
+        phone["turns"].as_array().unwrap(),
+        &durable,
+        "phone transcript must equal the journal: no duplicate, no gap"
+    );
+    assert_eq!(
+        phone["event_sequence"],
+        durable.len().to_string(),
+        "the cursor covers every durable turn exactly once"
+    );
+    assert_eq!(
+        phone["streamed"].as_array().unwrap().last().unwrap(),
+        E2E_STREAM
+    );
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("approved.txt")).unwrap(),
+        "APPROVED_CONTENT"
+    );
+    let requests = provider.requests();
+    assert_eq!(
+        requests.len(),
+        2,
+        "one provider call per step, none repeated"
+    );
+    assert_eq!(requests[1].tool_results, 1);
 }

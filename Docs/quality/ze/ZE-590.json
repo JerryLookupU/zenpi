@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-590",
+  "claim_id": "ZE-590@blueprint-4.0.0",
+  "from": "worker",
+  "to": "master",
+  "summary": "Production end-to-end without #[ignore]: tests/remote_host_e2e.rs starts the real `zenpi host serve` binary (127.0.0.1:0, mounted --workspace/--session) with the ZE-104 scripted FakeServer on the Responses wire, then launches the production Kotlin client (PairingClient + HostClient, compiled Android unit-test classes run under JUnitCore on a JVM) over real TCP + pinned TLS 1.3. The Kotlin side (AndroidRustHostE2eTest) pairs from the printed QR URI, opens a subscription, sends the prompt on a second connection while subscribed (output arrives as live ZE-517 subscription deltas; the first view has no stream, later views extend it in order), waits for the pending write_file approval, cancels the subscription (TLS socket closed = disconnect), approves on its own connection, waits while offline until the host journal holds the final answer, then reconnects with the held projection: resume replays the offline turns from the held cursor (replayedEventCount grows, the final turn is in the first resumed view) and the subscription continues until the prompt succeeds. Kotlin asserts distinct turn ids and one user/tool/final-assistant turn; Rust then asserts the phone transcript equals the durable journal exactly (id, role, content, order), the cursor equals the journal turn count, the streamed text, the approved file content and exactly 2 provider calls with one tool result.",
+  "changed_files": [
+    "tests/remote_host_e2e.rs",
+    "tests/support/scripted.rs",
+    "android/app/src/test/java/zenpi/AndroidRustHostE2eTest.kt",
+    "Docs/quality/ze/ZE-590.json"
+  ],
+  "diff_stat": "4 files changed: tests/remote_host_e2e.rs +160, tests/support/scripted.rs +10/-3, android/app/src/test/java/zenpi/AndroidRustHostE2eTest.kt +180 (new), Docs/quality/ze/ZE-590.json (new); code 350 insertions, 3 deletions",
+  "commands_run": [
+    "git fetch; HEAD at 2caed90 (origin/main)",
+    "tools/build_android_interop_classes.sh (export JVM classpath)",
+    "cargo fmt --all",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo clippy --locked --all-targets --all-features -- -D warnings",
+    "cargo clippy --locked --all-targets --features remote -- -D warnings",
+    "cargo test --locked --features remote --test remote_host_e2e production_serve_and_kotlin (x5, incl. the auto-built classpath path)",
+    "cargo test --locked --features remote --test remote_host_e2e",
+    "cargo test --locked --all-features --test remote_host_e2e -- --include-ignored",
+    "tools/build_android_interop_classes.sh --run",
+    "cd android && ./gradlew :app:testDebugUnitTest lint verifyRoborazziDebug",
+    "cargo test --locked --all-features --no-fail-fast",
+    "cd android && ./gradlew clean"
+  ],
+  "validation_result": {
+    "fmt": "clean",
+    "clippy_default": "pass",
+    "clippy_all_features": "pass",
+    "clippy_features_remote": "pass",
+    "validator_remote_host_e2e_features_remote": "3 passed, 6 ignored (pre-existing); the new ZE-590 test runs without #[ignore] and passes (~3 s once classes are built)",
+    "remote_host_e2e_all_features_include_ignored": "9 passed, 0 failed",
+    "interop_lane": "8 remote_android_*_interop suites pass (ack, approval, session, terminal, workspace, worktree, model 6, interop 3)",
+    "android_gradle": "testDebugUnitTest, lint, verifyRoborazziDebug BUILD SUCCESSFUL; AndroidRustHostE2eTest is skipped by assumption outside the Rust driver",
+    "full_cargo_test_all_features": "161 test binaries ok, 0 failed (no flaky reruns needed)",
+    "new_allow_dead_code_or_unused": "none"
+  },
+  "notes": [
+    "How the JVM client is driven: the Rust test uses ZENPI_ANDROID_INTEROP_JAVA/CLASSPATH when the interop lane exported them; otherwise it runs the same Gradle task as tools/build_android_interop_classes.sh (android/gradlew :app:writeInteropClasspath) itself, so the validator works without #[ignore] and a missing JVM fails instead of passing. Consequence: the default Rust suite now needs a JDK 17 and the Android SDK (GitHub ubuntu runners ship both); the first run pays the Gradle build (~30 s warm).",
+    "JUnitCore exits 0 for a skipped test, so the Rust side requires the Kotlin output file and checks it against the journal.",
+    "DeviceIdentity is hard-wired to AndroidKeyStore. The Kotlin test registers a test-only JCA provider named AndroidKeyStore (SoftwareKeyStoreSpi, software P-256 key) so the unchanged production DeviceIdentity, PairingClient and HostClient run on a plain JVM; no Android main source changed.",
+    "Outside the owned path: tests/support/scripted.rs gains Responses-wire SSE for Reply::TextThenCall (text delta, then the function call; other wires assert) so the scripted provider streams output before the tool approval; android/app/src/test/java/zenpi/AndroidRustHostE2eTest.kt is new (test only).",
+    "FakeServer emits the preview in one SSE delta, so the phone typically observes the stream as one subscription delta rather than several; ordered-prefix growth is asserted for however many views arrive.",
+    "The disconnect is the cancelled subscription coroutine closing its TLS socket (HostClient's SocketLease); the approval goes on its own connection as in the app. The host completes the tool and final answer while no client is attached, so the reconnect exercises cursor replay rather than the live stream.",
+    "Docs/execution, blueprint checklist marks and the Gantt are untouched."
+  ],
+  "created_at": "2026-10-15T01:28:34Z",
+  "digest": "933d9a01fa765ac068ab34490e9540f1b4685dd249791f3e8ffeffc35ac95ffe"
+}
