@@ -5,9 +5,9 @@
 
 ```yaml
 source: Docs/Zenpi_Execution_Blueprint_v2.md
-source_sha256: 2007db12392bd48fc40d85b06a09db3fefd9159b6fcc2c16182d804e8b6225fc
+source_sha256: 44a90503c47cf43d1ff61a586d81a2b83b1394249a9e131dfbb653bff22b2fee
 blueprint_version: 4.0.0
-generated_at: 2026-10-14T23:31:05Z
+generated_at: 2026-10-15T00:56:10Z
 ```
 
 ## Dependency-order view
@@ -130,9 +130,9 @@ gantt
     ZE-535 安全与无障碍：<br>• 默认开启  FLAG_SECURE  <br>• 支持 :done, ZE_535, after ZE_533, 1d
     section B3
     ZE-520 remote  feature 开关（默认关闭）：<br>•  cfg  覆盖 :done, ZE_520, after ZE_510 ZE_511 ZE_108, 1d
-    ZE-541 监听器加固：<br>• accept 改为事件驱动，不再每 10 ms 轮询 < :ZE_541, after ZE_513, 1d
-    ZE-542 持久认证连接：订阅复用同一条 TLS 会话，空闲时每分钟握手不超过 1 次 订阅 :ZE_542, after ZE_541 ZE_512, 1d
-    ZE-543 设备注册表按 mtime 缓存，不再在每一帧都 flock 并解析一遍 撤销仍在 :ZE_543, after ZE_514, 1d
+    ZE-541 监听器加固：<br>• accept 改为事件驱动，不再每 10 ms 轮询 < :active, ZE_541, after ZE_513, 1d
+    ZE-542 持久认证连接：订阅复用同一条 TLS 会话，空闲时每分钟握手不超过 1 次 订阅 :active, ZE_542, after ZE_541 ZE_512, 1d
+    ZE-543 设备注册表按 mtime 缓存，不再在每一帧都 flock 并解析一遍 撤销仍在 :active, ZE_543, after ZE_514, 1d
     ZE-544 后台审批通知：<br>• 申请  POST_NOTIFICATIONS  权限 :ZE_544, after ZE_531 ZE_542, 1d
     section B4
     ZE-590 生产端到端测试： zenpi host serve  配合 ZE-104 的脚本 :ZE_590, after ZE_104 ZE_514 ZE_517 ZE_542, 1d
@@ -144,7 +144,7 @@ gantt
 
 ## Monitoring index
 
-Counts: open 11 · self-tested 1 · accepted 101 · total 113
+Counts: open 8 · self-tested 4 · accepted 101 · total 113
 
 | ID | Layer | State | Ready | Depends | Claim | Integration | Est. LOC | Title |
 |---|---|---|---|---|---|---|---:|---|
@@ -252,9 +252,9 @@ Counts: open 11 · self-tested 1 · accepted 101 · total 113
 | ZE-534 | B2 | accepted | no | ZE-530, ZE-253 | ZE-534@blueprint-4.0.0 | accepted | 450 | 输入框命令板：输入 `/` 时弹出底部面板，列出主机端的斜杠命令和资源；输入 `@` 时弹出文件选择；不支持的桌面专属命令在面板中注明 |
 | ZE-535 | B2 | accepted | no | ZE-533 | ZE-535@blueprint-4.0.0 | accepted | 350 | 安全与无障碍：<br>• 默认开启 `FLAG_SECURE`；<br>• 支持深色和动态色；<br>• 同一个图标不再复用于多个功能；<br>• TalkBack 朗读内容不含 UUID，补上标题语义；<br>• release 构建开启 R8；<br>layer `B2` \| Depends: ZE-533 \| Owned paths: `android/.../ui/theme/`, `android/app/src/main/res/`, `android/app/build.gradle.kts` \| Validators: Compose `enableAccessibilityChecks` 通过；release 包能安装并完成配对；深色主题黄金图 \| Estimated LOC: 350 |
 | ZE-520 | B3 | accepted | no | ZE-510, ZE-511, ZE-108 | ZE-520@blueprint-4.0.0 | accepted | 300 | `remote` feature 开关（默认关闭）：<br>• `cfg` 覆盖 `src/remote/`、`host_pair`、rcgen、qrcode、`wakeup::notify` 和 `RemoteApprovalActor`；<br>• 去掉 rustls 中未使用的 `tls12`；<br>• 依赖数门按实测收紧；<br>• 核心 crate 永远不引入 tokio；<br>layer `B3` \| Depends: ZE-510, ZE-511, ZE-108 \| Owned paths: `Cargo.toml`, `src/lib.rs`, `src/core.rs`, `src/tui.rs`, `src/session.rs`, `src/approval.rs`, `src/pty_shell.rs`, `src/slash_actions.rs`, `tools/bench_runtime.py` \| Validators: 默认构建中没有 rcgen 和 qrcode；`cargo tree -i tokio` 为空；`cargo clippy --locked --all-targets --features remote -- -D warnings` 通过；G-REMOTE；G-BENCH \| Estimated LOC: 300 |
-| ZE-541 | B3 | open | yes | ZE-513 | — | — | 270 | 监听器加固：<br>• accept 改为事件驱动，不再每 10 ms 轮询；<br>• 每个 IP 只给 1 个未认证连接槽，未认证阶段总时限 5 s；<br>• 为已认证连接预留槽位；<br>layer `B3` \| Depends: ZE-513 \| Owned paths: `src/remote/listener.rs` \| Validators: 有 N 个半开连接时，已认证客户端仍能连上；空闲时每秒唤醒 0 次 \| Estimated LOC: 270 |
-| ZE-542 | B3 | open | no | ZE-541, ZE-512 | — | — | 800 | 持久认证连接：订阅复用同一条 TLS 会话，空闲时每分钟握手不超过 1 次；订阅循环改由 wakeup 驱动，不再每 250 ms 内部调度 4 次 |
-| ZE-543 | B3 | open | yes | ZE-514 | — | — | 150 | 设备注册表按 mtime 缓存，不再在每一帧都 flock 并解析一遍；撤销仍在下一帧生效 |
+| ZE-541 | B3 | self-tested | yes | ZE-513 | ZE-541@blueprint-4.0.0 | handoff | 270 | 监听器加固：<br>• accept 改为事件驱动，不再每 10 ms 轮询；<br>• 每个 IP 只给 1 个未认证连接槽，未认证阶段总时限 5 s；<br>• 为已认证连接预留槽位；<br>layer `B3` \| Depends: ZE-513 \| Owned paths: `src/remote/listener.rs` \| Validators: 有 N 个半开连接时，已认证客户端仍能连上；空闲时每秒唤醒 0 次 \| Estimated LOC: 270 |
+| ZE-542 | B3 | self-tested | no | ZE-541, ZE-512 | ZE-542@blueprint-4.0.0 | handoff | 800 | 持久认证连接：订阅复用同一条 TLS 会话，空闲时每分钟握手不超过 1 次；订阅循环改由 wakeup 驱动，不再每 250 ms 内部调度 4 次 |
+| ZE-543 | B3 | self-tested | yes | ZE-514 | ZE-543@blueprint-4.0.0 | handoff | 150 | 设备注册表按 mtime 缓存，不再在每一帧都 flock 并解析一遍；撤销仍在下一帧生效 |
 | ZE-544 | B3 | open | no | ZE-531, ZE-542 | — | — | 350 | 后台审批通知：<br>• 申请 `POST_NOTIFICATIONS` 权限；<br>• `ResumeWorker` 读到有待审批时，发一条高优先级通知，带"拒绝 / 允许一次"按钮（需要解锁），点击后深链到对应会话；<br>• 审批在别处处理后，1 s 内撤销这条通知；<br>• 不使用前台服务，也不使用 FCM；<br>layer `B3` \| Depends: ZE-531, ZE-542 \| Owned paths: `android/.../lifecycle/ResumeWorker.kt`, `android/app/src/main/AndroidManifest.xml` \| Validators: `ResumeWorkerTest` 中有通知断言；生命周期校验脚本确认没有前台服务 \| Estimated LOC: 350 |
 | ZE-590 | B4 | open | no | ZE-104, ZE-514, ZE-517, ZE-542 | — | — | 600 | 生产端到端测试：`zenpi host serve` 配合 ZE-104 的脚本化 provider，Kotlin JVM 客户端走真实 TCP，依次完成配对 → prompt → 流式输出 → 审批 → 断线 → 回放，全程零重复、零遗漏 |
 | ZE-591 | B4 | open | no | ZE-530, ZE-531, ZE-532, ZE-533, ZE-534, ZE-535, ZE-544 | — | — | 500 | Android 体验验收，覆盖以下必做要求：<br>• 审批通知在 2 s 内送达；<br>• 从通知深链进入会话不超过 1 s；<br>• 审批条在任何滚动位置都可见；<br>• 1 万轮对话滚动 p95 ≥ 55 fps（Macrobenchmark）；<br>• 断网 30 s 后重连，零重复、零遗漏，草稿保留；<br>• 离线时 500 ms 内渲染出缓存内容；<br>• 主要操作都在屏幕下方 40% 区域内；<br>layer `B4` \| Depends: ZE-530, ZE-531, ZE-532, ZE-533, ZE-534, ZE-535, ZE-544 \| Owned paths: `android/app/src/androidTest/`, `android/macrobenchmark/` \| Validators: 上述每一条都有对应的 instrumentation 或 Macrobenchmark 断言 \| Estimated LOC: 500 |
