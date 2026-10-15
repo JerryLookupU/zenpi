@@ -6,7 +6,7 @@
   "authority_item": "ZE-100",
   "blueprint": "Docs/Zenpi_Execution_Blueprint_v2.md",
   "blueprint_version": "4.0.0",
-  "requirement_digest": "20ba9d3ad60ad751745043b13e090530996704bc154eaaddcf3df9a86d9f8889",
+  "requirement_digest": "1de9b33eebaf9aab1c0693b4bf036e1342e8cff1dec650c41feea7cad25424f7",
   "validator": "tools/validate_blueprint_v2.py",
   "gantt": "Docs/Zenpi_Execution_Blueprint_v2_Gantt.md",
   "gantt_generator": "tools/generate_blueprint_v2_gantt.py",
