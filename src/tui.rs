@@ -3946,6 +3946,25 @@ impl TuiState {
         TuiAction::Redraw
     }
 
+    /// Close one layer-1 workspace tab the way an operator expects: the
+    /// folder leaves the host workspace too (not just this view), and closing
+    /// the last one keeps everything on disk and exits instead of refusing.
+    fn request_project_close(&mut self, index: usize) -> TuiAction {
+        let Some(name) = self.project_tabs.get(index).cloned() else {
+            return TuiAction::Redraw;
+        };
+        if self.project_tabs.len() <= 1 {
+            // The quit path checkpoints the workspace, layout and drafts.
+            return TuiAction::Quit;
+        }
+        if self.project_workspace.is_some() {
+            self.pending_project = Some(ProjectIntent::Close(name));
+        } else {
+            self.close_project_tab(&name);
+        }
+        TuiAction::Redraw
+    }
+
     pub fn close_project_tab(&mut self, name: &str) -> bool {
         if self.project_tabs.len() <= 1 {
             return false;
@@ -7883,9 +7902,9 @@ impl TuiState {
             }
         }
         // Match the familiar terminal/browser tab gesture without changing
-        // the BentoBox layout: middle-clicking a project tab closes only the
-        // tab projection; its session journal remains on disk and can be
-        // reopened through the picker/session browser.
+        // the BentoBox layout: middle-clicking a project tab closes that one
+        // folder; its session journal remains on disk and can be reopened
+        // through the picker/session browser.
         if mouse.kind == MouseEventKind::Down(MouseButton::Middle)
             && let Some((_, index)) = self
                 .project_hits
@@ -7903,9 +7922,7 @@ impl TuiState {
                 self.set_status("Draft kept · clear the prompt before closing this project");
                 return TuiAction::Redraw;
             }
-            if self.close_project_tab(&name) {
-                return TuiAction::Redraw;
-            }
+            return self.request_project_close(*index);
         }
         // Right-click a header card to rename it in place (ZS1-169).
         if mouse.kind == MouseEventKind::Down(MouseButton::Right) {
@@ -7948,16 +7965,11 @@ impl TuiState {
                 .find(|(rect, _)| rect.contains(position))
             {
                 if *index == usize::MAX - 2 {
-                    let name = self.active_project().to_owned();
-                    self.close_project_tab(&name);
+                    return self.request_project_close(self.active_project);
                 } else if *index >= usize::MAX - 3 - self.project_tabs.len()
                     && *index < usize::MAX - 2
                 {
-                    let close_index = usize::MAX - 3 - *index;
-                    if close_index < self.project_tabs.len() {
-                        let name = self.project_tabs[close_index].clone();
-                        self.close_project_tab(&name);
-                    }
+                    return self.request_project_close(usize::MAX - 3 - *index);
                 } else if *index == self.project_tabs.len() {
                     self.open_directory_picker();
                 } else {
@@ -8870,7 +8882,10 @@ impl TuiState {
                     self.kill_input_range(self.cursor, end);
                     return TuiAction::Redraw;
                 }
-                KeyCode::Char('w') if self.input.is_empty() && self.project_tabs.len() > 1 => {
+                KeyCode::Char('w') if self.input.is_empty() => {
+                    if self.project_tabs.len() <= 1 {
+                        return TuiAction::Quit;
+                    }
                     self.pending_project =
                         Some(ProjectIntent::Close(self.active_project().to_owned()));
                     return TuiAction::Redraw;

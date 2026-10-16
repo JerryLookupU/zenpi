@@ -1045,3 +1045,89 @@ fn right_click_renames_a_worktree_card() {
     let _ = state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(state.subtabs()[0].name, "trunk");
 }
+
+/// Screen cells of every layer-1 `[-]` control, left to right.
+fn layer1_close_controls(state: &mut TuiState) -> Vec<(u16, u16)> {
+    let mut terminal = Terminal::new(TestBackend::new(160, 40)).unwrap();
+    terminal
+        .draw(|frame| state.render_bentobox(frame, "zenpi"))
+        .unwrap();
+    let buffer = terminal.backend().buffer().clone();
+    let row: Vec<String> = (0..160)
+        .map(|x| buffer[(x, 0)].symbol().to_owned())
+        .collect();
+    (0..158)
+        .filter(|&x| row[x] == "[" && row[x + 1] == "-" && row[x + 2] == "]")
+        .map(|x| (x as u16 + 1, 0))
+        .collect()
+}
+
+fn click(state: &mut TuiState, (column, row): (u16, u16)) -> zenpi::tui::TuiAction {
+    state.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    })
+}
+
+#[test]
+fn layer1_tabs_are_one_per_folder_and_close_removes_only_that_folder() {
+    let root = tempdir().unwrap();
+    let (b, c) = (root.path().join("b"), root.path().join("c"));
+    fs::create_dir_all(&b).unwrap();
+    fs::create_dir_all(&c).unwrap();
+    let (mut state, mut host) = host(root.path());
+    host.apply(&mut state, ProjectIntent::Open(b.clone()))
+        .unwrap();
+    host.apply(&mut state, ProjectIntent::Open(c.clone()))
+        .unwrap();
+    // Reopening a folder (through any alias) selects its tab.
+    host.apply(&mut state, ProjectIntent::Open(c.join("../b")))
+        .unwrap();
+    host.apply(&mut state, ProjectIntent::Open(root.path().into()))
+        .unwrap();
+    assert_eq!(state.project_tab_count(), 3);
+    let controls = layer1_close_controls(&mut state);
+    assert_eq!(controls.len(), 3, "one close control per folder");
+
+    // `[-]` on the middle tab closes that folder in the host, not only in
+    // the view, so it cannot come back from the checkpoint.
+    assert_eq!(
+        click(&mut state, controls[1]),
+        zenpi::tui::TuiAction::Redraw
+    );
+    let intent = state
+        .take_project_intent()
+        .expect("close goes through host");
+    host.apply(&mut state, intent).unwrap();
+    assert_eq!(state.project_tab_count(), 2);
+    let checkpoint = state.project_checkpoint().to_string();
+    let b = b.canonicalize().unwrap().display().to_string();
+    let c = c.canonicalize().unwrap().display().to_string();
+    assert!(!checkpoint.contains(&format!("\"{b}\"")), "{checkpoint}");
+    assert!(checkpoint.contains(&format!("\"{c}\"")), "{checkpoint}");
+    assert_eq!(layer1_close_controls(&mut state).len(), 2);
+}
+
+#[test]
+fn closing_the_last_layer1_tab_keeps_state_and_quits() {
+    let root = tempdir().unwrap();
+    let (mut state, _host) = host(root.path());
+    state.handle_event(Event::Paste("unsent draft".into()));
+    let before = state.project_checkpoint();
+    let controls = layer1_close_controls(&mut state);
+    assert_eq!(controls.len(), 1);
+    assert_eq!(click(&mut state, controls[0]), zenpi::tui::TuiAction::Quit);
+    assert!(state.take_project_intent().is_none());
+    assert_eq!(state.project_tab_count(), 1);
+    assert_eq!(state.input(), "unsent draft");
+    assert_eq!(state.project_checkpoint(), before);
+
+    let other = tempdir().unwrap();
+    let (mut state, _host) = host(other.path());
+    assert_eq!(
+        state.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL)),
+        zenpi::tui::TuiAction::Quit
+    );
+}
