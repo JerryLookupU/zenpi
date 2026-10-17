@@ -318,13 +318,26 @@ impl Default for ModelRegistry {
             let mut model = unknown("deepseek", id);
             model.context_window = 131_072;
             model.max_output_tokens = 65_536;
-            model.capabilities.reasoning = false;
+            // Some OpenAI-compatible DeepSeek gateways run in thinking mode by
+            // default and require the previous `reasoning_text` to be replayed
+            // on tool continuations. The gateway may not return that field at
+            // all, which makes every tool call fail with HTTP 400. Advertising
+            // `none` lets the host disable thinking explicitly instead.
+            model.capabilities.reasoning = true;
+            model.reasoning_levels = [
+                ReasoningLevel::None,
+                ReasoningLevel::Low,
+                ReasoningLevel::Medium,
+                ReasoningLevel::High,
+            ]
+            .into();
             for field in [
                 "context_window",
                 "max_output_tokens",
                 "text",
                 "tools",
                 "streaming",
+                "reasoning_levels",
             ] {
                 model.sources.insert(field.into(), source.clone());
             }
