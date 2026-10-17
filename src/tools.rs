@@ -1202,6 +1202,9 @@ pub fn set_builtin_allowlist(only: Option<Vec<String>>) {
 
 /// Parse a `--tools a,b` value into known builtin names (unknown → error).
 pub fn parse_builtin_allowlist(value: &str) -> Result<Vec<String>, String> {
+    if matches!(value.trim(), "none" | "off" | "no-tools") {
+        return Ok(Vec::new());
+    }
     let mut names: Vec<String> = Vec::new();
     for name in value
         .split(',')

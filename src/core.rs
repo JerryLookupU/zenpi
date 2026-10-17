@@ -8249,7 +8249,7 @@ fn print_help() {
         "zenpi host pair [--bind IP:PORT] [--advertise IP] [--tailnet] [--identity PATH] [--duration-seconds 1..300] [--plain] [--workspace PATH --session PATH [--desktop | --list-projects]] [--list-devices [--json] | --revoke-device ID]"
     );
     println!(
-        "zenpi [--mode tui|headless] [--session PATH | -s NAME|ID | -c | --no-session] [--auto] [--eof-drain-secs N] [--max-tool-iterations N] [--tools a,b] [--backend openai|anthropic|google] [--profile NAME] [--model NAME]"
+        "zenpi [--mode tui|headless] [--session PATH | -s NAME|ID | -c | --no-session] [--auto] [--eof-drain-secs N] [--max-tool-iterations N] [--tools a,b|none] [--backend openai|anthropic|google] [--profile NAME] [--model NAME]"
     );
     println!("zenpi config import-codex [--profile NAME]");
     println!("zenpi config doctor [--profile NAME] [--json]");
