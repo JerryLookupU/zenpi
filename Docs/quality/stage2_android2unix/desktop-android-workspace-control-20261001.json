@@ -1,0 +1,94 @@
+{
+  "passed": true,
+  "started_at_unix": 1790866228.9935129,
+  "finished_at_unix": 1790866253.2611241,
+  "scope": "production desktop PTY / same owner observed by Android foreground durable transcript replay",
+  "terminal_qr_decoded_verified": true,
+  "camera_scanning_verified": false,
+  "lan_reachability_verified": false,
+  "shared_desktop_owner_update_verified": true,
+  "durable_transcript_replay_verified": true,
+  "foreground_auto_resume_verified": true,
+  "encrypted_cache_recreation_verified": true,
+  "independent_process_cache_restore_verified": true,
+  "actual_process_death_network_resume_verified": true,
+  "killed_live_android_pid": "3248",
+  "process_death_stdout_sha256": "6db881622abb0bc4b894ab61dc6c1c90ff9cd150decf2a7b031b08f12e6ffd8a",
+  "network_process_stdout_sha256": "8bb70ff86ff994ce83a368e4cf17b423951d8b8df4ed41ec70263f496d95b048",
+  "cache_process_outputs_sha256": [
+    "4d2d4d080c6621f98b3d2a81c5cfb1b205d50a564f9c27f8a16db575301da161",
+    "74a1cee1ab18dba4396eed2f3c4fbd46abdb228c5f7a3fc1c282f40c2af049d3"
+  ],
+  "live_event_push_verified": false,
+  "remote_mutation_verified": true,
+  "workspace_open_close_desktop_checkpoint_verified": true,
+  "listener_closed_with_desktop": true,
+  "desktop_provider_requests": 2,
+  "host_revocation_verified": true,
+  "environment_names": [
+    "ZENPI_HOME",
+    "NO_PROXY",
+    "no_proxy",
+    "TERM",
+    "NO_COLOR"
+  ],
+  "no_color_qr_verified": true,
+  "screenshot": {
+    "path": "Docs/quality/stage2_android2unix/desktop-android-workspace-control-20261001.png",
+    "sha256": "7b49c9751d61f1b1370688503cdd479118c3a55a2a6d8c96ac3a5ca8f2981d26"
+  },
+  "host_argv": [
+    "/Users/mac/Github/zenpi/target/debug/zenpi",
+    "host",
+    "pair",
+    "--desktop",
+    "--workspace",
+    "/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-c73o5c7n/workspace",
+    "--session",
+    "/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-c73o5c7n/session.jsonl",
+    "--bind",
+    "127.0.0.1:0",
+    "--duration-seconds",
+    "120",
+    "--identity",
+    "/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-c73o5c7n/identity.json"
+  ],
+  "host_cwd": "/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-c73o5c7n/workspace",
+  "seed": {
+    "argv": [
+      "/Users/mac/Github/zenpi/target/debug/zenpi",
+      "--mode",
+      "headless",
+      "--session",
+      "/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-c73o5c7n/session.jsonl"
+    ],
+    "cwd": "/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-c73o5c7n/workspace",
+    "exit_code": 0,
+    "stdout_sha256": "100bb63cf6ed904f0b7cf189f474ccccaa6c426ca49cd14c7b141fbf9e7cd76c",
+    "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "provider_requests": 1
+  },
+  "requirement": {
+    "schema_version": "stage2-selector/v1",
+    "active": true,
+    "activated_by": "master",
+    "activated_at": "2026-10-01T19:16:06+0800",
+    "blueprint": "Docs/stage2_android2unix_blueprint.md",
+    "specification": "Docs/stage2_android2unix_spec.md",
+    "requirement_digest": "9887f784c944db898610e136dca2774496abb2f80b3e5a8fdd6a0b32659e009d",
+    "spec_digest": "403e6339b0318a420d93600fc52926acf6a9e46ec899bd9a9edb03c235190a28",
+    "target_repo": "/Users/mac/Github/zenpi",
+    "target_baseline": "current-worktree-with-user-changes",
+    "run_id": "zenpi-stage2-android2unix-20261001"
+  },
+  "baseline_revision": "1a8ff1acf72e0816fad503a05df2b1d18e07361b",
+  "integration_state": "provisional uncommitted worktree; no item acceptance",
+  "instrumentation_exit_code": 0,
+  "stdout_sha256": "2a7322579a54a87d3bec9db5833beb7e227f4c12991bec96db522c0f2b9e7dc9",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "artifacts": {
+    "target/debug/zenpi": "a8e8c34ffdf33a47c2bdbbeeb5b187f3d487a816267eae644811b990e2c19b59",
+    "android/app/build/outputs/apk/debug/app-debug.apk": "c5d811f3a24de9e54654f66defede4159c9de7d8ee89d68b3ef65068d89ecd18",
+    "android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk": "75b033d44357082ae790cd11c84c5d0daa1f9919a367e7b82b05ceb216949942"
+  }
+}

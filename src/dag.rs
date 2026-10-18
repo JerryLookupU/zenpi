@@ -6,12 +6,15 @@
 //! every descendant is green; otherwise the worker stays alive and spawns
 //! workers for the new work.
 //!
-//! The store is bounded: nodes and messages are capped, bodies are truncated,
-//! and every read is a locked snapshot so concurrent workers cannot corrupt it.
+//! The store is bounded: nodes, messages, per-node mailboxes, spawn depth and
+//! fan-out are capped, and bodies are limited in bytes. Writers serialize on a
+//! sidecar lock file and replace the store atomically (temp file + fsync +
+//! rename + directory fsync), so a reader always sees a complete snapshot and a
+//! crash mid-write leaves the previous store intact.
 
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
@@ -26,11 +29,42 @@ pub const DAG_NODE_ENV: &str = "ZENPI_DAG_NODE";
 pub const DAG_STORE_ENV: &str = "ZENPI_DAG_STORE";
 /// Override for the worker binary spawned by `dag_spawn` (tests, hosts).
 pub const DAG_WORKER_ENV: &str = "ZENPI_DAG_WORKER";
+/// Explicitly advertise the `dag_*` tools in a process that is not a
+/// DAG-spawned worker (`1`/`true`). Workers are detected by [`DAG_NODE_ENV`].
+pub const DAG_TOOLS_ENV: &str = "ZENPI_DAG_TOOLS";
 
 pub const MAX_DAG_NODES: usize = 8_192;
 pub const MAX_DAG_MESSAGES: usize = 16_384;
 pub const MAX_DAG_BODY_BYTES: usize = 4_096;
 pub const MAX_DAG_STATUS_BYTES: usize = 64;
+/// Unacked messages one node may hold before `send` to it fails.
+pub const MAX_DAG_INBOX_MESSAGES: usize = 512;
+/// Maximum parent-chain length of a spawned node (root = 0).
+pub const MAX_DAG_SPAWN_DEPTH: usize = 3;
+/// Maximum direct children per node. There is no per-node lease concept, so
+/// fan-out is a fixed constant.
+pub const MAX_DAG_FANOUT: usize = 8;
+
+/// Whether this process should advertise the `dag_*` tools: it is a
+/// DAG-spawned worker (`ZENPI_DAG_NODE` set) or `ZENPI_DAG_TOOLS` is truthy.
+pub fn dag_tools_enabled() -> bool {
+    current_node().is_some()
+        || std::env::var(DAG_TOOLS_ENV)
+            .map(|value| matches!(value.trim(), "1" | "true" | "yes" | "on"))
+            .unwrap_or(false)
+}
+
+/// Longest prefix of `text` that fits in `max` bytes on a char boundary.
+fn truncate_bytes(text: &str, max: usize) -> &str {
+    if text.len() <= max {
+        return text;
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -174,58 +208,85 @@ impl DagStore {
         fs::create_dir_all(parent).map_err(|error| format!("dag store dir: {error}"))
     }
 
+    fn lock_path(&self) -> PathBuf {
+        let mut name = self.path.file_name().unwrap_or_default().to_os_string();
+        name.push(".lock");
+        self.path.with_file_name(name)
+    }
+
+    fn temp_path(&self) -> PathBuf {
+        let mut name = self.path.file_name().unwrap_or_default().to_os_string();
+        name.push(".tmp");
+        self.path.with_file_name(name)
+    }
+
+    /// Snapshot read. Writers replace the store by rename, so the file read
+    /// here is always a complete, previously committed state.
     fn read_locked(&self) -> Result<DagFile, String> {
-        let mut file = match File::open(&self.path) {
-            Ok(file) => file,
+        let text = match fs::read_to_string(&self.path) {
+            Ok(text) => text,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(DagFile::default());
             }
-            Err(error) => return Err(format!("dag store open: {error}")),
+            Err(error) => return Err(format!("dag store read: {error}")),
         };
-        lock_shared(&file)?;
-        let mut text = String::new();
-        file.read_to_string(&mut text)
-            .map_err(|error| format!("dag store read: {error}"))?;
-        unlock(&file);
         if text.trim().is_empty() {
             return Ok(DagFile::default());
         }
         serde_json::from_str(&text).map_err(|error| format!("dag store parse: {error}"))
     }
 
-    /// Locked read-modify-write. The closure must keep the file bounded.
+    /// Locked read-modify-write with an atomic replace. The closure must keep
+    /// the store bounded; an over-limit result is an error, never a silent
+    /// drop.
     fn update<T>(
         &self,
         apply: impl FnOnce(&mut DagFile) -> Result<T, String>,
     ) -> Result<T, String> {
         self.ensure_parent()?;
-        let mut file = OpenOptions::new()
+        let lock = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
-            .open(&self.path)
-            .map_err(|error| format!("dag store open: {error}"))?;
-        lock_exclusive(&file)?;
-        let mut text = String::new();
-        file.read_to_string(&mut text)
-            .map_err(|error| format!("dag store read: {error}"))?;
-        let mut state: DagFile = if text.trim().is_empty() {
-            DagFile::default()
-        } else {
-            serde_json::from_str(&text).map_err(|error| format!("dag store parse: {error}"))?
-        };
+            .open(self.lock_path())
+            .map_err(|error| format!("dag store lock open: {error}"))?;
+        lock_exclusive(&lock)?;
+        let result = self.update_held(apply);
+        unlock(&lock);
+        result
+    }
+
+    fn update_held<T>(
+        &self,
+        apply: impl FnOnce(&mut DagFile) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let mut state = self.read_locked()?;
+        let before =
+            serde_json::to_vec(&state).map_err(|error| format!("dag store encode: {error}"))?;
         let result = apply(&mut state)?;
-        state.messages.truncate(MAX_DAG_MESSAGES);
+        if state.messages.len() > MAX_DAG_MESSAGES || state.nodes.len() > MAX_DAG_NODES {
+            return Err("dag store is full".into());
+        }
         let bytes =
             serde_json::to_vec(&state).map_err(|error| format!("dag store encode: {error}"))?;
-        file.set_len(0)
-            .map_err(|error| format!("dag store truncate: {error}"))?;
-        file.seek(SeekFrom::Start(0))
-            .map_err(|error| format!("dag store seek: {error}"))?;
+        // An update that changed nothing (an empty claim) writes nothing.
+        if bytes == before {
+            return Ok(result);
+        }
+        let temp = self.temp_path();
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&temp)
+            .map_err(|error| format!("dag store temp open: {error}"))?;
         file.write_all(&bytes)
             .map_err(|error| format!("dag store write: {error}"))?;
-        unlock(&file);
+        fsync(&file).map_err(|error| format!("dag store fsync: {error}"))?;
+        drop(file);
+        fs::rename(&temp, &self.path).map_err(|error| format!("dag store rename: {error}"))?;
+        sync_dir(self.path.parent());
         Ok(result)
     }
 
@@ -247,50 +308,39 @@ impl DagStore {
         {
             return Err("dag parent id is invalid".into());
         }
+        self.update(|state| insert_node(state, id, parent))
+    }
+
+    /// Create a node for `dag_spawn`, enforcing the spawn bounds atomically:
+    /// the new node's parent chain is at most [`MAX_DAG_SPAWN_DEPTH`] long and
+    /// the parent has at most [`MAX_DAG_FANOUT`] children.
+    pub fn spawn_child(&self, id: &str, parent: Option<&str>) -> Result<DagNode, String> {
+        if !valid_id(id) {
+            return Err("dag node id is invalid".into());
+        }
+        if let Some(parent) = parent
+            && !valid_id(parent)
+        {
+            return Err("dag parent id is invalid".into());
+        }
         self.update(|state| {
-            if !state.nodes.contains_key(id) && state.nodes.len() >= MAX_DAG_NODES {
-                return Err("dag store node limit exceeded".into());
-            }
-            if let Some(parent) = parent
-                && !state.nodes.contains_key(parent)
-                && state.nodes.len() >= MAX_DAG_NODES
-            {
-                return Err("dag store node limit exceeded".into());
-            }
             if let Some(parent) = parent {
-                state
-                    .nodes
-                    .entry(parent.to_owned())
-                    .or_insert_with(|| DagNode {
-                        id: parent.to_owned(),
-                        parent: None,
-                        children: Vec::new(),
-                        status: default_status(),
-                        worker: None,
-                        summary: None,
-                        updated_ms: now_ms(),
-                        worker_heartbeat_ms: 0,
-                    });
-                let children = &mut state.nodes.get_mut(parent).expect("inserted").children;
-                if !children.iter().any(|child| child == id) {
-                    children.push(id.to_owned());
+                let depth = chain_depth(state, parent)? + 1;
+                if depth > MAX_DAG_SPAWN_DEPTH {
+                    return Err(format!(
+                        "dag spawn depth {depth} exceeds the limit of {MAX_DAG_SPAWN_DEPTH}"
+                    ));
+                }
+                if let Some(node) = state.nodes.get(parent)
+                    && !node.children.iter().any(|child| child == id)
+                    && node.children.len() >= MAX_DAG_FANOUT
+                {
+                    return Err(format!(
+                        "dag node {parent} already has {MAX_DAG_FANOUT} children (fan-out limit)"
+                    ));
                 }
             }
-            let node = state.nodes.entry(id.to_owned()).or_insert_with(|| DagNode {
-                id: id.to_owned(),
-                parent: parent.map(str::to_owned),
-                children: Vec::new(),
-                status: default_status(),
-                worker: None,
-                summary: None,
-                updated_ms: now_ms(),
-                worker_heartbeat_ms: 0,
-            });
-            if parent.is_some() {
-                node.parent = parent.map(str::to_owned);
-            }
-            node.updated_ms = now_ms();
-            Ok(node.clone())
+            insert_node(state, id, parent)
         })
     }
 
@@ -310,7 +360,7 @@ impl DagStore {
             node.status = status.to_owned();
             if let Some(summary) = summary {
                 let summary = summary.trim();
-                node.summary = Some(summary.chars().take(MAX_DAG_STATUS_BYTES).collect());
+                node.summary = Some(truncate_bytes(summary, MAX_DAG_STATUS_BYTES).to_owned());
             }
             node.updated_ms = now_ms();
             Ok(node.clone())
@@ -357,10 +407,10 @@ impl DagStore {
                 }
             }
             "grandparent" => {
-                if let Some(parent) = node.parent.as_ref().and_then(|id| state.nodes.get(id)) {
-                    if let Some(grand) = &parent.parent {
-                        out.push(grand.clone());
-                    }
+                if let Some(parent) = node.parent.as_ref().and_then(|id| state.nodes.get(id))
+                    && let Some(grand) = &parent.parent
+                {
+                    out.push(grand.clone());
                 }
             }
             "sibling" | "siblings" => {
@@ -417,8 +467,30 @@ impl DagStore {
         if body.is_empty() {
             return Err("dag message body is empty".into());
         }
-        let body: String = body.chars().take(MAX_DAG_BODY_BYTES).collect();
+        if body.len() > MAX_DAG_BODY_BYTES {
+            return Err(format!(
+                "dag message body is {} bytes; the limit is {MAX_DAG_BODY_BYTES}",
+                body.len()
+            ));
+        }
         self.update(|state| {
+            if state.messages.len() + targets.len() > MAX_DAG_MESSAGES {
+                return Err(format!(
+                    "dag store is full ({MAX_DAG_MESSAGES} messages); ack messages before sending"
+                ));
+            }
+            for target in &targets {
+                let pending = state
+                    .messages
+                    .iter()
+                    .filter(|message| &message.to == target)
+                    .count();
+                if pending >= MAX_DAG_INBOX_MESSAGES {
+                    return Err(format!(
+                        "dag mailbox for {target} is full ({MAX_DAG_INBOX_MESSAGES} messages)"
+                    ));
+                }
+            }
             for target in &targets {
                 state.next_message_id = state.next_message_id.max(
                     state
@@ -432,7 +504,7 @@ impl DagStore {
                     id: state.next_message_id,
                     from: from.to_owned(),
                     to: target.clone(),
-                    body: body.clone(),
+                    body: body.to_owned(),
                     ts_ms: now_ms(),
                     claimed_by: None,
                     claimed_ms: 0,
@@ -547,6 +619,69 @@ impl DagStore {
     }
 }
 
+/// Insert or re-parent `id` inside an already locked state.
+fn insert_node(state: &mut DagFile, id: &str, parent: Option<&str>) -> Result<DagNode, String> {
+    if !state.nodes.contains_key(id) && state.nodes.len() >= MAX_DAG_NODES {
+        return Err("dag store node limit exceeded".into());
+    }
+    if let Some(parent) = parent
+        && !state.nodes.contains_key(parent)
+        && state.nodes.len() >= MAX_DAG_NODES
+    {
+        return Err("dag store node limit exceeded".into());
+    }
+    if let Some(parent) = parent {
+        let children = &mut state
+            .nodes
+            .entry(parent.to_owned())
+            .or_insert_with(|| new_node(parent, None))
+            .children;
+        if !children.iter().any(|child| child == id) {
+            children.push(id.to_owned());
+        }
+    }
+    let node = state
+        .nodes
+        .entry(id.to_owned())
+        .or_insert_with(|| new_node(id, parent));
+    if parent.is_some() {
+        node.parent = parent.map(str::to_owned);
+    }
+    node.updated_ms = now_ms();
+    Ok(node.clone())
+}
+
+fn new_node(id: &str, parent: Option<&str>) -> DagNode {
+    DagNode {
+        id: id.to_owned(),
+        parent: parent.map(str::to_owned),
+        children: Vec::new(),
+        status: default_status(),
+        worker: None,
+        summary: None,
+        updated_ms: now_ms(),
+        worker_heartbeat_ms: 0,
+    }
+}
+
+/// Parent-chain length of `id` (a root or unknown node is 0). Cycles and
+/// overlong chains are bounded and reported as errors.
+fn chain_depth(state: &DagFile, id: &str) -> Result<usize, String> {
+    let mut depth = 0usize;
+    let mut cursor = state.nodes.get(id).and_then(|node| node.parent.clone());
+    while let Some(parent) = cursor {
+        depth += 1;
+        if depth > MAX_DAG_NODES {
+            return Err("dag parent chain is cyclic".into());
+        }
+        cursor = state
+            .nodes
+            .get(&parent)
+            .and_then(|node| node.parent.clone());
+    }
+    Ok(depth)
+}
+
 /// Node identity of the current process (headless worker or owner).
 pub fn current_node() -> Option<String> {
     std::env::var(DAG_NODE_ENV)
@@ -562,7 +697,6 @@ static SPAWNED: Mutex<Option<BTreeMap<String, SpawnedWorker>>> = Mutex::new(None
 struct SpawnedWorker {
     child: Child,
     sequence: u64,
-    log: PathBuf,
 }
 
 /// Spawn a headless worker for one new DAG node and keep its stdin open, so
@@ -576,11 +710,17 @@ pub fn spawn_worker(
     if !valid_id(node) {
         return Err("dag node id is invalid".into());
     }
-    let binary = std::env::var(DAG_WORKER_ENV)
-        .ok()
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "zenpi-dev".to_owned());
+    let override_binary = std::env::var(DAG_WORKER_ENV).ok();
+    let binary = resolve_worker_binary(override_binary.as_deref())?;
+    {
+        // Reap finished children first; a node keeps at most one live worker.
+        let mut guard = SPAWNED.lock().map_err(|_| "dag spawn registry poisoned")?;
+        let registry = guard.get_or_insert_with(BTreeMap::new);
+        reap_exited(registry);
+        if registry.contains_key(node) {
+            return Err(format!("dag node {node} already has a live worker"));
+        }
+    }
     fs::create_dir_all(session_dir).map_err(|error| format!("dag session dir: {error}"))?;
     let log_path = session_dir.join(format!("{node}.log"));
     let log = File::create(&log_path).map_err(|error| format!("dag worker log: {error}"))?;
@@ -604,18 +744,45 @@ pub fn spawn_worker(
         .spawn()
         .map_err(|error| format!("dag worker spawn: {error}"))?;
     let pid = child.id();
-    write_prompt(&mut child, node, 1, prompt)?;
+    if let Err(error) = write_prompt(&mut child, node, 1, prompt) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error);
+    }
     let mut guard = SPAWNED.lock().map_err(|_| "dag spawn registry poisoned")?;
     let registry = guard.get_or_insert_with(BTreeMap::new);
-    registry.insert(
-        node.to_owned(),
-        SpawnedWorker {
-            child,
-            sequence: 1,
-            log: log_path,
-        },
-    );
+    registry.insert(node.to_owned(), SpawnedWorker { child, sequence: 1 });
     Ok(u64::from(pid))
+}
+
+/// Worker binary for `dag_spawn`: the `ZENPI_DAG_WORKER` override when it is
+/// non-empty, else the currently running executable.
+pub fn resolve_worker_binary(override_binary: Option<&str>) -> Result<PathBuf, String> {
+    if let Some(value) = override_binary
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Ok(PathBuf::from(value));
+    }
+    std::env::current_exe().map_err(|error| format!("dag worker binary: {error}"))
+}
+
+/// Remove and reap every spawned child that has already exited, so finished
+/// workers never linger as zombies. Bounded by the registry size.
+fn reap_exited(registry: &mut BTreeMap<String, SpawnedWorker>) {
+    registry.retain(|_, worker| matches!(worker.child.try_wait(), Ok(None)));
+}
+
+/// Reap exited spawned workers now; returns how many are still running.
+pub fn reap_workers() -> usize {
+    let Ok(mut guard) = SPAWNED.lock() else {
+        return 0;
+    };
+    let Some(registry) = guard.as_mut() else {
+        return 0;
+    };
+    reap_exited(registry);
+    registry.len()
 }
 
 fn write_prompt(child: &mut Child, node: &str, sequence: u64, prompt: &str) -> Result<(), String> {
@@ -645,6 +812,7 @@ pub fn send_to_worker(node: &str, prompt: &str) -> Result<bool, String> {
     let Some(registry) = guard.as_mut() else {
         return Ok(false);
     };
+    reap_exited(registry);
     let Some(worker) = registry.get_mut(node) else {
         return Ok(false);
     };
@@ -658,10 +826,11 @@ pub fn spawned_nodes() -> Vec<String> {
     SPAWNED
         .lock()
         .ok()
-        .and_then(|guard| {
-            guard
-                .as_ref()
-                .map(|registry| registry.keys().cloned().collect())
+        .and_then(|mut guard| {
+            guard.as_mut().map(|registry| {
+                reap_exited(registry);
+                registry.keys().cloned().collect()
+            })
         })
         .unwrap_or_default()
 }
@@ -674,15 +843,40 @@ pub fn wait_for_message(
     cancelled: &dyn Fn() -> bool,
 ) -> Result<Vec<DagMessage>, String> {
     let deadline = std::time::Instant::now() + wait.min(Duration::from_secs(30));
+    // Waiters re-read only when the store file changed, and take the store
+    // lock only to claim a message that is there (ZE-308): 2000 idle workers
+    // cost one stat each per poll, not a locked rewrite and fsync.
+    let mut seen = None;
     loop {
         if cancelled() {
             return Err("cancelled".into());
         }
-        let messages = store.claim_inbox(node)?;
-        if !messages.is_empty() || std::time::Instant::now() >= deadline {
-            return Ok(messages);
+        let stamp = fs::metadata(store.path())
+            .ok()
+            .map(|metadata| (metadata.len(), metadata.modified().ok()));
+        if seen.as_ref() != Some(&stamp) {
+            seen = Some(stamp);
+            let pending = store.read_locked()?.messages.iter().any(|message| {
+                message.to == node
+                    && message
+                        .claimed_by
+                        .as_deref()
+                        .is_none_or(|owner| owner == node)
+            });
+            if pending {
+                let messages = store.claim_inbox(node)?;
+                if !messages.is_empty() {
+                    return Ok(messages);
+                }
+            }
         }
-        std::thread::sleep(Duration::from_millis(250));
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            return Ok(Vec::new());
+        }
+        // 500 ms keeps 2000 idle waiters near 0.15 core; mail and cancel
+        // latency stay under half a second.
+        std::thread::sleep(Duration::from_millis(500).min(deadline - now));
     }
 }
 
@@ -738,15 +932,37 @@ fn lock_exclusive(file: &File) -> Result<(), String> {
     }
 }
 
+/// Persist a rename by syncing the containing directory (best effort on
+/// platforms that cannot open directories).
 #[cfg(unix)]
-fn lock_shared(file: &File) -> Result<(), String> {
+fn sync_dir(dir: Option<&Path>) {
+    if let Some(dir) = dir
+        && let Ok(handle) = File::open(dir)
+    {
+        let _ = fsync(&handle);
+    }
+}
+
+#[cfg(not(unix))]
+fn sync_dir(_: Option<&Path>) {}
+
+/// POSIX `fsync`. `File::sync_all` is `F_FULLFSYNC` on Apple platforms, which
+/// flushes the whole drive cache and stalls unrelated I/O (including exec of
+/// freshly written workers) for seconds under load; plain `fsync` is the
+/// durability contract the store needs.
+#[cfg(unix)]
+fn fsync(file: &File) -> std::io::Result<()> {
     use std::os::unix::io::AsRawFd;
-    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH) };
-    if result == 0 {
+    if unsafe { libc::fsync(file.as_raw_fd()) } == 0 {
         Ok(())
     } else {
-        Err("dag store shared lock failed".into())
+        Err(std::io::Error::last_os_error())
     }
+}
+
+#[cfg(not(unix))]
+fn fsync(file: &File) -> std::io::Result<()> {
+    file.sync_all()
 }
 
 #[cfg(unix)]
@@ -759,11 +975,6 @@ fn unlock(file: &File) {
 
 #[cfg(not(unix))]
 fn lock_exclusive(_: &File) -> Result<(), String> {
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn lock_shared(_: &File) -> Result<(), String> {
     Ok(())
 }
 

@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-232",
+  "claim_id": "ZE-232@blueprint-4.0.0",
+  "from": "worker",
+  "to": "master",
+  "summary": "Compaction aligned to pi (compaction.ts/utils.ts). Cut points are user or completed assistant records (never tool results), so one long turn can be split; the turn prefix gets its own summary request and pi's '**Turn Context (split turn):**' merge. Opaque provider state in the summarized prefix is dropped instead of vetoing the cut. Summary input is pi's role-labelled text ([User]/[Assistant]/[Assistant tool calls]/[Tool result]) inside <conversation>, with <previous-summary> for iterative updates, tool results cut to 2000 chars, no metadata/signatures/reasoning. Output caps are floor(0.8*reserve) for history and floor(0.5*reserve) for the prefix (each clamped to the model output reservation), sent one after the other; every summary request is checked against the context window before any send, and all ledger reservations happen up front. Summaries are free text (no JSON/file-list echo); the checkpoint's read/modified files are appended as <read-files>/<modified-files> when the summary is projected. New config [compaction] {enabled=true, reserve_tokens=16384, keep_recent_tokens=20000} (CompactionSettings, Agent::set_compaction_settings, loaded by the CLI run path). Trigger: latest real usage (total, or input+output; usage before the latest checkpoint is ignored) plus an estimate of later records > window - reserve; the hard over-budget compaction remains. A provider ContextOverflow compacts once (forced) and retries once; a second overflow returns context_overflow. Tool-call assistant records now carry their usage so long tool loops have a real-usage anchor.",
+  "changed_files": [
+    "Docs/quality/ze/ZE-232.json",
+    "src/config.rs",
+    "src/context.rs",
+    "src/core.rs",
+    "tests/resume_compact_owner.rs",
+    "tests/stage1_branch_owner.rs",
+    "tests/stage1_context_checkpoint.rs",
+    "tests/stage1_input_host.rs",
+    "tests/stage1_semantic_compaction.rs"
+  ],
+  "diff_stat": "8 files changed, 839 insertions(+), 358 deletions(-)",
+  "commands_run": [
+    "cargo fmt --all",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo clippy --locked --all-targets --all-features -- -D warnings",
+    "cargo test --locked --lib context",
+    "cargo test --locked --test context --test stage1_semantic_compaction --test stage1_context_checkpoint --test resume_compact_owner --test stage1_branch_owner --test stage1_input_host --test tools_edit_paths",
+    "cargo test --locked --all-features --no-fail-fast",
+    "cargo test --locked --all-features --test governance",
+    "cargo test --locked --all-features --lib existing_terminal_projects_only_matching_live_session_and_root -- --test-threads=1"
+  ],
+  "validation_result": {
+    "one_prompt_200_tool_calls_compacts": "pass: stage1_semantic_compaction::one_prompt_with_two_hundred_tool_calls_compacts_by_splitting_the_turn (split turn, prefix-only request, restored wire opens user then assistant)",
+    "anthropic_signed_fixture_compacts": "pass: stage1_semantic_compaction::anthropic_signed_prefix_compacts_and_drops_opaque_reasoning",
+    "raw_tool_output_over_window_summary_request_under_window": "pass: stage1_semantic_compaction::raw_tool_output_larger_than_the_window_keeps_the_summary_request_inside_it",
+    "first_overflow_one_summary_one_retry_second_overflow_context_overflow": "pass: stage1_semantic_compaction::context_overflow_compacts_once_and_retries_once (exactly 3 HTTP requests in both cases; second overflow -> BackendError code context_overflow)",
+    "unit": "pass: --lib context (usage-anchored trigger, role-labelled truncated summary input)",
+    "related_suites": "pass: context 4, stage1_semantic_compaction 18 (+2 ignored helpers), stage1_context_checkpoint 8, resume_compact_owner 6, stage1_branch_owner 9, stage1_input_host 23, tools_edit_paths 8",
+    "clippy": "pass (default and --all-features, -D warnings)",
+    "full_suite": "pass except known load flakes: lib tui::local_remote_preview_tests::existing_terminal_projects_only_matching_live_session_and_root (passes with --test-threads=1) and governance::elapsed_wall_time_is_rejected_without_an_additional_charge (wall-time timing under load; passes on rerun)"
+  },
+  "notes": "Outside owned paths (test fixtures that encoded the old JSON summary contract; no product code): tests/stage1_semantic_compaction.rs (helpers read the text request and return free-text summaries; removed the 'json' and 'file_loss' invalid-summary cases that no longer apply; the opaque-state-veto test became the Anthropic-signed compaction validator; added the four row validators, a per-request status hook on the HTTP fixture and a budget-parameterized agent helper), tests/stage1_context_checkpoint.rs (assistant cut points: expectations 6->7, and a call missing/unknown result now yields a cut before the call, source_end 2, instead of an error), tests/resume_compact_owner.rs, tests/stage1_input_host.rs, tests/stage1_branch_owner.rs (scripted summary replies no longer parse the request as JSON). Design choices beyond pi's literal text, needed for zenpi's small-window fixtures and unknown models: the configured reserve applies only while 2*reserve < window, otherwise the model output reservation is the reserve; keep_recent_tokens is clamped to half the input capacity; summary output caps are clamped to the model output reservation. A threshold-only trigger that finds no safe cut (or is vetoed by unknown outcomes) sends the still-fitting context unchanged; over-budget/overflow compaction still fails explicitly. enabled=false disables the threshold trigger and overflow retry, while the pre-existing hard over-budget compaction and manual /compact remain. Manual /compact keeps its existing 'compact only when triggered' behaviour. The split-turn summary record is projected with the user role (pi compactionSummary) so wires still open with a user message; whole-turn cuts keep the system role. Legacy prepare_context/restore_checkpoint are left for ZE-235.",
+  "created_at": "2026-10-14T18:52:47Z",
+  "digest": "ce520cfd14a8229e3ddc237401351289176692afbc9f5e50ae6e4a26cb591ff4"
+}

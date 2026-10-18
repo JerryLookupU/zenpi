@@ -1,0 +1,60 @@
+{
+  "scope": "production non-TUI Rust host / Android composer and saved prompt recovery after actual process death",
+  "passed": true,
+  "direct_host_interface_verified": true,
+  "adb_reverse_used": false,
+  "camera_scanning_verified": false,
+  "physical_phone_lan_verified": false,
+  "terminal_qr_decode_verified": false,
+  "android_composer_provider_turn_verified": true,
+  "encrypted_pending_prompt_process_recovery_verified": true,
+  "concurrent_authenticated_android_reads_verified": true,
+  "durable_android_cursor_ack_checkpoint_verified": true,
+  "android_host_diff_ui_read_only_verified": true,
+  "exact_retry_without_provider_replay_verified": true,
+  "provider_requests": 2,
+  "listener_expiry_closed_verified": true,
+  "artifacts": {
+    "target/debug/zenpi": "f59f8cb78b9464bb6409ff1e5350cc90b3ef122fa1cf05795109a9012ca2d1b0",
+    "android/app/build/outputs/apk/debug/app-debug.apk": "d95d962091898f853d15e9887c45a72ca4f9e5f979dba4261a8636f98af4a4a4",
+    "android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk": "fd50469e021cd1bbeb697d6d3dc5306a4114de77843d143fde792e6d2614e034",
+    "tools/stage2_headless_android_smoke.py": "3a6dfc9a98876142dda00d20b17581219a31ed4dfa6ca2ba1848ea6487d951d4"
+  },
+  "android_api": "36",
+  "serial": "emulator-5580",
+  "started_at_unix": 1790893747.6197278,
+  "finished_at_unix": 1790893803.829649,
+  "failure": null,
+  "command_evidence": {
+    "path": "Docs/quality/stage2_android2unix/headless-android-diff-final-20261002.commands.json",
+    "sha256": "69bab191225169704741b25f0ced47db2bd668029d415b89680e8e0de8715b76"
+  },
+  "process_evidence": {
+    "killed_pid": "10057",
+    "committed_request_id": "cb239637-116e-486c-a50d-7e265e2df0d1",
+    "pending_command_recovered_in_distinct_process": true,
+    "recovery_exit_code": 0
+  },
+  "screenshot": {
+    "path": "Docs/quality/stage2_android2unix/headless-android-diff-final-20261002.png",
+    "sha256": "d02e1f3ac53cad83fbddb31ae991063803967eb418dd10f91e4fae8731fcdb95"
+  },
+  "diff_screenshot": {
+    "path": "Docs/quality/stage2_android2unix/headless-android-diff-final-20261002.diff.png",
+    "sha256": "f72383eafe14d84264231fac8eaacfa82579cfe1d71c60c7f7510dd1b07466e7"
+  },
+  "requirement": {
+    "schema_version": "stage2-selector/v1",
+    "active": true,
+    "activated_by": "master",
+    "activated_at": "2026-10-01T19:16:06+0800",
+    "blueprint": "Docs/stage2_android2unix_blueprint.md",
+    "specification": "Docs/stage2_android2unix_spec.md",
+    "requirement_digest": "9887f784c944db898610e136dca2774496abb2f80b3e5a8fdd6a0b32659e009d",
+    "spec_digest": "403e6339b0318a420d93600fc52926acf6a9e46ec899bd9a9edb03c235190a28",
+    "target_repo": "/Users/mac/Github/zenpi",
+    "target_baseline": "current-worktree-with-user-changes",
+    "run_id": "zenpi-stage2-android2unix-20261001"
+  },
+  "integration_state": "uncommitted provisional evidence; no whole-item acceptance"
+}

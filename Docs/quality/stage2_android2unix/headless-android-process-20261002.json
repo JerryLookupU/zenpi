@@ -1,0 +1,26 @@
+{
+  "scope": "production non-TUI Rust host / Android composer and saved prompt recovery after actual process death",
+  "passed": false,
+  "direct_host_interface_verified": false,
+  "adb_reverse_used": false,
+  "camera_scanning_verified": false,
+  "physical_phone_lan_verified": false,
+  "terminal_qr_decode_verified": false,
+  "android_composer_provider_turn_verified": false,
+  "encrypted_pending_prompt_process_recovery_verified": false,
+  "exact_retry_without_provider_replay_verified": false,
+  "provider_requests": 2,
+  "listener_expiry_closed_verified": false,
+  "artifacts": {
+    "target/debug/zenpi": "bdd666957d8a7323617b955252894cdb925df868ed939baec86ccff37bd502e9",
+    "android/app/build/outputs/apk/debug/app-debug.apk": "08a888a3dd46991340bd51d4cceb4cb0f6851d78684652c8dc1bfb7a6dcd89d0",
+    "android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk": "139593d00766fdf574a00ae912ebf558b40845fa75126eb6e46aaffeb1b8a8dc",
+    "tools/stage2_headless_android_smoke.py": "321a008d80e3e97208239dd2c0ef4263e174dca88b6284a622b42a2f20b1c4c8"
+  },
+  "android_api": "36",
+  "serial": "emulator-5580",
+  "started_at_unix": 1790889925.9641101,
+  "finished_at_unix": 1790889934.385003,
+  "failure": "[Errno 2] No such file or directory: '/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-headless-android-498b6ac4/config/project-tabs.json'",
+  "integration_state": "uncommitted provisional evidence; no whole-item acceptance"
+}

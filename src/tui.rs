@@ -13,8 +13,8 @@ mod trajectory;
 pub use trajectory::TrajectoryLevel;
 
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
-use std::fmt::Display;
 use std::io;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -44,6 +44,7 @@ use crate::layout::{
     arch_prompt_group, conversation_prompt_group,
 };
 use crate::slash::{self, BlueprintAction, InputRoute, LayoutAction, PaneAction, SlashCommand};
+use crate::slash_actions::prompt_file_references;
 use crate::tool_runtime::{
     MasterSessionCommand, MasterSessionInputError, classify_master_session_input,
 };
@@ -89,6 +90,15 @@ pub const RESOURCE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 /// refreshes far less often than the local host monitor (ZS1-158).
 pub const LAN_REFRESH_INTERVAL: Duration = Duration::from_secs(120);
 const MIN_LOOP_INTERVAL: Duration = Duration::from_millis(1);
+const FOOTER_NOTICE_TTL: Duration = Duration::from_secs(4);
+const COPY_NOTICE_TTL: Duration = Duration::from_secs(5);
+/// Durable writes wait until input has been quiet this long, so typing never
+/// writes the project checkpoint or layout file (ZE-309).
+const CHECKPOINT_QUIET: Duration = Duration::from_secs(1);
+const CHECKPOINT_INTERVAL: Duration = Duration::from_millis(250);
+/// The pairing screen shows a seconds countdown; it needs no faster redraw.
+#[cfg(feature = "remote")]
+const PAIRING_REDRAW: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MessageRole {
@@ -315,9 +325,9 @@ impl SessionPaneSnapshot {
             .map(|record| {
                 // Project envelope identity only. Never expose arbitrary event
                 // payloads, shell output, or credentials in this side pane.
+                let value = record.value();
                 let label = match record.kind.as_str() {
-                    "event" => record
-                        .value
+                    "event" => value
                         .get("event")
                         .and_then(|value| value.get("type"))
                         .and_then(serde_json::Value::as_str)
@@ -728,6 +738,7 @@ pub enum TuiAction {
     },
     Copy(String),
     OpenExternalEditor,
+    OpenPairing,
     Quit,
     Interrupt,
     /// Second Ctrl-C inside the escalation window (ZS1-179): terminate the
@@ -828,64 +839,6 @@ impl FileCompletionResult {
 
 fn quote_input_path(path: &str) -> String {
     format!("\"{}\"", path.replace('\\', "\\\\").replace('"', "\\\""))
-}
-
-/// Return explicit @ tokens only at word boundaries; skill arguments remain literal.
-fn prompt_file_references(text: &str) -> Result<Vec<(usize, usize, String, bool)>, String> {
-    let mut result = Vec::new();
-    let mut i = 0;
-    while i < text.len() {
-        let c = text[i..].chars().next().unwrap();
-        if c != '@'
-            || (i > 0
-                && !text[..i]
-                    .chars()
-                    .next_back()
-                    .is_some_and(char::is_whitespace))
-        {
-            i += c.len_utf8();
-            continue;
-        }
-        let start = i;
-        i += 1;
-        let quoted = text[i..].starts_with('"');
-        if quoted {
-            i += 1;
-        }
-        let mut path = String::new();
-        let mut closed = !quoted;
-        while i < text.len() {
-            let c = text[i..].chars().next().unwrap();
-            if quoted && c == '"' {
-                i += 1;
-                closed = true;
-                break;
-            }
-            if !quoted && c.is_whitespace() {
-                break;
-            }
-            if quoted && c == '\\' {
-                i += 1;
-                if i >= text.len() {
-                    break;
-                }
-                let next = text[i..].chars().next().unwrap();
-                path.push(next);
-                i += next.len_utf8();
-            } else {
-                path.push(c);
-                i += c.len_utf8();
-            }
-            if path.len() > 4096 {
-                return Err("File reference exceeds 4096 bytes".into());
-            }
-        }
-        result.push((start, i, path, closed));
-        if result.len() > crate::backend::MAX_ATTACHMENTS_PER_TURN {
-            return Err("Too many file references".into());
-        }
-    }
-    Ok(result)
 }
 
 /// Directory discovery is bounded and runs in a cancellable UI worker, never the input loop.
@@ -1012,7 +965,9 @@ const MAX_CLIPBOARD_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone)]
 struct TranscriptRow {
-    line: Line<'static>,
+    /// Shared so reassembling the window after a delta copies pointers, not
+    /// spans (ZE-309).
+    line: Arc<Line<'static>>,
     position: Option<(u64, usize)>,
 }
 
@@ -1379,39 +1334,31 @@ impl TuiState {
         ))
     }
     pub fn retire_approval(&mut self, id: &str) {
-        let project = self.active_project().to_owned();
-        if let Some(view) = self.approval_views.get_mut(&project) {
-            let previous = view.requests.len();
-            view.requests.retain(|r| r.request_id != id);
-            if view.requests.len() == previous {
-                return;
-            }
-            view.index = view.index.min(view.requests.len().saturating_sub(1));
-            view.allow = false;
-            view.remember = false;
-            view.scroll = 0;
-            view.stage = ApprovalStage::Select;
-            view.message.clear();
-            if view.requests.is_empty() {
-                view.focused = false;
-            }
-            self.dirty = true;
-            // A real coordinator retirement also retires its canonical mirror.
-            self.transcript_ux
-                .canonical_approvals
-                .retain(|pending| pending != id);
-            self.sync_activity_timer();
-        }
+        self.retire_approvals_where(|pending| pending.request_id == id);
     }
 
     fn retire_approval_request(&mut self, request: &crate::approval::ApprovalRequest) {
-        let project = self.active_project().to_owned();
-        if let Some(view) = self.approval_views.get_mut(&project) {
+        self.retire_approvals_where(|pending| Self::same_approval_request(pending, request));
+    }
+
+    /// ZE-251: retire matching requests in EVERY project's view, not only the
+    /// active tab, so a background tab never keeps a dead modal.
+    fn retire_approvals_where(
+        &mut self,
+        matches: impl Fn(&crate::approval::ApprovalRequest) -> bool,
+    ) {
+        let mut retired = Vec::new();
+        for view in self.approval_views.values_mut() {
             let previous = view.requests.len();
-            view.requests
-                .retain(|pending| !Self::same_approval_request(pending, request));
+            view.requests.retain(|pending| {
+                let hit = matches(pending);
+                if hit {
+                    retired.push(pending.request_id.clone());
+                }
+                !hit
+            });
             if view.requests.len() == previous {
-                return;
+                continue;
             }
             view.index = view.index.min(view.requests.len().saturating_sub(1));
             view.allow = false;
@@ -1422,12 +1369,23 @@ impl TuiState {
             if view.requests.is_empty() {
                 view.focused = false;
             }
-            self.dirty = true;
-            self.transcript_ux
-                .canonical_approvals
-                .retain(|pending| pending != &request.request_id);
-            self.sync_activity_timer();
         }
+        if retired.is_empty() {
+            return;
+        }
+        self.dirty = true;
+        // A real coordinator retirement also retires its canonical mirror, in
+        // the active tab and in every saved background tab.
+        self.transcript_ux
+            .canonical_approvals
+            .retain(|pending| !retired.contains(pending));
+        for draft in self.project_drafts.values_mut() {
+            draft
+                .ux
+                .canonical_approvals
+                .retain(|pending| !retired.contains(pending));
+        }
+        self.sync_activity_timer();
     }
 
     fn sync_activity_timer(&mut self) {
@@ -2141,8 +2099,6 @@ const WORKER_STDIO_EXCERPT_BYTES: usize = 4 * 1024;
 struct WorkerStdioRow {
     pid: u32,
     phase: crate::resources::FootprintPhase,
-    cpu_percent: f64,
-    resident_bytes: u64,
     session: String,
     input: Option<String>,
     output: Option<String>,
@@ -2322,7 +2278,6 @@ impl LocalDiffScope {
                     draft.ux.message_offset = draft.ux.message_offset.saturating_add(1);
                 }
             }
-            state.project_checkpoint_dirty = true;
             state.dirty = true;
         }
     }
@@ -2680,12 +2635,16 @@ impl SessionBrowserHost {
                     .is_some_and(|request| request.key == key)
                 {
                     let request = self.active.take().expect("matched active request");
+                    // The 500 ms background refresh redraws only when the
+                    // projection changed, so an idle loop stays quiet (ZE-309).
+                    let mut refreshed = request.original.is_some() || projection.receipt.is_some();
                     // Check the complete key, including query and generation,
                     // and the live project/session before projecting any part.
                     if self.desired.as_ref() == Some(&key) && scope.as_ref() == Some(&key.scope) {
                         state.session_browser_refresh.last_checked = Some(Instant::now());
                         if let Ok(rows) = projection.rows {
                             let selected = state.selected_session_browser_path();
+                            let previous_cursor = state.session_browser_cursor;
                             state.session_browser_cursor = if request.original.is_some()
                                 && key.query.is_some()
                             {
@@ -2699,6 +2658,9 @@ impl SessionBrowserHost {
                                             .min(rows.len().saturating_sub(1))
                                     })
                             };
+                            refreshed |= state.session_browser_cursor != previous_cursor
+                                || state.session_browser != rows
+                                || state.session_browser_refresh.query != key.query;
                             state.session_browser = rows;
                             state.session_browser_refresh.query = key.query.clone();
                             if request.original.is_some() && key.query.is_some() {
@@ -2731,8 +2693,10 @@ impl SessionBrowserHost {
                                 }
                             }
                         }
-                        state.dirty = true;
-                        changed = true;
+                        if refreshed {
+                            state.dirty = true;
+                            changed = true;
+                        }
                     }
                 }
             }
@@ -2945,6 +2909,7 @@ pub struct TuiState {
     /// Interactive shell bound to the active workspace cwd (ZS1-166). `None`
     /// until the Shell pane is first rendered or if the PTY cannot be created.
     pty_shell: Option<crate::pty_shell::PtyShell>,
+    pty_scope: Option<(String, String)>,
     session_snapshot: Option<SessionPaneSnapshot>,
     session_browser: Vec<crate::session::SessionSummary>,
     session_browser_cursor: usize,
@@ -3043,7 +3008,10 @@ pub struct TuiState {
     /// no native double-click event.
     last_left_click: Option<(Instant, u16, u16)>,
     /// Last Ctrl-C press used to escalate to a force kill (ZS1-179).
-    last_interrupt: Option<Instant>,
+    /// When and where the last Ctrl-C landed. ZE-252: escalation counts only
+    /// within one hot zone, so a Shell press (the PTY's SIGINT) followed by a
+    /// Conversation press never force-kills the job.
+    last_interrupt: Option<(Instant, HotZone)>,
     /// Current session's operator name, projected from the journal (ZS1-178).
     session_name: Option<String>,
     /// Journal path of the current session, for rename duplicate checks.
@@ -3060,6 +3028,9 @@ pub struct TuiState {
     spinner_tick: usize,
     last_area: Rect,
     cached_transcript: Option<(u16, Vec<TranscriptRow>)>,
+    /// Rendered rows per transcript message (ZE-309); a streaming delta
+    /// re-renders only its own message when the window is reassembled.
+    message_rows: MessageRowCache,
     dirty: bool,
 }
 
@@ -3138,6 +3109,7 @@ impl TuiState {
             gantt_status: GanttPaneStatus::Idle,
             terminal_snapshot: "No local shell result".into(),
             pty_shell: None,
+            pty_scope: None,
             session_snapshot: None,
             session_browser: Vec::new(),
             session_browser_cursor: 0,
@@ -3199,6 +3171,7 @@ impl TuiState {
             spinner_tick: 0,
             last_area: Rect::default(),
             cached_transcript: None,
+            message_rows: MessageRowCache::default(),
             dirty: true,
         }
     }
@@ -3234,7 +3207,7 @@ impl TuiState {
             .and_then(crate::persona::normalize)
             .unwrap_or("INTJ")
             .into();
-        self.cached_transcript = None;
+        self.invalidate_transcript();
         self.session_name = session.session_name().map(str::to_owned);
         self.current_session_path = Some(session.path().display().to_string());
         let snapshot = SessionPaneSnapshot::from_session(session);
@@ -3469,11 +3442,13 @@ impl TuiState {
         self.gantt_snapshot = draft.gantt_snapshot;
         self.gantt_status = draft.gantt_status.unwrap_or(GanttPaneStatus::Idle);
         self.preferred_column = None;
-        self.cached_transcript = None;
+        self.invalidate_transcript();
         self.palette_dismissed = false;
         self.project_metadata
             .entry(self.project_name.clone())
             .or_default();
+        // A wait may have been retired while this tab was in the background.
+        self.sync_activity_timer();
         self.dirty = true;
         self.project_checkpoint_dirty = true;
         true
@@ -3636,6 +3611,9 @@ impl TuiState {
     /// Create a fresh `git worktree` and open it as a layer-2 tab.
     pub fn subtab_add_worktree(&mut self, name: Option<String>) -> Result<String, String> {
         self.ensure_subtabs();
+        if self.is_busy() || self.master_busy() {
+            return Err("project is running; worktree creation refused".into());
+        }
         let project = self.active_project().to_owned();
         let base = self.project_cwd();
         let tabs = self.project_subtabs.entry(project.clone()).or_default();
@@ -3669,21 +3647,31 @@ impl TuiState {
 
     pub fn subtab_close(&mut self, index: usize) -> bool {
         self.ensure_subtabs();
+        if self.is_busy() || self.master_busy() {
+            self.set_status("tab close refused: project is running");
+            return false;
+        }
         let project = self.active_project().to_owned();
         let cwd = self.project_cwd();
-        let Some(tabs) = self.project_subtabs.get_mut(&project) else {
+        let Some(tabs) = self.project_subtabs.get(&project) else {
             return false;
         };
         if index == 0 || index >= tabs.len() {
             return false;
         }
-        let removed = tabs.remove(index);
-        if removed.kind == SubTabKind::Worktree {
-            let _ = crate::project_workspace::remove_worktree(
-                &cwd,
-                std::path::Path::new(&removed.root),
-            );
+        let removed = tabs[index].clone();
+        if removed.kind == SubTabKind::Worktree
+            && let Err(error) =
+                crate::project_workspace::remove_worktree(&cwd, std::path::Path::new(&removed.root))
+        {
+            self.set_status(format!("worktree close refused: {error}"));
+            return false;
         }
+        let tabs = self
+            .project_subtabs
+            .get_mut(&project)
+            .expect("retained subtab view");
+        tabs.remove(index);
         let active = self.active_subtab.entry(project).or_insert(0);
         if *active >= tabs.len() {
             *active = tabs.len().saturating_sub(1);
@@ -3983,6 +3971,25 @@ impl TuiState {
         TuiAction::Redraw
     }
 
+    /// Close one layer-1 workspace tab the way an operator expects: the
+    /// folder leaves the host workspace too (not just this view), and closing
+    /// the last one keeps everything on disk and exits instead of refusing.
+    fn request_project_close(&mut self, index: usize) -> TuiAction {
+        let Some(name) = self.project_tabs.get(index).cloned() else {
+            return TuiAction::Redraw;
+        };
+        if self.project_tabs.len() <= 1 {
+            // The quit path checkpoints the workspace, layout and drafts.
+            return TuiAction::Quit;
+        }
+        if self.project_workspace.is_some() {
+            self.pending_project = Some(ProjectIntent::Close(name));
+        } else {
+            self.close_project_tab(&name);
+        }
+        TuiAction::Redraw
+    }
+
     pub fn close_project_tab(&mut self, name: &str) -> bool {
         if self.project_tabs.len() <= 1 {
             return false;
@@ -4009,7 +4016,7 @@ impl TuiState {
         self.project_drafts.remove(name);
         self.approval_views.remove(name);
         self.scheduled_inputs.retain(|entry| entry.project != name);
-        self.cached_transcript = None;
+        self.invalidate_transcript();
         self.dirty = true;
         self.project_checkpoint_dirty = true;
         true
@@ -4189,7 +4196,7 @@ impl TuiState {
         }
         self.project_workspace = Some(workspace);
         self.project_checkpoint_dirty = true;
-        self.cached_transcript = None;
+        self.invalidate_transcript();
         Ok(())
     }
 
@@ -4293,14 +4300,6 @@ impl TuiState {
             .project_tabs
             .iter()
             .map(|name| {
-                let messages = if name == self.active_project() {
-                    self.messages.clone()
-                } else {
-                    self.project_transcripts
-                        .get(name)
-                        .cloned()
-                        .unwrap_or_default()
-                };
                 let layout = if name == self.active_project() {
                     Some(self.workspace_layout.clone())
                 } else {
@@ -4346,7 +4345,6 @@ impl TuiState {
                     "name": name,
                     "metadata": self.project_metadata.get(name),
                     "layout": layout,
-                    "messages": messages,
                     "subtabs": subtabs,
                     "active_subtab": active_subtab,
                 })
@@ -4608,16 +4606,9 @@ impl TuiState {
                 {
                     self.project_layouts.insert(name.to_owned(), layout);
                 }
-                if let Some(messages) = state.get("messages")
-                    && let Ok(messages) =
-                        serde_json::from_value::<VecDeque<TuiMessage>>(messages.clone())
-                    && messages.len() <= self.max_messages
-                    && messages
-                        .iter()
-                        .all(|message| message.text.len() <= MAX_MESSAGE_BYTES)
-                {
-                    self.project_transcripts.insert(name.to_owned(), messages);
-                }
+                // The transcript is not part of the checkpoint (ZE-309): the
+                // session journal is its durable owner and reloads it. A
+                // legacy `messages` field is ignored.
                 if self.project_workspace.is_none()
                     && let Some(metadata) = state.get("metadata")
                     && let Ok(metadata) =
@@ -4671,7 +4662,7 @@ impl TuiState {
             );
             self.set_status("Paste metadata recovered; full draft retained");
         }
-        self.cached_transcript = None;
+        self.invalidate_transcript();
         self.dirty = true;
         true
     }
@@ -5386,7 +5377,7 @@ impl TuiState {
     pub fn set_tool_logs_folded(&mut self, folded: bool) {
         if self.fold_tool_logs != folded {
             self.fold_tool_logs = folded;
-            self.cached_transcript = None;
+            self.invalidate_transcript();
             self.scroll = 0;
             self.dirty = true;
         }
@@ -5406,6 +5397,13 @@ impl TuiState {
     /// messages.  Input is sanitized and bounded because provider data is
     /// displayed in a terminal context.
     pub fn tool_call_started(&mut self, call_id: impl AsRef<str>, name: impl AsRef<str>) {
+        // ZE-250: a tool call ends the current streamed text segment, so text
+        // that streams after the tool lands after its row and never rewrites
+        // the text before it.
+        if self.streaming_message_started {
+            self.streaming_message_started = false;
+            self.streaming_role = None;
+        }
         self.upsert_tool_log(call_id.as_ref(), name.as_ref(), ToolRunStatus::Running);
     }
 
@@ -5433,17 +5431,20 @@ impl TuiState {
             ToolRunStatus::Failed => crate::view_model::ToolStatus::Failed,
             ToolRunStatus::Cancelled => crate::view_model::ToolStatus::Cancelled,
         };
+        let mut changed = false;
         for message in &mut self.messages {
             for block in &mut message.blocks {
                 if let crate::view_model::ViewBlock::ToolStatus { status, .. } = block
                     && *status == crate::view_model::ToolStatus::Running
                 {
                     *status = terminal;
-                    self.project_checkpoint_dirty = true;
-                    self.dirty = true;
-                    self.cached_transcript = None;
+                    changed = true;
                 }
             }
+        }
+        if changed {
+            self.dirty = true;
+            self.invalidate_transcript();
         }
         let running = self
             .messages
@@ -5481,8 +5482,7 @@ impl TuiState {
                 && message.text != text
             {
                 message.text = bound_text(text);
-                self.cached_transcript = None;
-                self.project_checkpoint_dirty = true;
+                self.invalidate_message_rows(index);
                 self.dirty = true;
             }
             return;
@@ -5492,6 +5492,23 @@ impl TuiState {
 
     pub fn invalidate(&mut self) {
         self.dirty = true;
+    }
+
+    /// Drop every rendered transcript row; used when the message set, ids,
+    /// folding, or presentation may have changed wholesale.
+    fn invalidate_transcript(&mut self) {
+        self.cached_transcript = None;
+        self.message_rows.rows.clear();
+    }
+
+    /// Re-render only the message at `index` on the next frame (ZE-309).
+    fn invalidate_message_rows(&mut self, index: usize) {
+        self.cached_transcript = None;
+        let id = self
+            .transcript_ux
+            .message_offset
+            .saturating_add(index as u64);
+        self.message_rows.rows.remove(&id);
     }
 
     pub fn take_dirty(&mut self) -> bool {
@@ -5529,8 +5546,30 @@ impl TuiState {
     fn live_footer_notice(&self) -> Option<&str> {
         self.footer_notice
             .as_ref()
-            .filter(|(_, at)| at.elapsed() < Duration::from_secs(4))
+            .filter(|(_, at)| at.elapsed() < FOOTER_NOTICE_TTL)
             .map(|(text, _)| text.as_str())
+    }
+
+    /// Drop lapsed time-limited notices and mark the frame dirty, so their
+    /// removal is drawn without a periodic redraw (ZE-309).
+    fn expire_notices(&mut self) {
+        if self
+            .footer_notice
+            .as_ref()
+            .is_some_and(|(_, at)| at.elapsed() >= FOOTER_NOTICE_TTL)
+        {
+            self.footer_notice = None;
+            self.dirty = true;
+        }
+        if self
+            .transcript_ux
+            .copy_notice
+            .as_ref()
+            .is_some_and(|(_, at)| at.elapsed() >= COPY_NOTICE_TTL)
+        {
+            self.transcript_ux.copy_notice = None;
+            self.dirty = true;
+        }
     }
 
     pub fn set_busy(&mut self, busy: bool) {
@@ -5596,7 +5635,7 @@ impl TuiState {
             self.streaming_job_id = None;
             self.streaming_message_started = false;
             self.streaming_block = None;
-            self.cached_transcript = None;
+            self.invalidate_transcript();
             self.scroll = 0;
             self.project_checkpoint_dirty = true;
             self.dirty = true;
@@ -5616,7 +5655,6 @@ impl TuiState {
             self.messages.pop_front();
             self.transcript_ux.message_offset = self.transcript_ux.message_offset.saturating_add(1);
         }
-        self.project_checkpoint_dirty = true;
         self.dirty = true;
     }
 
@@ -5636,7 +5674,6 @@ impl TuiState {
             self.messages.pop_front();
             self.transcript_ux.message_offset = self.transcript_ux.message_offset.saturating_add(1);
         }
-        self.project_checkpoint_dirty = true;
         self.dirty = true;
     }
 
@@ -6428,8 +6465,7 @@ impl TuiState {
         {
             last.text.push_str(chunk);
             self.streaming_role = Some(role);
-            self.cached_transcript = None;
-            self.project_checkpoint_dirty = true;
+            self.invalidate_message_rows(self.messages.len() - 1);
             self.dirty = true;
             return;
         }
@@ -6483,10 +6519,9 @@ impl TuiState {
             self.streaming_message_started = true;
             return;
         }
-        if let Some(message) = self.messages.iter_mut().rev().find(|m| m.role == role) {
-            message.text.push_str(chunk.as_ref());
-            self.cached_transcript = None;
-            self.project_checkpoint_dirty = true;
+        if let Some(index) = self.messages.iter().rposition(|m| m.role == role) {
+            self.messages[index].text.push_str(chunk.as_ref());
+            self.invalidate_message_rows(index);
             self.dirty = true;
             self.streaming_role = Some(role);
         } else {
@@ -6522,8 +6557,7 @@ impl TuiState {
         {
             if message.text != content {
                 message.text = content;
-                self.cached_transcript = None;
-                self.project_checkpoint_dirty = true;
+                self.invalidate_message_rows(index);
                 self.dirty = true;
             }
             self.streaming_role = None;
@@ -6548,9 +6582,12 @@ impl TuiState {
         let content = content.into();
         if self.streaming_message_started {
             self.finish_stream_impl(role, content);
-        } else {
+        } else if !content.trim().is_empty() {
             self.streaming_role = None;
             self.push_message(role, content);
+        } else {
+            // An empty answer after tools (ZE-210) adds no blank message.
+            self.streaming_role = None;
         }
         self.streaming_job_id = None;
         self.streaming_message_started = false;
@@ -6652,15 +6689,15 @@ impl TuiState {
                     return;
                 };
                 let key = format!("job-{job_id}:{block_id}");
-                if let Some(message) = self
+                if let Some(index) = self
                     .messages
-                    .iter_mut()
-                    .find(|message| message.block_id.as_ref() == Some(&key))
+                    .iter()
+                    .position(|message| message.block_id.as_ref() == Some(&key))
                 {
+                    let message = &mut self.messages[index];
                     message.text = bound_text(output.clone());
                     message.blocks = vec![block.clone()];
-                    self.cached_transcript = None;
-                    self.project_checkpoint_dirty = true;
+                    self.invalidate_message_rows(index);
                     self.dirty = true;
                 } else {
                     self.push_message_block(MessageRole::Tool, output.clone(), block.clone());
@@ -6693,6 +6730,7 @@ impl TuiState {
                     return;
                 }
                 let prefix = format!("job-{job_id}:");
+                let mut changed = false;
                 for message in &mut self.messages {
                     if message
                         .block_id
@@ -6708,12 +6746,14 @@ impl TuiState {
                                 && id == call_id
                             {
                                 *state = *status;
-                                self.project_checkpoint_dirty = true;
-                                self.cached_transcript = None;
-                                self.dirty = true;
+                                changed = true;
                             }
                         }
                     }
+                }
+                if changed {
+                    self.invalidate_transcript();
+                    self.dirty = true;
                 }
                 let status = match status {
                     crate::view_model::ToolStatus::Succeeded => ToolRunStatus::Succeeded,
@@ -6794,26 +6834,25 @@ impl TuiState {
             return;
         }
         if self.transcript_ux.reasoning_job == Some(job) {
-            if let Some(message) = self
+            if let Some(index) = self
                 .messages
-                .iter_mut()
-                .rev()
-                .find(|m| m.role == MessageRole::Reasoning)
+                .iter()
+                .rposition(|m| m.role == MessageRole::Reasoning)
             {
+                let message = &mut self.messages[index];
                 let remaining = MAX_MESSAGE_BYTES.saturating_sub(message.text.len());
                 message.text.push_str(truncate_bytes(delta, remaining));
+                self.invalidate_message_rows(index);
             }
         } else {
             self.push_message(MessageRole::Reasoning, delta.to_owned());
             self.transcript_ux.reasoning_job = Some(job);
         }
-        self.cached_transcript = None;
-        self.project_checkpoint_dirty = true;
         self.dirty = true;
     }
     pub fn toggle_reasoning(&mut self) -> bool {
         self.transcript_ux.reasoning_folded = !self.transcript_ux.reasoning_folded;
-        self.cached_transcript = None;
+        self.invalidate_transcript();
         self.project_checkpoint_dirty = true;
         self.dirty = true;
         self.transcript_ux.reasoning_folded
@@ -7336,7 +7375,7 @@ impl TuiState {
             );
         }
         let input = &masked;
-        for command in ["/attach ", "/diff ", "/review ", "/reload "] {
+        for command in ["/attach ", "/diff ", "/reload "] {
             if let Some(path) = input.strip_prefix(command) {
                 if !self.paste.folds.is_empty() {
                     return None;
@@ -7435,6 +7474,7 @@ impl TuiState {
                 | "layout"
                 | "pane"
                 | "resources"
+                | "resource"
                 | "skills"
                 | "templates"
                 | "reload"
@@ -7442,7 +7482,6 @@ impl TuiState {
                 | "scheduled"
                 | "compact"
                 | "diff"
-                | "review"
         )
     }
 
@@ -7564,17 +7603,6 @@ impl TuiState {
                 .iter()
                 .flat_map(|spec| std::iter::once(spec.name).chain(spec.aliases.iter().copied()))
                 .map(|name| format!("/{name}"))
-                .chain(
-                    [
-                        "/skills",
-                        "/templates",
-                        "/reload",
-                        "/reasoning",
-                        "/scheduled",
-                        "/input",
-                    ]
-                    .map(str::to_owned),
-                )
                 .chain(self.command_resources.iter().map(|r| r.command.clone()))
                 .filter(|name| name.to_ascii_lowercase().starts_with(&prefix))
                 .take(2048)
@@ -7653,7 +7681,6 @@ impl TuiState {
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
-            "/review" => Vec::new(),
             "/project" => {
                 let mut values = vec![
                     "list".to_string(),
@@ -8020,9 +8047,9 @@ impl TuiState {
             }
         }
         // Match the familiar terminal/browser tab gesture without changing
-        // the BentoBox layout: middle-clicking a project tab closes only the
-        // tab projection; its session journal remains on disk and can be
-        // reopened through the picker/session browser.
+        // the BentoBox layout: middle-clicking a project tab closes that one
+        // folder; its session journal remains on disk and can be reopened
+        // through the picker/session browser.
         if mouse.kind == MouseEventKind::Down(MouseButton::Middle)
             && let Some((_, index)) = self
                 .project_hits
@@ -8040,9 +8067,7 @@ impl TuiState {
                 self.set_status("Draft kept · clear the prompt before closing this project");
                 return TuiAction::Redraw;
             }
-            if self.close_project_tab(&name) {
-                return TuiAction::Redraw;
-            }
+            return self.request_project_close(*index);
         }
         // Right-click a header card to rename it in place (ZS1-169).
         if mouse.kind == MouseEventKind::Down(MouseButton::Right) {
@@ -8085,16 +8110,11 @@ impl TuiState {
                 .find(|(rect, _)| rect.contains(position))
             {
                 if *index == usize::MAX - 2 {
-                    let name = self.active_project().to_owned();
-                    self.close_project_tab(&name);
+                    return self.request_project_close(self.active_project);
                 } else if *index >= usize::MAX - 3 - self.project_tabs.len()
                     && *index < usize::MAX - 2
                 {
-                    let close_index = usize::MAX - 3 - *index;
-                    if close_index < self.project_tabs.len() {
-                        let name = self.project_tabs[close_index].clone();
-                        self.close_project_tab(&name);
-                    }
+                    return self.request_project_close(usize::MAX - 3 - *index);
                 } else if *index == self.project_tabs.len() {
                     self.open_directory_picker();
                 } else {
@@ -8308,7 +8328,7 @@ impl TuiState {
                 .row_weights
                 .insert(bottom, total - split);
             self.layout_dirty = true;
-            self.cached_transcript = None;
+            self.invalidate_transcript();
         } else if let Some((left, right, origin, initial)) = self.dragging_split
             && matches!(mouse.kind, MouseEventKind::Drag(MouseButton::Left))
             && self.workspace_area.width > 0
@@ -8323,7 +8343,7 @@ impl TuiState {
             ratios.set(right, total - value);
             self.workspace_layout.set_ratios(ratios);
             self.layout_dirty = true;
-            self.cached_transcript = None;
+            self.invalidate_transcript();
         }
         if let Some(pane) = panes.iter().find(|pane| pane.rect.contains(position))
             && matches!(
@@ -8651,6 +8671,9 @@ impl TuiState {
         if let Some(action) = self.approval_key(key) {
             return action;
         }
+        if key.code == KeyCode::F(3) && key.modifiers.is_empty() && !self.modal_active() {
+            return TuiAction::OpenPairing;
+        }
         // The arch console is the focused left-column prompt (ZS1-148). It only
         // captures editing keys; every control chord still reaches its usual
         // handler so focus can always be moved away.
@@ -8661,10 +8684,10 @@ impl TuiState {
         // the confirmation hint.
         if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('c') {
             let now = Instant::now();
-            let escalate = self
-                .last_interrupt
-                .is_some_and(|last| now.saturating_duration_since(last) <= INTERRUPT_WINDOW);
-            self.last_interrupt = Some(now);
+            let escalate = self.last_interrupt.is_some_and(|(last, last_zone)| {
+                last_zone == zone && now.saturating_duration_since(last) <= INTERRUPT_WINDOW
+            });
+            self.last_interrupt = Some((now, zone));
             if escalate {
                 return TuiAction::ForceKill;
             }
@@ -9014,7 +9037,10 @@ impl TuiState {
                     self.kill_input_range(self.cursor, end);
                     return TuiAction::Redraw;
                 }
-                KeyCode::Char('w') if self.input.is_empty() && self.project_tabs.len() > 1 => {
+                KeyCode::Char('w') if self.input.is_empty() => {
+                    if self.project_tabs.len() <= 1 {
+                        return TuiAction::Quit;
+                    }
                     self.pending_project =
                         Some(ProjectIntent::Close(self.active_project().to_owned()));
                     return TuiAction::Redraw;
@@ -9835,7 +9861,7 @@ impl TuiState {
         let area = frame.area();
         if area != self.last_area {
             self.last_area = area;
-            self.cached_transcript = None;
+            self.invalidate_transcript();
             self.input_scroll = 0;
         }
         let prompt_width = usize::from(area.width.saturating_sub(2)).max(1);
@@ -9910,7 +9936,7 @@ impl TuiState {
                     self.transcript_ux
                         .copy_notice
                         .as_ref()
-                        .filter(|(_, t)| t.elapsed() < Duration::from_secs(5))
+                        .filter(|(_, t)| t.elapsed() < COPY_NOTICE_TTL)
                         .map(|(text, _)| format!(" | {text}"))
                         .unwrap_or_default(),
                     Style::default().fg(Color::Cyan),
@@ -10026,12 +10052,17 @@ impl TuiState {
             .as_ref()
             .is_none_or(|(cached_width, _)| *cached_width != inner.width)
         {
+            let mut cache = std::mem::take(&mut self.message_rows);
             let messages = self.transcript_messages();
             let lines = transcript_window(
-                messages.iter().map(|(id, message)| (*id, message)),
+                messages.iter().map(|(id, message)| {
+                    (*id, message.as_ref(), matches!(message, Cow::Borrowed(_)))
+                }),
                 width,
                 &self.persona,
+                &mut cache,
             );
+            self.message_rows = cache;
             self.cached_transcript = Some((inner.width, lines));
         }
         let lines = self
@@ -10061,10 +10092,9 @@ impl TuiState {
             max_scroll.saturating_sub(self.scroll.min(max_scroll))
         };
         let scroll = max_scroll.saturating_sub(start);
-        if self.scroll != scroll {
-            self.scroll = scroll;
-            self.project_checkpoint_dirty = true;
-        }
+        // A render-time clamp follows streamed rows; it is not a user edit
+        // and must not schedule a checkpoint write (ZE-309).
+        self.scroll = scroll;
         self.transcript_ux.last_start = start;
         self.transcript_ux.visible_rows = visible;
         if self.scroll == 0 {
@@ -10078,7 +10108,7 @@ impl TuiState {
         let displayed = if start < end {
             lines[start..end]
                 .iter()
-                .map(|row| row.line.clone())
+                .map(|row| Line::clone(&row.line))
                 .collect()
         } else {
             Vec::new()
@@ -10100,7 +10130,7 @@ impl TuiState {
     /// Build the render-only message view.  Folding never mutates the
     /// canonical bounded queue, which means expanding the logs restores the
     /// exact lifecycle entries and ordinary transcript ordering.
-    fn transcript_messages(&self) -> VecDeque<(u64, TuiMessage)> {
+    fn transcript_messages(&self) -> VecDeque<(u64, Cow<'_, TuiMessage>)> {
         let mut visible = VecDeque::new();
         let mut folded = 0usize;
         for (index, message) in self.messages.iter().enumerate() {
@@ -10111,15 +10141,15 @@ impl TuiState {
             if message.role == MessageRole::Reasoning && self.transcript_ux.reasoning_folded {
                 visible.push_back((
                     id,
-                    TuiMessage::new(
+                    Cow::Owned(TuiMessage::new(
                         MessageRole::Reasoning,
                         format!("{} bytes · collapsed · Alt-R expand", message.text.len()),
-                    ),
+                    )),
                 ));
             } else if message.role == MessageRole::Tool && self.fold_tool_logs {
                 folded = folded.saturating_add(1);
             } else {
-                visible.push_back((id, message.clone()));
+                visible.push_back((id, Cow::Borrowed(message)));
             }
         }
         if folded > 0 {
@@ -10128,10 +10158,10 @@ impl TuiState {
                 self.transcript_ux
                     .message_offset
                     .saturating_add(self.messages.len() as u64),
-                TuiMessage::new(
+                Cow::Owned(TuiMessage::new(
                     MessageRole::System,
                     format!("{folded} tool log{suffix} folded; press Ctrl-O to expand"),
-                ),
+                )),
             ));
         }
         visible
@@ -10531,7 +10561,7 @@ impl TuiState {
         }
         if area != self.last_area {
             self.last_area = area;
-            self.cached_transcript = None;
+            self.invalidate_transcript();
             self.input_scroll = 0;
         }
         let prompt_width = usize::from(area.width.saturating_sub(2)).max(1);
@@ -11576,8 +11606,6 @@ impl TuiState {
             rows.push(WorkerStdioRow {
                 pid: row.pid,
                 phase: row.phase,
-                cpu_percent: row.cpu_percent,
-                resident_bytes: row.resident_bytes,
                 session: session.to_owned(),
                 input,
                 output,
@@ -11588,7 +11616,7 @@ impl TuiState {
 
     /// True on the bright half of the busy-worker blink cycle.
     pub fn resources_zoom_blink_on(&self) -> bool {
-        self.spinner_tick % 2 == 0
+        self.spinner_tick.is_multiple_of(2)
     }
 
     /// True while the matrix shows at least one busy worker, so the render
@@ -11697,7 +11725,7 @@ impl TuiState {
         }
         let summary = self.resource_zoom_summary();
         let project = self.active_project().to_owned();
-        let blink_on = self.spinner_tick % 2 == 0;
+        let blink_on = self.spinner_tick.is_multiple_of(2);
         let Some(zoom) = self.resources_zoom.as_mut() else {
             return;
         };
@@ -12128,13 +12156,32 @@ impl TuiState {
     /// (Re)spawn the Shell PTY rooted at the active workspace when it moved.
     fn ensure_shell(&mut self) {
         let cwd = self.shell_cwd();
+        let scope = self
+            .project_session_cursor(self.active_project())
+            .map(|(session, _)| (self.active_project().to_owned(), session.to_owned()));
         let current = self
             .pty_shell
             .as_ref()
             .map(|shell| shell.cwd() == cwd)
-            .unwrap_or(false);
+            .unwrap_or(false)
+            && self.pty_scope == scope;
         if !current {
+            #[cfg(feature = "remote")]
+            let previous_scope = self.pty_scope.clone();
             self.pty_shell = crate::pty_shell::PtyShell::spawn(cwd).ok();
+            self.pty_scope = if self.pty_shell.is_some() {
+                scope
+            } else {
+                None
+            };
+            #[cfg(feature = "remote")]
+            if let Some((_, session)) = previous_scope {
+                crate::remote::wakeup::notify(&session);
+            }
+            #[cfg(feature = "remote")]
+            if let Some((_, session)) = &self.pty_scope {
+                crate::remote::wakeup::notify(session);
+            }
         }
     }
 
@@ -12145,6 +12192,10 @@ impl TuiState {
             && shell.pump()
         {
             self.dirty = true;
+            #[cfg(feature = "remote")]
+            if let Some((_, session)) = &self.pty_scope {
+                crate::remote::wakeup::notify(session);
+            }
         }
     }
 
@@ -12152,6 +12203,51 @@ impl TuiState {
     /// shell output appears promptly.
     pub fn has_shell(&self) -> bool {
         self.pty_shell.is_some()
+    }
+
+    #[cfg(feature = "remote")]
+    fn remote_terminal(
+        &self,
+        pool: &crate::project_workspace::ProjectOwnerPool,
+        project: &str,
+    ) -> Option<serde_json::Value> {
+        if self.active_project() != project {
+            return None;
+        }
+        let shell = self.pty_shell.as_ref()?;
+        let context = pool.context(project)?;
+        if self.pty_scope.as_ref() != Some(&(project.to_owned(), context.session_id.clone())) {
+            return None;
+        }
+        let tabs = pool.subtab_state(project).ok()?;
+        let tab = tabs.tabs.iter().find(|tab| tab.id == tabs.active_id)?;
+        let visible_tabs = self.subtabs();
+        let visible = visible_tabs.get(self.active_subtab())?;
+        if std::path::Path::new(&visible.root) != tab.root
+            || shell.cwd() != std::path::Path::new(&tab.root)
+        {
+            return None;
+        }
+        let mut projection = crate::remote::terminal::screen(
+            project,
+            &context.session_id,
+            &tab.id,
+            tabs.revision,
+            &shell.remote_content(64),
+            &[
+                std::path::Path::new(&tab.root),
+                std::path::Path::new(&context.cwd),
+            ],
+        );
+        projection["terminal_id"] = serde_json::json!(shell.instance_id());
+        projection["running"] = serde_json::json!(shell.is_running());
+        if let Ok((rows, cols)) = shell.size()
+            && (1..=512).contains(&rows)
+            && (1..=512).contains(&cols)
+        {
+            projection["size"] = serde_json::json!({"rows":rows,"cols":cols});
+        }
+        Some(projection)
     }
 
     /// Shell pane body: live PTY scrollback, falling back to the last `!command`
@@ -12616,7 +12712,7 @@ enum TuiGoalOwnerAction {
     Show(String),
     Transition(String, GoalStatus),
     Create(String, String),
-    Run(String),
+    Run(String, usize),
     Resume(String),
 }
 
@@ -12651,7 +12747,7 @@ fn parse_tui_goal_owner_action(
         }
         Ok(raw.to_owned())
     };
-    let usage = || "use `/goal status [<goal-id>]`, `/goal run|resume|cancel <goal-id>`, or `/goal transition <goal-id> <state>`";
+    let usage = || "use `/goal status [<goal-id>]`, `/goal run|resume|cancel <goal-id> [until|N]`, or `/goal transition <goal-id> <state>`";
 
     if is_create {
         if tokens.len() != 3 {
@@ -12690,17 +12786,36 @@ fn parse_tui_goal_owner_action(
         };
     }
     if is_cancel || is_resume || is_run {
-        if tokens.len() != 2 {
+        if is_run {
+            if !(tokens.len() == 2 || tokens.len() == 3) {
+                return Err(usage());
+            }
+        } else if tokens.len() != 2 {
             return Err(usage());
         }
         let id = valid_id(tokens[1])?;
+        let steps = if is_run && tokens.len() == 3 {
+            if tokens[2].eq_ignore_ascii_case("until")
+                || tokens[2].eq_ignore_ascii_case("--until-done")
+            {
+                32
+            } else {
+                tokens[2]
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|value| (1..=32).contains(value))
+                    .ok_or("goal run steps must be between 1 and 32, or `until`")?
+            }
+        } else {
+            1
+        };
         let status = if is_cancel {
             GoalStatus::Cancelled
         } else {
             GoalStatus::Running
         };
         return Ok(Some(if is_run {
-            TuiGoalOwnerAction::Run(id)
+            TuiGoalOwnerAction::Run(id, steps)
         } else if is_resume {
             TuiGoalOwnerAction::Resume(id)
         } else {
@@ -12859,19 +12974,40 @@ pub fn dispatch_reasoning_input(
     agent: Option<&mut crate::core::Agent>,
     input: &str,
 ) -> bool {
-    let mut args = input.split_whitespace();
-    if args.next() != Some("/reasoning") {
-        return false;
+    match slash::parse(input) {
+        Ok(Some(SlashCommand::Reasoning { level })) => {
+            if !apply_reasoning(state, agent, level) {
+                state.set_rejected_input(input);
+            }
+            true
+        }
+        Err(
+            error @ slash::SlashError::UnexpectedArgument {
+                command: "reasoning",
+            },
+        ) => {
+            state.push_message(MessageRole::Error, error.to_string());
+            state.set_rejected_input(input);
+            true
+        }
+        _ => false,
     }
-    let effort = args.next();
-    let result = if args.next().is_some() {
-        Err("Usage: /reasoning [default|advertised level]".to_owned())
-    } else if state.busy {
+}
+
+/// Shared `/reasoning` owner operation: a level calls the Agent setter (so
+/// the next provider request carries it); no level opens the picker.
+/// Returns false after reporting an error.
+fn apply_reasoning(
+    state: &mut TuiState,
+    agent: Option<&mut crate::core::Agent>,
+    level: Option<String>,
+) -> bool {
+    let result = if state.busy {
         Err("reasoning selection requires an idle project".to_owned())
     } else if let Some(agent) = agent {
-        if let Some(effort) = effort {
+        if let Some(effort) = level {
             agent
-                .set_reasoning_effort((effort != "default").then(|| effort.to_owned()))
+                .set_reasoning_effort((effort != "default").then_some(effort))
                 .map_err(|e| e.to_string())
                 .map(|()| {
                     state.refresh_transcript_status(agent);
@@ -12902,11 +13038,13 @@ pub fn dispatch_reasoning_input(
     } else {
         Err("reasoning selection requires an idle project".to_owned())
     };
-    if let Err(error) = result {
-        state.push_message(MessageRole::Error, error);
-        state.set_rejected_input(input);
+    match result {
+        Ok(()) => true,
+        Err(error) => {
+            state.push_message(MessageRole::Error, error);
+            false
+        }
     }
-    true
 }
 
 /// Run a slash command submitted from the arch console (ZS1-165), reporting
@@ -13153,6 +13291,11 @@ pub fn dispatch_slash_command(
         }
         SlashCommand::Yolo { enabled } => {
             if let Some(agent) = agent.as_deref_mut() {
+                // No argument toggles the current posture, as `/help yolo` says.
+                let enabled = enabled.unwrap_or(
+                    agent.configured_approval_policy().unwrap_or_default().mode
+                        != crate::approval::ApprovalMode::Never,
+                );
                 let mode = if enabled {
                     crate::approval::ApprovalMode::Never
                 } else {
@@ -13173,7 +13316,25 @@ pub fn dispatch_slash_command(
                 state.push_message(MessageRole::Error, "yolo requires an idle owner");
             }
         }
-        SlashCommand::Approval { mode } => {
+        SlashCommand::Approval { mode: None } => {
+            if let Some(agent) = agent.as_deref_mut() {
+                // Display only: an omitted mode never changes the policy.
+                let mode = agent.configured_approval_policy().unwrap_or_default().mode;
+                state.push_message(
+                    MessageRole::System,
+                    format!(
+                        "approval mode: {}",
+                        crate::headless::approval_mode_label(mode)
+                    ),
+                );
+            } else {
+                state.push_message(MessageRole::Error, "approval requires an idle owner");
+            }
+        }
+        SlashCommand::Reasoning { level } => {
+            apply_reasoning(state, agent.as_deref_mut(), level);
+        }
+        SlashCommand::Approval { mode: Some(mode) } => {
             let mode = mode.to_ascii_lowercase();
             if !matches!(mode.as_str(), "ask" | "always" | "never") {
                 state.push_message(
@@ -13201,10 +13362,8 @@ pub fn dispatch_slash_command(
         }
         SlashCommand::Help { topic } => match if topic.as_deref() == Some("input") {
             Some("Input: Ctrl-G External editor · save and close to return. Enter sends; Ctrl-J/Shift-Enter inserts newline. Left/Right move; Ctrl/Alt-Left/Right move words; Ctrl-W/Ctrl-Backspace deletes previous word; Ctrl-Delete deletes next word; Ctrl-A/E line start/end; Ctrl-K deletes to line end; Ctrl-U deletes to logical line start (at line start, deletes previous newline). Ctrl-Y restores the last nonempty Ctrl-U/K/W or word deletion as plain text; one buffer per project, process-only, at most 256 KiB, never the system clipboard. Repeated yank preserves the buffer; input/checkpoint limits reject atomically. Ctrl-P/N or Alt-Up/Down browse history and return to the saved draft; Ctrl-R searches, Ctrl-R again selects older matches, Enter accepts without sending, Esc restores. Paste inserts literal text, never executes keys; limits reject without replacing the draft. Esc keeps drafted input. /input list views runtime inputs; /input edit ID REVISION TEXT changes an accepted queued input; /input cancel ID withdraws it. Future jobs: /scheduled list, /scheduled edit ID REVISION TEXT, /scheduled cancel ID. Restarted scheduled jobs are interrupted/unconfirmed; inspect the session before /scheduled retry ID.".into())
-        } else if topic.as_deref() == Some("reasoning") {
-            Some("/reasoning [default|advertised level] - select current model reasoning effort; default omits the field. Idle project required.".into())
         } else {
-            slash::help(topic.as_deref()).map(|text| if topic.is_none() { format!("{text}\n/reasoning [default|advertised level]         Select actual model reasoning effort") } else { text })
+            slash::help(topic.as_deref())
         } {
             Some(help) => state.push_message(MessageRole::System, help),
             None => state.push_message(
@@ -13221,7 +13380,7 @@ pub fn dispatch_slash_command(
                     return SlashDispatchAction::Continue;
                 }
                 state.persona = agent.persona().into();
-                state.cached_transcript = None;
+                state.invalidate_transcript();
                 state.set_status(format!("Persona {}", state.persona));
             } else {
                 state.push_message(MessageRole::Error, "persona requires an idle owner");
@@ -13485,7 +13644,7 @@ pub fn dispatch_slash_command(
                     "goal creation is unavailable while the agent is busy",
                 ),
             },
-            Ok(Some(TuiGoalOwnerAction::Run(id))) => match agent.as_deref_mut() {
+            Ok(Some(TuiGoalOwnerAction::Run(id, steps))) => match agent.as_deref_mut() {
                 Some(agent) => {
                     let target = crate::headless::domain_store_view(Some(agent))
                         .ok()
@@ -13508,7 +13667,7 @@ pub fn dispatch_slash_command(
                         });
                     match target {
                         Some(target) => {
-                            match crate::headless::run_goal_steps_for_tui(agent, &target, 1) {
+                            match crate::headless::run_goal_steps_for_tui(agent, &target, steps) {
                                 Ok(data) => state.push_message(
                                     MessageRole::System,
                                     format!(
@@ -14433,7 +14592,7 @@ pub fn dispatch_slash_command(
                     if state.subtab_close(index) {
                         format!("sub-tab closed: {index}")
                     } else {
-                        format!("cannot close sub-tab: {index}")
+                        format!("cannot close sub-tab: {index}: {}", state.status())
                     }
                 }
                 WorktreeAction::Move { index, target } => {
@@ -14471,6 +14630,8 @@ pub fn dispatch_slash_command(
 /// session and tool root. Preparing another project never locks a running one.
 pub struct ProjectRuntimeHost {
     pool: crate::project_workspace::ProjectOwnerPool,
+    #[cfg(feature = "remote")]
+    worktrees: crate::worktree::worktree_host::WorktreeHost,
 }
 impl ProjectRuntimeHost {
     pub fn new(
@@ -14493,6 +14654,8 @@ impl ProjectRuntimeHost {
         drop(owner);
         let mut host = Self {
             pool: crate::project_workspace::ProjectOwnerPool::new(Arc::clone(&agent))?,
+            #[cfg(feature = "remote")]
+            worktrees: crate::worktree::worktree_host::WorktreeHost::default(),
         };
         // ZS1-180: propagate the pool's auto-approval mode into the view so
         // project switches keep Never instead of restoring metadata.
@@ -14613,14 +14776,681 @@ impl ProjectRuntimeHost {
             self.pool
                 .publish(self.pool.workspace().clone(), &Default::default())?;
         }
+        // Import old view indices once; subsequent starts use the host's stable-ID domain.
+        for tab in self.pool.workspace().tabs().to_vec() {
+            let id = tab.id().as_str();
+            if !self.pool.has_subtab_state(id) {
+                let legacy = state.project_subtabs.get(id).cloned().unwrap_or_else(|| {
+                    vec![SubTab {
+                        name: "main".into(),
+                        root: tab.cwd().display().to_string(),
+                        kind: SubTabKind::Main,
+                        concurrency: 1,
+                    }]
+                });
+                let legacy = legacy
+                    .into_iter()
+                    .map(|tab| crate::worktree::subtab::LegacySubtab {
+                        name: tab.name,
+                        root: tab.root,
+                        concurrency: tab.concurrency,
+                        kind: match tab.kind {
+                            SubTabKind::Main => crate::worktree::subtab::SubtabKind::Main,
+                            SubTabKind::InPlace => crate::worktree::subtab::SubtabKind::InPlace,
+                            SubTabKind::Worktree => crate::worktree::subtab::SubtabKind::Worktree,
+                        },
+                    })
+                    .collect::<Vec<_>>();
+                self.pool.migrate_legacy_subtabs(
+                    id,
+                    &legacy,
+                    state.active_subtab.get(id).copied().unwrap_or(0),
+                )?;
+            }
+            self.restore_subtab_view(state, id)?;
+        }
         state.project_checkpoint_dirty = true;
-        state.cached_transcript = None;
+        state.invalidate_transcript();
         Ok(())
+    }
+    fn restore_subtab_view(&self, state: &mut TuiState, project: &str) -> Result<(), String> {
+        let saved = self.pool.subtab_state(project)?;
+        let active = saved
+            .tabs
+            .iter()
+            .position(|tab| tab.id == saved.active_id)
+            .ok_or("unknown host subtab selection")?;
+        state.project_subtabs.insert(
+            project.into(),
+            saved
+                .tabs
+                .into_iter()
+                .map(|tab| SubTab {
+                    name: tab.name,
+                    root: tab.root.display().to_string(),
+                    concurrency: tab.concurrency,
+                    kind: match tab.kind {
+                        crate::worktree::subtab::SubtabKind::Main => SubTabKind::Main,
+                        crate::worktree::subtab::SubtabKind::InPlace => SubTabKind::InPlace,
+                        crate::worktree::subtab::SubtabKind::Worktree => SubTabKind::Worktree,
+                    },
+                })
+                .collect(),
+        );
+        state.active_subtab.insert(project.into(), active);
+        Ok(())
+    }
+    /// Publish local layer-2 changes before exposing them to other host adapters.
+    pub fn sync_subtab_view(&mut self, state: &mut TuiState) -> Result<(), String> {
+        for tab in self.pool.workspace().tabs().to_vec() {
+            let id = tab.id().as_str();
+            let Some(tabs) = state.project_subtabs.get(id) else {
+                continue;
+            };
+            let legacy = tabs
+                .iter()
+                .map(|tab| crate::worktree::subtab::LegacySubtab {
+                    name: tab.name.clone(),
+                    root: tab.root.clone(),
+                    concurrency: tab.concurrency,
+                    kind: match tab.kind {
+                        SubTabKind::Main => crate::worktree::subtab::SubtabKind::Main,
+                        SubTabKind::InPlace => crate::worktree::subtab::SubtabKind::InPlace,
+                        SubTabKind::Worktree => crate::worktree::subtab::SubtabKind::Worktree,
+                    },
+                })
+                .collect::<Vec<_>>();
+            let before = self.pool.subtab_state(id)?;
+            let result = (|| {
+                let mut candidate = crate::worktree::subtab::SubtabState::migrate(
+                    id,
+                    tab.cwd(),
+                    &legacy,
+                    state.active_subtab.get(id).copied().unwrap_or(0),
+                )?;
+                candidate.revision = before.revision;
+                if candidate == before {
+                    return Ok(());
+                }
+                candidate.revision = before
+                    .revision
+                    .checked_add(1)
+                    .ok_or("subtab revision exhausted")?;
+                self.pool.commit_subtabs(id, before.revision, candidate)
+            })();
+            if let Err(error) = result {
+                self.restore_subtab_view(state, id)?;
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+    pub fn host_subtab_state(
+        &self,
+        project: &str,
+    ) -> Result<crate::worktree::subtab::SubtabState, String> {
+        self.pool.subtab_state(project)
     }
     pub fn active(&self, state: &TuiState) -> Arc<Mutex<crate::core::Agent>> {
         self.pool
             .owner(state.active_project())
             .expect("committed project owner")
+    }
+
+    #[cfg(feature = "remote")]
+    pub fn remote_workspace_identity(&self) -> (&str, u64) {
+        (self.pool.workspace_owner(), self.pool.workspace_revision())
+    }
+
+    #[cfg(feature = "remote")]
+    pub fn poll_remote_workers(&mut self) {
+        self.worktrees.poll(&mut self.pool);
+    }
+
+    #[cfg(feature = "remote")]
+    pub fn remote_workers_busy(&self, project: &str) -> bool {
+        self.worktrees.busy(project)
+    }
+    /// No remote host, so no remote worker can hold a project.
+    #[cfg(not(feature = "remote"))]
+    pub fn remote_workers_busy(&self, _project: &str) -> bool {
+        false
+    }
+
+    #[cfg(feature = "remote")]
+    fn selected_host_subtab(
+        &self,
+        state: &TuiState,
+    ) -> Result<String, crate::remote::protocol::ErrorCode> {
+        use crate::{remote::protocol::ErrorCode, worktree::subtab::SubtabKind};
+        let tabs = self
+            .pool
+            .subtab_state(state.active_project())
+            .map_err(|_| ErrorCode::InvalidRequest)?;
+        let selected = state
+            .subtabs()
+            .get(state.active_subtab())
+            .cloned()
+            .ok_or(ErrorCode::OwnerMismatch)?;
+        let actual = tabs
+            .tabs
+            .iter()
+            .find(|tab| tab.id == tabs.active_id)
+            .ok_or(ErrorCode::OwnerMismatch)?;
+        let kind = match selected.kind {
+            SubTabKind::Main => SubtabKind::Main,
+            SubTabKind::InPlace => SubtabKind::InPlace,
+            SubTabKind::Worktree => SubtabKind::Worktree,
+        };
+        if std::path::Path::new(&selected.root) != actual.root || kind != actual.kind {
+            return Err(ErrorCode::OwnerMismatch);
+        }
+        Ok(tabs.active_id)
+    }
+
+    #[cfg(feature = "remote")]
+    pub fn dispatch_local_worktree_status(&self, state: &mut TuiState, input: &str) -> bool {
+        if !matches!(slash::parse(input), Ok(Some(SlashCommand::Status))) {
+            return false;
+        }
+        let result = self.selected_host_subtab(state).and_then(|tab| {
+            self.worktrees
+                .local_status(&self.pool, state.active_project(), &tab)
+        });
+        match result {
+            Ok(tasks) if tasks.is_empty() => return false,
+            Ok(tasks) => {
+                let master = self
+                    .pool
+                    .owner(state.active_project())
+                    .and_then(|owner| {
+                        owner
+                            .try_lock()
+                            .ok()
+                            .map(|agent| format_agent_status(&agent))
+                    })
+                    .unwrap_or_else(|| {
+                        "status: agent host is busy; no model request was submitted".into()
+                    });
+                let mut lines = vec![
+                    master,
+                    format!("Worktree tasks (latest {}, current subtab):", tasks.len()),
+                ];
+                for task in tasks {
+                    let phase = serde_json::to_value(task.state)
+                        .ok()
+                        .and_then(|value| value.as_str().map(str::to_owned))
+                        .unwrap_or_else(|| "unknown_outcome".into());
+                    let request = crate::security::redact_text(&task.request, &[]);
+                    lines.push(format!(
+                        "{} / {}: {}{}",
+                        task.device,
+                        request,
+                        phase,
+                        if task.runtime_active {
+                            " (runtime active)"
+                        } else {
+                            ""
+                        }
+                    ));
+                }
+                state.push_message(MessageRole::System, lines.join("\n"));
+                state.set_status("Worktree status inspected");
+            }
+            Err(_) => state.set_status("Worktree status unavailable; no task outcome inferred"),
+        }
+        true
+    }
+
+    #[cfg(feature = "remote")]
+    pub fn cancel_active_worktree_tasks(&mut self, state: &mut TuiState) -> bool {
+        let project = state.active_project().to_owned();
+        if !self.worktrees.busy(&project) {
+            return false;
+        }
+        let result = self
+            .selected_host_subtab(state)
+            .and_then(|tab| self.worktrees.cancel_local(&self.pool, &project, &tab));
+        match result {
+            Ok(report) if report.requested == 0 && report.deferred == 0 => return false,
+            Ok(report) => state.set_status(format!("Worktree interrupt requested for {} task(s); {} not admitted; waiting for task exit", report.requested, report.deferred)),
+            Err(_) => state.set_status("Worktree interrupt unavailable; task ownership retained"),
+        }
+        true
+    }
+
+    #[cfg(feature = "remote")]
+    pub fn dispatch_local_worktree_cancel(&mut self, state: &mut TuiState, input: &str) -> bool {
+        if !self.remote_workers_busy(state.active_project())
+            || !matches!(slash::parse(input), Ok(Some(SlashCommand::Cancel)))
+        {
+            return false;
+        }
+        state.push_message(MessageRole::User, input);
+        if !self.cancel_active_worktree_tasks(state) {
+            state.set_status("No running worktree task in the selected tab");
+        }
+        true
+    }
+
+    #[cfg(feature = "remote")]
+    pub fn shutdown_remote_workers(&mut self, deadline: Instant) {
+        std::mem::take(&mut self.worktrees).shutdown(&self.pool, deadline);
+    }
+
+    #[cfg(feature = "remote")]
+    fn cancel_remote_worker(
+        &mut self,
+        registry: &crate::remote::auth::DeviceRegistry,
+        device: &crate::remote::auth::AuthenticatedDevice,
+        request: &crate::remote::protocol::Envelope,
+    ) -> Option<crate::remote::protocol::Envelope> {
+        self.worktrees
+            .cancel(&mut self.pool, registry, device, request)
+    }
+
+    /// Remote and local control publish through the same pool; only the view is reconciled here.
+    #[cfg(feature = "remote")]
+    pub fn dispatch_remote(
+        &mut self,
+        state: &mut TuiState,
+        registry: &crate::remote::auth::DeviceRegistry,
+        device: &crate::remote::auth::AuthenticatedDevice,
+        request: crate::remote::protocol::Envelope,
+        admitted_projects: &std::collections::BTreeSet<String>,
+    ) -> crate::remote::protocol::Envelope {
+        use crate::remote::{
+            host_adapter::HostAdapter,
+            protocol::{ErrorCode, Message, Operation},
+        };
+        let project = request.project_id.as_deref().unwrap_or_default();
+        if matches!(
+            &request.payload,
+            Message::Request {
+                operation: Operation::ModelSelect | Operation::ReasoningSelect,
+                ..
+            }
+        ) {
+            let response = crate::remote::model::select(
+                &mut self.pool,
+                registry,
+                device,
+                &request,
+                admitted_projects.contains(project)
+                    || self.worktrees.busy(project)
+                    || state.modal_active(),
+            );
+            if response.execution_state == Some(crate::remote::protocol::ExecutionState::Succeeded)
+                && project == state.active_project()
+                && let Some(owner) = self.pool.owner(project)
+                && let Ok(agent) = owner.try_lock()
+            {
+                let _ = state.set_zone_model(
+                    crate::view_model::Zone::Discussion,
+                    agent.model().map(str::to_owned),
+                );
+                state.refresh_transcript_status(&agent);
+                let _ = state.update_model_catalog(&agent);
+            }
+            return response;
+        }
+        if matches!(
+            &request.payload,
+            Message::Request {
+                operation: Operation::SessionRename,
+                ..
+            }
+        ) {
+            let response = crate::remote::sessions::rename(
+                &mut self.pool,
+                registry,
+                device,
+                &request,
+                admitted_projects.contains(project)
+                    || self.worktrees.busy(project)
+                    || state.modal_active(),
+            );
+            if response.execution_state == Some(crate::remote::protocol::ExecutionState::Succeeded)
+                && project == state.active_project()
+                && let Some(owner) = self.pool.owner(project)
+                && let Ok(agent) = owner.try_lock()
+            {
+                state.session_name = agent.session().session_name().map(str::to_owned);
+                for summary in &mut state.session_browser {
+                    if summary.session_id == agent.session().session_id() {
+                        summary.name = agent.session().session_name().map(str::to_owned);
+                    }
+                }
+                state.dirty = true;
+            }
+            return response;
+        }
+        if matches!(
+            &request.payload,
+            Message::Request {
+                operation: Operation::SessionNew | Operation::SessionResume,
+                ..
+            }
+        ) {
+            let previous_session = self
+                .pool
+                .context(project)
+                .map(|context| context.session_id.clone());
+            let response = crate::remote::sessions::new_session(
+                &mut self.pool,
+                registry,
+                device,
+                &request,
+                admitted_projects.contains(project)
+                    || self.worktrees.busy(project)
+                    || state.modal_active(),
+            );
+            if response.execution_state == Some(crate::remote::protocol::ExecutionState::Succeeded)
+                && self
+                    .pool
+                    .context(project)
+                    .map(|context| &context.session_id)
+                    != previous_session.as_ref()
+                && let Some(owner) = self.pool.owner(project)
+                && let Ok(agent) = owner.try_lock()
+            {
+                let visible = state.active_project().to_owned();
+                if let Some(index) = state.project_index(project) {
+                    state.select_project_tab(index);
+                    let mode = state
+                        .project_metadata(project)
+                        .map(|metadata| metadata.approval_mode)
+                        .unwrap_or_default();
+                    let mut metadata = ProjectTabMetadata::from_session(agent.session());
+                    metadata.approval_mode = mode;
+                    state.set_active_project_metadata(metadata);
+                    reload_state_from_agent(state, &agent);
+                    state.refresh_transcript_status(&agent);
+                    state.dirty = true;
+                }
+                if let Some(index) = state.project_index(&visible) {
+                    state.select_project_tab(index);
+                }
+            }
+            return response;
+        }
+        if matches!(
+            &request.payload,
+            Message::Request {
+                operation: Operation::TerminalOpen,
+                ..
+            }
+        ) {
+            let matched = state.remote_terminal(&self.pool, project).is_some();
+            let eligible =
+                state.active_project() == project && (matched || state.pty_shell.is_none());
+            let busy = !eligible
+                || admitted_projects.contains(project)
+                || self.worktrees.busy(project)
+                || state.modal_active();
+            let scope = (
+                project.to_owned(),
+                request.session_id.clone().unwrap_or_default(),
+            );
+            let response = crate::remote::terminal::open(
+                &mut self.pool,
+                registry,
+                device,
+                &request,
+                busy,
+                |cwd| {
+                    if matched {
+                        let shell = state.pty_shell.as_ref().unwrap();
+                        if shell.is_running() {
+                            return Ok(shell.instance_id().to_owned());
+                        }
+                    }
+                    let shell = crate::pty_shell::PtyShell::spawn(cwd.to_path_buf())
+                        .map_err(|_| ErrorCode::InternalError)?;
+                    let id = shell.instance_id().to_owned();
+                    state.pty_shell = Some(shell);
+                    state.pty_scope = Some(scope);
+                    state.dirty = true;
+                    Ok(id)
+                },
+            );
+            return response;
+        }
+        if matches!(
+            &request.payload,
+            Message::Request {
+                operation: Operation::TerminalRead,
+                ..
+            }
+        ) {
+            let shell = state
+                .remote_terminal(&self.pool, project)
+                .and(state.pty_shell.as_ref());
+            return crate::remote::terminal::read(&self.pool, registry, device, &request, shell);
+        }
+        if matches!(
+            &request.payload,
+            Message::Request {
+                operation: Operation::TerminalInput | Operation::TerminalResize,
+                ..
+            }
+        ) {
+            let matched = state.remote_terminal(&self.pool, project).is_some();
+            let busy = admitted_projects.contains(project) || state.modal_active();
+            let response = crate::remote::terminal::dispatch(
+                &mut self.pool,
+                registry,
+                device,
+                &request,
+                if matched {
+                    state.pty_shell.as_mut()
+                } else {
+                    None
+                },
+                busy,
+            );
+            state.dirty = true;
+            return response;
+        }
+        if matches!(
+            &request.payload,
+            Message::Request {
+                operation: Operation::ResourcesReload,
+                ..
+            }
+        ) {
+            let response = crate::remote::resources::reload(
+                &mut self.pool,
+                registry,
+                device,
+                &request,
+                admitted_projects.contains(project)
+                    || self.worktrees.busy(project)
+                    || state.modal_active(),
+            );
+            if response.execution_state == Some(crate::remote::protocol::ExecutionState::Succeeded)
+                && project == state.active_project()
+                && let Some(owner) = self.pool.owner(project)
+                && let Ok(agent) = owner.try_lock()
+            {
+                state.update_resource_catalog(&agent.resource_snapshot());
+                state.dirty = true;
+            }
+            return response;
+        }
+        if let Some(response) = self
+            .worktrees
+            .status_page(&self.pool, registry, device, &request)
+        {
+            return response;
+        }
+        if crate::worktree::worktree_host::WorktreeHost::is_worker_prompt(&request) {
+            return self.worktrees.dispatch_prompt(
+                &mut self.pool,
+                registry,
+                device,
+                &request,
+                admitted_projects.contains(project),
+            );
+        }
+        if matches!(
+            &request.payload,
+            Message::Request {
+                operation: Operation::Cancel,
+                ..
+            }
+        ) {
+            if let Some(response) = self.cancel_remote_worker(registry, device, &request) {
+                return response;
+            }
+            return crate::remote::command::CancelAdmissions.dispatch(
+                &mut self.pool,
+                registry,
+                device,
+                &request,
+                None,
+                || Err(ErrorCode::InvalidRequest),
+            );
+        }
+        if matches!(
+            &request.payload,
+            Message::Request {
+                operation: Operation::WorkspaceClose
+                    | Operation::SubtabAdd
+                    | Operation::SubtabClose
+                    | Operation::SubtabSelect
+                    | Operation::SubtabRename
+                    | Operation::SubtabMove,
+                ..
+            } | Message::Request {
+                operation: Operation::SetConcurrency,
+                ..
+            }
+        ) && request
+            .project_id
+            .as_ref()
+            .is_some_and(|id| admitted_projects.contains(id))
+        {
+            return HostAdapter::failure(&request, ErrorCode::Busy);
+        }
+        let before = self.pool.workspace().clone();
+        let subtab_project = request.project_id.clone();
+        let before_subtabs = subtab_project
+            .as_deref()
+            .and_then(|id| self.pool.subtab_state(id).ok());
+        let listing = matches!(
+            &request.payload,
+            Message::Request {
+                operation: Operation::WorkspaceList,
+                ..
+            }
+        );
+        let mut response = self
+            .worktrees
+            .dispatch_quota(
+                &mut self.pool,
+                registry,
+                device,
+                &request,
+                admitted_projects.contains(project),
+            )
+            .unwrap_or_else(|| {
+                HostAdapter::dispatch_owned(&mut self.pool, registry, device, request)
+            });
+        if listing
+            && let Message::Response { result } = &mut response.payload
+            && let Some(projects) = result["projects"].as_array_mut()
+        {
+            for project in projects {
+                if let Some(id) = project["id"].as_str().map(str::to_owned) {
+                    project["worker_control"] = serde_json::json!(
+                        self.pool.has_workspace_checkpoint()
+                            && registry.authorize(device, &id, Operation::Prompt).is_ok()
+                    );
+                    project["worker_statuses"] =
+                        self.worktrees.listing(&self.pool, device.id(), &id);
+                    project["desktop_terminal"] = state
+                        .remote_terminal(&self.pool, &id)
+                        .unwrap_or(serde_json::Value::Null);
+                    project["terminal_control"] = serde_json::json!(
+                        project["desktop_terminal"].is_object()
+                            && project["desktop_terminal"]["running"] == true
+                            && self.pool.has_workspace_checkpoint()
+                            && registry
+                                .authorize(device, &id, Operation::TerminalInput)
+                                .is_ok()
+                    );
+                    project["terminal_open_control"] = serde_json::json!(
+                        id == state.active_project()
+                            && self.pool.has_workspace_checkpoint()
+                            && (project["desktop_terminal"].is_object()
+                                || state.pty_shell.is_none())
+                            && registry
+                                .authorize(device, &id, Operation::TerminalOpen)
+                                .is_ok()
+                    );
+                }
+            }
+        }
+        if let Some(project) = subtab_project.as_deref()
+            && self.pool.subtab_state(project).ok() != before_subtabs
+        {
+            if let Err(error) = self.restore_subtab_view(state, project) {
+                state.set_status(error);
+            }
+            state.project_checkpoint_dirty = true;
+            state.dirty = true;
+        }
+        if self.pool.workspace() != &before {
+            let workspace = self.pool.workspace().clone();
+            let wanted = workspace
+                .active()
+                .expect("committed active project")
+                .id()
+                .as_str()
+                .to_owned();
+            for tab in workspace.tabs() {
+                let id = tab.id().as_str().to_owned();
+                if state.project_index(&id).is_none() {
+                    state.open_project_tab(id.clone());
+                }
+                let metadata = state.project_metadata.entry(id.clone()).or_default();
+                metadata.cwd = tab.cwd().display().to_string();
+                metadata.session_path = self
+                    .pool
+                    .sessions()
+                    .get(&id)
+                    .map(|path| path.display().to_string());
+            }
+            for id in state.project_tabs.clone() {
+                if !workspace.tabs().iter().any(|tab| tab.id().as_str() == id) {
+                    state.close_project_tab(&id);
+                }
+            }
+            state.select_project_tab(
+                state
+                    .project_index(&wanted)
+                    .expect("reconciled active project"),
+            );
+            state.project_workspace = Some(workspace);
+            state.project_checkpoint_dirty = true;
+            state.invalidate_transcript();
+            state.ensure_conversation_hot_zone();
+            if let Ok(agent) = self.pool.active().try_lock() {
+                let changed = state
+                    .project_session_cursor(&wanted)
+                    .is_some_and(|(id, _)| id != agent.session().session_id());
+                state
+                    .set_active_project_metadata(ProjectTabMetadata::from_session(agent.session()));
+                state.refresh_session_snapshot(agent.session());
+                state.refresh_transcript_status(&agent);
+                if changed || state.messages.is_empty() {
+                    reload_state_from_agent(state, &agent);
+                }
+            }
+            state.set_status("Remote workspace updated");
+        }
+        response
     }
 
     /// Independent arch master-session owner for the active project (ZS1-156).
@@ -14659,6 +15489,7 @@ impl ProjectRuntimeHost {
             }
             _ => return Err("expected session open or resume-last".into()),
         };
+        self.pool.refresh_owner_control(&id, &agent);
         let approval_mode = state
             .project_metadata(&id)
             .map(|meta| meta.approval_mode)
@@ -14753,7 +15584,7 @@ impl ProjectRuntimeHost {
         }
         state.project_workspace = Some(workspace);
         state.project_checkpoint_dirty = true;
-        state.cached_transcript = None;
+        state.invalidate_transcript();
         state.set_status(project_status);
         // A running existing owner needs no lock to switch its saved view.
         if let Ok(agent) = self.active(state).try_lock() {
@@ -14775,6 +15606,13 @@ impl ProjectRuntimeHost {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(feature = "remote")]
+impl Drop for ProjectRuntimeHost {
+    fn drop(&mut self) {
+        self.shutdown_remote_workers(Instant::now() + crate::runtime::DEFAULT_SHUTDOWN_GRACE);
     }
 }
 
@@ -15046,7 +15884,7 @@ fn finish_turn_reasoning(state: &mut TuiState, job: u64, turn: &crate::core::Tur
             .find(|m| m.role == MessageRole::Reasoning)
         {
             message.text = bound_text(text);
-            state.cached_transcript = None;
+            state.invalidate_transcript();
             state.dirty = true;
         }
     } else {
@@ -15444,64 +16282,6 @@ fn format_process_summary(processes: &crate::resources::ProcessSummary) -> Strin
     line
 }
 
-/// Run the interactive mode for zenpi's shared agent.
-pub fn run(agent: &mut crate::core::Agent) -> Result<(), crate::error::ZenpiError> {
-    let mut state = TuiState::default();
-    reload_state_from_agent(&mut state, agent);
-    let config = TuiConfig::default();
-    run_with_state_controls(config, state, true, |text, state| {
-        if crate::slash::input_queue_control(&text).is_some() {
-            let original = state.bind_submitted_input(text.clone());
-            let result = crate::slash_actions::input_queue_control_request(
-                agent.session().session_id(),
-                "tui-input-control",
-                &text,
-            )
-            .and_then(|request| {
-                agent.input_queue_request(request.expect("recognized input control"))
-            })
-            .map_err(|error| error.to_string());
-            TuiInputControls::show_result(state, result, original);
-            return Ok(());
-        }
-        if crate::slash::output_control(&text).is_some() {
-            match crate::slash_actions::output_control_request(
-                agent.session().session_id(),
-                "tui-output-control",
-                &text,
-            )
-            .and_then(|r| {
-                agent
-                    .tool_output_control(r.expect("recognized control"), &|| false)
-                    .map_err(|e| crate::core::AgentError::InvalidTurn(e.to_string()))
-            }) {
-                Ok(value) => {
-                    state.push_message(MessageRole::System, format_output_projection(&value))
-                }
-                Err(error) => state.push_message(MessageRole::Error, error.to_string()),
-            }
-            return Ok(());
-        }
-        if dispatch_tree_input(state, Some(agent), &text) {
-            return Ok(());
-        }
-        let result = agent.process_sync(text);
-        for event in agent.take_events() {
-            apply_agent_tool_event(state, event);
-        }
-        match result {
-            Ok(result) => {
-                if let Some(assistant) = result.assistant {
-                    state.push_message(MessageRole::Assistant, assistant.content);
-                }
-                Ok::<(), crate::core::AgentError>(())
-            }
-            Err(error) => Err(error),
-        }
-    })
-    .map_err(|error| crate::error::ZenpiError::Message(error.to_string()))
-}
-
 /// The UI owns only outstanding control tickets. The Agent owns the durable queue.
 #[derive(Default)]
 pub struct TuiInputControls {
@@ -15539,31 +16319,10 @@ impl TuiInputControls {
         let original = state.bind_submitted_input(original);
         if let crate::protocol::InputQueueAction::Enqueue { text, .. }
         | crate::protocol::InputQueueAction::Edit { text, .. } = &action
+            && let Err(error) = crate::slash_actions::plain_queue_input(text)
         {
-            if !text.starts_with('/')
-                && let Err(error) = prompt_file_references(text)
-            {
-                Self::show_result(state, Err(error), original);
-                return;
-            }
-            if !text.starts_with('/')
-                && prompt_file_references(text).is_ok_and(|references| !references.is_empty())
-            {
-                Self::show_result(state, Err("File references require a scheduled or idle prompt; in-turn queue inputs are text-only".into()), original);
-                return;
-            }
-            if text.starts_with('/')
-                && state.command_resources.iter().any(|resource| {
-                    text.split_whitespace().next() == Some(resource.command.as_str())
-                })
-            {
-                Self::show_result(
-                    state,
-                    Err("Skill/template invocation requires a scheduled or idle prompt".into()),
-                    original,
-                );
-                return;
-            }
+            Self::show_result(state, Err(error), original);
+            return;
         }
         let project = state.active_project().to_owned();
         let id = self.next_id();
@@ -15733,10 +16492,24 @@ struct TuiRequest {
     owner: Option<Arc<Mutex<crate::core::Agent>>>,
     text: String,
     kind: TuiRequestKind,
+    #[cfg(feature = "remote")]
+    remote_prompt: bool,
+    #[cfg(feature = "remote")]
+    remote_identity: Option<(crate::remote::protocol::Envelope, String)>,
+    /// Streams a desktop turn's text to remote subscribers of its project.
+    #[cfg(feature = "remote")]
+    local_preview_project: Option<String>,
+    execution: Option<Result<crate::worktree::subtab::SubtabExecution, String>>,
     provider_events: Arc<Mutex<TuiProviderEventBuffer>>,
 }
 
 impl TuiRequest {
+    #[cfg(feature = "remote")]
+    fn preview_local_model(&mut self, project: &str, arch: bool) {
+        if !arch && self.kind == TuiRequestKind::Model && self.remote_identity.is_none() {
+            self.local_preview_project = Some(project.to_owned());
+        }
+    }
     fn new(text: String) -> (Self, Arc<Mutex<TuiProviderEventBuffer>>) {
         Self::with_kind(text, TuiRequestKind::Model)
     }
@@ -15748,6 +16521,13 @@ impl TuiRequest {
                 owner: None,
                 text,
                 kind,
+                #[cfg(feature = "remote")]
+                remote_prompt: false,
+                #[cfg(feature = "remote")]
+                remote_identity: None,
+                #[cfg(feature = "remote")]
+                local_preview_project: None,
+                execution: None,
                 provider_events: Arc::clone(&provider_events),
             },
             provider_events,
@@ -16052,7 +16832,10 @@ impl NewSessionControl {
             if !requested {
                 match self.worker.try_shutdown() {
                     Ok(()) => requested = true,
-                    Err(crate::runtime::SubmitError::Closed) => break,
+                    Err(
+                        crate::runtime::SubmitError::Closed
+                        | crate::runtime::SubmitError::SpawnFailed,
+                    ) => break,
                     Err(crate::runtime::SubmitError::QueueFull) => {}
                 }
             }
@@ -16486,6 +17269,597 @@ fn render_user_shell_result(state: &mut TuiState, result: &serde_json::Value) {
     state.set_status(status);
 }
 
+#[cfg(all(test, feature = "remote"))]
+mod local_remote_preview_tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn existing_terminal_projects_only_matching_live_session_and_root() {
+        let root = tempfile::tempdir().unwrap();
+        let cwd = root.path().canonicalize().unwrap();
+        let session =
+            crate::session::SessionStore::open_in_workspace(cwd.join("session.jsonl"), &cwd)
+                .unwrap();
+        let session_id = session.session_id().to_owned();
+        let metadata = ProjectTabMetadata::from_session(&session);
+        let owner = Arc::new(Mutex::new(crate::core::Agent::with_echo(session)));
+        let mut view = TuiState::default();
+        view.set_active_project_metadata(metadata);
+        let mut host = ProjectRuntimeHost::new(&mut view, owner).unwrap();
+        host.restore_shared_workspace(&mut view).unwrap();
+        let project = view.active_project().to_owned();
+        view.set_project_session_cursor(&project, &session_id, 0);
+        assert!(view.remote_terminal(&host.pool, &project).is_none());
+        let registry =
+            crate::remote::auth::DeviceRegistry::new(cwd.join("devices.json"), "a".repeat(64))
+                .unwrap();
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+        use ring::signature::{ECDSA_P256_SHA256_ASN1_SIGNING, EcdsaKeyPair, KeyPair};
+        let random = ring::rand::SystemRandom::new();
+        let document =
+            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &random).unwrap();
+        let key =
+            EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, document.as_ref(), &random)
+                .unwrap();
+        let public = URL_SAFE_NO_PAD.encode(key.public_key().as_ref());
+        let proof = crate::remote::auth::pairing_proof_message(
+            &"a".repeat(64),
+            "token",
+            "pair",
+            "phone",
+            &public,
+        );
+        let record = registry
+            .verify_pair_and_register(
+                "token",
+                "pair",
+                "phone",
+                &public,
+                &URL_SAFE_NO_PAD.encode(key.sign(&random, &proof).unwrap().as_ref()),
+                || true,
+            )
+            .unwrap();
+        registry
+            .set_permissions(
+                &record.id,
+                record.revision,
+                vec![
+                    crate::remote::auth::Capability::Read,
+                    crate::remote::auth::Capability::Control,
+                ],
+                vec![project.clone()],
+            )
+            .unwrap();
+        let mut challenge = crate::remote::auth::DeviceChallenge::new("a".repeat(64)).unwrap();
+        let device = challenge
+            .authenticate(
+                &registry,
+                &record.id,
+                &URL_SAFE_NO_PAD.encode(
+                    key.sign(&random, &challenge.proof_message(&record.id))
+                        .unwrap()
+                        .as_ref(),
+                ),
+            )
+            .unwrap();
+        use crate::remote::protocol::{Channel, Envelope, ExecutionState, Message, Operation};
+        let tabs = host.pool.subtab_state(&project).unwrap();
+        let mut open = Envelope::new(
+            Channel::Control,
+            Message::Request {
+                operation: Operation::TerminalOpen,
+                arguments: serde_json::json!({"subtab_id":tabs.active_id,"subtab_revision":tabs.revision}),
+            },
+        );
+        open.id = Some("terminal-open".into());
+        open.project_id = Some(project.clone());
+        open.session_id = Some(session_id.clone());
+        open.required_owner = Some(host.pool.workspace_owner().into());
+        open.expected_revision = Some(host.pool.workspace_revision());
+        let mut stale = open.clone();
+        stale.expected_revision = Some(host.pool.workspace_revision() + 1);
+        assert_eq!(
+            host.dispatch_remote(&mut view, &registry, &device, stale, &Default::default())
+                .code,
+            Some(crate::remote::protocol::ErrorCode::RevisionConflict)
+        );
+        assert!(!view.has_shell());
+        assert_eq!(
+            host.dispatch_remote(
+                &mut view,
+                &registry,
+                &device,
+                open.clone(),
+                &std::collections::BTreeSet::from([project.clone()])
+            )
+            .code,
+            Some(crate::remote::protocol::ErrorCode::Busy)
+        );
+        assert!(!view.has_shell());
+        let mut failed = open.clone();
+        failed.id = Some("terminal-open-ambiguous".into());
+        let uncertain = crate::remote::terminal::open(
+            &mut host.pool,
+            &registry,
+            &device,
+            &failed,
+            false,
+            |_| Err(crate::remote::protocol::ErrorCode::InternalError),
+        );
+        assert_eq!(
+            uncertain.execution_state,
+            Some(ExecutionState::UnknownOutcome)
+        );
+        assert_eq!(
+            crate::remote::terminal::open(
+                &mut host.pool,
+                &registry,
+                &device,
+                &failed,
+                false,
+                |_| panic!("ambiguous terminal creation repeated")
+            ),
+            uncertain
+        );
+        let opened = host.dispatch_remote(
+            &mut view,
+            &registry,
+            &device,
+            open.clone(),
+            &Default::default(),
+        );
+        assert_eq!(opened.execution_state, Some(ExecutionState::Succeeded));
+        assert!(view.has_shell());
+        let instance = view.pty_shell.as_ref().unwrap().instance_id().to_owned();
+        assert_eq!(
+            host.dispatch_remote(
+                &mut view,
+                &registry,
+                &device,
+                open.clone(),
+                &Default::default()
+            ),
+            opened
+        );
+        assert_eq!(view.pty_shell.as_ref().unwrap().instance_id(), instance);
+        let retained_shell = view.pty_shell.take();
+        assert_eq!(
+            host.dispatch_remote(
+                &mut view,
+                &registry,
+                &device,
+                open.clone(),
+                &Default::default()
+            ),
+            opened
+        );
+        assert!(
+            !view.has_shell(),
+            "resolved retry must not create a terminal after its instance disappears"
+        );
+        view.pty_shell = retained_shell;
+        let mut again = open.clone();
+        again.id = Some("terminal-open-again".into());
+        assert_eq!(
+            host.dispatch_remote(&mut view, &registry, &device, again, &Default::default())
+                .execution_state,
+            Some(ExecutionState::Succeeded)
+        );
+        assert_eq!(view.pty_shell.as_ref().unwrap().instance_id(), instance);
+        let mut conflict = open.clone();
+        if let Message::Request { arguments, .. } = &mut conflict.payload {
+            arguments["subtab_revision"] = serde_json::json!(99);
+        }
+        assert_eq!(
+            host.dispatch_remote(&mut view, &registry, &device, conflict, &Default::default())
+                .code,
+            Some(crate::remote::protocol::ErrorCode::RequestIdConflict)
+        );
+        let mut listing = Envelope::new(
+            Channel::Control,
+            Message::Request {
+                operation: Operation::WorkspaceList,
+                arguments: serde_json::json!({}),
+            },
+        );
+        listing.id = Some("terminal-list".into());
+        let result =
+            host.dispatch_remote(&mut view, &registry, &device, listing, &Default::default());
+        let Message::Response { result } = result.payload else {
+            panic!("listing")
+        };
+        assert_eq!(result["projects"][0]["terminal_control"], true);
+        assert_eq!(result["projects"][0]["terminal_open_control"], true);
+        let terminal = &result["projects"][0]["desktop_terminal"];
+        view.pty_shell.as_mut().unwrap().resize(24, 80);
+        assert_eq!(
+            view.remote_terminal(&host.pool, &project).unwrap()["size"],
+            serde_json::json!({"rows":24,"cols":80})
+        );
+        let mut resize = Envelope::new(
+            Channel::Control,
+            Message::Request {
+                operation: Operation::TerminalResize,
+                arguments: serde_json::json!({"terminal_id":terminal["terminal_id"],"subtab_id":terminal["subtab_id"],
+                "subtab_revision":terminal["subtab_revision"],"rows":33,"cols":91}),
+            },
+        );
+        resize.id = Some("terminal-resize".into());
+        resize.project_id = Some(project.clone());
+        resize.session_id = Some(session_id.clone());
+        resize.required_owner = Some(host.pool.workspace_owner().into());
+        resize.expected_revision = Some(host.pool.workspace_revision());
+        let resized = host.dispatch_remote(
+            &mut view,
+            &registry,
+            &device,
+            resize.clone(),
+            &Default::default(),
+        );
+        assert_eq!(resized.execution_state, Some(ExecutionState::Succeeded));
+        assert_eq!(
+            host.dispatch_remote(&mut view, &registry, &device, resize, &Default::default()),
+            resized
+        );
+        assert_eq!(
+            view.remote_terminal(&host.pool, &project).unwrap()["size"],
+            serde_json::json!({"rows":33,"cols":91})
+        );
+        view.pty_shell.as_mut().unwrap().resize(24, 80);
+        assert_eq!(
+            view.remote_terminal(&host.pool, &project).unwrap()["size"],
+            serde_json::json!({"rows":33,"cols":91})
+        );
+        view.pty_shell.as_mut().unwrap().resize(25, 82);
+        assert_eq!(
+            view.remote_terminal(&host.pool, &project).unwrap()["size"],
+            serde_json::json!({"rows":25,"cols":82})
+        );
+        let mut input = Envelope::new(
+            Channel::Control,
+            Message::Request {
+                operation: Operation::TerminalInput,
+                arguments: serde_json::json!({"terminal_id":terminal["terminal_id"],"subtab_id":terminal["subtab_id"],
+                "subtab_revision":terminal["subtab_revision"],"text":"printf '%s%s\\n' 'TUI_INPUT_' 'OWNED' | tee tui-input.txt\r"}),
+            },
+        );
+        input.id = Some("terminal-input".into());
+        input.project_id = Some(project.clone());
+        input.session_id = Some(session_id.clone());
+        input.required_owner = Some(host.pool.workspace_owner().into());
+        input.expected_revision = Some(host.pool.workspace_revision());
+        let reply = host.dispatch_remote(
+            &mut view,
+            &registry,
+            &device,
+            input.clone(),
+            &Default::default(),
+        );
+        assert_eq!(reply.execution_state, Some(ExecutionState::Succeeded));
+        assert_eq!(
+            host.dispatch_remote(&mut view, &registry, &device, input, &Default::default()),
+            reply
+        );
+        let until = Instant::now() + Duration::from_secs(15);
+        while std::fs::read_to_string(cwd.join("tui-input.txt"))
+            .ok()
+            .as_deref()
+            != Some("TUI_INPUT_OWNED\n")
+        {
+            view.pump_shell();
+            assert!(
+                Instant::now() < until,
+                "TUI did not route remote input to owned PTY"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        // Match the command's own output, not the echoed input line, which a
+        // user's interactive shell (zle) may redraw or wrap.
+        let until = Instant::now() + Duration::from_secs(15);
+        while !view
+            .pty_shell
+            .as_ref()
+            .unwrap()
+            .remote_content(64)
+            .contains("TUI_INPUT_OWNED")
+        {
+            view.pump_shell();
+            assert!(
+                Instant::now() < until,
+                "PTY output not yet projected after file effect: {:?}",
+                view.pty_shell.as_ref().unwrap().remote_content(64)
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let signal = crate::remote::wakeup::watch(&session_id).unwrap();
+        let mut read = Envelope::new(
+            Channel::Control,
+            Message::Request {
+                operation: Operation::TerminalRead,
+                arguments: serde_json::json!({"terminal_id":terminal["terminal_id"],"subtab_id":terminal["subtab_id"],
+                "subtab_revision":terminal["subtab_revision"],"offset":0,"digest":null}),
+            },
+        );
+        read.id = Some("terminal-history".into());
+        read.project_id = Some(project.clone());
+        read.session_id = Some(session_id.clone());
+        let page = host.dispatch_remote(&mut view, &registry, &device, read, &Default::default());
+        assert_eq!(page.execution_state, Some(ExecutionState::Succeeded));
+        assert!(
+            matches!(page.payload, Message::Response { result } if result["text"].as_str().unwrap().contains("TUI_INPUT_"))
+        );
+        let foreign_signal = crate::remote::wakeup::watch("foreign-pty-wakeup-test").unwrap();
+        let observed = signal.revision();
+        view.pty_shell
+            .as_mut()
+            .unwrap()
+            .write_input(b"printf '%s%s\\n' 'TUI_REMOTE_' 'PTY'\r");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            view.pump_shell();
+            if view
+                .remote_terminal(&host.pool, &project)
+                .is_some_and(|screen| screen["text"].as_str().unwrap().contains("TUI_REMOTE_PTY"))
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "production TUI PTY projection unavailable"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(signal.wait(observed, Duration::ZERO));
+        assert_eq!(foreign_signal.revision(), 0);
+        view.pty_shell
+            .as_mut()
+            .unwrap()
+            .try_write_input(b"exit\r")
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while view.pty_shell.as_ref().unwrap().is_running() {
+            view.pump_shell();
+            assert!(Instant::now() < deadline, "terminal exit not observed");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        view.pump_shell();
+        assert_eq!(
+            view.remote_terminal(&host.pool, &project).unwrap()["running"],
+            false
+        );
+        let mut listing = Envelope::new(
+            Channel::Control,
+            Message::Request {
+                operation: Operation::WorkspaceList,
+                arguments: serde_json::json!({}),
+            },
+        );
+        listing.id = Some("terminal-exited-list".into());
+        let listing =
+            host.dispatch_remote(&mut view, &registry, &device, listing, &Default::default());
+        assert!(
+            matches!(listing.payload, Message::Response { result } if result["projects"][0]["terminal_control"] == false
+            && result["projects"][0]["terminal_open_control"] == true)
+        );
+        let mut rejected = Envelope::new(
+            Channel::Control,
+            Message::Request {
+                operation: Operation::TerminalInput,
+                arguments: serde_json::json!({"terminal_id":instance,"subtab_id":terminal["subtab_id"],"subtab_revision":terminal["subtab_revision"],"text":"touch exited-input.txt\r"}),
+            },
+        );
+        rejected.id = Some("terminal-exited-input".into());
+        rejected.project_id = Some(project.clone());
+        rejected.session_id = Some(session_id.clone());
+        rejected.required_owner = Some(host.pool.workspace_owner().into());
+        rejected.expected_revision = Some(host.pool.workspace_revision());
+        assert_eq!(
+            host.dispatch_remote(&mut view, &registry, &device, rejected, &Default::default())
+                .code,
+            Some(crate::remote::protocol::ErrorCode::InvalidRequest)
+        );
+        assert!(!cwd.join("exited-input.txt").exists());
+        assert_eq!(
+            host.dispatch_remote(
+                &mut view,
+                &registry,
+                &device,
+                open.clone(),
+                &Default::default()
+            ),
+            opened
+        );
+        assert!(!view.pty_shell.as_ref().unwrap().is_running());
+        let mut reopen = open;
+        reopen.id = Some("terminal-reopen".into());
+        let reopened = host.dispatch_remote(
+            &mut view,
+            &registry,
+            &device,
+            reopen.clone(),
+            &Default::default(),
+        );
+        assert_eq!(reopened.execution_state, Some(ExecutionState::Succeeded));
+        let next_instance = view.pty_shell.as_ref().unwrap().instance_id();
+        assert_ne!(next_instance, instance);
+        assert!(view.pty_shell.as_ref().unwrap().is_running());
+        assert_eq!(
+            host.dispatch_remote(&mut view, &registry, &device, reopen, &Default::default()),
+            reopened
+        );
+        assert_eq!(
+            view.pty_shell.as_ref().unwrap().instance_id(),
+            next_instance
+        );
+        assert!(view.remote_terminal(&host.pool, "foreign").is_none());
+        view.pty_scope = Some((project.clone(), "foreign-session".into()));
+        assert!(view.remote_terminal(&host.pool, &project).is_none());
+        view.pty_scope = Some((project.clone(), session_id));
+        view.pty_shell = Some(crate::pty_shell::PtyShell::spawn(std::env::temp_dir()).unwrap());
+        assert!(view.remote_terminal(&host.pool, &project).is_none());
+        let previous = host.pool.context(&project).unwrap().session_id.clone();
+        let mut rename = Envelope::new(
+            Channel::Control,
+            Message::Request {
+                operation: Operation::SessionRename,
+                arguments: serde_json::json!({"name":"TUI development","journal_revision":host.pool.owner(&project).unwrap().lock().unwrap().session().next_sequence()}),
+            },
+        );
+        rename.id = Some("tui-rename-session".into());
+        rename.project_id = Some(project.clone());
+        rename.session_id = Some(previous.clone());
+        rename.required_owner = Some(host.pool.workspace_owner().into());
+        rename.expected_revision = Some(host.pool.workspace_revision());
+        let renamed = host.dispatch_remote(
+            &mut view,
+            &registry,
+            &device,
+            rename.clone(),
+            &Default::default(),
+        );
+        assert_eq!(renamed.execution_state, Some(ExecutionState::Succeeded));
+        assert_eq!(view.session_name.as_deref(), Some("TUI development"));
+        let count = view.messages().count();
+        assert_eq!(
+            host.dispatch_remote(&mut view, &registry, &device, rename, &Default::default()),
+            renamed
+        );
+        assert_eq!(view.messages().count(), count);
+        let mut new = Envelope::new(
+            Channel::Control,
+            Message::Request {
+                operation: Operation::SessionNew,
+                arguments: serde_json::json!({}),
+            },
+        );
+        new.id = Some("tui-new-session".into());
+        new.project_id = Some(project.clone());
+        new.session_id = Some(previous.clone());
+        new.required_owner = Some(host.pool.workspace_owner().into());
+        new.expected_revision = Some(host.pool.workspace_revision());
+        let response = host.dispatch_remote(
+            &mut view,
+            &registry,
+            &device,
+            new.clone(),
+            &Default::default(),
+        );
+        assert_eq!(response.execution_state, Some(ExecutionState::Succeeded));
+        let current = host.pool.context(&project).unwrap().session_id.clone();
+        assert_ne!(current, previous);
+        assert_eq!(view.project_session_cursor(&project).unwrap().0, current);
+        assert!(view.remote_terminal(&host.pool, &project).is_none());
+        view.push_message(MessageRole::User, "draft view must survive receipt retry");
+        let count = view.messages().count();
+        assert_eq!(
+            host.dispatch_remote(&mut view, &registry, &device, new, &Default::default()),
+            response
+        );
+        assert_eq!(view.messages().count(), count);
+        let mut read = Envelope::new(
+            Channel::Control,
+            Message::Request {
+                operation: Operation::SessionList,
+                arguments: serde_json::json!({}),
+            },
+        );
+        read.id = Some("tui-session-catalog".into());
+        read.project_id = Some(project.clone());
+        read.session_id = Some(current.clone());
+        let catalog = host.dispatch_remote(
+            &mut view,
+            &registry,
+            &device,
+            read.clone(),
+            &Default::default(),
+        );
+        assert_eq!(catalog.execution_state, Some(ExecutionState::Succeeded));
+        let Message::Response { result } = catalog.payload else {
+            panic!("session catalog")
+        };
+        let mut resume = read;
+        resume.id = Some("tui-session-resume".into());
+        resume.required_owner = Some(host.pool.workspace_owner().into());
+        resume.expected_revision = Some(host.pool.workspace_revision());
+        resume.payload = Message::Request {
+            operation: Operation::SessionResume,
+            arguments: serde_json::json!({"target_session_id":previous,"snapshot_id":result["snapshot_id"]}),
+        };
+        let response = host.dispatch_remote(
+            &mut view,
+            &registry,
+            &device,
+            resume.clone(),
+            &Default::default(),
+        );
+        assert_eq!(response.execution_state, Some(ExecutionState::Succeeded));
+        assert_eq!(view.project_session_cursor(&project).unwrap().0, previous);
+        view.push_message(MessageRole::User, "resumed view must survive receipt retry");
+        let count = view.messages().count();
+        assert_eq!(
+            host.dispatch_remote(&mut view, &registry, &device, resume, &Default::default()),
+            response
+        );
+        assert_eq!(view.messages().count(), count);
+        let old_port = host.pool.control(&project).unwrap().input_port;
+        let target = host.pool.owner(&project).unwrap();
+        let previous_path = target.lock().unwrap().session().path().to_path_buf();
+        let replacement_path = previous_path
+            .parent()
+            .unwrap()
+            .join("local-resume-target.jsonl");
+        let cwd = host.pool.context(&project).unwrap().cwd.clone();
+        let replacement =
+            crate::session::SessionStore::open_in_workspace(&replacement_path, &cwd).unwrap();
+        let replacement_id = replacement.session_id().to_owned();
+        drop(replacement);
+        host.resume_session(
+            &mut view,
+            &crate::slash::SessionAction::Open {
+                path: replacement_path.display().to_string(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            host.pool.control(&project).unwrap().input_port.session_id(),
+            replacement_id
+        );
+        assert_eq!(
+            target.lock().unwrap().input_port().session_id(),
+            replacement_id
+        );
+        assert_eq!(old_port.session_id(), previous);
+    }
+
+    #[test]
+    fn local_model_binds_original_project_but_shell_resource_arch_and_remote_do_not() {
+        let (mut request, _) = TuiRequest::new("prompt".into());
+        request.preview_local_model("original", false);
+        assert_eq!(request.local_preview_project.as_deref(), Some("original"));
+        for kind in [TuiRequestKind::UserShell, TuiRequestKind::ResourceControl] {
+            let (mut request, _) = TuiRequest::with_kind("input".into(), kind);
+            request.preview_local_model("project", false);
+            assert!(request.local_preview_project.is_none());
+        }
+        let (mut arch, _) = TuiRequest::new("arch".into());
+        arch.preview_local_model("project", true);
+        assert!(arch.local_preview_project.is_none());
+        let (mut remote, _) = TuiRequest::new("remote".into());
+        remote.remote_identity = Some((
+            crate::remote::protocol::Envelope::new(
+                crate::remote::protocol::Channel::Control,
+                crate::remote::protocol::Message::Hello {
+                    supported_versions: vec![1],
+                },
+            ),
+            "device".into(),
+        ));
+        remote.preview_local_model("project", false);
+        assert!(remote.local_preview_project.is_none());
+    }
+}
+
 /// Provider deltas are produced on the worker thread while the terminal loop
 /// may be busy rendering or waiting for input. Keep that mailbox bounded, but
 /// retain a loss counter so backpressure never turns into a silent transcript
@@ -16785,6 +18159,59 @@ pub fn run_async_with_profile(
     agent: crate::core::Agent,
     profile: Option<String>,
 ) -> Result<(), crate::error::ZenpiError> {
+    run_tui_loop(
+        agent,
+        profile,
+        #[cfg(feature = "remote")]
+        None,
+        TuiIo::Terminal,
+    )
+}
+
+#[cfg(feature = "remote")]
+pub fn run_async_with_remote(
+    agent: crate::core::Agent,
+    profile: Option<String>,
+    remote: Option<crate::host_pair::HostPairOptions>,
+) -> Result<(), crate::error::ZenpiError> {
+    run_tui_loop(agent, profile, remote, TuiIo::Terminal)
+}
+
+/// Test hook: run the same production loop as [`run_async_with_remote`], but
+/// read scripted events from `harness.events` and draw into `harness.screen`
+/// instead of the real terminal. No raw mode, signals or panic hook are
+/// installed, and the external editor reports itself unavailable.
+#[doc(hidden)]
+pub fn run_async_with_harness(
+    agent: crate::core::Agent,
+    harness: TuiHarness,
+) -> Result<(), crate::error::ZenpiError> {
+    run_tui_loop(
+        agent,
+        None,
+        #[cfg(feature = "remote")]
+        None,
+        TuiIo::Harness(harness),
+    )
+}
+
+/// A desktop prompt: its text plus any `@file` attachments it names.
+fn local_turn_input(
+    agent: &mut crate::core::Agent,
+    text: String,
+) -> Result<crate::core::TurnInputRequest, crate::core::AgentError> {
+    let attachments = crate::slash_actions::prompt_attachments(agent, &text)?;
+    Ok(crate::core::TurnInputRequest::new(text)
+        .with_mode(crate::protocol::TurnMode::StartOrSteer)
+        .with_attachments(attachments))
+}
+
+fn run_tui_loop(
+    agent: crate::core::Agent,
+    profile: Option<String>,
+    #[cfg(feature = "remote")] remote: Option<crate::host_pair::HostPairOptions>,
+    io: TuiIo,
+) -> Result<(), crate::error::ZenpiError> {
     use crate::core::AgentError;
     use crate::runtime::{BackgroundRunner, JobOutcome, RuntimeConfig, RuntimeEvent};
 
@@ -16798,11 +18225,20 @@ pub fn run_async_with_profile(
     let mut approvals: std::collections::BTreeMap<String, crate::project_workspace::OwnerControl> =
         std::collections::BTreeMap::new();
     let worker_state = Arc::clone(&shared);
+    #[cfg(feature = "remote")]
+    let remote_progress = Arc::new(crate::remote::command::PromptProgress::default());
+    #[cfg(feature = "remote")]
+    let worker_progress = Arc::clone(&remote_progress);
     // Keep provider events bounded independently of the transcript. A slow
     // terminal must not turn an unbounded stream into unbounded memory.
     let runner = BackgroundRunner::spawn(
-        move |request: TuiRequest, token| -> Result<TuiJobResult, AgentError> {
-            if token.is_cancelled() {
+        move |mut request: TuiRequest, token| -> Result<TuiJobResult, AgentError> {
+            // A remote prompt still records its terminal state when cancelled.
+            #[cfg(feature = "remote")]
+            let local = request.remote_identity.is_none();
+            #[cfg(not(feature = "remote"))]
+            let local = true;
+            if token.is_cancelled() && local {
                 return Err(AgentError::Backend(crate::backend::BackendError::Cancelled));
             }
             let mut agent = request
@@ -16811,83 +18247,145 @@ pub fn run_async_with_profile(
                 .unwrap_or(&worker_state)
                 .lock()
                 .map_err(|_| AgentError::InvalidTurn("agent lock poisoned".into()))?;
+            #[cfg(feature = "remote")]
+            if let Some((envelope, device)) = &request.remote_identity {
+                crate::remote::command::persist_progress(
+                    &mut agent,
+                    envelope,
+                    device,
+                    crate::remote::protocol::ExecutionState::Running,
+                )
+                .map_err(|error| AgentError::Recovery(error.to_string()))?;
+                worker_progress.record(
+                    envelope,
+                    device,
+                    crate::remote::protocol::ExecutionState::Running,
+                );
+            }
             let tool_events = Arc::clone(&request.provider_events);
+            #[cfg(feature = "remote")]
+            let desktop_preview = request.local_preview_project.as_deref().map(|project| {
+                worker_progress
+                    .desktop_text()
+                    .begin(project, agent.session().session_id())
+            });
             let tool_sink = Arc::new(move |event| {
                 if let Ok(mut pending) = tool_events.lock() {
                     pending.push_agent(event);
                 }
             });
-            let result = agent.with_live_tool_events(
-                tool_sink,
-                |agent| -> Result<TuiJobResult, AgentError> {
-                    Ok(match request.kind {
-                        TuiRequestKind::Model => {
-                            let mut attachments = Vec::new();
-                            if !request.text.starts_with('/') {
-                                for (_, _, path, closed) in prompt_file_references(&request.text)
-                                    .map_err(AgentError::InvalidTurn)?
-                                {
-                                    if !closed || path.is_empty() {
-                                        return Err(AgentError::InvalidTurn(
-                                            "Incomplete file reference".into(),
-                                        ));
-                                    }
-                                    attachments.push(
-                                        crate::slash_actions::attachment_for_path(
-                                            agent.attachment_workspace_root().ok_or_else(|| {
-                                                AgentError::InvalidTurn(
-                                                    "File reference requires project cwd".into(),
-                                                )
-                                            })?,
-                                            &path,
-                                        )
-                                        .map_err(|e| AgentError::InvalidTurn(e.to_string()))?,
-                                    );
-                                }
-                            }
-                            TuiJobResult::Model(
-                                agent.process_with_cancel_and_events(
-                                    crate::core::TurnInputRequest::new(request.text)
-                                        .with_attachments(attachments),
+            let execution = request.execution.take();
+            let run = |agent: &mut crate::core::Agent| {
+                agent.with_live_tool_events(
+                    tool_sink,
+                    |agent| -> Result<TuiJobResult, AgentError> {
+                        Ok(match request.kind {
+                            TuiRequestKind::Model => {
+                                #[cfg(feature = "remote")]
+                                let input = if request.remote_prompt {
+                                    crate::remote::command::prompt_input(agent, request.text)?
+                                } else {
+                                    local_turn_input(agent, request.text)?
+                                };
+                                #[cfg(not(feature = "remote"))]
+                                let input = local_turn_input(agent, request.text)?;
+                                TuiJobResult::Model(agent.process_with_cancel_and_events(
+                                    input,
                                     || token.is_cancelled(),
                                     &mut |event| {
+                                        #[cfg(feature = "remote")]
+                                        if let Some(preview) = &desktop_preview {
+                                            preview.update(&event);
+                                        }
+                                        #[cfg(feature = "remote")]
+                                        if let Some((envelope, device)) = &request.remote_identity {
+                                            worker_progress
+                                                .provider_event(envelope, device, &event);
+                                        }
                                         if let Ok(mut pending) = request.provider_events.lock() {
                                             pending.push(event, MAX_TUI_PROVIDER_EVENTS);
                                         }
                                         Ok(())
                                     },
-                                )?,
-                            )
-                        }
-                        TuiRequestKind::ResourceControl => {
-                            let value = if let Some(value) =
-                                crate::headless::external_evidence_input(
-                                    agent,
-                                    &request.text,
-                                    &|| token.is_cancelled(),
-                                )? {
-                                value
-                            } else {
-                                crate::slash_actions::resource_control_value(
-                                    agent,
-                                    &request.text,
-                                    || token.is_cancelled(),
-                                )?
-                                .ok_or_else(|| {
-                                    AgentError::InvalidTurn("unknown resource control".into())
-                                })?
-                            };
-                            TuiJobResult::ResourceControl(value)
-                        }
-                        TuiRequestKind::UserShell => {
-                            let command = request.text;
-                            let result = agent
-                                .run_user_shell_with_cancel(&command, || token.is_cancelled())?;
-                            TuiJobResult::UserShell(result)
-                        }
-                    })
-                },
-            )?;
+                                )?)
+                            }
+                            TuiRequestKind::ResourceControl => {
+                                let value = if let Some(value) =
+                                    crate::headless::external_evidence_input(
+                                        agent,
+                                        &request.text,
+                                        &|| token.is_cancelled(),
+                                    )? {
+                                    value
+                                } else {
+                                    crate::slash_actions::resource_control_value(
+                                        agent,
+                                        &request.text,
+                                        || token.is_cancelled(),
+                                    )?
+                                    .ok_or_else(|| {
+                                        AgentError::InvalidTurn("unknown resource control".into())
+                                    })?
+                                };
+                                TuiJobResult::ResourceControl(value)
+                            }
+                            TuiRequestKind::UserShell => {
+                                let command = request.text;
+                                let result = agent.run_user_shell_with_cancel(&command, || {
+                                    token.is_cancelled()
+                                })?;
+                                TuiJobResult::UserShell(result)
+                            }
+                        })
+                    },
+                )
+            };
+            let result = match execution {
+                Some(Ok(execution)) => execution
+                    .run_cancelable(&mut agent, &|| token.is_cancelled(), run)
+                    .and_then(|value| value),
+                Some(Err(error)) => Err(AgentError::InvalidTurn(error)),
+                None => run(&mut agent),
+            };
+            #[cfg(feature = "remote")]
+            if let Some((envelope, device)) = &request.remote_identity {
+                use crate::remote::protocol::ExecutionState;
+                let status = match &result {
+                    Ok(TuiJobResult::Model(value)) if value.submission.accepted() => {
+                        ExecutionState::Succeeded
+                    }
+                    Err(AgentError::Backend(crate::backend::BackendError::Cancelled)) => {
+                        ExecutionState::Cancelled
+                    }
+                    _ => ExecutionState::Failed,
+                };
+                let code = if status == ExecutionState::Failed {
+                    Some(
+                        result
+                            .as_ref()
+                            .err()
+                            .map(crate::remote::command::failure_code)
+                            .unwrap_or(crate::remote::protocol::ErrorCode::InvalidRequest),
+                    )
+                } else {
+                    None
+                };
+                let saved = crate::remote::command::persist_progress_with_code(
+                    &mut agent, envelope, device, status, code,
+                );
+                worker_progress.record_with_code(
+                    envelope,
+                    device,
+                    if saved.is_ok() {
+                        status
+                    } else {
+                        ExecutionState::UnknownOutcome
+                    },
+                    if saved.is_ok() { code } else { None },
+                );
+                saved.map_err(|error| AgentError::Recovery(error.to_string()))?;
+            }
+            let result = result?;
             // The core has crossed its durable completion boundary when it
             // returns a successful ProcessResult. Mark it before returning to
             // the runtime so a late shutdown/cancel cannot report a persisted
@@ -17084,8 +18582,8 @@ pub fn run_async_with_profile(
     // agent independently of the terminal.  Terminal setup can still fail
     // (for example when stdin is not a TTY), so every early return here must
     // close and join the worker instead of relying on `Drop` to detach it.
-    let mut guard = match TerminalGuard::enter() {
-        Ok(guard) => guard,
+    let (mut guard, mut terminal, mut events) = match io.open() {
+        Ok(opened) => opened,
         Err(error) => {
             let _ = runner.shutdown_and_join();
             let _ = new_sessions.worker.shutdown_and_join();
@@ -17093,20 +18591,6 @@ pub fn run_async_with_profile(
             let _ = completion_runner.shutdown_and_join();
             let _ = gantt_runner.shutdown_and_join();
             let _ = lan_runner.shutdown_and_join();
-            return Err(crate::error::ZenpiError::Message(error.to_string()));
-        }
-    };
-    let backend = CrosstermBackend::new(io::stdout());
-    let mut terminal = match Terminal::new(backend) {
-        Ok(terminal) => terminal,
-        Err(error) => {
-            let _ = runner.shutdown_and_join();
-            let _ = new_sessions.worker.shutdown_and_join();
-            let _ = resource_runner.shutdown_and_join();
-            let _ = completion_runner.shutdown_and_join();
-            let _ = gantt_runner.shutdown_and_join();
-            let _ = lan_runner.shutdown_and_join();
-            guard.leave();
             return Err(crate::error::ZenpiError::Message(error.to_string()));
         }
     };
@@ -17122,20 +18606,435 @@ pub fn run_async_with_profile(
     let mut active_job_project: Option<String> = None;
     let mut active_job_owner: Option<Arc<Mutex<crate::core::Agent>>> = None;
     let mut active_job_is_arch = false;
+    #[cfg(feature = "remote")]
+    let mut active_remote_prompt: Option<(crate::remote::protocol::Envelope, String)> = None;
+    #[cfg(feature = "remote")]
+    let mut cancel_admissions = crate::remote::command::CancelAdmissions;
+    #[cfg(feature = "remote")]
+    let mut steer_admissions = crate::remote::command::SteerAdmissions::default();
     let mut pending_inputs = TuiPendingInputs::default();
     let mut input_controls = TuiInputControls::default();
     if let Ok(agent) = shared.try_lock() {
         input_controls.remember_owner(state.active_project(), &agent);
     }
-    let mut last_checkpoint = Instant::now() - Duration::from_millis(250);
+    let mut last_checkpoint = Instant::now() - CHECKPOINT_INTERVAL;
+    let mut last_input = Instant::now() - CHECKPOINT_QUIET;
+    #[cfg(feature = "remote")]
+    let mut pairing_drawn: Option<Instant> = None;
     let mut submitted_inputs: HashMap<crate::runtime::JobId, SubmittedInput> = HashMap::new();
     let mut stream_buffers: HashMap<crate::runtime::JobId, Arc<Mutex<TuiProviderEventBuffer>>> =
         HashMap::new();
     let mut pending_approvals = VecDeque::new();
+    #[cfg(feature = "remote")]
+    let mut remote_host = None;
+    #[cfg(feature = "remote")]
+    let mut remote_mailbox = None;
+    #[cfg(feature = "remote")]
+    let mut pairing_visible = false;
     let loop_result = (|| -> Result<(), crate::error::ZenpiError> {
+        #[cfg(feature = "remote")]
+        if let Some(options) = remote.as_ref() {
+            let (adapter, mailbox) = crate::remote::host_adapter::HostAdapter::owner_thread();
+            remote_host = Some(crate::host_pair::PairingHost::start(
+                options,
+                Arc::new(adapter),
+            )?);
+            remote_mailbox = Some(mailbox);
+            pairing_visible = true;
+        }
         'outer: loop {
             if guard.termination_requested() {
                 break;
+            }
+            #[cfg(feature = "remote")]
+            project_host.poll_remote_workers();
+            if state.project_checkpoint_dirty()
+                && let Err(error) = project_host.sync_subtab_view(&mut state)
+            {
+                state.set_status(format!("subtab checkpoint rejected: {error}"));
+            }
+            #[cfg(feature = "remote")]
+            if let Some(mailbox) = remote_mailbox.as_ref() {
+                steer_admissions.poll(&mut project_host.pool);
+                let mut admitted: std::collections::BTreeSet<String> =
+                    pending_inputs.projects.iter().cloned().collect();
+                admitted.extend(active_job_project.iter().cloned());
+                for tab in project_host.pool.workspace().tabs() {
+                    let id = tab.id().as_str();
+                    if new_sessions.owns(id) || input_controls.has_pending(id) {
+                        admitted.insert(id.into());
+                    }
+                }
+                let revision = project_host.pool.workspace_revision();
+                mailbox.drain_with(|registry, device, request| {
+                    if matches!(
+                        &request.payload,
+                        crate::remote::protocol::Message::Request {
+                            operation: crate::remote::protocol::Operation::Steer,
+                            ..
+                        }
+                    ) {
+                        let active = active_remote_prompt
+                            .as_ref()
+                            .filter(|_| active_job.is_some())
+                            .map(|(request, device)| (request, device.as_str()));
+                        return steer_admissions.dispatch(
+                            &mut project_host.pool,
+                            registry,
+                            device,
+                            &request,
+                            active,
+                        );
+                    }
+                    if matches!(
+                        &request.payload,
+                        crate::remote::protocol::Message::Request {
+                            operation: crate::remote::protocol::Operation::WorkspaceList,
+                            ..
+                        }
+                    ) && let Some(response) = project_host.worktrees.status_page(
+                        &project_host.pool,
+                        registry,
+                        device,
+                        &request,
+                    ) {
+                        return response;
+                    }
+                    if matches!(
+                        &request.payload,
+                        crate::remote::protocol::Message::Request {
+                            operation: crate::remote::protocol::Operation::Approve,
+                            ..
+                        }
+                    ) {
+                        return crate::remote::approval::dispatch_routed(
+                            &mut project_host.pool,
+                            registry,
+                            device,
+                            &request,
+                        );
+                    }
+                    if matches!(
+                        &request.payload,
+                        crate::remote::protocol::Message::Request {
+                            operation: crate::remote::protocol::Operation::Cancel,
+                            ..
+                        }
+                    ) {
+                        if let Some(response) =
+                            project_host.cancel_remote_worker(registry, device, &request)
+                        {
+                            return response;
+                        }
+                        let active = active_remote_prompt
+                            .as_ref()
+                            .filter(|_| active_job.is_some())
+                            .map(|(request, device)| (request, device.as_str()));
+                        let approval = request
+                            .project_id
+                            .as_deref()
+                            .and_then(|project| project_host.pool.control(project))
+                            .and_then(|control| control.approval);
+                        return cancel_admissions.dispatch(
+                            &mut project_host.pool,
+                            registry,
+                            device,
+                            &request,
+                            active,
+                            || {
+                                runner
+                                    .try_cancel(active_job.ok_or(
+                                        crate::remote::protocol::ErrorCode::InvalidRequest,
+                                    )?)
+                                    .map_err(|_| crate::remote::protocol::ErrorCode::Busy)?;
+                                if let Some(approval) = approval {
+                                    approval.emergency_cancel();
+                                }
+                                Ok(())
+                            },
+                        );
+                    }
+                    if matches!(
+                        &request.payload,
+                        crate::remote::protocol::Message::Request {
+                            operation: crate::remote::protocol::Operation::Prompt,
+                            ..
+                        }
+                    ) {
+                        let project = request.project_id.clone().unwrap_or_default();
+                        let busy = pairing_visible
+                            || active_job.is_some()
+                            || !pending_inputs.inputs.is_empty()
+                            || admitted.contains(&project);
+                        if crate::worktree::worktree_host::WorktreeHost::is_worker_prompt(&request)
+                        {
+                            let mut worker_admitted = admitted.clone();
+                            if busy {
+                                worker_admitted.insert(project.clone());
+                            }
+                            return project_host.dispatch_remote(
+                                &mut state,
+                                registry,
+                                device,
+                                request,
+                                &worker_admitted,
+                            );
+                        }
+                        let busy = busy || project_host.remote_workers_busy(&project);
+                        return crate::remote::command::dispatch_prompt(
+                            &mut project_host.pool,
+                            registry,
+                            device,
+                            &request,
+                            busy,
+                            |owner, text, execution| {
+                                let (mut input, events) = TuiRequest::new(text.clone());
+                                input.remote_prompt = true;
+                                input.execution = Some(Ok(execution));
+                                input.remote_identity =
+                                    Some((request.clone(), device.id().to_owned()));
+                                input.owner = Some(Arc::clone(&owner));
+                                let id = runner
+                                    .try_submit(input)
+                                    .map_err(|_| crate::remote::protocol::ErrorCode::Busy)?;
+                                // Remote text is not the desktop's draft; failures must not restore it into the local composer.
+                                stream_buffers.insert(id, events);
+                                active_job = Some(id);
+                                active_remote_prompt =
+                                    Some((request.clone(), device.id().to_owned()));
+                                active_job_project = Some(project.clone());
+                                active_job_owner = Some(owner);
+                                active_job_kind = Some(TuiRequestKind::Model);
+                                active_job_is_arch = false;
+                                let visible = state.active_project().to_owned();
+                                if let Some(index) = state.project_index(&project) {
+                                    state.select_project_tab(index);
+                                    state.push_message(MessageRole::User, text);
+                                    state.begin_stream_for_job(id.get());
+                                    state.set_busy(true);
+                                    state.set_status("Working");
+                                }
+                                if let Some(index) = state.project_index(&visible) {
+                                    state.select_project_tab(index);
+                                }
+                                scheduler.request();
+                                remote_progress.record(
+                                    &request,
+                                    device.id(),
+                                    crate::remote::protocol::ExecutionState::Accepted,
+                                );
+                                Ok(id.get().to_string())
+                            },
+                        );
+                    }
+                    if matches!(
+                        &request.payload,
+                        crate::remote::protocol::Message::Request {
+                            operation: crate::remote::protocol::Operation::ModelSelect
+                                | crate::remote::protocol::Operation::ReasoningSelect,
+                            ..
+                        }
+                    ) {
+                        let project = request.project_id.as_deref().unwrap_or_default();
+                        let busy = pairing_visible
+                            || active_job.is_some()
+                            || !pending_inputs.inputs.is_empty()
+                            || admitted.contains(project)
+                            || project_host.remote_workers_busy(project);
+                        let mut selection_admitted = admitted.clone();
+                        if busy {
+                            selection_admitted.insert(project.to_owned());
+                        }
+                        return project_host.dispatch_remote(
+                            &mut state,
+                            registry,
+                            device,
+                            request,
+                            &selection_admitted,
+                        );
+                    }
+                    if matches!(
+                        &request.payload,
+                        crate::remote::protocol::Message::Request {
+                            operation: crate::remote::protocol::Operation::ResourcesReload,
+                            ..
+                        }
+                    ) {
+                        let project = request.project_id.as_deref().unwrap_or_default();
+                        let busy = pairing_visible
+                            || active_job.is_some()
+                            || !pending_inputs.inputs.is_empty()
+                            || admitted.contains(project)
+                            || project_host.remote_workers_busy(project);
+                        let mut reload_admitted = admitted.clone();
+                        if busy {
+                            reload_admitted.insert(project.to_owned());
+                        }
+                        let response = project_host.dispatch_remote(
+                            &mut state,
+                            registry,
+                            device,
+                            request,
+                            &reload_admitted,
+                        );
+                        if response.execution_state
+                            == Some(crate::remote::protocol::ExecutionState::Succeeded)
+                        {
+                            state.dirty = true;
+                            state.set_status("Host resources reloaded");
+                        }
+                        return response;
+                    }
+                    if matches!(
+                        &request.payload,
+                        crate::remote::protocol::Message::Request {
+                            operation: crate::remote::protocol::Operation::SessionNew
+                                | crate::remote::protocol::Operation::SessionResume
+                                | crate::remote::protocol::Operation::SessionRename
+                                | crate::remote::protocol::Operation::TerminalOpen
+                                | crate::remote::protocol::Operation::TerminalInput
+                                | crate::remote::protocol::Operation::TerminalResize,
+                            ..
+                        }
+                    ) {
+                        let mut terminal_admitted = admitted.clone();
+                        if pairing_visible
+                            || matches!(
+                                &request.payload,
+                                crate::remote::protocol::Message::Request {
+                                    operation: crate::remote::protocol::Operation::SessionNew
+                                        | crate::remote::protocol::Operation::SessionResume
+                                        | crate::remote::protocol::Operation::SessionRename,
+                                    ..
+                                }
+                            ) && (active_job.is_some() || !pending_inputs.inputs.is_empty())
+                        {
+                            terminal_admitted
+                                .insert(request.project_id.clone().unwrap_or_default());
+                        }
+                        return project_host.dispatch_remote(
+                            &mut state,
+                            registry,
+                            device,
+                            request,
+                            &terminal_admitted,
+                        );
+                    }
+                    let listing = matches!(
+                        &request.payload,
+                        crate::remote::protocol::Message::Request {
+                            operation: crate::remote::protocol::Operation::WorkspaceList,
+                            ..
+                        }
+                    );
+                    let mut response = project_host
+                        .dispatch_remote(&mut state, registry, device, request, &admitted);
+                    if listing
+                        && let crate::remote::protocol::Message::Response { result } =
+                            &mut response.payload
+                        && let Some(projects) = result
+                            .get_mut("projects")
+                            .and_then(serde_json::Value::as_array_mut)
+                    {
+                        for project in projects {
+                            if let Some(id) = project["id"].as_str().map(str::to_owned) {
+                                project["prompt_control"] = serde_json::json!(
+                                    project_host.pool.has_workspace_checkpoint()
+                                        && registry
+                                            .authorize(
+                                                device,
+                                                &id,
+                                                crate::remote::protocol::Operation::Prompt
+                                            )
+                                            .is_ok()
+                                );
+                                project["prompt_statuses"] =
+                                    remote_progress.listing(&project_host.pool, device.id(), &id);
+                                project["desktop_stream_text"] = project["session_id"]
+                                    .as_str()
+                                    .and_then(|session| {
+                                        remote_progress.desktop_text().projected(&id, session)
+                                    })
+                                    .map(serde_json::Value::String)
+                                    .unwrap_or(serde_json::Value::Null);
+                                project["desktop_terminal"] = state
+                                    .remote_terminal(&project_host.pool, &id)
+                                    .unwrap_or(serde_json::Value::Null);
+                                project["terminal_control"] = serde_json::json!(
+                                    project["desktop_terminal"].is_object()
+                                        && project["desktop_terminal"]["running"] == true
+                                        && project_host.pool.has_workspace_checkpoint()
+                                        && registry
+                                            .authorize(
+                                                device,
+                                                &id,
+                                                crate::remote::protocol::Operation::TerminalInput
+                                            )
+                                            .is_ok()
+                                );
+                                project["terminal_open_control"] = serde_json::json!(
+                                    id == state.active_project()
+                                        && project_host.pool.has_workspace_checkpoint()
+                                        && (project["desktop_terminal"].is_object()
+                                            || state.pty_shell.is_none())
+                                        && registry
+                                            .authorize(
+                                                device,
+                                                &id,
+                                                crate::remote::protocol::Operation::TerminalOpen
+                                            )
+                                            .is_ok()
+                                );
+                            }
+                        }
+                    }
+                    response
+                });
+                if revision != project_host.pool.workspace_revision() {
+                    shared = project_host.active(&state);
+                    state.resource_snapshot = None;
+                    last_resource_refresh = Instant::now() - RESOURCE_REFRESH_INTERVAL;
+                    if let Some(path) = state
+                        .project_metadata(state.active_project())
+                        .and_then(|m| m.session_path.clone())
+                        && gantt_tracker.switch_session(path.into())
+                    {
+                        state.clear_gantt_snapshot();
+                        gantt_refresh_pending = true;
+                    }
+                    scheduler.request();
+                }
+            }
+            #[cfg(feature = "remote")]
+            if pairing_visible {
+                let host = remote_host.as_mut().expect("pairing host");
+                if pairing_drawn.is_none_or(|at| at.elapsed() >= PAIRING_REDRAW) {
+                    let _qr_colors = crate::host_pair::QrColorGuard::enter();
+                    let mut render_result = Ok(());
+                    terminal.draw(|frame| {
+                        render_result = host.render(frame);
+                    })?;
+                    render_result?;
+                    pairing_drawn = Some(Instant::now());
+                }
+                if events.poll(Duration::from_millis(20))?
+                    && let Event::Key(key) = events.read()?
+                    && key.kind == KeyEventKind::Press
+                {
+                    pairing_drawn = None;
+                    match key.code {
+                        KeyCode::Esc => {
+                            host.cancel_invite()?;
+                            pairing_visible = false;
+                            scheduler.request();
+                        }
+                        KeyCode::Char('r') => host.refresh(Duration::from_secs(
+                            remote.as_ref().unwrap().duration_seconds,
+                        ))?,
+                        _ => {}
+                    }
+                }
+                continue;
             }
             if new_sessions.poll(&mut state, &mut project_host, &mut input_controls) {
                 if let Some(path) = state
@@ -17238,7 +19137,10 @@ pub fn run_async_with_profile(
                         state.gantt_refresh_started();
                     }
                     Err(crate::runtime::SubmitError::QueueFull) => {}
-                    Err(crate::runtime::SubmitError::Closed) => {
+                    Err(
+                        crate::runtime::SubmitError::Closed
+                        | crate::runtime::SubmitError::SpawnFailed,
+                    ) => {
                         gantt_refresh_pending = false;
                         state.gantt_refresh_failed("Gantt worker closed");
                     }
@@ -17342,7 +19244,10 @@ pub fn run_async_with_profile(
                         scheduler.request();
                     }
                     Err(crate::runtime::SubmitError::QueueFull) => {}
-                    Err(crate::runtime::SubmitError::Closed) => {
+                    Err(
+                        crate::runtime::SubmitError::Closed
+                        | crate::runtime::SubmitError::SpawnFailed,
+                    ) => {
                         state.resource_refresh_failed("resource worker closed");
                         last_resource_refresh = now;
                         scheduler.request();
@@ -17442,7 +19347,7 @@ pub fn run_async_with_profile(
                 }
             }
             approvals = owner_controls(&project_host.pool);
-            if !approvals.is_empty() {
+            if !approvals.is_empty() || !pending_approvals.is_empty() {
                 // A request is stale only when no live owner still holds it:
                 // the owner that raised it need not be the one most recently
                 // submitted to, or even the active tab.
@@ -17716,6 +19621,10 @@ pub fn run_async_with_profile(
                 state.select_project_tab(index);
             }
             if active_job.is_none() {
+                #[cfg(feature = "remote")]
+                {
+                    active_remote_prompt = None;
+                }
                 active_job_project = None;
                 active_job_owner = None;
                 active_job_is_arch = false;
@@ -17726,9 +19635,9 @@ pub fn run_async_with_profile(
             // for a `!` request.
             let queued_project = pending_inputs.projects.front().cloned();
             if active_job.is_none()
-                && !queued_project
-                    .as_deref()
-                    .is_some_and(|project| new_sessions.owns(project))
+                && !queued_project.as_deref().is_some_and(|project| {
+                    new_sessions.owns(project) || project_host.remote_workers_busy(project)
+                })
                 && let Some((kind, text, paste, arch_queued)) = pending_inputs.pop()
             {
                 pending_inputs.sync_projection(&mut state);
@@ -17753,6 +19662,14 @@ pub fn run_async_with_profile(
                 let (request, events) = TuiRequest::with_kind(request_text, kind);
                 let mut request = request;
                 request.owner = Some(Arc::clone(&owner));
+                #[cfg(feature = "remote")]
+                request.preview_local_model(state.active_project(), arch_queued);
+                if !arch_queued && kind != TuiRequestKind::ResourceControl {
+                    request.execution =
+                        Some(project_host.sync_subtab_view(&mut state).and_then(|_| {
+                            project_host.pool.subtab_execution(state.active_project())
+                        }));
+                }
                 if let Ok(agent) = owner.try_lock() {
                     input_controls.remember_owner(state.active_project(), &agent);
                 }
@@ -17797,7 +19714,9 @@ pub fn run_async_with_profile(
                 state.select_project_tab(index);
                 shared = project_host.active(&state);
             }
-            if last_checkpoint.elapsed() >= Duration::from_millis(250) {
+            if last_checkpoint.elapsed() >= CHECKPOINT_INTERVAL
+                && last_input.elapsed() >= CHECKPOINT_QUIET
+            {
                 if state.layout_dirty() && !layout_persistence.disabled {
                     match layout_persistence.save(&state) {
                         Ok(()) => {
@@ -17822,7 +19741,6 @@ pub fn run_async_with_profile(
                     let result = layout_persistence.save_project_checkpoint(&state);
                     state.checkpoint_result(result);
                 }
-                scheduler.request();
                 last_checkpoint = Instant::now();
             }
             if editor
@@ -17838,6 +19756,7 @@ pub fn run_async_with_profile(
             }
             let now = Instant::now();
             state.flush_ordinary_paste(now);
+            state.expire_notices();
             if (state.is_busy() || state.master_busy() || state.resources_zoom_has_busy())
                 && now.saturating_duration_since(last_tick) >= poll_interval
             {
@@ -17874,7 +19793,8 @@ pub fn run_async_with_profile(
             };
             let wait = state.ordinary_paste_wait(Instant::now(), wait);
             state.pump_shell();
-            if !event::poll(wait)
+            if !events
+                .poll(wait)
                 .map_err(|error| crate::error::ZenpiError::Message(error.to_string()))?
             {
                 // Idle tick: keep the embedded Shell pane's scrollback live
@@ -17882,9 +19802,11 @@ pub fn run_async_with_profile(
                 state.pump_shell();
                 continue;
             }
+            last_input = Instant::now();
             let mut processed = 0usize;
             loop {
-                let event = event::read()
+                let event = events
+                    .read()
                     .map_err(|error| crate::error::ZenpiError::Message(error.to_string()))?;
                 if matches!(event, Event::Resize(_, _)) {
                     resize_pending = true;
@@ -17921,6 +19843,50 @@ pub fn run_async_with_profile(
                     other => other,
                 };
                 match action {
+                    TuiAction::OpenPairing => {
+                        #[cfg(feature = "remote")]
+                        {
+                            if active_job.is_some()
+                                || state.is_busy()
+                                || state.master_busy()
+                                || !pending_inputs.projects.is_empty()
+                                || new_sessions.active.is_some()
+                                || !input_controls.pending.is_empty()
+                                || input_controls
+                                    .ports
+                                    .values()
+                                    .any(|port| port.has_pending() || port.is_preparing())
+                                || !pending_approvals.is_empty()
+                            {
+                                state.set_status(
+                                    "Pairing unavailable while work is running or queued",
+                                );
+                            } else if let (Some(host), Some(options)) =
+                                (remote_host.as_mut(), remote.as_ref())
+                            {
+                                match host.refresh(Duration::from_secs(options.duration_seconds)) {
+                                    Ok(()) => {
+                                        pairing_visible = true;
+                                        pairing_drawn = None;
+                                    }
+                                    Err(error) => {
+                                        state.set_status(format!("Pairing unavailable: {error}"))
+                                    }
+                                }
+                            } else {
+                                state.set_status("Remote pairing is not enabled for this desktop");
+                            }
+                            scheduler.request();
+                            if pairing_visible {
+                                continue 'outer;
+                            }
+                        }
+                        #[cfg(not(feature = "remote"))]
+                        {
+                            state.set_status("Remote pairing is not enabled for this desktop");
+                            scheduler.request();
+                        }
+                    }
                     TuiAction::RespondApproval {
                         project,
                         request_id,
@@ -18023,6 +19989,22 @@ pub fn run_async_with_profile(
                     TuiAction::Submit(text) => {
                         // Consumed exactly once: true only for an arch lane turn.
                         let arch_submit = state.take_arch_submit_pending();
+                        #[cfg(feature = "remote")]
+                        if project_host.dispatch_local_worktree_status(&mut state, &text) {
+                            scheduler.request();
+                            continue 'outer;
+                        }
+                        #[cfg(feature = "remote")]
+                        if project_host.remote_workers_busy(state.active_project()) {
+                            if project_host.dispatch_local_worktree_cancel(&mut state, &text) {
+                                scheduler.request();
+                                continue 'outer;
+                            }
+                            state.restore_rejected_input(&text);
+                            state.set_status("Worktree tasks are running; wait or cancel them before submitting desktop input");
+                            scheduler.request();
+                            continue 'outer;
+                        }
                         if new_sessions.owns(state.active_project())
                             && !text.trim_start().starts_with('/')
                         {
@@ -18109,7 +20091,13 @@ pub fn run_async_with_profile(
                             scheduler.request();
                             continue 'outer;
                         }
-                        if text.split_whitespace().next() == Some("/reasoning") {
+                        if matches!(
+                            slash::parse(&text),
+                            Ok(Some(SlashCommand::Reasoning { .. }))
+                                | Err(slash::SlashError::UnexpectedArgument {
+                                    command: "reasoning"
+                                })
+                        ) {
                             state.push_message(MessageRole::User, &text);
                             match shared.try_lock() {
                                 Ok(mut agent) => {
@@ -18574,6 +20562,17 @@ pub fn run_async_with_profile(
                                     );
                                     let mut request = request;
                                     request.owner = Some(Arc::clone(&owner));
+                                    if !arch_submit {
+                                        request.execution = Some(
+                                            project_host.sync_subtab_view(&mut state).and_then(
+                                                |_| {
+                                                    project_host
+                                                        .pool
+                                                        .subtab_execution(state.active_project())
+                                                },
+                                            ),
+                                        );
+                                    }
                                     if let Ok(agent) = owner.try_lock() {
                                         input_controls
                                             .remember_owner(state.active_project(), &agent);
@@ -18716,6 +20715,20 @@ pub fn run_async_with_profile(
                                     let (request, events) = TuiRequest::new(text);
                                     let mut request = request;
                                     request.owner = Some(Arc::clone(&owner));
+                                    #[cfg(feature = "remote")]
+                                    request
+                                        .preview_local_model(state.active_project(), arch_submit);
+                                    if !arch_submit {
+                                        request.execution = Some(
+                                            project_host.sync_subtab_view(&mut state).and_then(
+                                                |_| {
+                                                    project_host
+                                                        .pool
+                                                        .subtab_execution(state.active_project())
+                                                },
+                                            ),
+                                        );
+                                    }
                                     if let Ok(agent) = owner.try_lock() {
                                         input_controls
                                             .remember_owner(state.active_project(), &agent);
@@ -18752,6 +20765,11 @@ pub fn run_async_with_profile(
                         }
                     }
                     TuiAction::Interrupt => {
+                        #[cfg(feature = "remote")]
+                        if project_host.cancel_active_worktree_tasks(&mut state) {
+                            scheduler.request();
+                            continue 'outer;
+                        }
                         if local_diff_host.cancel_current(&mut state) {
                             scheduler.request();
                             continue 'outer;
@@ -18769,19 +20787,27 @@ pub fn run_async_with_profile(
                         pending_inputs.cancel(&mut state);
                         if let Some(id) = active_job {
                             let cancel_result = runner.try_cancel(id);
-                            if !matches!(cancel_result, Err(crate::runtime::SubmitError::QueueFull))
+                            if matches!(cancel_result, Err(crate::runtime::SubmitError::QueueFull))
                             {
-                                // The cancel command is admitted (or the
-                                // worker is already closed), so no approval
-                                // from this turn can be answered safely.
-                                for control in approvals.values() {
-                                    if let Some(approval) = control.approval.as_ref() {
-                                        approval.emergency_cancel();
-                                    }
-                                }
-                                pending_approvals.clear();
-                                state.clear_activity_approvals();
+                                state.set_status(
+                                    "Interrupt not delivered (runtime busy); press again",
+                                );
+                                continue 'outer;
                             }
+                            // The cancel command is admitted (or the worker is
+                            // already closed), so no approval from this turn
+                            // can be answered safely. ZE-251: only the running
+                            // job's owner is cancelled; other projects keep
+                            // their pending approvals.
+                            for control in approvals.values() {
+                                if Some(control.project.as_str()) != active_job_project.as_deref() {
+                                    continue;
+                                }
+                                if let Some(approval) = control.approval.as_ref() {
+                                    approval.emergency_cancel();
+                                }
+                            }
+                            state.clear_activity_approvals();
                             state.set_status("Interrupt requested");
                         } else {
                             state.set_status("Ready");
@@ -18860,7 +20886,8 @@ pub fn run_async_with_profile(
                 }
                 processed += 1;
                 if processed >= 256
-                    || !event::poll(Duration::ZERO)
+                    || !events
+                        .poll(Duration::ZERO)
                         .map_err(|error| crate::error::ZenpiError::Message(error.to_string()))?
                 {
                     break;
@@ -18869,8 +20896,17 @@ pub fn run_async_with_profile(
         }
         Ok(())
     })();
+    #[cfg(feature = "remote")]
+    let loop_result = loop_result.and(remote_host.as_mut().map_or(Ok(()), |host| host.shutdown()));
+    #[cfg(feature = "remote")]
+    drop(remote_mailbox);
     editor.shutdown(&mut state);
     state.finish_ordinary_paste();
+    if state.project_checkpoint_dirty()
+        && let Err(error) = project_host.sync_subtab_view(&mut state)
+    {
+        state.set_status(format!("subtab checkpoint rejected: {error}"));
+    }
     // Save any final layout mutation when the user quits before the next
     // event-loop checkpoint. The operation is bounded and atomic; a failure
     // must not mask the primary terminal/runtime result.
@@ -18897,7 +20933,13 @@ pub fn run_async_with_profile(
     // Terminal I/O can fail while a provider job is still active. Always
     // cancel and join the owned runtime before returning that error; relying
     // on `Drop` would detach a worker when its command queue is full.
+    #[cfg(feature = "remote")]
+    let worker_deadline = Instant::now() + crate::runtime::DEFAULT_SHUTDOWN_GRACE;
+    #[cfg(feature = "remote")]
+    project_host.worktrees.request_shutdown(worker_deadline);
     let join_result = runner.shutdown_and_join();
+    #[cfg(feature = "remote")]
+    project_host.shutdown_remote_workers(worker_deadline);
     let new_session_join_result =
         new_sessions.shutdown(&mut state, &mut project_host, &mut input_controls);
     if state.project_checkpoint_dirty() && !layout_persistence.disabled {
@@ -18922,259 +20964,6 @@ pub fn run_async_with_profile(
             .and(lan_join_result)
             .map_err(|_| crate::error::ZenpiError::Message("runtime worker panicked".into())),
     }
-}
-
-/// Run a TUI with a synchronous submit callback.  Callback errors become
-/// visible transcript entries and do not strand the terminal in raw mode.
-pub fn run_interactive<F, E>(config: TuiConfig, on_submit: F) -> Result<(), TuiError>
-where
-    F: FnMut(String, &mut TuiState) -> Result<(), E>,
-    E: Display,
-{
-    let state = TuiState::new(config.max_messages);
-    run_with_state(config, state, on_submit)
-}
-
-/// Same loop with caller-provided state, used to restore a session transcript
-/// before entering the alternate screen.
-pub fn run_with_state<F, E>(
-    config: TuiConfig,
-    state: TuiState,
-    on_submit: F,
-) -> Result<(), TuiError>
-where
-    F: FnMut(String, &mut TuiState) -> Result<(), E>,
-    E: Display,
-{
-    run_with_state_controls(config, state, false, on_submit)
-}
-
-// Only the Agent-backed synchronous host may route queue commands through its
-// callback. Generic prompt callbacks must never receive control-plane input.
-fn run_with_state_controls<F, E>(
-    config: TuiConfig,
-    mut state: TuiState,
-    input_controls: bool,
-    mut on_submit: F,
-) -> Result<(), TuiError>
-where
-    F: FnMut(String, &mut TuiState) -> Result<(), E>,
-    E: Display,
-{
-    let mut editor = ExternalEditorHost::capture_startup();
-    let mut guard = TerminalGuard::enter()?;
-    let backend = CrosstermBackend::new(io::stdout());
-    let mut terminal = Terminal::new(backend)?;
-    // Public config fields can be constructed directly, so normalize both
-    // intervals at the loop boundary instead of relying on CLI defaults.
-    let frame_interval = config.frame_interval.max(MIN_LOOP_INTERVAL);
-    let poll_interval = config.poll_interval.max(MIN_LOOP_INTERVAL);
-    let mut scheduler = RenderScheduler::new(frame_interval);
-    let mut resize_pending = false;
-    let mut last_tick = Instant::now();
-
-    let loop_result = (|| -> Result<(), TuiError> {
-        'outer: loop {
-            if guard.termination_requested() {
-                break;
-            }
-            if editor.poll(&mut state, &mut guard, &mut terminal, None)? {
-                scheduler.request();
-                resize_pending = false;
-            }
-            if editor.active() {
-                std::thread::sleep(poll_interval.min(Duration::from_millis(20)));
-                continue;
-            }
-            let now = Instant::now();
-            state.flush_ordinary_paste(now);
-            if (state.is_busy() || state.master_busy() || state.resources_zoom_has_busy())
-                && now.saturating_duration_since(last_tick) >= poll_interval
-            {
-                state.tick();
-                scheduler.request();
-                last_tick = now;
-            }
-            if state.take_dirty() {
-                scheduler.request();
-            }
-            if scheduler.due(now) {
-                if resize_pending {
-                    terminal.autoresize()?;
-                    resize_pending = false;
-                }
-                terminal.draw(|frame| state.render(frame, &config.title))?;
-                scheduler.rendered(Instant::now());
-            }
-
-            let wait = if scheduler.is_dirty() {
-                frame_interval
-                    .saturating_sub(Instant::now().saturating_duration_since(now))
-                    .min(poll_interval)
-            } else {
-                poll_interval
-            };
-            let wait = if state.has_shell() {
-                wait.min(Duration::from_millis(16))
-            } else {
-                wait
-            };
-            let wait = state.ordinary_paste_wait(Instant::now(), wait);
-            state.pump_shell();
-            if !event::poll(wait)? {
-                continue;
-            }
-            let mut processed = 0usize;
-            loop {
-                let event = event::read()?;
-                if matches!(event, Event::Resize(_, _)) {
-                    resize_pending = true;
-                }
-                match state.handle_event(event) {
-                    TuiAction::OpenExternalEditor => {
-                        editor.start(&mut state, &mut guard, &mut terminal, None)?;
-                        scheduler.request();
-                        continue 'outer;
-                    }
-                    TuiAction::Copy(text) => {
-                        state.transcript_ux.copy_notice = Some((
-                            match write_terminal_clipboard(&text) {
-                                Ok(()) => format!("Clipboard sent {} bytes", text.len()),
-                                Err(error) => format!("Copy failed: {error}"),
-                            },
-                            Instant::now(),
-                        ));
-                        state.dirty = true;
-                    }
-                    TuiAction::RespondApproval { .. } => {
-                        state.push_message(
-                            MessageRole::Error,
-                            "Approval requires the production owner host",
-                        );
-                    }
-                    TuiAction::InspectResource { .. } => {
-                        state.set_status(
-                            "Resource source inspection requires the production owner host",
-                        );
-                    }
-                    TuiAction::OpenSession(_) => {
-                        state.push_message(
-                        MessageRole::Error,
-                        "session cannot be opened in the synchronous TUI host; use the production TUI",
-                    );
-                        state.set_status("Session open unavailable");
-                    }
-                    TuiAction::Submit(text)
-                        if input_controls && slash::input_queue_control(&text).is_some() =>
-                    {
-                        state.push_message(MessageRole::User, &text);
-                        if let Err(error) = on_submit(text, &mut state) {
-                            state.push_message(MessageRole::Error, error.to_string());
-                            state.set_status("Input control failed");
-                        }
-                    }
-                    // ZS1-148: the arch console belongs to the master session.
-                    // The synchronous host has no shell owner, but it can still
-                    // forward a steering instruction through `on_submit` and it
-                    // must report a bash rejection instead of faking success.
-                    TuiAction::SubmitArch(command) => match command {
-                        MasterSessionCommand::Bash(_) => {
-                            state.complete_master_turn(
-                                MessageRole::Error,
-                                "local shell unavailable in the synchronous TUI host",
-                            );
-                            state.set_status("Arch bash unavailable");
-                        }
-                        MasterSessionCommand::Steer(prompt) => {
-                            state.set_busy(true);
-                            state.set_status("Working");
-                            let result = on_submit(prompt.clone(), &mut state);
-                            match result {
-                                Ok(()) => state.complete_master_turn(
-                                    MessageRole::System,
-                                    format!("arch steer applied: {prompt}"),
-                                ),
-                                Err(error) => state
-                                    .complete_master_turn(MessageRole::Error, error.to_string()),
-                            }
-                            state.set_busy(false);
-                        }
-                    },
-                    TuiAction::SubmitArchSlash { command, text } => {
-                        state.set_message_target(MessageTarget::Arch);
-                        state.push_arch_message(MessageRole::User, &text);
-                        let result = dispatch_slash_command(command, &mut state, None);
-                        state.set_message_target(MessageTarget::Discussion);
-                        match result {
-                            SlashDispatchAction::Quit => break 'outer,
-                            SlashDispatchAction::Interrupt => {
-                                state.set_busy(false);
-                                state.set_status("Interrupted");
-                            }
-                            SlashDispatchAction::Continue => {}
-                        }
-                    }
-                    TuiAction::Submit(text) => match slash::route_input(&text) {
-                        Err(error) => {
-                            state.push_message(MessageRole::User, &text);
-                            state.push_message(MessageRole::Error, error.to_string());
-                            state.set_status("Command rejected");
-                        }
-                        Ok(InputRoute::Slash(command)) => {
-                            state.push_message(MessageRole::User, &text);
-                            match dispatch_slash_command(command, &mut state, None) {
-                                SlashDispatchAction::Quit => break 'outer,
-                                SlashDispatchAction::Interrupt => {
-                                    state.set_busy(false);
-                                    state.set_status("Interrupted");
-                                }
-                                SlashDispatchAction::Continue => {}
-                            }
-                        }
-                        Ok(InputRoute::UserShell(_command)) => {
-                            state.push_message(
-                            MessageRole::Error,
-                            "local shell is unavailable in the synchronous TUI host; use the production TUI",
-                        );
-                            state.set_status("Local shell unavailable");
-                        }
-                        Ok(InputRoute::Prompt(prompt)) => {
-                            state.push_message(MessageRole::User, &prompt);
-                            state.set_busy(true);
-                            state.set_status("Working");
-                            if let Err(error) = on_submit(prompt, &mut state) {
-                                state.push_message(MessageRole::Error, error.to_string());
-                                state.set_status("Request failed");
-                            }
-                            state.set_busy(false);
-                        }
-                    },
-                    TuiAction::Quit => break 'outer,
-                    TuiAction::Interrupt => {
-                        state.set_busy(false);
-                        state.set_status("Interrupted");
-                    }
-                    TuiAction::ForceKill => {
-                        state.set_busy(false);
-                        state.set_status("Force-killed · journal intact");
-                    }
-                    TuiAction::RenameSession(name) => {
-                        state.set_status(format!("Session 已重命名：{name}（同步宿主仅更新视图）"));
-                    }
-                    TuiAction::Redraw | TuiAction::None => {}
-                }
-                scheduler.request();
-                processed += 1;
-                if processed >= 256 || !event::poll(Duration::ZERO)? {
-                    break;
-                }
-            }
-        }
-        Ok(())
-    })();
-    editor.shutdown(&mut state);
-    guard.leave();
-    loop_result
 }
 
 struct ExternalEditorHost {
@@ -19212,7 +21001,7 @@ impl ExternalEditorHost {
         &mut self,
         state: &mut TuiState,
         guard: &mut TerminalGuard,
-        terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+        terminal: &mut Terminal<LoopBackend>,
         owner: Option<&Arc<Mutex<crate::core::Agent>>>,
     ) -> Result<(), TuiError> {
         #[cfg(not(unix))]
@@ -19278,7 +21067,7 @@ impl ExternalEditorHost {
         &mut self,
         state: &mut TuiState,
         guard: &mut TerminalGuard,
-        terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+        terminal: &mut Terminal<LoopBackend>,
         owner: Option<&Arc<Mutex<crate::core::Agent>>>,
     ) -> Result<bool, TuiError> {
         #[cfg(not(unix))]
@@ -19341,19 +21130,96 @@ impl ExternalEditorHost {
 struct TerminalGuard {
     active: bool,
     #[cfg(unix)]
-    original_terminal: Option<crate::external_editor::TerminalState>,
+    original_terminal: Option<Arc<crate::external_editor::TerminalState>>,
     #[cfg(unix)]
     signals: Option<terminal_signals::SignalGuard>,
+    // The hook that was installed before `enter`; reinstated by `leave`.
+    previous_panic_hook: Option<Arc<PanicHook>>,
+}
+
+type PanicHook = Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Send + Sync + 'static>;
+
+// Set while a TerminalGuard's panic hook may still restore the terminal.
+// Whoever swaps it to false first (the hook or `leave`) owns restoration, so
+// the screen/termios steps run exactly once.
+static PANIC_RESTORE_PENDING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+// The same steps as `TerminalGuard::leave`, usable from a panic hook.
+fn restore_terminal_screen(#[cfg(unix)] original: Option<&crate::external_editor::TerminalState>) {
+    let _ = execute!(
+        io::stdout(),
+        Show,
+        DisableMouseCapture,
+        DisableBracketedPaste,
+        LeaveAlternateScreen
+    );
+    let _ = disable_raw_mode();
+    #[cfg(unix)]
+    if let Some(original) = original {
+        let _ = original.reclaim();
+        let _ = original.restore(false);
+    }
+}
+
+// The release profile aborts on panic, so `Drop` never runs; this hook is the
+// only chance to leave raw mode and the alternate screen. With unwinding, a
+// panic on another thread may be caught, so only the owning thread restores.
+fn install_panic_restore_hook(
+    #[cfg(unix)] original: Option<Arc<crate::external_editor::TerminalState>>,
+) -> Arc<PanicHook> {
+    let previous: Arc<PanicHook> = Arc::new(std::panic::take_hook());
+    let chained = Arc::clone(&previous);
+    let owner = std::thread::current().id();
+    PANIC_RESTORE_PENDING.store(true, std::sync::atomic::Ordering::SeqCst);
+    std::panic::set_hook(Box::new(move |info| {
+        let restores = cfg!(panic = "abort") || std::thread::current().id() == owner;
+        if restores && PANIC_RESTORE_PENDING.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            restore_terminal_screen(
+                #[cfg(unix)]
+                original.as_deref(),
+            );
+        }
+        chained(info);
+    }));
+    previous
+}
+
+fn uninstall_panic_restore_hook(previous: Arc<PanicHook>) {
+    // take_hook/set_hook panic when called from a panicking thread.
+    if std::thread::panicking() {
+        return;
+    }
+    // Dropping our hook releases its clone, so the original box is unique again.
+    drop(std::panic::take_hook());
+    match Arc::try_unwrap(previous) {
+        Ok(previous) => std::panic::set_hook(previous),
+        Err(previous) => std::panic::set_hook(Box::new(move |info| previous(info))),
+    }
 }
 
 impl TerminalGuard {
+    /// A guard that owns no terminal state, for harness-driven loops.
+    fn detached() -> Self {
+        Self {
+            active: false,
+            #[cfg(unix)]
+            original_terminal: None,
+            #[cfg(unix)]
+            signals: None,
+            previous_panic_hook: None,
+        }
+    }
+
     fn enter() -> Result<Self, TuiError> {
         #[cfg(unix)]
         let signals = terminal_signals::SignalGuard::install()?;
         #[cfg(unix)]
         // A redirected stdin can still use crossterm's /dev/tty fallback.
         // Only the explicit editor request requires actual foreground stdin.
-        let original_terminal = crate::external_editor::TerminalState::capture().ok();
+        let original_terminal = crate::external_editor::TerminalState::capture()
+            .ok()
+            .map(Arc::new);
         enable_raw_mode()?;
         let mut stdout = io::stdout();
         if let Err(error) = execute!(
@@ -19373,13 +21239,29 @@ impl TerminalGuard {
             let _ = disable_raw_mode();
             return Err(TuiError::Io(error));
         }
-        Ok(Self {
+        let previous_panic_hook = install_panic_restore_hook(
+            #[cfg(unix)]
+            original_terminal.clone(),
+        );
+        let guard = Self {
             active: true,
             #[cfg(unix)]
             original_terminal,
             #[cfg(unix)]
             signals: Some(signals),
-        })
+            previous_panic_hook: Some(previous_panic_hook),
+        };
+        #[cfg(debug_assertions)]
+        if std::env::var_os("ZENPI_DEBUG_PANIC_AFTER_START").is_some_and(|value| value == "1") {
+            // Mirror the release profile (`panic = "abort"`): the hook runs,
+            // then the process aborts without unwinding, so Drop never runs
+            // and only the panic hook can restore the terminal.
+            let _ = std::panic::catch_unwind(|| {
+                panic!("ZENPI_DEBUG_PANIC_AFTER_START requested a panic after terminal entry")
+            });
+            std::process::abort();
+        }
+        Ok(guard)
     }
 
     // The caller has exclusive event ownership. The reset callback must clear
@@ -19410,7 +21292,7 @@ impl TerminalGuard {
     fn resume_editor(
         &mut self,
         reset_reader: fn() -> io::Result<()>,
-        terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+        terminal: &mut Terminal<LoopBackend>,
     ) -> Result<(), TuiError> {
         let original = self
             .original_terminal
@@ -19450,7 +21332,10 @@ impl TerminalGuard {
     }
 
     fn leave(&mut self) {
-        if self.active {
+        // If the panic hook already restored the terminal, do not repeat it.
+        let hook_restored = self.previous_panic_hook.is_some()
+            && !PANIC_RESTORE_PENDING.swap(false, std::sync::atomic::Ordering::SeqCst);
+        if self.active && !hook_restored {
             let mut stdout = io::stdout();
             let _ = execute!(
                 stdout,
@@ -19460,15 +21345,18 @@ impl TerminalGuard {
                 LeaveAlternateScreen
             );
             let _ = disable_raw_mode();
-            self.active = false;
         }
+        self.active = false;
         #[cfg(unix)]
         {
-            if let Some(original) = &self.original_terminal {
+            if !hook_restored && let Some(original) = &self.original_terminal {
                 let _ = original.reclaim();
                 let _ = original.restore(false);
             }
             drop(self.signals.take());
+        }
+        if let Some(previous) = self.previous_panic_hook.take() {
+            uninstall_panic_restore_hook(previous);
         }
     }
 }
@@ -19476,6 +21364,156 @@ impl TerminalGuard {
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         self.leave();
+    }
+}
+
+/// Scripted IO for [`run_async_with_harness`]: events arrive on `events` in
+/// order, and every frame is drawn into `screen`, which the caller can read
+/// (or resize before sending `Event::Resize`) while the loop runs. Dropping
+/// the sender ends the loop with an error rather than letting it idle.
+#[doc(hidden)]
+pub struct TuiHarness {
+    pub events: std::sync::mpsc::Receiver<Event>,
+    pub screen: Arc<Mutex<ratatui::backend::TestBackend>>,
+}
+
+/// Where the production loop reads input and draws frames.
+enum TuiIo {
+    Terminal,
+    Harness(TuiHarness),
+}
+
+impl TuiIo {
+    fn open(self) -> Result<(TerminalGuard, Terminal<LoopBackend>, LoopEvents), TuiError> {
+        match self {
+            Self::Terminal => {
+                let mut guard = TerminalGuard::enter()?;
+                match Terminal::new(LoopBackend::Terminal(CrosstermBackend::new(io::stdout()))) {
+                    Ok(terminal) => Ok((guard, terminal, LoopEvents::Terminal)),
+                    Err(error) => {
+                        guard.leave();
+                        Err(error.into())
+                    }
+                }
+            }
+            Self::Harness(harness) => {
+                let terminal = Terminal::new(LoopBackend::Harness(harness.screen))?;
+                let events = LoopEvents::Scripted {
+                    events: harness.events,
+                    pending: None,
+                };
+                Ok((TerminalGuard::detached(), terminal, events))
+            }
+        }
+    }
+}
+
+/// Event source with crossterm's `poll`/`read` contract.
+enum LoopEvents {
+    Terminal,
+    Scripted {
+        events: std::sync::mpsc::Receiver<Event>,
+        pending: Option<Event>,
+    },
+}
+
+impl LoopEvents {
+    fn poll(&mut self, timeout: Duration) -> io::Result<bool> {
+        match self {
+            Self::Terminal => event::poll(timeout),
+            Self::Scripted { events, pending } => {
+                if pending.is_some() {
+                    return Ok(true);
+                }
+                match events.recv_timeout(timeout) {
+                    Ok(event) => {
+                        *pending = Some(event);
+                        Ok(true)
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Ok(false),
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                        Err(io::Error::other("scripted input closed"))
+                    }
+                }
+            }
+        }
+    }
+
+    fn read(&mut self) -> io::Result<Event> {
+        match self {
+            Self::Terminal => event::read(),
+            Self::Scripted { events, pending } => match pending.take() {
+                Some(event) => Ok(event),
+                None => events
+                    .recv()
+                    .map_err(|_| io::Error::other("scripted input closed")),
+            },
+        }
+    }
+}
+
+/// The real terminal, or a shared `TestBackend` the harness caller observes.
+enum LoopBackend {
+    Terminal(CrosstermBackend<io::Stdout>),
+    Harness(Arc<Mutex<ratatui::backend::TestBackend>>),
+}
+
+impl LoopBackend {
+    fn with_test<T>(
+        screen: &Mutex<ratatui::backend::TestBackend>,
+        f: impl FnOnce(&mut ratatui::backend::TestBackend) -> Result<T, std::convert::Infallible>,
+    ) -> io::Result<T> {
+        let mut backend = screen
+            .lock()
+            .map_err(|_| io::Error::other("test screen lock poisoned"))?;
+        f(&mut backend).map_err(|never| match never {})
+    }
+}
+
+macro_rules! loop_backend_call {
+    ($self:expr, $backend:ident => $call:expr) => {
+        match $self {
+            LoopBackend::Terminal($backend) => $call,
+            LoopBackend::Harness(screen) => LoopBackend::with_test(screen, |$backend| $call),
+        }
+    };
+}
+
+impl ratatui::backend::Backend for LoopBackend {
+    type Error = io::Error;
+
+    fn draw<'a, I>(&mut self, content: I) -> io::Result<()>
+    where
+        I: Iterator<Item = (u16, u16, &'a ratatui::buffer::Cell)>,
+    {
+        loop_backend_call!(self, backend => backend.draw(content))
+    }
+    fn hide_cursor(&mut self) -> io::Result<()> {
+        loop_backend_call!(self, backend => backend.hide_cursor())
+    }
+    fn show_cursor(&mut self) -> io::Result<()> {
+        loop_backend_call!(self, backend => backend.show_cursor())
+    }
+    fn get_cursor_position(&mut self) -> io::Result<Position> {
+        loop_backend_call!(self, backend => backend.get_cursor_position())
+    }
+    fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> io::Result<()> {
+        loop_backend_call!(self, backend => backend.set_cursor_position(position))
+    }
+    fn clear(&mut self) -> io::Result<()> {
+        loop_backend_call!(self, backend => backend.clear())
+    }
+    fn clear_region(&mut self, clear_type: ratatui::backend::ClearType) -> io::Result<()> {
+        loop_backend_call!(self, backend => backend.clear_region(clear_type))
+    }
+    fn size(&self) -> io::Result<ratatui::layout::Size> {
+        loop_backend_call!(self, backend => backend.size())
+    }
+    fn window_size(&mut self) -> io::Result<ratatui::backend::WindowSize> {
+        loop_backend_call!(self, backend => backend.window_size())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        loop_backend_call!(self, backend => backend.flush())
     }
 }
 
@@ -20025,91 +22063,138 @@ fn transcript_lines(
         messages
             .iter()
             .enumerate()
-            .map(|(id, message)| (id as u64, message)),
+            .map(|(id, message)| (id as u64, message, false)),
         width,
         persona,
+        &mut MessageRowCache::default(),
     )
     .into_iter()
-    .map(|row| row.line)
+    .map(|row| Arc::unwrap_or_clone(row.line))
     .collect()
+}
+
+/// Rendered rows of transcript messages at one width and persona (ZE-309).
+/// Entries are keyed by stable message id; mutation sites drop the entry of
+/// the message they change, so a streaming delta re-renders one message.
+#[derive(Debug, Clone, Default)]
+struct MessageRowCache {
+    width: usize,
+    persona: String,
+    rows: HashMap<u64, Vec<TranscriptRow>>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static MESSAGE_RENDERS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Render every visual row of one message, tagged with its source position.
+fn message_rows(id: u64, message: &TuiMessage, width: usize, persona: &str) -> Vec<TranscriptRow> {
+    #[cfg(test)]
+    MESSAGE_RENDERS.with(|count| count.set(count.get() + 1));
+    let prefix = if message.role == MessageRole::Reasoning {
+        "◇ Reasoning: "
+    } else {
+        "● "
+    };
+    let style = if message.role == MessageRole::Assistant {
+        Style::default().fg(crate::persona::color(persona))
+    } else {
+        message.role.style()
+    };
+    // Provider prose gets the small Markdown renderer; user prompts,
+    // tool output, and errors stay literal so metadata or diff markers do
+    // not acquire surprising presentation semantics.
+    // Live output text is already the complete literal projection of its
+    // canonical block; retain that block for inspection without printing
+    // the same snapshot twice in the conversation pane.
+    let block_text = if message.blocks.is_empty() || message.block_id.is_some() {
+        None
+    } else {
+        Some(
+            message
+                .blocks
+                .iter()
+                .map(view_block_text)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+    };
+    let display_text = block_text
+        .as_deref()
+        .map(|blocks| format!("{}\n{}", message.text, blocks))
+        .unwrap_or_else(|| message.text.clone());
+    let rendered = match message.role {
+        MessageRole::Assistant | MessageRole::System => {
+            crate::render::render_markdown_tail_prefixed_with_metadata(
+                prefix,
+                &display_text,
+                width,
+                style,
+            )
+        }
+        MessageRole::User | MessageRole::Tool | MessageRole::Error | MessageRole::Reasoning => {
+            crate::render::render_plain_tail_prefixed_with_metadata(
+                prefix,
+                &display_text,
+                width,
+                style,
+            )
+        }
+    };
+    let omitted_visual_lines = rendered.omitted_visual_lines;
+    rendered
+        .lines
+        .into_iter()
+        .enumerate()
+        .map(|(line_index, line)| TranscriptRow {
+            line: Arc::new(line),
+            // Keep the identity in the message's full visual layout as
+            // its retained tail advances during streaming at this width.
+            position: Some((id, omitted_visual_lines + line_index)),
+        })
+        .collect()
 }
 
 /// Build a recent display window without rendering the entire oldest prefix.
 /// Source positions identify rows even when the retained window moves forward.
+/// Messages flagged cacheable reuse `cache` rows; the cache keeps only the
+/// messages that this window visited, so it stays bounded by the window.
 fn transcript_window<'a>(
-    messages: impl DoubleEndedIterator<Item = (u64, &'a TuiMessage)>,
+    messages: impl DoubleEndedIterator<Item = (u64, &'a TuiMessage, bool)>,
     width: usize,
     persona: &str,
+    cache: &mut MessageRowCache,
 ) -> Vec<TranscriptRow> {
     let width = width.max(1);
+    if cache.width != width || cache.persona != persona {
+        cache.rows.clear();
+        cache.width = width;
+        cache.persona = persona.to_owned();
+    }
+    let mut previous = std::mem::take(&mut cache.rows);
     let max_lines = MAX_RENDER_LINES
         .min(crate::render::MAX_MARKDOWN_CELLS / width)
         .max(1);
     let mut result = VecDeque::new();
     let mut messages = messages.rev().peekable();
     let mut omitted = false;
-    while let Some((id, message)) = messages.next() {
-        let prefix = if message.role == MessageRole::Reasoning {
-            "◇ Reasoning: "
-        } else {
-            "● "
-        };
-        let style = if message.role == MessageRole::Assistant {
-            Style::default().fg(crate::persona::color(persona))
-        } else {
-            message.role.style()
-        };
-        // Provider prose gets the small Markdown renderer; user prompts,
-        // tool output, and errors stay literal so metadata or diff markers do
-        // not acquire surprising presentation semantics.
-        // Live output text is already the complete literal projection of its
-        // canonical block; retain that block for inspection without printing
-        // the same snapshot twice in the conversation pane.
-        let block_text = if message.blocks.is_empty() || message.block_id.is_some() {
-            None
-        } else {
-            Some(
-                message
-                    .blocks
-                    .iter()
-                    .map(view_block_text)
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            )
-        };
-        let display_text = block_text
-            .as_deref()
-            .map(|blocks| format!("{}\n{}", message.text, blocks))
-            .unwrap_or_else(|| message.text.clone());
-        let rendered = match message.role {
-            MessageRole::Assistant | MessageRole::System => {
-                crate::render::render_markdown_tail_prefixed_with_metadata(
-                    prefix,
-                    &display_text,
-                    width,
-                    style,
-                )
-            }
-            MessageRole::User | MessageRole::Tool | MessageRole::Error | MessageRole::Reasoning => {
-                crate::render::render_plain_tail_prefixed_with_metadata(
-                    prefix,
-                    &display_text,
-                    width,
-                    style,
-                )
-            }
-        };
+    while let Some((id, message, cacheable)) = messages.next() {
+        let rows = previous
+            .remove(&id)
+            .filter(|_| cacheable)
+            .unwrap_or_else(|| message_rows(id, message, width, persona));
         let remaining = max_lines.saturating_sub(result.len());
-        let skipped = rendered.lines.len().saturating_sub(remaining);
-        let omitted_visual_lines = rendered.omitted_visual_lines;
-        omitted |= omitted_visual_lines > 0;
-        for (line_index, line) in rendered.lines.into_iter().enumerate().rev().take(remaining) {
-            result.push_front(TranscriptRow {
-                line,
-                // Keep the identity in the message's full visual layout as
-                // its retained tail advances during streaming at this width.
-                position: Some((id, omitted_visual_lines + line_index)),
-            });
+        let skipped = rows.len().saturating_sub(remaining);
+        omitted |= rows
+            .first()
+            .and_then(|row| row.position)
+            .is_some_and(|(_, first)| first > 0);
+        for row in rows.iter().rev().take(remaining) {
+            result.push_front(row.clone());
+        }
+        if cacheable {
+            cache.rows.insert(id, rows);
         }
         if result.len() == max_lines {
             omitted |= skipped > 0 || messages.peek().is_some();
@@ -20119,10 +22204,10 @@ fn transcript_window<'a>(
     if omitted {
         result.pop_front();
         result.push_front(TranscriptRow {
-            line: Line::from(Span::styled(
+            line: Arc::new(Line::from(Span::styled(
                 truncate_to_width("[Earlier rows omitted from this view]", width),
                 Style::default().fg(Color::DarkGray),
-            )),
+            ))),
             position: None,
         });
     }
@@ -20605,13 +22690,15 @@ mod tests {
         s.begin_stream_for_job(2);
         s.set_busy(true);
         let second_started = s.transcript_ux.started;
+        // ZE-251: retiring from another tab clears the owning project's wait.
         s.retire_approval("one");
         assert_eq!(s.transcript_ux.started, second_started);
         s.select_project_tab(0);
         assert_eq!(s.transcript_ux.elapsed, first_elapsed);
-        assert!(s.transcript_ux.started.is_none());
-        s.retire_approval("one");
-        assert!(s.transcript_ux.started.is_some());
+        assert!(
+            s.transcript_ux.started.is_some(),
+            "no wait is left, so the running interval resumes"
+        );
         let first_started = s.transcript_ux.started;
         s.select_project_tab(1);
         assert_eq!(
@@ -21098,11 +23185,10 @@ mod tests {
                 .unwrap()
                 .push_agent(progress(OutputStream::Stdout, text));
             drain_tui_provider_events(&mut state, 71, &events);
-            assert!(
-                state.project_checkpoint_dirty(),
-                "tool snapshot must persist without keys"
-            );
-            assert!(state.project_checkpoint().to_string().contains(text));
+            // ZE-309: snapshots update the view, never the checkpoint.
+            assert!(state.messages().any(|m| m.text.contains(text)));
+            assert!(!state.project_checkpoint_dirty());
+            assert!(!state.project_checkpoint().to_string().contains(text));
         }
         events
             .lock()
@@ -21969,7 +24055,7 @@ mod local_diff_host_tests {
             Ok(value())
         })
         .unwrap();
-        host.start(&mut state, Some("note".into()), "/review note".into());
+        host.start(&mut state, Some("note".into()), "/diff note".into());
         started.recv_timeout(Duration::from_secs(2)).unwrap();
         state.set_input("new B draft");
         let layout_b = state.active_project_workspace().clone();
@@ -22012,8 +24098,8 @@ mod local_diff_host_tests {
         })
         .unwrap();
         host.start(&mut state, None, "/diff".into());
-        host.start(&mut state, None, "/review".into());
-        assert_eq!(state.input(), "/review");
+        host.start(&mut state, None, "/diff".into());
+        assert_eq!(state.input(), "/diff");
         assert!(
             state
                 .messages()
@@ -22026,7 +24112,7 @@ mod local_diff_host_tests {
         release.send(()).unwrap();
         settle(&mut host, &mut state);
         assert!(!state.messages().any(|m| m.text.contains("B_ONLY")));
-        assert_eq!(state.input(), "/review");
+        assert_eq!(state.input(), "/diff");
     }
     #[test]
     fn worker_shutdown_signals_cancel_and_joins_without_detachment() {
@@ -22156,5 +24242,119 @@ mod local_diff_host_tests {
         settle(&mut host, &mut state);
         assert_eq!(state.input(), "new draft");
         assert_eq!(state.messages().last().unwrap().role, MessageRole::Error);
+    }
+}
+
+#[cfg(test)]
+mod render_cost_tests {
+    //! ZE-309 render-cost validators.
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    fn transcript(pairs: usize) -> TuiState {
+        let mut state = TuiState::new(DEFAULT_MAX_MESSAGES);
+        for index in 0..pairs {
+            state.push_message(MessageRole::User, format!("question {index}"));
+            state.push_message(
+                MessageRole::Assistant,
+                format!("answer {index}\n\n- **item** `code`\n- second line of prose"),
+            );
+        }
+        state.begin_stream_for_job(1);
+        state.append_stream_for_job(1, MessageRole::Assistant, "streaming");
+        state
+    }
+
+    fn renders() -> usize {
+        MESSAGE_RENDERS.with(std::cell::Cell::get)
+    }
+
+    /// Best-of-N frame time after a streaming delta, plus the most messages
+    /// any one of those frames rendered.
+    fn streaming_frame_cost(state: &mut TuiState) -> (Duration, usize) {
+        let mut terminal = Terminal::new(TestBackend::new(140, 40)).unwrap();
+        terminal
+            .draw(|f| state.render_bentobox(f, "zenpi"))
+            .unwrap();
+        let mut most = 0;
+        let best = (0..20)
+            .map(|_| {
+                state.append_stream_for_job(1, MessageRole::Assistant, " delta");
+                let before = renders();
+                let start = Instant::now();
+                terminal
+                    .draw(|f| state.render_bentobox(f, "zenpi"))
+                    .unwrap();
+                let elapsed = start.elapsed();
+                most = most.max(renders() - before);
+                elapsed
+            })
+            .min()
+            .unwrap();
+        (best, most)
+    }
+
+    #[test]
+    fn streaming_frame_cost_stays_flat_as_the_transcript_grows() {
+        let mut short = transcript(5);
+        let mut long = transcript(1_000);
+        let (short_cost, short_renders) = streaming_frame_cost(&mut short);
+        let (long_cost, long_renders) = streaming_frame_cost(&mut long);
+        eprintln!(
+            "ZE-309 streaming frame: 11 messages {short_cost:?}, 2001 messages {long_cost:?}"
+        );
+        // Only the streaming message is re-rendered, whatever the length.
+        assert_eq!((short_renders, long_renders), (1, 1));
+        // Reassembly copies row pointers only; before ZE-309 this was ~15x.
+        assert!(
+            long_cost < short_cost * 4,
+            "frame cost scaled: {short_cost:?} -> {long_cost:?}"
+        );
+        // The cached rows still match a cold render of the same transcript.
+        let mut terminal = Terminal::new(TestBackend::new(140, 40)).unwrap();
+        terminal.draw(|f| long.render_bentobox(f, "zenpi")).unwrap();
+        let warm = terminal.backend().buffer().clone();
+        long.invalidate_transcript();
+        terminal.draw(|f| long.render_bentobox(f, "zenpi")).unwrap();
+        assert_eq!(&warm, terminal.backend().buffer());
+    }
+
+    #[test]
+    fn transcript_is_not_checkpointed_and_streaming_never_dirties_it() {
+        let mut state = transcript(3);
+        state.clear_project_checkpoint_dirty();
+        state.append_stream_for_job(1, MessageRole::Assistant, " more");
+        state.append_reasoning_for_job(1, "thinking");
+        state.push_message(MessageRole::Tool, "tool log");
+        state.finish_stream_for_job(1, MessageRole::Assistant, "final answer");
+        assert!(!state.project_checkpoint_dirty());
+        let checkpoint = state.project_checkpoint().to_string();
+        assert!(!checkpoint.contains("question 0"), "{checkpoint}");
+        assert!(!checkpoint.contains("final answer"), "{checkpoint}");
+    }
+
+    #[test]
+    fn ordinary_paste_burst_bounds_the_event_loop_wait() {
+        let mut state = TuiState::default();
+        let start = Instant::now();
+        for (offset, ch) in "abc".chars().enumerate() {
+            state.handle_event_at(
+                Event::Key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE)),
+                start + Duration::from_millis(offset as u64),
+            );
+        }
+        let last = start + Duration::from_millis(2);
+        assert_eq!(state.input(), "", "burst is still buffered");
+        // An idle loop would block for the full poll interval; the burst
+        // deadline shortens it so the paste flushes within its timeout.
+        let wait = state.ordinary_paste_wait(last, Duration::from_secs(60));
+        assert!(wait <= state.ordinary_paste_timeout() + Duration::from_millis(1));
+        assert!(state.flush_ordinary_paste(last + wait));
+        assert_eq!(state.input(), "abc");
+        assert_eq!(
+            state.ordinary_paste_wait(last + wait, Duration::from_secs(60)),
+            Duration::from_secs(60),
+            "no deadline once flushed"
+        );
     }
 }

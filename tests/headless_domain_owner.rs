@@ -1,4 +1,6 @@
-use std::io::Cursor;
+#[path = "support/sequential_host.rs"]
+mod sequential_host;
+use sequential_host::run_headless_sequential;
 
 use serde_json::Value;
 use tempfile::tempdir;
@@ -7,7 +9,6 @@ use zenpi::{
     core::{Agent, TurnRole},
     domain_store::{DomainStore, path_for_session},
     domains::{Blueprint, BlueprintItem, Goal, GoalStatus},
-    headless::run_headless,
     session::SessionStore,
 };
 
@@ -33,7 +34,7 @@ fn headless_goal_status_is_a_durable_typed_owner_operation() {
     let dir = tempdir().unwrap();
     let session_path = dir.path().join("session.jsonl");
     seed_goal(&session_path);
-    let mut agent = Agent::with_echo(SessionStore::open(&session_path).unwrap());
+    let agent = Agent::with_echo(SessionStore::open(&session_path).unwrap());
     let input = [
         serde_json::json!({
             "type": "command",
@@ -63,7 +64,7 @@ fn headless_goal_status_is_a_durable_typed_owner_operation() {
     .join("\n")
         + "\n";
     let mut output = Vec::new();
-    run_headless(&mut agent, Cursor::new(input.into_bytes()), &mut output).unwrap();
+    run_headless_sequential(agent, input.into_bytes(), &mut output).unwrap();
     let records = records(&output);
 
     let shown = records
@@ -107,8 +108,9 @@ fn headless_goal_status_is_a_durable_typed_owner_operation() {
         GoalStatus::Done
     );
     assert!(
-        agent
-            .history()
+        SessionStore::open_existing(&session_path)
+            .unwrap()
+            .turns()
             .iter()
             .all(|turn| turn.role != TurnRole::User)
     );
@@ -123,7 +125,7 @@ fn headless_goal_create_links_one_persisted_blueprint_without_provider_work() {
     let mut store = DomainStore::open(path_for_session(&session_path)).unwrap();
     store.put_blueprint(blueprint).unwrap();
     drop(store);
-    let mut agent = Agent::with_echo(SessionStore::open(&session_path).unwrap());
+    let agent = Agent::with_echo(SessionStore::open(&session_path).unwrap());
     let input = [
         serde_json::json!({"type":"command","id":"create","text":"/goal create created-goal create-plan@1"}),
         serde_json::json!({"type":"command","id":"show","text":"/goal show created-goal"}),
@@ -135,7 +137,7 @@ fn headless_goal_create_links_one_persisted_blueprint_without_provider_work() {
     .join("\n")
         + "\n";
     let mut output = Vec::new();
-    run_headless(&mut agent, Cursor::new(input.into_bytes()), &mut output).unwrap();
+    run_headless_sequential(agent, input.into_bytes(), &mut output).unwrap();
     let records = records(&output);
     let created = records
         .iter()
@@ -156,14 +158,14 @@ fn headless_goal_create_links_one_persisted_blueprint_without_provider_work() {
 fn headless_plan_creates_bounded_sequential_blueprint_without_provider_work() {
     let dir = tempdir().unwrap();
     let session_path = dir.path().join("session.jsonl");
-    let mut agent = Agent::with_echo(SessionStore::open(&session_path).unwrap());
+    let agent = Agent::with_echo(SessionStore::open(&session_path).unwrap());
     let input = [
         serde_json::json!({"type":"command","id":"plan","text":"/plan release-plan :: inspect; test; publish"}),
         serde_json::json!({"type":"command","id":"show","text":"/blueprint show"}),
         serde_json::json!({"type":"shutdown","id":"shutdown"}),
     ].into_iter().map(|value| serde_json::to_string(&value).unwrap()).collect::<Vec<_>>().join("\n") + "\n";
     let mut output = Vec::new();
-    run_headless(&mut agent, Cursor::new(input.into_bytes()), &mut output).unwrap();
+    run_headless_sequential(agent, input.into_bytes(), &mut output).unwrap();
     let records = records(&output);
     let plan = records
         .iter()
@@ -187,7 +189,7 @@ fn missing_or_malformed_goal_status_fails_without_creating_a_store() {
     let dir = tempdir().unwrap();
     let session_path = dir.path().join("session.jsonl");
     let domain_path = path_for_session(&session_path);
-    let mut agent = Agent::with_echo(SessionStore::open(&session_path).unwrap());
+    let agent = Agent::with_echo(SessionStore::open(&session_path).unwrap());
     let input = [
         serde_json::json!({
             "type": "command",
@@ -212,7 +214,7 @@ fn missing_or_malformed_goal_status_fails_without_creating_a_store() {
     .join("\n")
         + "\n";
     let mut output = Vec::new();
-    run_headless(&mut agent, Cursor::new(input.into_bytes()), &mut output).unwrap();
+    run_headless_sequential(agent, input.into_bytes(), &mut output).unwrap();
     let records = records(&output);
 
     let missing = records
@@ -241,7 +243,7 @@ fn headless_goal_run_resume_and_cancel_aliases_are_durable() {
     let dir = tempdir().unwrap();
     let session_path = dir.path().join("session.jsonl");
     seed_goal(&session_path);
-    let mut agent = Agent::with_echo(SessionStore::open(&session_path).unwrap());
+    let agent = Agent::with_echo(SessionStore::open(&session_path).unwrap());
     let input = [
         serde_json::json!({"type":"command","id":"run","text":"/goal run owner-goal"}),
         serde_json::json!({"type":"command","id":"pause","text":"/goal status owner-goal paused"}),
@@ -255,7 +257,7 @@ fn headless_goal_run_resume_and_cancel_aliases_are_durable() {
     .join("\n")
         + "\n";
     let mut output = Vec::new();
-    run_headless(&mut agent, Cursor::new(input.into_bytes()), &mut output).unwrap();
+    run_headless_sequential(agent, input.into_bytes(), &mut output).unwrap();
     let records = records(&output);
     for id in ["run", "pause", "resume", "cancel"] {
         assert_eq!(
@@ -283,7 +285,7 @@ fn headless_layout_and_pane_owner_persist_project_state_and_fail_closed() {
     let previous = std::env::var_os("ZENPI_HOME");
     unsafe { std::env::set_var("ZENPI_HOME", &home) };
     let session_path = dir.path().join("session.jsonl");
-    let mut agent = Agent::with_echo(SessionStore::open(&session_path).unwrap());
+    let agent = Agent::with_echo(SessionStore::open(&session_path).unwrap());
     let input = [
         serde_json::json!({"type":"command","id":"pane","text":"/pane collapse resources"}),
         serde_json::json!({"type":"command","id":"layout","text":"/layout show"}),
@@ -296,7 +298,7 @@ fn headless_layout_and_pane_owner_persist_project_state_and_fail_closed() {
     .join("\n")
         + "\n";
     let mut output = Vec::new();
-    run_headless(&mut agent, Cursor::new(input.into_bytes()), &mut output).unwrap();
+    run_headless_sequential(agent, input.into_bytes(), &mut output).unwrap();
     let records = records(&output);
     assert_eq!(
         records
@@ -360,13 +362,13 @@ fn goal_create_respects_explicit_version_and_does_not_mutate_on_rejection() {
         }
         drop(store);
         let before = std::fs::read(&domain_path).unwrap();
-        let mut agent = Agent::with_echo(SessionStore::open(&session_path).unwrap());
+        let agent = Agent::with_echo(SessionStore::open(&session_path).unwrap());
         let input = [
             serde_json::json!({"type":"command","id":"create","text":format!("/goal create selected {target}")}),
             serde_json::json!({"type":"shutdown","id":"stop"}),
         ].into_iter().map(|value| serde_json::to_string(&value).unwrap()).collect::<Vec<_>>().join("\n") + "\n";
         let mut output = Vec::new();
-        run_headless(&mut agent, Cursor::new(input.into_bytes()), &mut output).unwrap();
+        run_headless_sequential(agent, input.into_bytes(), &mut output).unwrap();
         let wire = records(&output);
         let response = wire
             .iter()
@@ -394,8 +396,9 @@ fn goal_create_respects_explicit_version_and_does_not_mutate_on_rejection() {
             );
         }
         assert!(
-            agent
-                .history()
+            SessionStore::open_existing(&session_path)
+                .unwrap()
+                .turns()
                 .iter()
                 .all(|turn| turn.role != TurnRole::User && turn.role != TurnRole::Assistant)
         );

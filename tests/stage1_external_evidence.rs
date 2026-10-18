@@ -1,4 +1,7 @@
 #![cfg(unix)]
+#[path = "support/sequential_host.rs"]
+mod sequential_host;
+use sequential_host::run_headless_sequential;
 use serde_json::json;
 use std::{
     fs,
@@ -673,12 +676,12 @@ fn abrupt_host_exit_leaves_unknown_validation_for_reconcile_without_worker_repla
     );
 }
 #[test]
-fn borrowed_headless_and_tui_share_candidate_and_host_acceptance() {
-    use std::io::Cursor;
+fn headless_and_tui_share_candidate_and_host_acceptance() {
     let mut f = Fixture::new(VALIDATOR);
     let input=json!({"schema_version":2,"type":"command","id":"prepare","text":"/blueprint prepare evidence-plan@1 preparation.json"}).to_string()+"\n";
+    let session_path = f.agent.session().path().to_owned();
     let mut output = Vec::new();
-    zenpi::headless::run_headless(&mut f.agent, Cursor::new(input), &mut output).unwrap();
+    run_headless_sequential(f.agent, input, &mut output).unwrap();
     let records: Vec<serde_json::Value> = String::from_utf8(output)
         .unwrap()
         .lines()
@@ -690,8 +693,6 @@ fn borrowed_headless_and_tui_share_candidate_and_host_acceptance() {
         .unwrap();
     assert_eq!(prepared["success"], true, "{prepared}");
     assert_eq!(prepared["data"]["master_accepted"], false);
-    let session_path = f.agent.session().path().to_owned();
-    drop(f.agent);
     f.agent = Agent::with_echo(SessionStore::open_existing_writable(&session_path).unwrap());
     f.agent.set_tools(
         ToolRegistry::with_all_builtins().unwrap(),

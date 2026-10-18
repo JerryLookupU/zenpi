@@ -1,0 +1,408 @@
+INSTRUMENTATION_STATUS: class=zenpi.ForegroundStoreTest
+INSTRUMENTATION_STATUS: current=1
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=5
+INSTRUMENTATION_STATUS: stream=
+zenpi.ForegroundStoreTest:
+INSTRUMENTATION_STATUS: test=replacedForegroundWritesCannotPublishOrRemoveKeysAtFinalAdmission
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.ForegroundStoreTest
+INSTRUMENTATION_STATUS: current=1
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=5
+INSTRUMENTATION_STATUS: stack=java.lang.AssertionError: finish_workspace expected:<SavedHostState(host=PairedHost(host=127.0.0.1, port=7777, fingerprint=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, deviceId=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb), projection=HostProjection(projects=[RemoteProject(id=project, title=Workspace, sessionId=session, workspaceControl=false, promptControl=false, promptStatuses=[], pendingApprovals=[], approvalControl=false, diffAvailable=false, desktopStreamText=null, terminal=null, modelControl=false, reasoningControl=false, workerControl=false, workerStatuses=[], resourcesReloadControl=false, terminalControl=false, sessionControl=false, sessionName=null, terminalOpenControl=false)], selectedId=project, sessionId=session, phase=idle, turns=[RemoteTurn(id=old, role=assistant, content=old, contentTruncated=false, toolCalls=[], toolCallsTruncated=false, toolCallsOmitted=false)], journalSequence=1, truncated=false, eventSequence=1, hasMoreEvents=false, replayedEventCount=0, workspaceOwner=null, workspaceRevision=null, subtabs=null, modelStatus=null, snapshotReplaced=false), pendingWorkspace=zenpi.transport.WorkspaceCommand@bc38726, pendingRevoke=null)> but was:<SavedHostState(host=PairedHost(host=127.0.0.1, port=7777, fingerprint=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, deviceId=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb), projection=HostProjection(projects=[RemoteProject(id=project, title=Workspace, sessionId=session, workspaceControl=false, promptControl=false, promptStatuses=[], pendingApprovals=[], approvalControl=false, diffAvailable=false, desktopStreamText=null, terminal=null, modelControl=false, reasoningControl=false, workerControl=false, workerStatuses=[], resourcesReloadControl=false, terminalControl=false, sessionControl=false, sessionName=null, terminalOpenControl=false)], selectedId=project, sessionId=session, phase=idle, turns=[RemoteTurn(id=old, role=assistant, content=old, contentTruncated=false, toolCalls=[], toolCallsTruncated=false, toolCallsOmitted=false)], journalSequence=1, truncated=false, eventSequence=1, hasMoreEvents=false, replayedEventCount=0, workspaceOwner=null, workspaceRevision=null, subtabs=null, modelStatus=null, snapshotReplaced=false), pendingWorkspace=zenpi.transport.WorkspaceCommand@2d24f67, pendingRevoke=null)>
+	at org.junit.Assert.fail(Assert.java:89)
+	at org.junit.Assert.failNotEquals(Assert.java:835)
+	at org.junit.Assert.assertEquals(Assert.java:120)
+	at zenpi.ForegroundStoreTest$exercise$1.invokeSuspend(ForegroundStoreTest.kt:71)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:104)
+	at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:277)
+	at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+	at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source:1)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:48)
+	at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source:1)
+	at zenpi.ForegroundStoreTest.exercise(ForegroundStoreTest.kt:15)
+	at zenpi.ForegroundStoreTest.replacedForegroundWritesCannotPublishOrRemoveKeysAtFinalAdmission(ForegroundStoreTest.kt:96)
+
+INSTRUMENTATION_STATUS: stream=
+Error in replacedForegroundWritesCannotPublishOrRemoveKeysAtFinalAdmission(zenpi.ForegroundStoreTest):
+java.lang.AssertionError: finish_workspace expected:<SavedHostState(host=PairedHost(host=127.0.0.1, port=7777, fingerprint=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, deviceId=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb), projection=HostProjection(projects=[RemoteProject(id=project, title=Workspace, sessionId=session, workspaceControl=false, promptControl=false, promptStatuses=[], pendingApprovals=[], approvalControl=false, diffAvailable=false, desktopStreamText=null, terminal=null, modelControl=false, reasoningControl=false, workerControl=false, workerStatuses=[], resourcesReloadControl=false, terminalControl=false, sessionControl=false, sessionName=null, terminalOpenControl=false)], selectedId=project, sessionId=session, phase=idle, turns=[RemoteTurn(id=old, role=assistant, content=old, contentTruncated=false, toolCalls=[], toolCallsTruncated=false, toolCallsOmitted=false)], journalSequence=1, truncated=false, eventSequence=1, hasMoreEvents=false, replayedEventCount=0, workspaceOwner=null, workspaceRevision=null, subtabs=null, modelStatus=null, snapshotReplaced=false), pendingWorkspace=zenpi.transport.WorkspaceCommand@bc38726, pendingRevoke=null)> but was:<SavedHostState(host=PairedHost(host=127.0.0.1, port=7777, fingerprint=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, deviceId=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb), projection=HostProjection(projects=[RemoteProject(id=project, title=Workspace, sessionId=session, workspaceControl=false, promptControl=false, promptStatuses=[], pendingApprovals=[], approvalControl=false, diffAvailable=false, desktopStreamText=null, terminal=null, modelControl=false, reasoningControl=false, workerControl=false, workerStatuses=[], resourcesReloadControl=false, terminalControl=false, sessionControl=false, sessionName=null, terminalOpenControl=false)], selectedId=project, sessionId=session, phase=idle, turns=[RemoteTurn(id=old, role=assistant, content=old, contentTruncated=false, toolCalls=[], toolCallsTruncated=false, toolCallsOmitted=false)], journalSequence=1, truncated=false, eventSequence=1, hasMoreEvents=false, replayedEventCount=0, workspaceOwner=null, workspaceRevision=null, subtabs=null, modelStatus=null, snapshotReplaced=false), pendingWorkspace=zenpi.transport.WorkspaceCommand@2d24f67, pendingRevoke=null)>
+	at org.junit.Assert.fail(Assert.java:89)
+	at org.junit.Assert.failNotEquals(Assert.java:835)
+	at org.junit.Assert.assertEquals(Assert.java:120)
+	at zenpi.ForegroundStoreTest$exercise$1.invokeSuspend(ForegroundStoreTest.kt:71)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:104)
+	at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:277)
+	at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+	at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source:1)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:48)
+	at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source:1)
+	at zenpi.ForegroundStoreTest.exercise(ForegroundStoreTest.kt:15)
+	at zenpi.ForegroundStoreTest.replacedForegroundWritesCannotPublishOrRemoveKeysAtFinalAdmission(ForegroundStoreTest.kt:96)
+
+INSTRUMENTATION_STATUS: test=replacedForegroundWritesCannotPublishOrRemoveKeysAtFinalAdmission
+INSTRUMENTATION_STATUS_CODE: -2
+INSTRUMENTATION_STATUS: class=zenpi.ForegroundStoreTest
+INSTRUMENTATION_STATUS: current=2
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=5
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=cancelledForegroundWritesCannotPublishAfterWaitingForStorage
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.ForegroundStoreTest
+INSTRUMENTATION_STATUS: current=2
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=5
+INSTRUMENTATION_STATUS: stack=java.lang.AssertionError: finish_workspace expected:<SavedHostState(host=PairedHost(host=127.0.0.1, port=7777, fingerprint=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, deviceId=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb), projection=HostProjection(projects=[RemoteProject(id=project, title=Workspace, sessionId=session, workspaceControl=false, promptControl=false, promptStatuses=[], pendingApprovals=[], approvalControl=false, diffAvailable=false, desktopStreamText=null, terminal=null, modelControl=false, reasoningControl=false, workerControl=false, workerStatuses=[], resourcesReloadControl=false, terminalControl=false, sessionControl=false, sessionName=null, terminalOpenControl=false)], selectedId=project, sessionId=session, phase=idle, turns=[RemoteTurn(id=old, role=assistant, content=old, contentTruncated=false, toolCalls=[], toolCallsTruncated=false, toolCallsOmitted=false)], journalSequence=1, truncated=false, eventSequence=1, hasMoreEvents=false, replayedEventCount=0, workspaceOwner=null, workspaceRevision=null, subtabs=null, modelStatus=null, snapshotReplaced=false), pendingWorkspace=zenpi.transport.WorkspaceCommand@12e43f8, pendingRevoke=null)> but was:<SavedHostState(host=PairedHost(host=127.0.0.1, port=7777, fingerprint=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, deviceId=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb), projection=HostProjection(projects=[RemoteProject(id=project, title=Workspace, sessionId=session, workspaceControl=false, promptControl=false, promptStatuses=[], pendingApprovals=[], approvalControl=false, diffAvailable=false, desktopStreamText=null, terminal=null, modelControl=false, reasoningControl=false, workerControl=false, workerStatuses=[], resourcesReloadControl=false, terminalControl=false, sessionControl=false, sessionName=null, terminalOpenControl=false)], selectedId=project, sessionId=session, phase=idle, turns=[RemoteTurn(id=old, role=assistant, content=old, contentTruncated=false, toolCalls=[], toolCallsTruncated=false, toolCallsOmitted=false)], journalSequence=1, truncated=false, eventSequence=1, hasMoreEvents=false, replayedEventCount=0, workspaceOwner=null, workspaceRevision=null, subtabs=null, modelStatus=null, snapshotReplaced=false), pendingWorkspace=zenpi.transport.WorkspaceCommand@338b0d1, pendingRevoke=null)>
+	at org.junit.Assert.fail(Assert.java:89)
+	at org.junit.Assert.failNotEquals(Assert.java:835)
+	at org.junit.Assert.assertEquals(Assert.java:120)
+	at zenpi.ForegroundStoreTest$exercise$1.invokeSuspend(ForegroundStoreTest.kt:71)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.internal.ScopeCoroutine.afterResume(Scopes.kt:28)
+	at kotlinx.coroutines.AbstractCoroutine.resumeWith(AbstractCoroutine.kt:99)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:46)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:104)
+	at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:277)
+	at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+	at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source:1)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:48)
+	at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source:1)
+	at zenpi.ForegroundStoreTest.exercise(ForegroundStoreTest.kt:15)
+	at zenpi.ForegroundStoreTest.cancelledForegroundWritesCannotPublishAfterWaitingForStorage(ForegroundStoreTest.kt:95)
+
+INSTRUMENTATION_STATUS: stream=
+Error in cancelledForegroundWritesCannotPublishAfterWaitingForStorage(zenpi.ForegroundStoreTest):
+java.lang.AssertionError: finish_workspace expected:<SavedHostState(host=PairedHost(host=127.0.0.1, port=7777, fingerprint=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, deviceId=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb), projection=HostProjection(projects=[RemoteProject(id=project, title=Workspace, sessionId=session, workspaceControl=false, promptControl=false, promptStatuses=[], pendingApprovals=[], approvalControl=false, diffAvailable=false, desktopStreamText=null, terminal=null, modelControl=false, reasoningControl=false, workerControl=false, workerStatuses=[], resourcesReloadControl=false, terminalControl=false, sessionControl=false, sessionName=null, terminalOpenControl=false)], selectedId=project, sessionId=session, phase=idle, turns=[RemoteTurn(id=old, role=assistant, content=old, contentTruncated=false, toolCalls=[], toolCallsTruncated=false, toolCallsOmitted=false)], journalSequence=1, truncated=false, eventSequence=1, hasMoreEvents=false, replayedEventCount=0, workspaceOwner=null, workspaceRevision=null, subtabs=null, modelStatus=null, snapshotReplaced=false), pendingWorkspace=zenpi.transport.WorkspaceCommand@12e43f8, pendingRevoke=null)> but was:<SavedHostState(host=PairedHost(host=127.0.0.1, port=7777, fingerprint=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, deviceId=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb), projection=HostProjection(projects=[RemoteProject(id=project, title=Workspace, sessionId=session, workspaceControl=false, promptControl=false, promptStatuses=[], pendingApprovals=[], approvalControl=false, diffAvailable=false, desktopStreamText=null, terminal=null, modelControl=false, reasoningControl=false, workerControl=false, workerStatuses=[], resourcesReloadControl=false, terminalControl=false, sessionControl=false, sessionName=null, terminalOpenControl=false)], selectedId=project, sessionId=session, phase=idle, turns=[RemoteTurn(id=old, role=assistant, content=old, contentTruncated=false, toolCalls=[], toolCallsTruncated=false, toolCallsOmitted=false)], journalSequence=1, truncated=false, eventSequence=1, hasMoreEvents=false, replayedEventCount=0, workspaceOwner=null, workspaceRevision=null, subtabs=null, modelStatus=null, snapshotReplaced=false), pendingWorkspace=zenpi.transport.WorkspaceCommand@338b0d1, pendingRevoke=null)>
+	at org.junit.Assert.fail(Assert.java:89)
+	at org.junit.Assert.failNotEquals(Assert.java:835)
+	at org.junit.Assert.assertEquals(Assert.java:120)
+	at zenpi.ForegroundStoreTest$exercise$1.invokeSuspend(ForegroundStoreTest.kt:71)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.internal.ScopeCoroutine.afterResume(Scopes.kt:28)
+	at kotlinx.coroutines.AbstractCoroutine.resumeWith(AbstractCoroutine.kt:99)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:46)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:104)
+	at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:277)
+	at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+	at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source:1)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:48)
+	at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source:1)
+	at zenpi.ForegroundStoreTest.exercise(ForegroundStoreTest.kt:15)
+	at zenpi.ForegroundStoreTest.cancelledForegroundWritesCannotPublishAfterWaitingForStorage(ForegroundStoreTest.kt:95)
+
+INSTRUMENTATION_STATUS: test=cancelledForegroundWritesCannotPublishAfterWaitingForStorage
+INSTRUMENTATION_STATUS_CODE: -2
+INSTRUMENTATION_STATUS: class=zenpi.PairingCancelTest
+INSTRUMENTATION_STATUS: current=3
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=5
+INSTRUMENTATION_STATUS: stream=
+zenpi.PairingCancelTest:
+INSTRUMENTATION_STATUS: test=firstPairingCancelReconcilesAnAlreadyOwnedCredentialSave
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.PairingCancelTest
+INSTRUMENTATION_STATUS: current=3
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=5
+INSTRUMENTATION_STATUS: stack=java.lang.AssertionError: expected:<OFFLINE> but was:<CONNECTING>
+	at org.junit.Assert.fail(Assert.java:89)
+	at org.junit.Assert.failNotEquals(Assert.java:835)
+	at org.junit.Assert.assertEquals(Assert.java:120)
+	at org.junit.Assert.assertEquals(Assert.java:146)
+	at zenpi.PairingCancelTest$heldSave$1.invokeSuspend(PairingCancelTest.kt:115)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTaskKt.resume(DispatchedTask.kt:231)
+	at kotlinx.coroutines.DispatchedTaskKt.dispatch(DispatchedTask.kt:164)
+	at kotlinx.coroutines.CancellableContinuationImpl.dispatchResume(CancellableContinuationImpl.kt:466)
+	at kotlinx.coroutines.CancellableContinuationImpl.resumeImpl(CancellableContinuationImpl.kt:500)
+	at kotlinx.coroutines.CancellableContinuationImpl.resumeImpl$default(CancellableContinuationImpl.kt:489)
+	at kotlinx.coroutines.CancellableContinuationImpl.resumeUndispatched(CancellableContinuationImpl.kt:587)
+	at kotlinx.coroutines.EventLoopImplBase$DelayedResumeTask.run(EventLoop.common.kt:490)
+	at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:277)
+	at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+	at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source:1)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:48)
+	at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source:1)
+	at zenpi.PairingCancelTest.heldSave(PairingCancelTest.kt:32)
+	at zenpi.PairingCancelTest.heldSave$default(PairingCancelTest.kt:32)
+	at zenpi.PairingCancelTest.firstPairingCancelReconcilesAnAlreadyOwnedCredentialSave(PairingCancelTest.kt:20)
+
+INSTRUMENTATION_STATUS: stream=
+Error in firstPairingCancelReconcilesAnAlreadyOwnedCredentialSave(zenpi.PairingCancelTest):
+java.lang.AssertionError: expected:<OFFLINE> but was:<CONNECTING>
+	at org.junit.Assert.fail(Assert.java:89)
+	at org.junit.Assert.failNotEquals(Assert.java:835)
+	at org.junit.Assert.assertEquals(Assert.java:120)
+	at org.junit.Assert.assertEquals(Assert.java:146)
+	at zenpi.PairingCancelTest$heldSave$1.invokeSuspend(PairingCancelTest.kt:115)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTaskKt.resume(DispatchedTask.kt:231)
+	at kotlinx.coroutines.DispatchedTaskKt.dispatch(DispatchedTask.kt:164)
+	at kotlinx.coroutines.CancellableContinuationImpl.dispatchResume(CancellableContinuationImpl.kt:466)
+	at kotlinx.coroutines.CancellableContinuationImpl.resumeImpl(CancellableContinuationImpl.kt:500)
+	at kotlinx.coroutines.CancellableContinuationImpl.resumeImpl$default(CancellableContinuationImpl.kt:489)
+	at kotlinx.coroutines.CancellableContinuationImpl.resumeUndispatched(CancellableContinuationImpl.kt:587)
+	at kotlinx.coroutines.EventLoopImplBase$DelayedResumeTask.run(EventLoop.common.kt:490)
+	at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:277)
+	at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+	at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source:1)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:48)
+	at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source:1)
+	at zenpi.PairingCancelTest.heldSave(PairingCancelTest.kt:32)
+	at zenpi.PairingCancelTest.heldSave$default(PairingCancelTest.kt:32)
+	at zenpi.PairingCancelTest.firstPairingCancelReconcilesAnAlreadyOwnedCredentialSave(PairingCancelTest.kt:20)
+
+INSTRUMENTATION_STATUS: test=firstPairingCancelReconcilesAnAlreadyOwnedCredentialSave
+INSTRUMENTATION_STATUS_CODE: -2
+INSTRUMENTATION_STATUS: class=zenpi.PairingCancelTest
+INSTRUMENTATION_STATUS: current=4
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=5
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=networkLossPairingReconcilesAnAlreadyOwnedCredentialSave
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.PairingCancelTest
+INSTRUMENTATION_STATUS: current=4
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=5
+INSTRUMENTATION_STATUS: stack=java.lang.AssertionError: expected:<OFFLINE> but was:<CONNECTING>
+	at org.junit.Assert.fail(Assert.java:89)
+	at org.junit.Assert.failNotEquals(Assert.java:835)
+	at org.junit.Assert.assertEquals(Assert.java:120)
+	at org.junit.Assert.assertEquals(Assert.java:146)
+	at zenpi.PairingCancelTest$heldSave$1.invokeSuspend(PairingCancelTest.kt:115)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTaskKt.resume(DispatchedTask.kt:231)
+	at kotlinx.coroutines.DispatchedTaskKt.dispatch(DispatchedTask.kt:164)
+	at kotlinx.coroutines.CancellableContinuationImpl.dispatchResume(CancellableContinuationImpl.kt:466)
+	at kotlinx.coroutines.CancellableContinuationImpl.resumeImpl(CancellableContinuationImpl.kt:500)
+	at kotlinx.coroutines.CancellableContinuationImpl.resumeImpl$default(CancellableContinuationImpl.kt:489)
+	at kotlinx.coroutines.CancellableContinuationImpl.resumeUndispatched(CancellableContinuationImpl.kt:587)
+	at kotlinx.coroutines.EventLoopImplBase$DelayedResumeTask.run(EventLoop.common.kt:490)
+	at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:277)
+	at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+	at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source:1)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:48)
+	at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source:1)
+	at zenpi.PairingCancelTest.heldSave(PairingCancelTest.kt:32)
+	at zenpi.PairingCancelTest.heldSave$default(PairingCancelTest.kt:32)
+	at zenpi.PairingCancelTest.networkLossPairingReconcilesAnAlreadyOwnedCredentialSave(PairingCancelTest.kt:28)
+
+INSTRUMENTATION_STATUS: stream=
+Error in networkLossPairingReconcilesAnAlreadyOwnedCredentialSave(zenpi.PairingCancelTest):
+java.lang.AssertionError: expected:<OFFLINE> but was:<CONNECTING>
+	at org.junit.Assert.fail(Assert.java:89)
+	at org.junit.Assert.failNotEquals(Assert.java:835)
+	at org.junit.Assert.assertEquals(Assert.java:120)
+	at org.junit.Assert.assertEquals(Assert.java:146)
+	at zenpi.PairingCancelTest$heldSave$1.invokeSuspend(PairingCancelTest.kt:115)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTaskKt.resume(DispatchedTask.kt:231)
+	at kotlinx.coroutines.DispatchedTaskKt.dispatch(DispatchedTask.kt:164)
+	at kotlinx.coroutines.CancellableContinuationImpl.dispatchResume(CancellableContinuationImpl.kt:466)
+	at kotlinx.coroutines.CancellableContinuationImpl.resumeImpl(CancellableContinuationImpl.kt:500)
+	at kotlinx.coroutines.CancellableContinuationImpl.resumeImpl$default(CancellableContinuationImpl.kt:489)
+	at kotlinx.coroutines.CancellableContinuationImpl.resumeUndispatched(CancellableContinuationImpl.kt:587)
+	at kotlinx.coroutines.EventLoopImplBase$DelayedResumeTask.run(EventLoop.common.kt:490)
+	at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:277)
+	at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+	at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source:1)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:48)
+	at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source:1)
+	at zenpi.PairingCancelTest.heldSave(PairingCancelTest.kt:32)
+	at zenpi.PairingCancelTest.heldSave$default(PairingCancelTest.kt:32)
+	at zenpi.PairingCancelTest.networkLossPairingReconcilesAnAlreadyOwnedCredentialSave(PairingCancelTest.kt:28)
+
+INSTRUMENTATION_STATUS: test=networkLossPairingReconcilesAnAlreadyOwnedCredentialSave
+INSTRUMENTATION_STATUS_CODE: -2
+INSTRUMENTATION_STATUS: class=zenpi.PairingCancelTest
+INSTRUMENTATION_STATUS: current=5
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=5
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=backgroundPairingReconcilesAnAlreadyOwnedCredentialSave
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.PairingCancelTest
+INSTRUMENTATION_STATUS: current=5
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=5
+INSTRUMENTATION_STATUS: stack=java.lang.AssertionError: expected:<OFFLINE> but was:<CONNECTING>
+	at org.junit.Assert.fail(Assert.java:89)
+	at org.junit.Assert.failNotEquals(Assert.java:835)
+	at org.junit.Assert.assertEquals(Assert.java:120)
+	at org.junit.Assert.assertEquals(Assert.java:146)
+	at zenpi.PairingCancelTest$heldSave$1.invokeSuspend(PairingCancelTest.kt:115)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTaskKt.resume(DispatchedTask.kt:231)
+	at kotlinx.coroutines.DispatchedTaskKt.dispatch(DispatchedTask.kt:164)
+	at kotlinx.coroutines.CancellableContinuationImpl.dispatchResume(CancellableContinuationImpl.kt:466)
+	at kotlinx.coroutines.CancellableContinuationImpl.resumeImpl(CancellableContinuationImpl.kt:500)
+	at kotlinx.coroutines.CancellableContinuationImpl.resumeImpl$default(CancellableContinuationImpl.kt:489)
+	at kotlinx.coroutines.CancellableContinuationImpl.resumeUndispatched(CancellableContinuationImpl.kt:587)
+	at kotlinx.coroutines.EventLoopImplBase$DelayedResumeTask.run(EventLoop.common.kt:490)
+	at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:277)
+	at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+	at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source:1)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:48)
+	at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source:1)
+	at zenpi.PairingCancelTest.heldSave(PairingCancelTest.kt:32)
+	at zenpi.PairingCancelTest.heldSave$default(PairingCancelTest.kt:32)
+	at zenpi.PairingCancelTest.backgroundPairingReconcilesAnAlreadyOwnedCredentialSave(PairingCancelTest.kt:23)
+
+INSTRUMENTATION_STATUS: stream=
+Error in backgroundPairingReconcilesAnAlreadyOwnedCredentialSave(zenpi.PairingCancelTest):
+java.lang.AssertionError: expected:<OFFLINE> but was:<CONNECTING>
+	at org.junit.Assert.fail(Assert.java:89)
+	at org.junit.Assert.failNotEquals(Assert.java:835)
+	at org.junit.Assert.assertEquals(Assert.java:120)
+	at org.junit.Assert.assertEquals(Assert.java:146)
+	at zenpi.PairingCancelTest$heldSave$1.invokeSuspend(PairingCancelTest.kt:115)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTaskKt.resume(DispatchedTask.kt:231)
+	at kotlinx.coroutines.DispatchedTaskKt.dispatch(DispatchedTask.kt:164)
+	at kotlinx.coroutines.CancellableContinuationImpl.dispatchResume(CancellableContinuationImpl.kt:466)
+	at kotlinx.coroutines.CancellableContinuationImpl.resumeImpl(CancellableContinuationImpl.kt:500)
+	at kotlinx.coroutines.CancellableContinuationImpl.resumeImpl$default(CancellableContinuationImpl.kt:489)
+	at kotlinx.coroutines.CancellableContinuationImpl.resumeUndispatched(CancellableContinuationImpl.kt:587)
+	at kotlinx.coroutines.EventLoopImplBase$DelayedResumeTask.run(EventLoop.common.kt:490)
+	at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:277)
+	at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+	at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source:1)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:48)
+	at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source:1)
+	at zenpi.PairingCancelTest.heldSave(PairingCancelTest.kt:32)
+	at zenpi.PairingCancelTest.heldSave$default(PairingCancelTest.kt:32)
+	at zenpi.PairingCancelTest.backgroundPairingReconcilesAnAlreadyOwnedCredentialSave(PairingCancelTest.kt:23)
+
+INSTRUMENTATION_STATUS: test=backgroundPairingReconcilesAnAlreadyOwnedCredentialSave
+INSTRUMENTATION_STATUS_CODE: -2
+INSTRUMENTATION_RESULT: stream=
+
+Time: 3.682
+There were 5 failures:
+1) replacedForegroundWritesCannotPublishOrRemoveKeysAtFinalAdmission(zenpi.ForegroundStoreTest)
+java.lang.AssertionError: finish_workspace expected:<SavedHostState(host=PairedHost(host=127.0.0.1, port=7777, fingerprint=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, deviceId=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb), projection=HostProjection(projects=[RemoteProject(id=project, title=Workspace, sessionId=session, workspaceControl=false, promptControl=false, promptStatuses=[], pendingApprovals=[], approvalControl=false, diffAvailable=false, desktopStreamText=null, terminal=null, modelControl=false, reasoningControl=false, workerControl=false, workerStatuses=[], resourcesReloadControl=false, terminalControl=false, sessionControl=false, sessionName=null, terminalOpenControl=false)], selectedId=project, sessionId=session, phase=idle, turns=[RemoteTurn(id=old, role=assistant, content=old, contentTruncated=false, toolCalls=[], toolCallsTruncated=false, toolCallsOmitted=false)], journalSequence=1, truncated=false, eventSequence=1, hasMoreEvents=false, replayedEventCount=0, workspaceOwner=null, workspaceRevision=null, subtabs=null, modelStatus=null, snapshotReplaced=false), pendingWorkspace=zenpi.transport.WorkspaceCommand@bc38726, pendingRevoke=null)> but was:<SavedHostState(host=PairedHost(host=127.0.0.1, port=7777, fingerprint=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, deviceId=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb), projection=HostProjection(projects=[RemoteProject(id=project, title=Workspace, sessionId=session, workspaceControl=false, promptControl=false, promptStatuses=[], pendingApprovals=[], approvalControl=false, diffAvailable=false, desktopStreamText=null, terminal=null, modelControl=false, reasoningControl=false, workerControl=false, workerStatuses=[], resourcesReloadControl=false, terminalControl=false, sessionControl=false, sessionName=null, terminalOpenControl=false)], selectedId=project, sessionId=session, phase=idle, turns=[RemoteTurn(id=old, role=assistant, content=old, contentTruncated=false, toolCalls=[], toolCallsTruncated=false, toolCallsOmitted=false)], journalSequence=1, truncated=false, eventSequence=1, hasMoreEvents=false, replayedEventCount=0, workspaceOwner=null, workspaceRevision=null, subtabs=null, modelStatus=null, snapshotReplaced=false), pendingWorkspace=zenpi.transport.WorkspaceCommand@2d24f67, pendingRevoke=null)>
+	at org.junit.Assert.fail(Assert.java:89)
+	at org.junit.Assert.failNotEquals(Assert.java:835)
+	at org.junit.Assert.assertEquals(Assert.java:120)
+	at zenpi.ForegroundStoreTest$exercise$1.invokeSuspend(ForegroundStoreTest.kt:71)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:104)
+	at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:277)
+	at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+	at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source:1)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:48)
+	at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source:1)
+	at zenpi.ForegroundStoreTest.exercise(ForegroundStoreTest.kt:15)
+	at zenpi.ForegroundStoreTest.replacedForegroundWritesCannotPublishOrRemoveKeysAtFinalAdmission(ForegroundStoreTest.kt:96)
+2) cancelledForegroundWritesCannotPublishAfterWaitingForStorage(zenpi.ForegroundStoreTest)
+java.lang.AssertionError: finish_workspace expected:<SavedHostState(host=PairedHost(host=127.0.0.1, port=7777, fingerprint=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, deviceId=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb), projection=HostProjection(projects=[RemoteProject(id=project, title=Workspace, sessionId=session, workspaceControl=false, promptControl=false, promptStatuses=[], pendingApprovals=[], approvalControl=false, diffAvailable=false, desktopStreamText=null, terminal=null, modelControl=false, reasoningControl=false, workerControl=false, workerStatuses=[], resourcesReloadControl=false, terminalControl=false, sessionControl=false, sessionName=null, terminalOpenControl=false)], selectedId=project, sessionId=session, phase=idle, turns=[RemoteTurn(id=old, role=assistant, content=old, contentTruncated=false, toolCalls=[], toolCallsTruncated=false, toolCallsOmitted=false)], journalSequence=1, truncated=false, eventSequence=1, hasMoreEvents=false, replayedEventCount=0, workspaceOwner=null, workspaceRevision=null, subtabs=null, modelStatus=null, snapshotReplaced=false), pendingWorkspace=zenpi.transport.WorkspaceCommand@12e43f8, pendingRevoke=null)> but was:<SavedHostState(host=PairedHost(host=127.0.0.1, port=7777, fingerprint=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, deviceId=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb), projection=HostProjection(projects=[RemoteProject(id=project, title=Workspace, sessionId=session, workspaceControl=false, promptControl=false, promptStatuses=[], pendingApprovals=[], approvalControl=false, diffAvailable=false, desktopStreamText=null, terminal=null, modelControl=false, reasoningControl=false, workerControl=false, workerStatuses=[], resourcesReloadControl=false, terminalControl=false, sessionControl=false, sessionName=null, terminalOpenControl=false)], selectedId=project, sessionId=session, phase=idle, turns=[RemoteTurn(id=old, role=assistant, content=old, contentTruncated=false, toolCalls=[], toolCallsTruncated=false, toolCallsOmitted=false)], journalSequence=1, truncated=false, eventSequence=1, hasMoreEvents=false, replayedEventCount=0, workspaceOwner=null, workspaceRevision=null, subtabs=null, modelStatus=null, snapshotReplaced=false), pendingWorkspace=zenpi.transport.WorkspaceCommand@338b0d1, pendingRevoke=null)>
+	at org.junit.Assert.fail(Assert.java:89)
+	at org.junit.Assert.failNotEquals(Assert.java:835)
+	at org.junit.Assert.assertEquals(Assert.java:120)
+	at zenpi.ForegroundStoreTest$exercise$1.invokeSuspend(ForegroundStoreTest.kt:71)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.internal.ScopeCoroutine.afterResume(Scopes.kt:28)
+	at kotlinx.coroutines.AbstractCoroutine.resumeWith(AbstractCoroutine.kt:99)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:46)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:104)
+	at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:277)
+	at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+	at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source:1)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:48)
+	at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source:1)
+	at zenpi.ForegroundStoreTest.exercise(ForegroundStoreTest.kt:15)
+	at zenpi.ForegroundStoreTest.cancelledForegroundWritesCannotPublishAfterWaitingForStorage(ForegroundStoreTest.kt:95)
+3) firstPairingCancelReconcilesAnAlreadyOwnedCredentialSave(zenpi.PairingCancelTest)
+java.lang.AssertionError: expected:<OFFLINE> but was:<CONNECTING>
+	at org.junit.Assert.fail(Assert.java:89)
+	at org.junit.Assert.failNotEquals(Assert.java:835)
+	at org.junit.Assert.assertEquals(Assert.java:120)
+	at org.junit.Assert.assertEquals(Assert.java:146)
+	at zenpi.PairingCancelTest$heldSave$1.invokeSuspend(PairingCancelTest.kt:115)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTaskKt.resume(DispatchedTask.kt:231)
+	at kotlinx.coroutines.DispatchedTaskKt.dispatch(DispatchedTask.kt:164)
+	at kotlinx.coroutines.CancellableContinuationImpl.dispatchResume(CancellableContinuationImpl.kt:466)
+	at kotlinx.coroutines.CancellableContinuationImpl.resumeImpl(CancellableContinuationImpl.kt:500)
+	at kotlinx.coroutines.CancellableContinuationImpl.resumeImpl$default(CancellableContinuationImpl.kt:489)
+	at kotlinx.coroutines.CancellableContinuationImpl.resumeUndispatched(CancellableContinuationImpl.kt:587)
+	at kotlinx.coroutines.EventLoopImplBase$DelayedResumeTask.run(EventLoop.common.kt:490)
+	at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:277)
+	at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+	at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source:1)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:48)
+	at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source:1)
+	at zenpi.PairingCancelTest.heldSave(PairingCancelTest.kt:32)
+	at zenpi.PairingCancelTest.heldSave$default(PairingCancelTest.kt:32)
+	at zenpi.PairingCancelTest.firstPairingCancelReconcilesAnAlreadyOwnedCredentialSave(PairingCancelTest.kt:20)
+4) networkLossPairingReconcilesAnAlreadyOwnedCredentialSave(zenpi.PairingCancelTest)
+java.lang.AssertionError: expected:<OFFLINE> but was:<CONNECTING>
+	at org.junit.Assert.fail(Assert.java:89)
+	at org.junit.Assert.failNotEquals(Assert.java:835)
+	at org.junit.Assert.assertEquals(Assert.java:120)
+	at org.junit.Assert.assertEquals(Assert.java:146)
+	at zenpi.PairingCancelTest$heldSave$1.invokeSuspend(PairingCancelTest.kt:115)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTaskKt.resume(DispatchedTask.kt:231)
+	at kotlinx.coroutines.DispatchedTaskKt.dispatch(DispatchedTask.kt:164)
+	at kotlinx.coroutines.CancellableContinuationImpl.dispatchResume(CancellableContinuationImpl.kt:466)
+	at kotlinx.coroutines.CancellableContinuationImpl.resumeImpl(CancellableContinuationImpl.kt:500)
+	at kotlinx.coroutines.CancellableContinuationImpl.resumeImpl$default(CancellableContinuationImpl.kt:489)
+	at kotlinx.coroutines.CancellableContinuationImpl.resumeUndispatched(CancellableContinuationImpl.kt:587)
+	at kotlinx.coroutines.EventLoopImplBase$DelayedResumeTask.run(EventLoop.common.kt:490)
+	at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:277)
+	at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+	at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source:1)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:48)
+	at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source:1)
+	at zenpi.PairingCancelTest.heldSave(PairingCancelTest.kt:32)
+	at zenpi.PairingCancelTest.heldSave$default(PairingCancelTest.kt:32)
+	at zenpi.PairingCancelTest.networkLossPairingReconcilesAnAlreadyOwnedCredentialSave(PairingCancelTest.kt:28)
+5) backgroundPairingReconcilesAnAlreadyOwnedCredentialSave(zenpi.PairingCancelTest)
+java.lang.AssertionError: expected:<OFFLINE> but was:<CONNECTING>
+	at org.junit.Assert.fail(Assert.java:89)
+	at org.junit.Assert.failNotEquals(Assert.java:835)
+	at org.junit.Assert.assertEquals(Assert.java:120)
+	at org.junit.Assert.assertEquals(Assert.java:146)
+	at zenpi.PairingCancelTest$heldSave$1.invokeSuspend(PairingCancelTest.kt:115)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTaskKt.resume(DispatchedTask.kt:231)
+	at kotlinx.coroutines.DispatchedTaskKt.dispatch(DispatchedTask.kt:164)
+	at kotlinx.coroutines.CancellableContinuationImpl.dispatchResume(CancellableContinuationImpl.kt:466)
+	at kotlinx.coroutines.CancellableContinuationImpl.resumeImpl(CancellableContinuationImpl.kt:500)
+	at kotlinx.coroutines.CancellableContinuationImpl.resumeImpl$default(CancellableContinuationImpl.kt:489)
+	at kotlinx.coroutines.CancellableContinuationImpl.resumeUndispatched(CancellableContinuationImpl.kt:587)
+	at kotlinx.coroutines.EventLoopImplBase$DelayedResumeTask.run(EventLoop.common.kt:490)
+	at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:277)
+	at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+	at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source:1)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:48)
+	at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source:1)
+	at zenpi.PairingCancelTest.heldSave(PairingCancelTest.kt:32)
+	at zenpi.PairingCancelTest.heldSave$default(PairingCancelTest.kt:32)
+	at zenpi.PairingCancelTest.backgroundPairingReconcilesAnAlreadyOwnedCredentialSave(PairingCancelTest.kt:23)
+
+FAILURES!!!
+Tests run: 5,  Failures: 5
+
+
+INSTRUMENTATION_CODE: -1

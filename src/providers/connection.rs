@@ -174,6 +174,7 @@ pub(crate) fn api_key_destinations(
 /// the destination already checked against the credential's grant.
 #[derive(Debug, Clone)]
 pub(crate) struct ValidatedRoute {
+    #[cfg(test)]
     profile: String,
     provider: String,
     protocol: Protocol,
@@ -187,12 +188,14 @@ pub(crate) struct ValidatedRoute {
     streaming: bool,
     route_digest: String,
     identity_scope: String,
+    #[cfg(test)]
     config_revision: u64,
     credential_revision: Option<u64>,
     definition_version: u32,
 }
 
 impl ValidatedRoute {
+    #[cfg(test)]
     pub(crate) fn profile(&self) -> &str {
         &self.profile
     }
@@ -232,9 +235,11 @@ impl ValidatedRoute {
     pub(crate) fn identity_scope(&self) -> &str {
         &self.identity_scope
     }
+    #[cfg(test)]
     pub(crate) fn config_revision(&self) -> u64 {
         self.config_revision
     }
+    #[cfg(test)]
     pub(crate) fn credential_revision(&self) -> Option<u64> {
         self.credential_revision
     }
@@ -413,12 +418,13 @@ pub(crate) fn resolve_model_route(
     capabilities = intersect(capabilities, wire);
     // Legacy catalog fallback is intentionally permissive. Only explicit new
     // connections require per-field catalog or user evidence for rich inputs.
+    // Tools and reasoning are not rich inputs (ZE-222): an uncatalogued model
+    // keeps the wire's tools and may return reasoning, while an effort is
+    // still only sent for catalogued or user-declared levels.
     for (field, supported) in [
         ("images", &mut capabilities.images),
         ("files", &mut capabilities.files),
-        ("tools", &mut capabilities.tools),
         ("structured_output", &mut capabilities.structured_output),
-        ("reasoning_levels", &mut capabilities.reasoning),
     ] {
         if !matches!(
             model.sources.get(field),
@@ -431,7 +437,9 @@ pub(crate) fn resolve_model_route(
         return Err(invalid("selected model does not support streaming"));
     }
     let options = OptionPolicy {
-        reasoning_effort: rule.options.reasoning_effort && capabilities.reasoning,
+        reasoning_effort: rule.options.reasoning_effort
+            && capabilities.reasoning
+            && !model.reasoning_levels.is_empty(),
         tool_choice: rule.options.tool_choice && capabilities.tools,
         // JSON mode is independent of JSON Schema support on both DeepSeek APIs.
         response_format: rule.options.response_format
@@ -463,6 +471,7 @@ pub(crate) fn resolve_model_route(
         ),
     ))?;
     Ok(ValidatedRoute {
+        #[cfg(test)]
         profile: connection.profile.clone(),
         provider: connection.provider.clone(),
         protocol: connection.protocol,
@@ -476,6 +485,7 @@ pub(crate) fn resolve_model_route(
         streaming,
         route_digest,
         identity_scope,
+        #[cfg(test)]
         config_revision: connection.config_revision,
         credential_revision: identity.map(|identity| identity.credential_revision),
         definition_version: definition.definition_version,
@@ -1266,13 +1276,52 @@ mod tests {
             .unwrap()
             .capabilities();
         assert!(caps.text && caps.streaming);
-        assert!(
-            !caps.images
-                && !caps.files
-                && !caps.tools
-                && !caps.structured_output
-                && !caps.reasoning
-        );
+        // ZE-222: an uncatalogued model keeps the wire's tools and reasoning
+        // default; rich inputs still need catalog or user evidence.
+        assert!(caps.tools && caps.reasoning);
+        assert!(!caps.images && !caps.files && !caps.structured_output);
+        let route = resolve_connection(&c, "unknown", &registry, Some(&id), true).unwrap();
+        assert!(route.options().tool_choice);
+        assert!(validate_effort_for_test(&route, "high").is_err());
+        let chat = ProviderConnection {
+            protocol: Protocol::ChatCompletions,
+            ..c
+        };
+        let route = resolve_connection(&chat, "unknown", &registry, Some(&id), true).unwrap();
+        assert!(route.capabilities().tools && route.capabilities().reasoning);
+        assert!(!route.options().reasoning_effort);
+    }
+
+    fn validate_effort_for_test(route: &ValidatedRoute, effort: &str) -> Result<(), ()> {
+        route
+            .model()
+            .validate_reasoning(route.capabilities(), Some(effort))
+            .map_err(|_| ())
+    }
+
+    #[test]
+    fn codex_default_model_resolves_with_tools_and_reasoning() {
+        let c = connection("openai-codex", Protocol::OpenAiCodexResponses);
+        let endpoint = Url::parse(crate::providers::codex::RESPONSES_ENDPOINT).unwrap();
+        let id = identity(&c.provider, &endpoint.origin().ascii_serialization(), "/");
+        let model = crate::providers::registry::default_model("openai-codex").unwrap();
+        let route =
+            resolve_connection(&c, model, &ModelRegistry::default(), Some(&id), true).unwrap();
+        let caps = route.capabilities();
+        assert!(caps.tools && caps.reasoning && caps.streaming);
+        assert!(route.options().tool_choice && route.options().reasoning_effort);
+        assert!(validate_effort_for_test(&route, "high").is_ok());
+        assert_eq!(route.model().context_window, 272_000);
+        for model in [
+            "gpt-5-codex",
+            "gpt-5.1-codex",
+            "gpt-5.2-codex",
+            "gpt-5.3-codex",
+        ] {
+            let route =
+                resolve_connection(&c, model, &ModelRegistry::default(), Some(&id), true).unwrap();
+            assert!(route.capabilities().tools && route.capabilities().reasoning);
+        }
     }
 
     #[test]
@@ -1331,7 +1380,8 @@ mod tests {
         assert!(route.options().response_format);
         assert!(!route.capabilities().structured_output);
         let unknown = resolve_connection(&c, "unknown", &registry, Some(&id), true).unwrap();
-        assert!(!unknown.capabilities().reasoning);
+        // ZE-222: the wire default allows returned reasoning; no effort is sent.
+        assert!(unknown.capabilities().reasoning);
         assert!(!unknown.options().reasoning_effort);
         assert!(unknown.options().response_format);
         assert!(!unknown.capabilities().structured_output);
@@ -1349,8 +1399,10 @@ mod tests {
         c.protocol = Protocol::ChatCompletions;
         let id = identity("gateway", "https://gateway.test", "/v1");
         let route = resolve_connection(&c, "synthetic", &registry, Some(&id), true).unwrap();
-        assert!(!route.capabilities().reasoning);
-        assert!(!route.options().reasoning_effort);
+        // ZE-224: generic Chat carries `reasoning_effort` for declared levels;
+        // DeepSeek JSON mode still does not leak into generic Chat.
+        assert!(route.capabilities().reasoning);
+        assert!(route.options().reasoning_effort);
         assert!(!route.options().response_format);
         assert!(!route.capabilities().structured_output);
     }

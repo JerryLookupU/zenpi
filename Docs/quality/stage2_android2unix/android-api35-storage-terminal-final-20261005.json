@@ -1,0 +1,46 @@
+{
+  "schema_version": "stage2-storage-terminal-regression/v1",
+  "passed": true,
+  "verified_at_unix": 1791138787.535025,
+  "serial": "emulator-5584",
+  "android_api": 35,
+  "build_provenance": {
+    "path": "android/app/build/stage2-device-build.json",
+    "sha256": "79eb012c09a8cd261557d022e8284b61f2ebe25b3281629bb46c76456d52ad41",
+    "inputs_sha256": "bbc09e22e0281e5734ca1fa037cdc8cb27ee10a3137f29ae696c89c6e1185a73",
+    "artifacts": {
+      "android/app/build/outputs/apk/debug/app-debug.apk": "46ceae6cc632eb864fb85be5960d5720f677f94d05bfc4d135856d08c625c553",
+      "android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk": "a520840270ae4bd972cddfa8e53f958e20858d9d424c5a4b9781863ba89bad22"
+    }
+  },
+  "installed_apks": {
+    "app.zenpi.android": "46ceae6cc632eb864fb85be5960d5720f677f94d05bfc4d135856d08c625c553",
+    "app.zenpi.android.test": "a520840270ae4bd972cddfa8e53f958e20858d9d424c5a4b9781863ba89bad22"
+  },
+  "completed_tests": [
+    "zenpi.ForegroundStoreTest#cancelledForegroundWritesCannotPublishAfterWaitingForStorage",
+    "zenpi.ForegroundStoreTest#replacedForegroundWritesCannotPublishOrRemoveKeysAtFinalAdmission",
+    "zenpi.PairingCancelTest#backgroundPairingReconcilesAnAlreadyOwnedCredentialSave",
+    "zenpi.PairingCancelTest#firstPairingCancelReconcilesAnAlreadyOwnedCredentialSave",
+    "zenpi.PairingCancelTest#networkLossPairingReconcilesAnAlreadyOwnedCredentialSave",
+    "zenpi.TerminalControlScreenTest#terminalInputInterruptAndResizeUseTheHostControlAtNarrowWidth"
+  ],
+  "phases": [
+    "foreground_storage_final_admission_fenced_verified",
+    "foreground_storage_wait_cancellation_fenced_verified",
+    "first_pair_cancel_saved_host_restored_verified",
+    "network_pair_saved_host_restored_verified",
+    "background_pair_saved_host_restored_verified"
+  ],
+  "instrumentation": {
+    "path": "Docs/quality/stage2_android2unix/android-api35-storage-terminal-final-20261005.instrumentation.txt",
+    "sha256": "784a2b931a9d1b74662025eefdb9f62eadc08e22ff130e70e017631c719b4159"
+  },
+  "held_and_replaced_storage_commits_fenced_verified": true,
+  "pairing_commit_cancellation_reconciliation_verified": true,
+  "terminal_scope_and_control_regression_verified": true,
+  "physical_camera_verified": false,
+  "physical_lan_verified": false,
+  "whole_item_accepted": false,
+  "scope": "Six named connected tests: encrypted storage cancellation, pairing recovery and terminal control UI only; no live terminal network or full-suite acceptance"
+}

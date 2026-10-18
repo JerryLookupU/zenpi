@@ -1,0 +1,47 @@
+{
+  "schema_version": "stage2-emulator-camera/v1",
+  "passed": false,
+  "failure": "ValueError: emulator camera workflow incomplete",
+  "whole_item_accepted": false,
+  "emulator_imagefile_camera_verified": false,
+  "production_scanner_to_pinned_tls_verified": false,
+  "physical_camera_scan_verified": false,
+  "physical_phone_lan_verified": false,
+  "direct_lan_verified": false,
+  "adb_reverse_used": true,
+  "serial": "emulator-5584",
+  "avd": "ZenpiStage2Api35",
+  "android_api": 35,
+  "expected_android_api": 35,
+  "endpoint": {
+    "address": "127.0.0.1:65184",
+    "fingerprint": "6f53958b84182e41c11a55d5f0fb7f52bdbfad24541dd45ba20e1731e414af54"
+  },
+  "safety_code_input": "automated emulator-only input; not manual operator confirmation",
+  "completed_tests": [],
+  "android_build_provenance": {
+    "path": "android/app/build/stage2-device-build.json",
+    "sha256": "a374f53b455ccc17e05804e3296071de6bcdc090a4d06c8c6240e8a0314cb3f2",
+    "inputs_sha256": "a5b3d64e73b367a37c022122f27b5fe0172dc19d2cb71bc1036b5a4dd9ad8faa",
+    "artifacts": {
+      "android/app/build/outputs/apk/debug/app-debug.apk": "2267dfddf3d2c2e00c3876b17cb55a5041fc5478cc03f0145e4aa1f6409986a5",
+      "android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk": "85a32ba6012fc865cfb69f8123889d8ab734dd74d993b13c2301019901d9cfb7"
+    }
+  },
+  "host_build_provenance": {
+    "path": "target/stage2-host-build-debug.json",
+    "sha256": "799da8bf05a9985887961153c65257f5e6325e5a1875b3259c6e7c8b94d889b9",
+    "inputs_sha256": "9aa1b19a756f3a031cf5925c3b241e95bb18a1781627a44749d62a2a33028086",
+    "artifact": {
+      "path": "target/debug/zenpi",
+      "sha256": "c93f6d6385f31c092b3abaf34a6e5f959d041ad9a1e671aacdf69add23da63bd"
+    }
+  },
+  "screenshot": null,
+  "instrumentation": {
+    "path": "Docs/quality/stage2_android2unix/emulator-camera-api35-native-wait-20261005.instrumentation.txt",
+    "sha256": "dce3b77eda79ddf5087b959e771089baf5bc97bb88ec4a340ae8ddcc138a5df2"
+  },
+  "started_at_unix": 1791132714.701488,
+  "finished_at_unix": 1791132807.740221
+}

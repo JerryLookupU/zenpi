@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-234",
+  "claim_id": "ZE-234@blueprint-4.0.0",
+  "from": "worker",
+  "to": "master",
+  "summary": "Invalid SKILL.md, prompt template, symlinked template, or ignore file is skipped with a LoadDiagnostic instead of failing the whole load; cancellation and structural limits still abort. Diagnostics are exposed via SkillSet/PromptTemplates/ResourceSnapshot::diagnostics() and the /skills resource status.",
+  "changed_files": [
+    "src/core.rs",
+    "src/prompt_templates.rs",
+    "src/resource_loader.rs",
+    "src/skills.rs",
+    "tests/stage1_prompt_resources.rs",
+    "tests/stage1_resource_host.rs",
+    "tests/stage1_skill_md.rs",
+    "Docs/quality/ze/ZE-234.json",
+    "Docs/Zenpi_Execution_Blueprint_v2.md",
+    "Docs/Zenpi_Execution_Blueprint_v2_Gantt.md"
+  ],
+  "diff_stat": "7 files changed, 171 insertions(+), 43 deletions(-)",
+  "commands_run": [
+    "cargo test --locked --test stage1_skill_md --test stage1_prompt_resources",
+    "cargo test --locked --test stage1_resource_host",
+    "cargo build --locked --features dev-fixtures",
+    "ZENPI_HOME=<tmp with skills/good + skills/bad> zenpi --mode headless --backend echo <<< {type:command,text:/skills},{type:shutdown}",
+    "cargo fmt --all -- --check",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo test --locked --no-fail-fast"
+  ],
+  "validation_result": {
+    "one_bad_one_good_skill": "pass: skills_total=1, diagnostics=1 (missing frontmatter), unit + binary level",
+    "binary_starts": "pass: headless exit 0 with a bad SKILL.md under ZENPI_HOME/skills",
+    "G-BUILD": "pass (dev-fixtures debug build)",
+    "G-TEST": "2061 passed / 1 failed across 136 binaries; the failure tui::local_remote_preview_tests::existing_terminal_projects_only_matching_live_session_and_root is a timing-bound PTY test that passes 3/3 in isolation with this change and passes on the unmodified HEAD; pre-existing flake under full-suite load, unrelated",
+    "G-RUST": "fmt clean; clippy -D warnings has 72 pre-existing errors, none in touched files (tracked by ZE-108)"
+  },
+  "notes": "Actual LOC exceeds the 40 LOC estimate because tests that encoded the old fail-closed semantics were rewritten to the pi skip-with-diagnostic semantics; same-priority duplicate templates and over-limit catalogues still fail.",
+  "created_at": "2026-10-14T11:12:57Z",
+  "digest": "501e764626aa62d700fbec4ae142461187a6f6b468b9ecb52a90d39665911d57"
+}

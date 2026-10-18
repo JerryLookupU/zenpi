@@ -7,6 +7,7 @@
 //! explicit policy grants and are guarded by the host approval boundary.
 
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet, VecDeque},
     fs::{self, File, OpenOptions},
     io::{self, Read, Write},
@@ -24,7 +25,12 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-pub const MAX_TOOL_CALL_BYTES: usize = 64 * 1024;
+/// Maximum serialized size of one tool call (id, name and JSON arguments).
+/// A full `MAX_WRITE_BYTES` write plus its path and JSON escaping overhead
+/// must fit, otherwise large `write_file` calls could never succeed.
+pub const MAX_TOOL_CALL_BYTES: usize = MAX_WRITE_BYTES + 64 * 1024;
+/// Maximum serialized size of a tool input schema or Blueprint policy.
+pub const MAX_TOOL_DEFINITION_BYTES: usize = 64 * 1024;
 pub const MAX_TOOL_RESULT_BYTES: usize = 1024 * 1024;
 pub const MAX_INLINE_TOOL_RESULT_BYTES: usize = 64 * 1024;
 pub const TOOL_ARTIFACT_DIRECTORY: &str = ".zenpi/artifacts";
@@ -33,6 +39,8 @@ pub const MAX_TOOL_ID_BYTES: usize = 128;
 // Leave room for the path/flags wrapper in the one-megabyte serialized result
 // envelope, so every value accepted by the input schema can be returned.
 pub const MAX_READ_BYTES: usize = 512 * 1024;
+/// pi's read page: at most 2000 lines and 50 KiB unless `max_bytes` says otherwise.
+pub const MAX_READ_LINES: usize = 2000;
 // 128 entries leaves room for long, nested relative paths in the serialized
 // result envelope while keeping every schema-accepted call bounded.
 pub const MAX_LIST_ENTRIES: usize = 128;
@@ -49,9 +57,10 @@ pub const MAX_WRITE_BYTES: usize = 512 * 1024;
 pub const MAX_DIFF_BYTES: usize = 64 * 1024;
 pub const MAX_COMMAND_BYTES: usize = 16 * 1024;
 pub const MAX_COMMAND_OUTPUT_BYTES: usize = 256 * 1024;
-pub const DEFAULT_COMMAND_TIMEOUT_MS: u64 = 30_000;
+/// Upper bound for an explicit model-requested `timeout_ms` (24 h); there is no default.
+pub const MAX_COMMAND_TIMEOUT_MS: u64 = 86_400_000;
 
-const DEFAULT_READ_BYTES: usize = 256 * 1024;
+const DEFAULT_READ_BYTES: usize = 50 * 1024;
 const DEFAULT_LIST_ENTRIES: usize = 64;
 const DEFAULT_SEARCH_MATCHES: usize = 100;
 const DIFF_CONTEXT_LINES: usize = 3;
@@ -238,7 +247,7 @@ impl BlueprintGate {
         }
         let encoded = serde_json::to_vec(&(&policy, &lease, context.workspace_root()))
             .map_err(ToolError::Json)?;
-        if encoded.len() > MAX_TOOL_CALL_BYTES {
+        if encoded.len() > MAX_TOOL_DEFINITION_BYTES {
             return Err(invalid("Blueprint policy exceeds 64 KiB"));
         }
         let mut digest = Sha256::new();
@@ -412,27 +421,30 @@ pub(crate) fn private_output_path(path: &Path) -> bool {
     })
 }
 
-fn credential_path(path: &Path) -> bool {
+pub(crate) const CREDENTIAL_NAMES: &[&str] = &[
+    ".git",
+    ".zenpi",
+    ".ssh",
+    ".aws",
+    ".azure",
+    ".config",
+    ".codex",
+    ".claude",
+    ".netrc",
+    ".npmrc",
+    "credentials",
+    "credentials.json",
+    "auth.json",
+    "id_rsa",
+    "id_ed25519",
+    ".env",
+];
+pub(crate) const CREDENTIAL_GLOBS: &[&str] = &[".env.*", "*.pem", "*.key", "*.p12"];
+
+pub(crate) fn credential_path(path: &Path) -> bool {
     path.components().any(|component| {
         let name = component.as_os_str().to_string_lossy().to_ascii_lowercase();
-        matches!(
-            name.as_str(),
-            ".git"
-                | ".zenpi"
-                | ".ssh"
-                | ".aws"
-                | ".azure"
-                | ".config"
-                | ".codex"
-                | ".claude"
-                | ".netrc"
-                | ".npmrc"
-                | "credentials"
-                | "credentials.json"
-                | "auth.json"
-                | "id_rsa"
-                | "id_ed25519"
-        ) || name == ".env"
+        CREDENTIAL_NAMES.contains(&name.as_str())
             || name.starts_with(".env.")
             || name.ends_with(".pem")
             || name.ends_with(".key")
@@ -525,7 +537,7 @@ impl ToolDefinition {
         if serde_json::to_vec(&self.input_schema)
             .map_err(ToolError::Json)?
             .len()
-            > MAX_TOOL_CALL_BYTES
+            > MAX_TOOL_DEFINITION_BYTES
         {
             return Err(ToolError::InvalidDefinition(
                 "tool input schema is too large".into(),
@@ -821,6 +833,27 @@ impl ToolContext {
         &self.workspace_root
     }
 
+    /// Rebind ordinary host tools without transferring a worker gate or active raw capture.
+    pub(crate) fn for_workspace(&self, root: &Path) -> Result<Self, ToolError> {
+        if self.blueprint_gate.is_some()
+            || self.origin == ToolOrigin::BlueprintWorker
+            || self.output_capture.is_some()
+        {
+            return Err(ToolError::InvalidCall(
+                "tool workspace cannot change under a worker grant or output capture".into(),
+            ));
+        }
+        let canonical = ToolContext::new(root)?.workspace_root;
+        if canonical != root {
+            return Err(ToolError::InvalidCall(
+                "execution workspace is no longer canonical".into(),
+            ));
+        }
+        let mut next = self.clone();
+        next.workspace_root = canonical;
+        Ok(next)
+    }
+
     pub fn origin(&self) -> ToolOrigin {
         self.origin
     }
@@ -891,24 +924,90 @@ impl ToolContext {
     fn admit_builtin(&self, name: &str, arguments: &Map<String, Value>) -> Result<(), ToolError> {
         let effect = builtin_effect(name).ok_or_else(|| ToolError::UnknownTool(name.into()))?;
         self.check_call_gate(name, effect, arguments)?;
-        if let Some(gate) = self.blueprint_gate.as_deref()
-            && gate
-                .actions
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
-                    (count < gate.policy.max_actions).then_some(count.saturating_add(1))
-                })
-                .is_err()
-        {
-            return Err(gate.deny("action_budget_exhausted"));
+        if let Some(gate) = self.blueprint_gate.as_deref() {
+            // Claim one action within the budget (a compare-exchange loop:
+            // `fetch_update` is deprecated and `try_update` is above MSRV).
+            let mut count = gate.actions.load(Ordering::SeqCst);
+            loop {
+                if count >= gate.policy.max_actions {
+                    return Err(gate.deny("action_budget_exhausted"));
+                }
+                match gate.actions.compare_exchange(
+                    count,
+                    count.saturating_add(1),
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                ) {
+                    Ok(_) => break,
+                    Err(actual) => count = actual,
+                }
+            }
         }
         Ok(())
     }
 
     fn check_path_gate(&self, requested: &str, write: bool) -> Result<(), ToolError> {
+        let requested = self.workspace_path(requested)?;
+        self.check_relative_path_gate(&requested, write)
+    }
+
+    fn check_relative_path_gate(&self, relative: &str, write: bool) -> Result<(), ToolError> {
         if let Some(gate) = self.checked_gate()? {
-            gate.check_path(requested, write)?;
+            gate.check_path(relative, write)?;
         }
         Ok(())
+    }
+
+    /// Map a model-supplied path to a workspace-relative one (pi path rules).
+    /// A leading `@` is dropped, `~` and `~/x` expand to the home directory,
+    /// and an absolute path is accepted only when it names something inside
+    /// the workspace, comparing canonical prefixes so symlinked spellings of
+    /// the root (for example `/var` vs `/private/var`) still match. The
+    /// result goes through the usual relative checks, so `..`, symlink
+    /// escapes and private output paths stay rejected.
+    fn workspace_path<'a>(&self, requested: &'a str) -> Result<Cow<'a, str>, ToolError> {
+        let denied = || ToolError::PathDenied(requested.to_owned());
+        let path = requested.strip_prefix('@').unwrap_or(requested);
+        let absolute = if path == "~" || path.starts_with("~/") {
+            let home = std::env::var_os("HOME")
+                .filter(|home| Path::new(home).is_absolute())
+                .ok_or_else(denied)?;
+            Path::new(&home).join(path[1..].trim_start_matches('/'))
+        } else if Path::new(path).is_absolute() {
+            PathBuf::from(path)
+        } else {
+            return Ok(Cow::Borrowed(path));
+        };
+        if path.contains(['\0', '\r', '\n'])
+            || absolute
+                .components()
+                .any(|component| component == Component::ParentDir)
+        {
+            return Err(denied());
+        }
+        let relative = match absolute.strip_prefix(&self.workspace_root) {
+            Ok(relative) => relative.to_path_buf(),
+            Err(_) => {
+                // Canonicalize the deepest existing ancestor; components
+                // below it do not exist yet and cannot be symlinks.
+                let existing = absolute
+                    .ancestors()
+                    .find(|ancestor| ancestor.exists())
+                    .ok_or_else(denied)?;
+                let canonical = existing.canonicalize().map_err(|_| denied())?;
+                let base = canonical
+                    .strip_prefix(&self.workspace_root)
+                    .map_err(|_| denied())?;
+                let rest = absolute.strip_prefix(existing).map_err(|_| denied())?;
+                base.join(rest)
+            }
+        };
+        let relative = relative.to_str().ok_or_else(denied)?;
+        Ok(Cow::Owned(if relative.is_empty() {
+            ".".to_owned()
+        } else {
+            relative.to_owned()
+        }))
     }
 
     /// Resolve a model-independent user attachment inside the fixed workspace.
@@ -944,14 +1043,15 @@ impl ToolContext {
     }
 
     fn resolve_for_write(&self, requested: &str) -> Result<PathBuf, ToolError> {
-        self.check_path_gate(requested, true)?;
+        let requested = &*self.workspace_path(requested)?;
+        self.check_relative_path_gate(requested, true)?;
         validate_relative_path(requested)?;
         if private_output_path(Path::new(requested)) {
             return Err(ToolError::PathDenied(requested.into()));
         }
         let candidate = self.workspace_root.join(requested);
         if candidate.exists() {
-            self.check_path_gate(requested, false)?;
+            self.check_relative_path_gate(requested, false)?;
             let canonical = candidate
                 .canonicalize()
                 .map_err(|error| map_path_io(&candidate, error))?;
@@ -983,7 +1083,8 @@ impl ToolContext {
     }
 
     fn resolve_existing(&self, requested: &str) -> Result<ResolvedPath, ToolError> {
-        self.check_path_gate(requested, false)?;
+        let requested = &*self.workspace_path(requested)?;
+        self.check_relative_path_gate(requested, false)?;
         validate_relative_path(requested)?;
         if private_output_path(Path::new(requested)) {
             return Err(ToolError::PathDenied(requested.into()));
@@ -1059,6 +1160,89 @@ struct RegisteredTool {
     execution_mode: ToolExecutionMode,
 }
 
+/// Every builtin tool name, in registration order.
+pub const BUILTIN_TOOL_NAMES: &[&str] = &[
+    "read_file",
+    "read_tool_output",
+    "list_directory",
+    "search_text",
+    "find",
+    "write_file",
+    "edit_file",
+    "run_command",
+    "websearch",
+    "dag_status",
+    "dag_send",
+    "dag_recv",
+    "dag_finish",
+    "dag_spawn",
+];
+
+/// Which builtins are advertised to the model (ZE-214).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BuiltinSelection {
+    /// Advertise `dag_*` (DAG-spawned worker or explicit opt-in).
+    pub dag: bool,
+    /// Advertise `websearch` (its API key resolves).
+    pub websearch: bool,
+    /// `--tools a,b`: exactly these builtins, overriding the flags above.
+    pub only: Option<Vec<String>>,
+}
+
+/// Process-wide `--tools` allow-list so every owner a host prepares (CLI
+/// agent and project owners alike) advertises the same builtin set.
+static BUILTIN_ALLOWLIST: std::sync::Mutex<Option<Vec<String>>> = std::sync::Mutex::new(None);
+
+/// Install (or clear) the process-wide `--tools` allow-list.
+pub fn set_builtin_allowlist(only: Option<Vec<String>>) {
+    if let Ok(mut guard) = BUILTIN_ALLOWLIST.lock() {
+        *guard = only;
+    }
+}
+
+/// Parse a `--tools a,b` value into known builtin names (unknown → error).
+pub fn parse_builtin_allowlist(value: &str) -> Result<Vec<String>, String> {
+    if matches!(value.trim(), "none" | "off" | "no-tools") {
+        return Ok(Vec::new());
+    }
+    let mut names: Vec<String> = Vec::new();
+    for name in value
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        if !BUILTIN_TOOL_NAMES.contains(&name) {
+            return Err(format!(
+                "unknown tool `{name}`; known tools: {}",
+                BUILTIN_TOOL_NAMES.join(",")
+            ));
+        }
+        if !names.iter().any(|existing| existing == name) {
+            names.push(name.to_owned());
+        }
+    }
+    if names.is_empty() {
+        return Err("--tools requires at least one tool name".into());
+    }
+    Ok(names)
+}
+
+impl BuiltinSelection {
+    /// `dag_*` only for DAG-spawned workers (`ZENPI_DAG_NODE`) or when
+    /// `ZENPI_DAG_TOOLS=1`; `websearch` only when [`exa_api_key`] resolves;
+    /// plus the process-wide `--tools` allow-list, if any.
+    pub fn from_environment() -> Self {
+        Self {
+            dag: crate::dag::dag_tools_enabled(),
+            websearch: exa_api_key().is_some(),
+            only: BUILTIN_ALLOWLIST
+                .lock()
+                .ok()
+                .and_then(|guard| guard.clone()),
+        }
+    }
+}
+
 #[derive(Default, Clone)]
 pub struct ToolRegistry {
     tools: BTreeMap<String, RegisteredTool>,
@@ -1100,6 +1284,40 @@ impl ToolRegistry {
         registry.register_builtin(DagFinishTool)?;
         registry.register_builtin(DagSpawnTool)?;
         Ok(registry)
+    }
+
+    /// Builtins scoped by `selection` (ZE-214): an explicit `only` list keeps
+    /// exactly the named builtins; otherwise `dag_*` and `websearch` are kept
+    /// only when their selection flag is set.
+    pub fn with_builtin_selection(selection: &BuiltinSelection) -> Result<Self, ToolError> {
+        let mut registry = Self::with_all_builtins()?;
+        if let Some(only) = &selection.only {
+            for name in only {
+                if !registry.tools.contains_key(name) {
+                    return Err(ToolError::InvalidDefinition(format!(
+                        "unknown builtin tool `{name}`"
+                    )));
+                }
+            }
+            registry.tools.retain(|name, _| only.contains(name));
+            return Ok(registry);
+        }
+        registry.tools.retain(|name, _| {
+            if name.starts_with("dag_") {
+                selection.dag
+            } else if name == "websearch" {
+                selection.websearch
+            } else {
+                true
+            }
+        });
+        Ok(registry)
+    }
+
+    /// Builtins a host advertises by default: see
+    /// [`BuiltinSelection::from_environment`].
+    pub fn with_default_builtins() -> Result<Self, ToolError> {
+        Self::with_builtin_selection(&BuiltinSelection::from_environment())
     }
 
     fn register_builtin<T: Tool + 'static>(&mut self, tool: T) -> Result<(), ToolError> {
@@ -1480,6 +1698,345 @@ pub fn compact_tool_result(
     })
 }
 
+/// Plain text the model receives for one tool result (pi `content`). The
+/// structured [`ToolResult`] stays the journal and UI record (pi `details`);
+/// providers get this text plus an `is_error` flag, never the JSON envelope.
+/// Built-in tools render a compact human form; anything else (extension
+/// tools, hook-rewritten or unexpected shapes) keeps the serialized record.
+pub fn model_facing_text(
+    result: &ToolResult,
+    capture: Option<&crate::tool_output::CaptureReport>,
+) -> String {
+    let (tool, output) = match result {
+        ToolResult::Error { error, .. } => return error.message.clone(),
+        ToolResult::Success { tool, output, .. } => (tool, output),
+    };
+    let rendered = if output.get("compacted").is_some() && output.get("preview").is_some() {
+        compacted_model_text(output, capture)
+    } else {
+        match tool.as_str() {
+            "read_file" => read_file_model_text(output),
+            "run_command" => run_command_model_text(output, capture),
+            "write_file" => write_file_model_text(output),
+            "edit_file" => edit_file_model_text(output),
+            "search_text" => search_model_text(output),
+            "find" => find_model_text(output),
+            "list_directory" => list_model_text(output),
+            _ => None,
+        }
+    };
+    rendered.unwrap_or_else(|| {
+        let mut value = serde_json::to_value(result).unwrap_or(Value::Null);
+        if let Some(report) = capture
+            && let Some(object) = value.as_object_mut()
+        {
+            object.insert(
+                "output_capture".into(),
+                serde_json::to_value(report).unwrap_or(Value::Null),
+            );
+        }
+        value.to_string()
+    })
+}
+
+/// How the model can page through one captured raw output stream.
+fn artifact_hint(artifact: &crate::tool_output::ArtifactRef) -> String {
+    format!(
+        "read_tool_output artifact_id={} call_id={}",
+        artifact.artifact_id, artifact.call_id
+    )
+}
+
+fn compacted_model_text(
+    output: &Value,
+    capture: Option<&crate::tool_output::CaptureReport>,
+) -> Option<String> {
+    let preview = output.get("preview")?.as_str()?;
+    let bytes = output.get("bytes").and_then(Value::as_u64).unwrap_or(0);
+    let note = match output.get("artifact").and_then(Value::as_str) {
+        Some(artifact) => format!(
+            "[Result too large ({bytes} bytes); full JSON stored at {artifact}. Preview follows]"
+        ),
+        None => format!("[Result too large ({bytes} bytes); showing a preview only]"),
+    };
+    let mut text = format!("{note}\n{preview}");
+    for artifact in capture.into_iter().flat_map(|report| &report.artifacts) {
+        let stream = match artifact.stream {
+            crate::tool_output::OutputStream::Stdout => "stdout",
+            crate::tool_output::OutputStream::Stderr => "stderr",
+        };
+        text.push_str(&format!("\n[Full {stream}: {}]", artifact_hint(artifact)));
+    }
+    Some(text)
+}
+
+fn output_flag(output: &Value, key: &str) -> bool {
+    output.get(key).and_then(Value::as_bool).unwrap_or(false)
+}
+
+fn read_file_model_text(output: &Value) -> Option<String> {
+    let content = output.get("content")?.as_str()?;
+    if !output_flag(output, "truncated") {
+        return Some(content.to_owned());
+    }
+    let mut text = content.to_owned();
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    let number = |key: &str| output.get(key).and_then(Value::as_u64).unwrap_or(0);
+    match output.get("next_offset").and_then(Value::as_u64) {
+        Some(next) => text.push_str(&format!(
+            "\n[Showing lines {}-{} of {}. Use offset={next} to continue]",
+            number("start_line"),
+            number("end_line"),
+            number("total_lines")
+        )),
+        None => text.push_str(&format!(
+            "\n[Line {} was cut at {} bytes; use run_command to inspect it]",
+            number("end_line"),
+            content.len()
+        )),
+    }
+    Some(text)
+}
+
+struct LinePage {
+    content: String,
+    truncated: bool,
+    start_line: usize,
+    end_line: usize,
+    total_lines: usize,
+    next_offset: Option<usize>,
+}
+
+/// Read lines `offset..offset+limit` (1-based) within `max_bytes`, counting the
+/// file's total lines. Lines are never split except a single over-long line,
+/// which is cut on a character boundary.
+fn read_line_page<R: io::BufRead>(
+    mut reader: R,
+    offset: usize,
+    limit: usize,
+    max_bytes: usize,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<LinePage, ToolError> {
+    let mut content = String::new();
+    let mut line = Vec::new();
+    let mut total = 0usize;
+    let mut end = offset.saturating_sub(1);
+    let mut full = false;
+    let mut cut_line = false;
+    loop {
+        line.clear();
+        if reader.read_until(b'\n', &mut line)? == 0 {
+            break;
+        }
+        total += 1;
+        if total.is_multiple_of(4096) && cancelled() {
+            return Err(ToolError::Cancelled);
+        }
+        if total < offset || full {
+            continue;
+        }
+        let text = std::str::from_utf8(&line).map_err(|_| ToolError::InvalidUtf8(String::new()))?;
+        if total - offset >= limit || content.len() + text.len() > max_bytes {
+            full = true;
+            if content.is_empty() {
+                // One line larger than the page: return its head, cut cleanly.
+                let mut cut = max_bytes.min(text.len());
+                while !text.is_char_boundary(cut) {
+                    cut -= 1;
+                }
+                content.push_str(&text[..cut]);
+                end = total;
+                cut_line = true;
+            }
+            continue;
+        }
+        content.push_str(text);
+        end = total;
+    }
+    let truncated = full || cut_line;
+    Ok(LinePage {
+        content,
+        truncated,
+        start_line: offset.min(total.max(1)),
+        end_line: end,
+        total_lines: total,
+        next_offset: (truncated && end < total).then_some(end + 1),
+    })
+}
+
+fn run_command_model_text(
+    output: &Value,
+    capture: Option<&crate::tool_output::CaptureReport>,
+) -> Option<String> {
+    let stdout = output.get("stdout")?.as_str()?;
+    let stderr = output.get("stderr")?.as_str()?;
+    let mut combined = String::new();
+    for stream in [stdout, stderr] {
+        if stream.is_empty() {
+            continue;
+        }
+        combined.push_str(stream);
+        if !stream.ends_with('\n') {
+            combined.push('\n');
+        }
+    }
+    let (tail, cut) = model_command_tail(&combined);
+    let mut text = String::new();
+    if cut {
+        text.push_str("[Showing the last part of the output]\n");
+    }
+    text.push_str(tail);
+    if !text.is_empty() {
+        text.push('\n');
+    }
+    if output_flag(output, "cancelled") {
+        text.push_str("Command was cancelled");
+    } else if output_flag(output, "timed_out") {
+        let timeout = output
+            .get("timeout_ms")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        text.push_str(&format!("Command timed out after {timeout} ms"));
+    } else if let Some(code) = output.get("exit_code").and_then(Value::as_i64) {
+        text.push_str(&format!("Command exited with code {code}"));
+    } else if let Some(signal) = output.get("signal").and_then(Value::as_i64) {
+        text.push_str(&format!("Command terminated by signal {signal}"));
+    } else {
+        text.push_str("Command finished without an exit code");
+    }
+    let artifacts: Vec<crate::tool_output::ArtifactRef> = output
+        .get("output_artifacts")
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
+        .or_else(|| capture.map(|report| report.artifacts.clone()))
+        .unwrap_or_default();
+    for (stream, key, label) in [
+        (
+            crate::tool_output::OutputStream::Stdout,
+            "stdout_truncated",
+            "stdout",
+        ),
+        (
+            crate::tool_output::OutputStream::Stderr,
+            "stderr_truncated",
+            "stderr",
+        ),
+    ] {
+        if !output_flag(output, key) {
+            continue;
+        }
+        text.push_str(&format!("\n[{label} truncated: earlier output omitted]"));
+        if let Some(artifact) = artifacts.iter().find(|artifact| artifact.stream == stream) {
+            text.push_str(&format!(" Full {label}: {}", artifact_hint(artifact)));
+        }
+    }
+    Some(text)
+}
+
+fn write_file_model_text(output: &Value) -> Option<String> {
+    let path = output.get("path")?.as_str()?;
+    let bytes = output.get("bytes")?.as_u64()?;
+    let verb = if output_flag(output, "created") {
+        "Created"
+    } else {
+        "Wrote"
+    };
+    Some(format!("{verb} {path} ({bytes} bytes)"))
+}
+
+fn edit_file_model_text(output: &Value) -> Option<String> {
+    let path = output.get("path")?.as_str()?;
+    let replacements = output
+        .get("replacements")
+        .and_then(Value::as_u64)
+        .unwrap_or(1);
+    let noun = if replacements == 1 {
+        "replacement"
+    } else {
+        "replacements"
+    };
+    Some(format!("Edited {path} ({replacements} {noun})"))
+}
+
+fn finish_listing(mut lines: Vec<String>, empty: &str, output: &Value) -> String {
+    if lines.is_empty() {
+        lines.push(empty.into());
+    }
+    if output_flag(output, "truncated") {
+        let reasons: Vec<&str> = output
+            .get("truncation_reasons")
+            .and_then(Value::as_array)
+            .map(|reasons| reasons.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        lines.push(if reasons.is_empty() {
+            "[Results truncated]".into()
+        } else {
+            format!("[Results truncated: {}]", reasons.join(", "))
+        });
+    }
+    lines.join("\n")
+}
+
+fn search_model_text(output: &Value) -> Option<String> {
+    let record = |item: &Value, matched: bool| -> Option<(String, u64, bool, String)> {
+        Some((
+            item.get("path")?.as_str()?.to_owned(),
+            item.get("line")?.as_u64()?,
+            matched,
+            item.get("text")?.as_str()?.to_owned(),
+        ))
+    };
+    let mut records = Vec::new();
+    for item in output.get("matches")?.as_array()? {
+        records.push(record(item, true)?);
+    }
+    for item in output
+        .get("context")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        records.push(record(item, false)?);
+    }
+    // Matches precede context for the same line, so dedup keeps the match.
+    records.sort_by(|left, right| (&left.0, left.1).cmp(&(&right.0, right.1)));
+    records.dedup_by(|later, earlier| earlier.0 == later.0 && earlier.1 == later.1);
+    let lines = records
+        .into_iter()
+        .map(|(path, line, matched, text)| {
+            let separator = if matched { ':' } else { '-' };
+            format!(
+                "{path}{separator}{line}{separator} {}",
+                text.trim_end_matches(['\r', '\n'])
+            )
+        })
+        .collect();
+    Some(finish_listing(lines, "No matches found", output))
+}
+
+fn find_model_text(output: &Value) -> Option<String> {
+    let mut lines = Vec::new();
+    for path in output.get("paths")?.as_array()? {
+        lines.push(path.as_str()?.to_owned());
+    }
+    Some(finish_listing(lines, "No files found", output))
+}
+
+fn list_model_text(output: &Value) -> Option<String> {
+    let mut lines = Vec::new();
+    for entry in output.get("entries")?.as_array()? {
+        let name = entry.get("name")?.as_str()?;
+        let suffix = match entry.get("kind").and_then(Value::as_str) {
+            Some("directory") => "/",
+            Some("symlink") => "@",
+            _ => "",
+        };
+        lines.push(format!("{name}{suffix}"));
+    }
+    Some(finish_listing(lines, "(empty directory)", output))
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ReadToolOutputTool;
 impl Tool for ReadToolOutputTool {
@@ -1542,11 +2099,13 @@ impl Tool for ReadFileTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "read_file".into(),
-            description: "Read a UTF-8 text file inside the workspace with a byte limit.".into(),
+            description: "Read a UTF-8 text file inside the workspace by lines. Returns at most `limit` lines (default 2000) and 50 KiB per call; continue with `offset` (1-based line) as the result says.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string" },
+                    "offset": { "type": "integer", "minimum": 1 },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": MAX_READ_LINES },
                     "max_bytes": { "type": "integer", "minimum": 1, "maximum": MAX_READ_BYTES }
                 },
                 "required": ["path"],
@@ -1574,8 +2133,10 @@ impl Tool for ReadFileTool {
             return Err(ToolError::Cancelled);
         }
         context.admit_builtin("read_file", arguments)?;
-        reject_unknown(arguments, &["path", "max_bytes"])?;
+        reject_unknown(arguments, &["path", "offset", "limit", "max_bytes"])?;
         let requested = required_string(arguments, "path", 4_096)?;
+        let offset = bounded_usize(arguments, "offset", 1, 1, usize::MAX)?;
+        let limit = bounded_usize(arguments, "limit", MAX_READ_LINES, 1, MAX_READ_LINES)?;
         let max_bytes = bounded_usize(
             arguments,
             "max_bytes",
@@ -1589,21 +2150,29 @@ impl Tool for ReadFileTool {
         if !metadata.is_file() {
             return Err(ToolError::NotAFile(requested.to_owned()));
         }
-        let mut bytes = Vec::with_capacity(max_bytes.min(metadata.len() as usize));
         let file = File::open(&path.canonical)?;
         if crate::tool_output::private_output_inode(&file)? {
             return Err(ToolError::PathDenied(requested.into()));
         }
-        file.take(max_bytes.saturating_add(1) as u64)
-            .read_to_end(&mut bytes)?;
-        let truncated = bytes.len() > max_bytes;
-        bytes.truncate(max_bytes);
-        let content =
-            String::from_utf8(bytes).map_err(|_| ToolError::InvalidUtf8(requested.to_owned()))?;
+        let page = read_line_page(
+            io::BufReader::new(file),
+            offset,
+            limit,
+            max_bytes,
+            cancelled,
+        )
+        .map_err(|error| match error {
+            ToolError::InvalidUtf8(_) => ToolError::InvalidUtf8(requested.to_owned()),
+            error => error,
+        })?;
         Ok(json!({
             "path": relative_display(&path.relative),
-            "content": content,
-            "truncated": truncated
+            "content": page.content,
+            "truncated": page.truncated,
+            "start_line": page.start_line,
+            "end_line": page.end_line,
+            "total_lines": page.total_lines,
+            "next_offset": page.next_offset
         }))
     }
 }
@@ -1730,7 +2299,7 @@ impl Tool for SearchTextTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "search_text".into(),
-            description: "Search literal text by default. Explicit regex/glob/ignore/hidden/context options use installed ripgrep with bounded traversal.".into(),
+            description: "Search file contents with one installed ripgrep run. The query is a regex by default; set literal=true (or regex=false) for a fixed-string search. glob/ignore/hidden/context map to ripgrep flags. Without ripgrep only literal search without glob/ignore/hidden/context is available.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -1738,7 +2307,8 @@ impl Tool for SearchTextTool {
                     "path": { "type": "string", "default": "." },
                     "case_sensitive": { "type": "boolean", "default": true },
                     "max_matches": { "type": "integer", "minimum": 1, "maximum": MAX_SEARCH_MATCHES },
-                    "regex": { "type": "boolean", "default": false },
+                    "regex": { "type": "boolean", "default": true },
+                    "literal": { "type": "boolean", "default": false },
                     "glob": { "type": "string" },
                     "ignore": { "type": "boolean", "default": true },
                     "hidden": { "type": "boolean", "default": false },
@@ -1777,6 +2347,7 @@ impl Tool for SearchTextTool {
                 "case_sensitive",
                 "max_matches",
                 "regex",
+                "literal",
                 "glob",
                 "ignore",
                 "hidden",
@@ -1794,29 +2365,47 @@ impl Tool for SearchTextTool {
             MAX_SEARCH_MATCHES,
         )?;
         let path = context.resolve_existing(requested)?;
-        if search_requires_subprocess(arguments) {
-            if let Some(gate) = context.checked_gate()? {
-                return Err(gate.deny("advanced_search_requires_confined_traversal"));
-            }
-            let options = crate::search::SearchOptions {
-                query: query.into(),
-                regex: optional_bool(arguments, "regex", false)?,
-                glob: arguments
-                    .get("glob")
-                    .map(|_| required_string(arguments, "glob", 4096).map(str::to_owned))
-                    .transpose()?,
-                ignore: optional_bool(arguments, "ignore", true)?,
-                hidden: optional_bool(arguments, "hidden", false)?,
-                context: bounded_usize(arguments, "context", 0, 0, 10)?,
-                case_sensitive,
-                max_matches,
-            };
+        let literal = optional_bool(arguments, "literal", false)?;
+        let regex = optional_bool(arguments, "regex", !literal)?;
+        if literal && regex {
+            return Err(ToolError::InvalidArguments(
+                "literal=true conflicts with regex=true".into(),
+            ));
+        }
+        let options = crate::search::SearchOptions {
+            query: query.into(),
+            regex,
+            glob: arguments
+                .get("glob")
+                .map(|_| required_string(arguments, "glob", 4096).map(str::to_owned))
+                .transpose()?,
+            ignore: optional_bool(arguments, "ignore", true)?,
+            hidden: optional_bool(arguments, "hidden", false)?,
+            context: bounded_usize(arguments, "context", 0, 0, 10)?,
+            case_sensitive,
+            max_matches,
+        };
+        let gate = context.checked_gate()?;
+        if gate.is_none() && context.search_backend.available() {
             return context.search_backend.search(
                 context.workspace_root(),
                 &path.canonical,
                 &options,
                 cancelled,
             );
+        }
+        // Fallback when ripgrep is not installed, or when a worker gate needs
+        // per-path checks ripgrep cannot honor: a literal in-process scan.
+        let ripgrep_only = ["glob", "ignore", "hidden", "context"]
+            .iter()
+            .any(|key| arguments.contains_key(*key));
+        if ripgrep_only || (options.regex && !crate::search::regex_is_literal(query)) {
+            if let Some(gate) = gate {
+                return Err(gate.deny("advanced_search_requires_confined_traversal"));
+            }
+            return Err(ToolError::Unsupported(
+                "ripgrep is not installed; regex/glob/ignore/hidden/context search needs it (set literal=true for a fixed-string search)".into(),
+            ));
         }
         let needle = if case_sensitive {
             query.to_owned()
@@ -1940,27 +2529,14 @@ impl Tool for SearchTextTool {
     }
 }
 
-/// Whether the call opts into the installed-ripgrep path. Before dispatch the
-/// host must reserve search_process_budget from its cumulative Processes ledger;
-/// sequential child execution is not a reusable process-start allowance.
-pub fn search_requires_subprocess(arguments: &Map<String, Value>) -> bool {
-    ["regex", "glob", "ignore", "hidden", "context"]
-        .iter()
-        .any(|key| arguments.contains_key(*key))
-}
-
-/// Conservative total process starts for one built-in call, including regex
-/// validation, ignore/glob listings and every admitted search-file chunk. The
-/// host reserves this before dispatch; unused starts are not refunded.
-pub fn search_process_budget(name: &str, arguments: &Map<String, Value>) -> u64 {
+/// Conservative total process starts for one built-in call. A `search_text`
+/// call starts at most one ripgrep child (none for the in-process fallback);
+/// `find` runs its path listing plus a glob listing. The host reserves this
+/// before dispatch; unused starts are not refunded.
+pub fn search_process_budget(name: &str, _arguments: &Map<String, Value>) -> u64 {
     match name {
         "find" => 2,
-        "search_text" if search_requires_subprocess(arguments) => {
-            crate::search::MAX_SEARCH_CHUNKS as u64
-                + 1
-                + u64::from(arguments.contains_key("glob"))
-                + u64::from(arguments.get("regex").and_then(Value::as_bool) == Some(true))
-        }
+        "search_text" => 1,
         _ => 0,
     }
 }
@@ -2141,13 +2717,7 @@ impl EditFileTool {
         }
         let path = context.resolve_existing(requested)?.canonical;
         let original = read_bounded_text(&path, MAX_WRITE_BYTES)?;
-        let occurrences = original.matches(old).count();
-        if occurrences != 1 {
-            return Err(ToolError::InvalidArguments(format!(
-                "old text must occur exactly once (found {occurrences})"
-            )));
-        }
-        let edited = original.replacen(old, new, 1);
+        let edited = apply_text_edit(&original, old, new)?;
         if edited.len() > MAX_WRITE_BYTES {
             return Err(ToolError::LimitExceeded(format!(
                 "edited content exceeds {MAX_WRITE_BYTES} bytes"
@@ -2173,7 +2743,9 @@ impl Tool for EditFileTool {
         ToolDefinition {
             name: "edit_file".into(),
             description:
-                "Replace one exact UTF-8 text occurrence atomically and return a bounded unified diff."
+                "Replace one unique UTF-8 text occurrence atomically and return a bounded unified diff. \
+                 Matching ignores CRLF vs LF, a UTF-8 BOM, trailing whitespace and Unicode quote, \
+                 dash and space variants; the file keeps its line endings."
                     .into(),
             input_schema: json!({
                 "type": "object",
@@ -2208,13 +2780,7 @@ impl Tool for EditFileTool {
         // Read at most one byte past the write budget so oversized sources are
         // rejected before they can consume unbounded memory.
         let original = read_bounded_text(&path, MAX_WRITE_BYTES)?;
-        let occurrences = original.matches(old).count();
-        if occurrences != 1 {
-            return Err(ToolError::InvalidArguments(format!(
-                "old text must occur exactly once (found {occurrences})"
-            )));
-        }
-        let edited = original.replacen(old, new, 1);
+        let edited = apply_text_edit(&original, old, new)?;
         if edited.len() > MAX_WRITE_BYTES {
             return Err(ToolError::LimitExceeded(format!(
                 "edited content exceeds {MAX_WRITE_BYTES} bytes"
@@ -2269,10 +2835,12 @@ impl RunCommandTool {
             return Err(ToolError::CommandTimeout(outcome.timeout_ms));
         }
         if outcome.exit_code != Some(0) {
-            return Err(ToolError::CommandFailed(format!(
-                "exit={:?}; signal={:?}; stderr={}",
-                outcome.exit_code, outcome.signal, outcome.stderr
-            )));
+            // pi semantics: a failing command is an error result that still
+            // carries its output tail and exit code; output is never dropped.
+            let value = Self::encode_outcome(context, outcome)?;
+            let text = run_command_model_text(&value, None)
+                .unwrap_or_else(|| "Command failed without output".into());
+            return Err(ToolError::CommandFailed(text));
         }
         Self::encode_outcome(context, outcome)
     }
@@ -2320,16 +2888,25 @@ impl RunCommandTool {
             return Err(ToolError::InvalidArguments("command contains NUL".into()));
         }
         let gate = context.checked_gate()?;
-        let default_timeout = gate.map_or(DEFAULT_COMMAND_TIMEOUT_MS, |gate| {
-            gate.policy.max_command_timeout_ms
-        });
-        let timeout_ms = bounded_usize(
-            arguments,
-            "timeout_ms",
-            default_timeout as usize,
-            1,
-            120_000,
-        )? as u64;
+        // pi semantics: timeout is optional with no default. Worker gates keep
+        // their policy ceiling as the default and maximum.
+        let timeout_ms = match gate {
+            Some(gate) => Some(bounded_usize(
+                arguments,
+                "timeout_ms",
+                gate.policy.max_command_timeout_ms as usize,
+                1,
+                gate.policy.max_command_timeout_ms as usize,
+            )? as u64),
+            None if arguments.contains_key("timeout_ms") => Some(bounded_usize(
+                arguments,
+                "timeout_ms",
+                1,
+                1,
+                MAX_COMMAND_TIMEOUT_MS as usize,
+            )? as u64),
+            None => None,
+        };
         let output_cap = gate.map_or(MAX_COMMAND_OUTPUT_BYTES, |gate| {
             gate.policy.max_command_output_bytes
         });
@@ -2349,7 +2926,7 @@ impl RunCommandTool {
                 stderr_truncated: false,
                 timed_out: false,
                 cancelled: true,
-                timeout_ms,
+                timeout_ms: timeout_ms.unwrap_or(0),
                 child_reaped: true,
                 process_group_terminated: false,
                 policy_evidence: context.policy_evidence(),
@@ -2410,16 +2987,13 @@ impl RunCommandTool {
             })?;
         make_pipe_nonblocking(&stdout)?;
         make_pipe_nonblocking(&stderr)?;
-        let stop = Arc::new(AtomicBool::new(false));
-        let stdout_stop = Arc::clone(&stop);
-        let stderr_stop = Arc::clone(&stop);
-        let stdout_thread = std::thread::spawn(move || {
-            read_limited_stream(stdout, output_cap, &stdout_stop, stdout_capture)
-        });
-        let stderr_thread = std::thread::spawn(move || {
-            read_limited_stream(stderr, output_cap, &stderr_stop, stderr_capture)
-        });
-        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        // One thread pumps both pipes and watches the child: it sleeps in
+        // poll(2) until output, the deadline or the next cancellation check.
+        let mut pumps = [
+            StreamPump::new(stdout.into(), output_cap, stdout_capture),
+            StreamPump::new(stderr.into(), output_cap, stderr_capture),
+        ];
+        let deadline = timeout_ms.map(|ms| Instant::now() + Duration::from_millis(ms));
         let mut was_cancelled = false;
         let mut timed_out = false;
         let status = loop {
@@ -2432,24 +3006,36 @@ impl RunCommandTool {
                 Ok(None) => {}
                 Err(error) => break Err(ToolError::Io(error)),
             }
-            if Instant::now() >= deadline {
+            let now = Instant::now();
+            if deadline.is_some_and(|deadline| now >= deadline) {
                 timed_out = true;
                 break Ok(None);
             }
-            std::thread::sleep(Duration::from_millis(5));
+            let mut wait = deadline.map_or(CANCEL_POLL, |deadline| {
+                deadline.saturating_duration_since(now).min(CANCEL_POLL)
+            });
+            if pumps.iter().all(StreamPump::done) {
+                // Both pipes closed: the child is exiting, so reap it promptly.
+                wait = wait.min(EXIT_POLL);
+            }
+            pump_streams(&mut pumps, wait);
         };
         // A command's descendants do not outlive its operation, even if the
         // shell exits successfully or closes its own stdout before they do.
         child.cleanup();
-        stop.store(true, Ordering::SeqCst);
-        let stdout = stdout_thread
-            .join()
-            .map_err(|_| ToolError::CommandFailed("stdout reader panicked".into()))?;
-        let stderr = stderr_thread
-            .join()
-            .map_err(|_| ToolError::CommandFailed("stderr reader panicked".into()))?;
-        let mut stdout = stdout?;
-        let mut stderr = stderr?;
+        // Drain what the killed group left behind; a pipe still held open by
+        // an escaped descendant ends the drain as truncated.
+        let drain_until = Instant::now() + DRAIN_GRACE;
+        while !pumps.iter().all(StreamPump::done) {
+            let left = drain_until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            pump_streams(&mut pumps, left);
+        }
+        let [stdout, stderr] = pumps;
+        let mut stdout = stdout.finish();
+        let mut stderr = stderr.finish();
         let command_complete = !was_cancelled && !timed_out && status.is_ok();
         if let Some(capture) = capture {
             for stream in [&mut stdout, &mut stderr] {
@@ -2487,13 +3073,13 @@ impl RunCommandTool {
             origin: context.origin(),
             exit_code: status.and_then(|status| status.code()),
             signal: status.and_then(|status| status.signal()),
-            stdout: truncate_utf8(&String::from_utf8_lossy(&stdout), output_cap),
-            stderr: truncate_utf8(&String::from_utf8_lossy(&stderr), output_cap),
+            stdout: tail_utf8(&String::from_utf8_lossy(&stdout), output_cap).to_owned(),
+            stderr: tail_utf8(&String::from_utf8_lossy(&stderr), output_cap).to_owned(),
             stdout_truncated,
             stderr_truncated,
             timed_out,
             cancelled: was_cancelled,
-            timeout_ms,
+            timeout_ms: timeout_ms.unwrap_or(0),
             child_reaped: true,
             process_group_terminated: true,
             policy_evidence: context.policy_evidence(),
@@ -2619,6 +3205,144 @@ fn source_digest(path: &Path) -> Result<String, ToolError> {
 /// Read a UTF-8 file while enforcing a hard byte bound.  Unlike
 /// [`read_diff_source`], this helper rejects a clipped source because an exact
 /// edit cannot safely determine occurrence count from a prefix.
+/// Replace the single occurrence of `old` in `original` (pi edit semantics).
+///
+/// Matching runs on LF-normalized text without a leading BOM. An exact match
+/// is preferred; otherwise a fuzzy match ignores trailing whitespace per line
+/// and folds Unicode quotes, dashes, spaces and full-width forms to ASCII.
+/// Uniqueness is always judged on the fuzzy form, so ambiguous text is
+/// rejected. Only the matched source span is rewritten: the BOM, the rest of
+/// the file and its line endings are preserved, and `new` is written with the
+/// file's line ending.
+fn apply_text_edit(original: &str, old: &str, new: &str) -> Result<String, ToolError> {
+    let (bom, body) = match original.strip_prefix('\u{feff}') {
+        Some(body) => ("\u{feff}", body),
+        None => ("", original),
+    };
+    let old = old.strip_prefix('\u{feff}').unwrap_or(old);
+    let exact = NormalizedText::new(body, false);
+    let fuzzy = NormalizedText::new(body, true);
+    let exact_old = NormalizedText::new(old, false).text;
+    let fuzzy_old = NormalizedText::new(old, true).text;
+    if fuzzy_old.trim().is_empty() {
+        return Err(ToolError::InvalidArguments(
+            "old text must contain non-whitespace characters".into(),
+        ));
+    }
+    let occurrences = fuzzy.text.matches(fuzzy_old.as_str()).count();
+    if occurrences != 1 {
+        let hint = if occurrences == 0 {
+            "; re-read the file and copy the text exactly"
+        } else {
+            "; include more surrounding lines to make it unique"
+        };
+        return Err(ToolError::InvalidArguments(format!(
+            "old text must occur exactly once (found {occurrences}){hint}"
+        )));
+    }
+    let (start, end) = match exact.text.find(exact_old.as_str()) {
+        Some(index) => exact.source_span(index, exact_old.len()),
+        None => {
+            let index = fuzzy.text.find(fuzzy_old.as_str()).unwrap_or_default();
+            fuzzy.source_span(index, fuzzy_old.len())
+        }
+    };
+    let crlf = body
+        .find('\n')
+        .is_some_and(|index| body[..index].ends_with('\r'));
+    let new = NormalizedText::new(new, false).text;
+    let new = if crlf { new.replace('\n', "\r\n") } else { new };
+    let mut edited = String::with_capacity(original.len() + new.len());
+    edited.push_str(bom);
+    edited.push_str(&body[..start]);
+    edited.push_str(&new);
+    edited.push_str(&body[end..]);
+    Ok(edited)
+}
+
+/// Text with normalized line endings (and, when fuzzy, folded characters and
+/// no trailing whitespace) plus a map from each output character back to the
+/// source bytes that produced it.
+struct NormalizedText {
+    text: String,
+    /// (output byte offset, source start, source end) for every output char.
+    spans: Vec<(usize, usize, usize)>,
+}
+
+impl NormalizedText {
+    fn new(source: &str, fuzzy: bool) -> Self {
+        let mut normalized = Self {
+            text: String::with_capacity(source.len()),
+            spans: Vec::new(),
+        };
+        let mut line_start = 0;
+        loop {
+            let rest = &source[line_start..];
+            let (line_len, break_len) = match rest.find(['\r', '\n']) {
+                Some(index) if rest[index..].starts_with("\r\n") => (index, 2),
+                Some(index) => (index, 1),
+                None => (rest.len(), 0),
+            };
+            let line = &rest[..line_len];
+            let kept = if fuzzy { line.trim_end() } else { line };
+            for (offset, character) in kept.char_indices() {
+                let start = line_start + offset;
+                let end = start + character.len_utf8();
+                if fuzzy {
+                    normalized.push_folded(character, start, end);
+                } else {
+                    normalized.push(character, start, end);
+                }
+            }
+            if break_len == 0 {
+                return normalized;
+            }
+            let start = line_start + line_len;
+            normalized.push('\n', start, start + break_len);
+            line_start = start + break_len;
+        }
+    }
+
+    fn push(&mut self, character: char, start: usize, end: usize) {
+        self.spans.push((self.text.len(), start, end));
+        self.text.push(character);
+    }
+
+    /// NFKC-like folding for the characters models most often rewrite.
+    fn push_folded(&mut self, character: char, start: usize, end: usize) {
+        let folded = match character {
+            '\u{2018}' | '\u{2019}' | '\u{201a}' | '\u{201b}' => '\'',
+            '\u{201c}' | '\u{201d}' | '\u{201e}' | '\u{201f}' => '"',
+            '\u{2010}'..='\u{2015}' | '\u{2212}' => '-',
+            '\u{00a0}' | '\u{2002}'..='\u{200a}' | '\u{202f}' | '\u{205f}' | '\u{3000}' => ' ',
+            '\u{2026}' => {
+                for _ in 0..3 {
+                    self.push('.', start, end);
+                }
+                return;
+            }
+            // Full-width ASCII forms fold to ASCII, as NFKC does.
+            '\u{ff01}'..='\u{ff5e}' => {
+                char::from_u32(u32::from(character) - 0xff01 + 0x21).unwrap_or(character)
+            }
+            other => other,
+        };
+        self.push(folded, start, end);
+    }
+
+    /// Source byte range covered by `len` output bytes starting at `index`.
+    fn source_span(&self, index: usize, len: usize) -> (usize, usize) {
+        let first = self.spans.partition_point(|span| span.0 < index);
+        let last = self.spans.partition_point(|span| span.0 < index + len);
+        let start = self.spans.get(first).map_or(0, |span| span.1);
+        let end = last
+            .checked_sub(1)
+            .and_then(|last| self.spans.get(last))
+            .map_or(start, |span| span.2);
+        (start, end.max(start))
+    }
+}
+
 fn read_bounded_text(path: &Path, max_bytes: usize) -> Result<String, ToolError> {
     let file = File::open(path).map_err(|error| map_path_io(path, error))?;
     let mut bytes = Vec::with_capacity(max_bytes.min(64 * 1024));
@@ -2797,17 +3521,13 @@ fn terminate_process_tree(child: &mut std::process::Child) {
     #[cfg(unix)]
     {
         if let Ok(pid) = i32::try_from(child.id()) {
-            // Negative PID addresses the process group created above.
-            // SAFETY: `pid` is the live child ID returned by `std::process`;
-            // the child was placed in its own process group before spawning.
-            // `kill` borrows no Rust memory and errors are intentionally
-            // tolerated because the process may have exited concurrently.
-            unsafe {
-                libc::kill(-pid, libc::SIGTERM);
-            }
-            std::thread::sleep(Duration::from_millis(50));
-            // The leader may have died while a descendant ignored SIGTERM.
-            // SAFETY: same process-group invariant as the SIGTERM call.
+            // Negative PID addresses the process group created above. Like
+            // pi's process-tree kill: SIGKILL with no grace sleep.
+            // SAFETY: `pid` is the child ID returned by `std::process`; the
+            // child leads its own process group, and a group ID is not reused
+            // while any member lives, so this is sound even after the leader
+            // was reaped. `kill` borrows no Rust memory and errors are
+            // tolerated because the group may already be gone.
             unsafe {
                 libc::kill(-pid, libc::SIGKILL);
             }
@@ -2837,7 +3557,7 @@ impl Tool for RunCommandTool {
                 "type": "object",
                 "properties": {
                     "command": { "type": "string", "maxLength": MAX_COMMAND_BYTES },
-                    "timeout_ms": { "type": "integer", "minimum": 1, "maximum": 120000 }
+                    "timeout_ms": { "type": "integer", "minimum": 1, "maximum": 86400000 }
                 },
                 "required": ["command"],
                 "additionalProperties": false
@@ -2897,7 +3617,7 @@ fn atomic_write_text(path: &Path, bytes: &[u8]) -> Result<(), ToolError> {
         if let Some(permissions) = permissions {
             file.set_permissions(permissions)?;
         }
-        file.sync_all()
+        crate::session::durable_sync(&file)
     })();
     if let Err(error) = write_result {
         let _ = fs::remove_file(&temporary);
@@ -2912,9 +3632,33 @@ fn atomic_write_text(path: &Path, bytes: &[u8]) -> Result<(), ToolError> {
     // closes the rename durability window after the temporary file was synced.
     #[cfg(unix)]
     {
-        File::open(parent)?.sync_all()?;
+        crate::session::durable_sync(&File::open(parent)?)?;
     }
     Ok(())
+}
+
+/// Keep the last `max` bytes of `text`, starting on a character boundary.
+fn tail_utf8(text: &str, max: usize) -> &str {
+    if text.len() <= max {
+        return text;
+    }
+    let mut start = text.len() - max;
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    &text[start..]
+}
+
+/// pi's model-facing command output budget: the last 2000 lines / 50 KB.
+const MODEL_COMMAND_OUTPUT_LINES: usize = 2000;
+const MODEL_COMMAND_OUTPUT_BYTES: usize = 50 * 1024;
+
+fn model_command_tail(text: &str) -> (&str, bool) {
+    let mut cut = tail_utf8(text, MODEL_COMMAND_OUTPUT_BYTES);
+    if let Some((index, _)) = cut.rmatch_indices('\n').nth(MODEL_COMMAND_OUTPUT_LINES) {
+        cut = &cut[index + 1..];
+    }
+    (cut, cut.len() < text.len())
 }
 
 fn truncate_utf8(text: &str, max: usize) -> String {
@@ -2957,58 +3701,144 @@ struct LimitedStream {
     artifact: Option<crate::tool_output::ArtifactWriter>,
 }
 
-fn read_limited_stream<R: Read>(
-    mut reader: R,
+/// Longest sleep between cancellation checks while a child runs.
+pub(crate) const CANCEL_POLL: Duration = Duration::from_millis(100);
+/// Reap interval once both pipes closed and the child is exiting.
+const EXIT_POLL: Duration = Duration::from_millis(5);
+/// Bound on draining pipes after the process group was killed.
+const DRAIN_GRACE: Duration = Duration::from_millis(100);
+
+/// Block until any of `read` is readable or closed, any of `write` is
+/// writable, or `timeout` elapses. With no descriptors this is a plain sleep.
+#[cfg(unix)]
+pub(crate) fn wait_ready(
+    read: &[std::os::fd::RawFd],
+    write: &[std::os::fd::RawFd],
+    timeout: Duration,
+) {
+    if read.is_empty() && write.is_empty() {
+        std::thread::sleep(timeout);
+        return;
+    }
+    let record = |fd, events| libc::pollfd {
+        fd,
+        events,
+        revents: 0,
+    };
+    let mut polls: Vec<libc::pollfd> = read
+        .iter()
+        .map(|&fd| record(fd, libc::POLLIN))
+        .chain(write.iter().map(|&fd| record(fd, libc::POLLOUT)))
+        .collect();
+    let millis = timeout.as_millis().clamp(1, i32::MAX as u128) as i32;
+    // SAFETY: `polls` is an initialized array of `polls.len()` records whose
+    // descriptors the caller keeps open for the duration of the call. Errors
+    // (EINTR included) just end the wait early; callers re-check their state.
+    unsafe {
+        libc::poll(polls.as_mut_ptr(), polls.len() as libc::nfds_t, millis);
+    }
+}
+
+#[cfg(not(unix))]
+pub(crate) fn wait_ready(_read: &[i32], _write: &[i32], timeout: Duration) {
+    std::thread::sleep(timeout.min(Duration::from_millis(5)));
+}
+
+/// Read every pump that has data, sleeping in poll(2) up to `timeout` first.
+fn pump_streams(pumps: &mut [StreamPump], timeout: Duration) {
+    use std::os::fd::AsRawFd;
+    let fds: Vec<_> = pumps
+        .iter()
+        .filter(|pump| !pump.done())
+        .map(|pump| pump.file.as_raw_fd())
+        .collect();
+    wait_ready(&fds, &[], timeout);
+    for pump in pumps.iter_mut().filter(|pump| !pump.done()) {
+        pump.read_available();
+    }
+}
+
+/// A non-blocking pipe reader that keeps the tail, where errors usually are.
+struct StreamPump {
+    file: std::fs::File,
     max: usize,
-    stop: &AtomicBool,
-    mut artifact: Option<crate::tool_output::ArtifactWriter>,
-) -> Result<LimitedStream, ToolError> {
-    let mut bytes = Vec::with_capacity(max.min(64 * 1024));
-    let mut buffer = [0_u8; 8192];
-    let mut truncated = false;
-    let mut eof = false;
-    let mut error = None;
-    loop {
-        let count = match reader.read(&mut buffer) {
-            Ok(count) => count,
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                if stop.load(Ordering::SeqCst) {
-                    truncated = true;
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(2));
-                continue;
-            }
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Err(read_error) => {
-                error = Some(read_error);
-                break;
-            }
-        };
-        if count == 0 {
-            eof = true;
-            break;
-        }
-        if let Some(writer) = &mut artifact {
-            // Continue draining after a spill failure. The writer permanently
-            // records the failure and marks its terminal artifact incomplete.
-            let _ = writer.append(&buffer[..count]);
-        }
-        let remaining = max.saturating_sub(bytes.len());
-        if remaining > 0 {
-            bytes.extend_from_slice(&buffer[..count.min(remaining)]);
-        }
-        if count > remaining {
-            truncated = true;
+    bytes: Vec<u8>,
+    truncated: bool,
+    eof: bool,
+    error: Option<io::Error>,
+    artifact: Option<crate::tool_output::ArtifactWriter>,
+}
+
+impl StreamPump {
+    fn new(
+        fd: std::os::fd::OwnedFd,
+        max: usize,
+        artifact: Option<crate::tool_output::ArtifactWriter>,
+    ) -> Self {
+        Self {
+            file: fd.into(),
+            max,
+            bytes: Vec::with_capacity(max.min(64 * 1024)),
+            truncated: false,
+            eof: false,
+            error: None,
+            artifact,
         }
     }
-    Ok(LimitedStream {
-        bytes,
-        truncated,
-        eof,
-        error,
-        artifact,
-    })
+
+    fn done(&self) -> bool {
+        self.eof || self.error.is_some()
+    }
+
+    fn read_available(&mut self) {
+        let mut buffer = [0_u8; 8192];
+        loop {
+            let count = match self.file.read(&mut buffer) {
+                Ok(0) => {
+                    self.eof = true;
+                    return;
+                }
+                Ok(count) => count,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => return,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => {
+                    self.error = Some(error);
+                    return;
+                }
+            };
+            if let Some(writer) = &mut self.artifact {
+                // Continue draining after a spill failure. The writer permanently
+                // records the failure and marks its terminal artifact incomplete.
+                let _ = writer.append(&buffer[..count]);
+            }
+            // Trim in amortized batches.
+            self.bytes.extend_from_slice(&buffer[..count]);
+            if self.bytes.len() > self.max.saturating_mul(2).max(16 * 1024) {
+                let excess = self.bytes.len() - self.max;
+                self.bytes.drain(..excess);
+                self.truncated = true;
+            }
+        }
+    }
+
+    fn finish(mut self) -> LimitedStream {
+        // Stopped before EOF: the command's output is not complete.
+        if !self.done() {
+            self.truncated = true;
+        }
+        if self.bytes.len() > self.max {
+            let excess = self.bytes.len() - self.max;
+            self.bytes.drain(..excess);
+            self.truncated = true;
+        }
+        LimitedStream {
+            bytes: self.bytes,
+            truncated: self.truncated,
+            eof: self.eof,
+            error: self.error,
+            artifact: self.artifact,
+        }
+    }
 }
 
 pub(crate) fn validate_call(call: &ToolCall) -> Result<(), ToolError> {
@@ -3023,8 +3853,10 @@ pub(crate) fn validate_call(call: &ToolCall) -> Result<(), ToolError> {
     }
     let serialized = serde_json::to_vec(call).map_err(ToolError::Json)?;
     if serialized.len() > MAX_TOOL_CALL_BYTES {
-        return Err(ToolError::InvalidCall(format!(
-            "serialized call exceeds {MAX_TOOL_CALL_BYTES} bytes"
+        return Err(ToolError::LimitExceeded(format!(
+            "tool call arguments are {} bytes; the limit is {MAX_TOOL_CALL_BYTES} bytes. \
+             Split the content into smaller writes or edits",
+            serialized.len()
         )));
     }
     Ok(())
@@ -3287,11 +4119,11 @@ impl Tool for DagSendTool {
         };
         let store = crate::dag::DagStore::default_store();
         let delivered = store
-            .send(&from, &to, &body)
+            .send(&from, to, body)
             .map_err(ToolError::Unsupported)?;
         let mut piped = Vec::new();
         for target in &delivered {
-            if crate::dag::send_to_worker(target, &body).unwrap_or(false) {
+            if crate::dag::send_to_worker(target, body).unwrap_or(false) {
                 piped.push(target.clone());
             }
         }
@@ -3412,7 +4244,7 @@ impl Tool for DagFinishTool {
         let node_view = store
             .set_status(
                 &node,
-                &status,
+                status,
                 (!summary.is_empty()).then_some(summary.as_str()),
             )
             .map_err(ToolError::Unsupported)?;
@@ -3439,7 +4271,7 @@ impl Tool for DagSpawnTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "dag_spawn".into(),
-            description: "Create a child DAG node and spawn a live headless worker for it. The child gets ZENPI_DAG_NODE/ZENPI_DAG_STORE, and this process keeps its stdin so dag_send can deliver follow-up work while it stays alive.".into(),
+            description: "Create a child DAG node and spawn a live headless worker for it. The child gets ZENPI_DAG_NODE/ZENPI_DAG_STORE, and this process keeps its stdin so dag_send can deliver follow-up work while it stays alive. Bounded: spawn depth <= 3 below the root and at most 8 children per node.".into(),
             input_schema: json!({"type":"object","properties":{
                 "node":{"type":"string"},"parent":{"type":"string"},"prompt":{"type":"string"},
                 "session_dir":{"type":"string"}},
@@ -3472,10 +4304,10 @@ impl Tool for DagSpawnTool {
         let store = crate::dag::DagStore::default_store();
         let parent_ref = parent.as_deref();
         store
-            .upsert(&node, parent_ref)
+            .spawn_child(node, parent_ref)
             .map_err(ToolError::Unsupported)?;
         let session_dir = match optional_string(arguments, "session_dir", "", 1_024)? {
-            value if value.is_empty() => {
+            "" => {
                 let base = store
                     .path()
                     .parent()
@@ -3492,10 +4324,10 @@ impl Tool for DagSpawnTool {
                 }
             }
         };
-        let pid = crate::dag::spawn_worker(&store, &node, &prompt, &session_dir)
+        let pid = crate::dag::spawn_worker(&store, node, prompt, &session_dir)
             .map_err(ToolError::Unsupported)?;
         store
-            .assign_worker(&node, &format!("pid:{pid}"))
+            .assign_worker(node, &format!("pid:{pid}"))
             .map_err(ToolError::Unsupported)?;
         Ok(json!({
             "node": node,
@@ -3619,7 +4451,7 @@ impl Tool for WebSearchTool {
         reject_unknown(arguments, &["query", "num_results"])?;
         let query = required_string(arguments, "query", 4_096)?;
         let num_results = bounded_usize(arguments, "num_results", 5, 1, 10)?;
-        self.invoke_search(&query, num_results, cancelled)
+        self.invoke_search(query, num_results, cancelled)
     }
 }
 

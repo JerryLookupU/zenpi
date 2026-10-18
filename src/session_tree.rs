@@ -179,9 +179,9 @@ impl SessionTree {
         for (index, record) in records.iter().enumerate() {
             check_cancel(cancelled)?;
             if record.kind == "turn" {
-                let turn: Turn = serde_json::from_value(record.value["turn"].clone())?;
+                let turn: Turn = serde_json::from_value(record.value()["turn"].clone())?;
                 let expected = tree.plan_turn(&turn, record.sequence)?;
-                match record.value.get("tree_entry") {
+                match record.value().get("tree_entry") {
                     Some(raw) if tree.enabled => {
                         let entry: TreeEntry = serde_json::from_value(raw.clone())?;
                         if entry != expected {
@@ -197,8 +197,8 @@ impl SessionTree {
                     None => {}
                 }
                 tree.commit_turn(expected);
-            } else if record.kind == "event" && record.value["event"]["type"] == "session_tree" {
-                let event: TreeEvent = serde_json::from_value(record.value["event"].clone())?;
+            } else if record.kind == "event" && record.value()["event"]["type"] == "session_tree" {
+                let event: TreeEvent = serde_json::from_value(record.value()["event"].clone())?;
                 tree.validate_event(&event)?;
                 if let TreeAction::Migrate {
                     source_records,

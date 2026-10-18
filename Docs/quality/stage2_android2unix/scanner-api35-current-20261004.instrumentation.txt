@@ -1,0 +1,491 @@
+INSTRUMENTATION_STATUS: class=zenpi.ScannerActivityTest
+INSTRUMENTATION_STATUS: current=1
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=1
+INSTRUMENTATION_STATUS: stream=
+zenpi.ScannerActivityTest:
+INSTRUMENTATION_STATUS: test=actualCameraPermissionDenialReturnsToProductionPairingScreen
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: zenpi_phase=production_pairing_qr_factory_verified
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: zenpi_phase=scanner_permission_denial_nonblank_verified
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.ScannerActivityTest
+INSTRUMENTATION_STATUS: current=1
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=1
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=actualCameraPermissionDenialReturnsToProductionPairingScreen
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_RESULT: stream=
+
+Time: 2.547
+
+OK (1 test)
+
+
+INSTRUMENTATION_CODE: -1
+
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=1
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=
+zenpi.ScannerResultTest:
+INSTRUMENTATION_STATUS: test=permissionTimeoutAndUnavailablePreserveHostCacheAndAuthority
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=1
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=permissionTimeoutAndUnavailablePreserveHostCacheAndAuthority
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=2
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=savedHostColdForegroundReconnectDoesNotLeaveScannerPermanentlyLoading
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: zenpi_phase=cold_restore_scanner_ready_verified
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=2
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=savedHostColdForegroundReconnectDoesNotLeaveScannerPermanentlyLoading
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=3
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=coldInvitationQueueRejectsRawOversizedInputAndRetainsOriginalDeadline
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: zenpi_phase=cold_invitation_validated_queue_verified
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=3
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=coldInvitationQueueRejectsRawOversizedInputAndRetainsOriginalDeadline
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=4
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=malformedScanNeverBecomesHostOrEchoesSecret
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: zenpi_phase=scanner_raw_payload_fence_verified
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=4
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=malformedScanNeverBecomesHostOrEchoesSecret
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=5
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=unresolvedWriteFencesScannerResultsIncludingErrors
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=5
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=unresolvedWriteFencesScannerResultsIncludingErrors
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=6
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=cancellingQueuedColdDeepLinkStillAllowsLaterScanning
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: zenpi_phase=cold_deep_link_cancel_verified
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=6
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=cancellingQueuedColdDeepLinkStillAllowsLaterScanning
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=7
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=cameraAdmissionImmediatelyStopsLiveReadsBeforeActivityBackgrounds
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: zenpi_phase=scanner_live_read_pause_verified
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=7
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=cameraAdmissionImmediatelyStopsLiveReadsBeforeActivityBackgrounds
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=8
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=cancellingConfirmationRestoresSavedDisplayWithoutRestoringControl
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: zenpi_phase=repair_confirmation_cancel_restores_host_verified
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=8
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=cancellingConfirmationRestoresSavedDisplayWithoutRestoringControl
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=9
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=duplicateLaunchAndLateResultsCannotReplaceCancellationOrNewDeepLink
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: zenpi_phase=scanner_late_result_fence_verified
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=9
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=duplicateLaunchAndLateResultsCannotReplaceCancellationOrNewDeepLink
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=10
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=coldDeepLinkCannotReplaceUnresolvedDurableWorkspaceRequest
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: zenpi_phase=cold_deep_link_pending_fence_verified
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=10
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=coldDeepLinkCannotReplaceUnresolvedDurableWorkspaceRequest
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=11
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=validScanRequiresConfirmationAndNeverPersistsInvitation
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=11
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=validScanRequiresConfirmationAndNeverPersistsInvitation
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=12
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=invalidReplacementQrDoesNotLoseAnExistingConfirmationOrSavedHost
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: zenpi_phase=invalid_replacement_qr_preserves_host_verified
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=12
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=invalidReplacementQrDoesNotLoseAnExistingConfirmationOrSavedHost
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=13
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=coldDeepLinkTakesPrecedenceOverAutomaticSavedHostReconnect
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: zenpi_phase=cold_deep_link_confirmation_verified
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=13
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=coldDeepLinkTakesPrecedenceOverAutomaticSavedHostReconnect
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=14
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=cancellationDoesNotForgetOrInventPairing
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=14
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=cancellationDoesNotForgetOrInventPairing
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=15
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=invitationExpiredWhileQueuedCannotReenterConfirmationAfterRestore
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: zenpi_phase=cold_invitation_expired_queue_verified
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=15
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=invitationExpiredWhileQueuedCannotReenterConfirmationAfterRestore
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.PairingScreenTest
+INSTRUMENTATION_STATUS: current=16
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=
+zenpi.PairingScreenTest:
+INSTRUMENTATION_STATUS: test=localForgetRequiresConfirmationAndCorruptMetadataHasResetRoute
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.PairingScreenTest
+INSTRUMENTATION_STATUS: current=16
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=localForgetRequiresConfirmationAndCorruptMetadataHasResetRoute
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.PairingScreenTest
+INSTRUMENTATION_STATUS: current=17
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=deviceConfirmationCannotSurviveHostReplacementOrAuthorizeDuringScan
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: zenpi_phase=device_confirmation_scope_verified
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.PairingScreenTest
+INSTRUMENTATION_STATUS: current=17
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=deviceConfirmationCannotSurviveHostReplacementOrAuthorizeDuringScan
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.PairingScreenTest
+INSTRUMENTATION_STATUS: current=18
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=selfRevocationRequiresConfirmationSeparateFromLocalForget
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.PairingScreenTest
+INSTRUMENTATION_STATUS: current=18
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=selfRevocationRequiresConfirmationSeparateFromLocalForget
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.PairingScreenTest
+INSTRUMENTATION_STATUS: current=19
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=safetyCodeRequiresHumanEntryAndCancelIsAccessible
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: zenpi_invite_monotonic_ui=expired_confirmation_never_revives_verified
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.PairingScreenTest
+INSTRUMENTATION_STATUS: current=19
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=safetyCodeRequiresHumanEntryAndCancelIsAccessible
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.PairingScreenTest
+INSTRUMENTATION_STATUS: current=20
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=pairedDeviceIdentityIsReadableAndCopiesExactlyOfflineOnNarrowScreen
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.PairingScreenTest
+INSTRUMENTATION_STATUS: current=20
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=pairedDeviceIdentityIsReadableAndCopiesExactlyOfflineOnNarrowScreen
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.PairingScreenTest
+INSTRUMENTATION_STATUS: current=21
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=scannerErrorIsVisibleWithoutRemovingCachedHostAndPendingWriteHidesScan
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: zenpi_sync_status=snapshot_tail_offline_status_verified
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.PairingScreenTest
+INSTRUMENTATION_STATUS: current=21
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=scannerErrorIsVisibleWithoutRemovingCachedHostAndPendingWriteHidesScan
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.PairingScreenTest
+INSTRUMENTATION_STATUS: current=22
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=registeredDeviceDoesNotClaimHostControl
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: zenpi_phase=registered_host_without_invite_verified
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.PairingScreenTest
+INSTRUMENTATION_STATUS: current=22
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=registeredDeviceDoesNotClaimHostControl
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.PairingScreenTest
+INSTRUMENTATION_STATUS: current=23
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=unresolvedRevocationDisablesScanRefreshAndAnotherRevoke
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.PairingScreenTest
+INSTRUMENTATION_STATUS: current=23
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=unresolvedRevocationDisablesScanRefreshAndAnotherRevoke
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.DiffScreenTest
+INSTRUMENTATION_STATUS: current=24
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=
+zenpi.DiffScreenTest:
+INSTRUMENTATION_STATUS: test=boundedPatchFlagsPathAndCloseAreVisibleOnNarrowDisplay
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.DiffScreenTest
+INSTRUMENTATION_STATUS: current=24
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=boundedPatchFlagsPathAndCloseAreVisibleOnNarrowDisplay
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.DiffScreenTest
+INSTRUMENTATION_STATUS: current=25
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=previousMessagePageUsesAnIconAndIsFencedDuringLoadingOfflineOrUnknownWrite
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.DiffScreenTest
+INSTRUMENTATION_STATUS: current=25
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=previousMessagePageUsesAnIconAndIsFencedDuringLoadingOfflineOrUnknownWrite
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.DiffScreenTest
+INSTRUMENTATION_STATUS: current=26
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=readOnlyDiffControlIsFencedOfflineAndDuringPendingWrites
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.DiffScreenTest
+INSTRUMENTATION_STATUS: current=26
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=readOnlyDiffControlIsFencedOfflineAndDuringPendingWrites
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.DeviceIdentityAdmissionTest
+INSTRUMENTATION_STATUS: current=27
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=
+zenpi.DeviceIdentityAdmissionTest:
+INSTRUMENTATION_STATUS: test=wipedOrMismatchedSigningKeyFencesForegroundWithoutReplacingIdentity
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.DeviceIdentityAdmissionTest
+INSTRUMENTATION_STATUS: current=27
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stack=org.junit.ComparisonFailure: expected:<Host [access or ownership changed. Refresh to authenticate again].> but was:<Host [unavailable or project access refused. Displayed data may be stale].>
+	at org.junit.Assert.assertEquals(Assert.java:117)
+	at org.junit.Assert.assertEquals(Assert.java:146)
+	at zenpi.DeviceIdentityAdmissionTest$wipedOrMismatchedSigningKeyFencesForegroundWithoutReplacingIdentity$1.invokeSuspend(DeviceIdentityAdmissionTest.kt:43)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTaskKt.resume(DispatchedTask.kt:231)
+	at kotlinx.coroutines.DispatchedTaskKt.dispatch(DispatchedTask.kt:164)
+	at kotlinx.coroutines.CancellableContinuationImpl.dispatchResume(CancellableContinuationImpl.kt:466)
+	at kotlinx.coroutines.CancellableContinuationImpl.resumeImpl(CancellableContinuationImpl.kt:500)
+	at kotlinx.coroutines.CancellableContinuationImpl.resumeImpl$default(CancellableContinuationImpl.kt:489)
+	at kotlinx.coroutines.CancellableContinuationImpl.resumeUndispatched(CancellableContinuationImpl.kt:587)
+	at kotlinx.coroutines.EventLoopImplBase$DelayedResumeTask.run(EventLoop.common.kt:490)
+	at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:277)
+	at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+	at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source:1)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:48)
+	at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source:1)
+	at zenpi.DeviceIdentityAdmissionTest.wipedOrMismatchedSigningKeyFencesForegroundWithoutReplacingIdentity(DeviceIdentityAdmissionTest.kt:17)
+
+INSTRUMENTATION_STATUS: stream=
+Error in wipedOrMismatchedSigningKeyFencesForegroundWithoutReplacingIdentity(zenpi.DeviceIdentityAdmissionTest):
+org.junit.ComparisonFailure: expected:<Host [access or ownership changed. Refresh to authenticate again].> but was:<Host [unavailable or project access refused. Displayed data may be stale].>
+	at org.junit.Assert.assertEquals(Assert.java:117)
+	at org.junit.Assert.assertEquals(Assert.java:146)
+	at zenpi.DeviceIdentityAdmissionTest$wipedOrMismatchedSigningKeyFencesForegroundWithoutReplacingIdentity$1.invokeSuspend(DeviceIdentityAdmissionTest.kt:43)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTaskKt.resume(DispatchedTask.kt:231)
+	at kotlinx.coroutines.DispatchedTaskKt.dispatch(DispatchedTask.kt:164)
+	at kotlinx.coroutines.CancellableContinuationImpl.dispatchResume(CancellableContinuationImpl.kt:466)
+	at kotlinx.coroutines.CancellableContinuationImpl.resumeImpl(CancellableContinuationImpl.kt:500)
+	at kotlinx.coroutines.CancellableContinuationImpl.resumeImpl$default(CancellableContinuationImpl.kt:489)
+	at kotlinx.coroutines.CancellableContinuationImpl.resumeUndispatched(CancellableContinuationImpl.kt:587)
+	at kotlinx.coroutines.EventLoopImplBase$DelayedResumeTask.run(EventLoop.common.kt:490)
+	at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:277)
+	at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+	at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source:1)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:48)
+	at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source:1)
+	at zenpi.DeviceIdentityAdmissionTest.wipedOrMismatchedSigningKeyFencesForegroundWithoutReplacingIdentity(DeviceIdentityAdmissionTest.kt:17)
+
+INSTRUMENTATION_STATUS: test=wipedOrMismatchedSigningKeyFencesForegroundWithoutReplacingIdentity
+INSTRUMENTATION_STATUS_CODE: -2
+INSTRUMENTATION_STATUS: class=zenpi.PairingActivityIntentTest
+INSTRUMENTATION_STATUS: current=28
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=28
+INSTRUMENTATION_STATUS: stream=
+zenpi.PairingActivityIntentTest:
+INSTRUMENTATION_STATUS: test=externalPairingIntentsReuseTheActivityAndCannotBypassAnInFlightRegistration
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: zenpi_phase=external_pair_intent_single_owner_verified
+INSTRUMENTATION_STATUS_CODE: 0

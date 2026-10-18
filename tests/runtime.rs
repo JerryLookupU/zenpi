@@ -490,6 +490,123 @@ fn shutdown_and_join_is_safe_after_closed_event_was_consumed() {
 }
 
 #[test]
+fn shutdown_observer_preserves_a_completed_result_and_event_order() {
+    let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+    let runner = BackgroundRunner::spawn(
+        move |request: u8, token| {
+            token.mark_completed();
+            ready_tx.send(()).unwrap();
+            Ok::<_, String>(request)
+        },
+        RuntimeConfig::default(),
+    );
+    let id = runner.try_submit(7).unwrap();
+    ready_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    let mut events = Vec::new();
+    runner
+        .shutdown_and_join_with_events(Duration::from_secs(1), |event| events.push(event))
+        .unwrap();
+    assert!(
+        matches!(events.first(), Some(RuntimeEvent::Accepted { id: actual, .. }) if *actual == id)
+    );
+    assert!(matches!(events.last(), Some(RuntimeEvent::Closed)));
+    assert_eq!(
+        events.iter().filter(|event| matches!(event,
+            RuntimeEvent::Completed { id: actual, outcome: JobOutcome::Succeeded(7) } if *actual == id
+        )).count(),
+        1
+    );
+}
+
+#[test]
+fn shutdown_observer_drains_terminal_events_after_worker_already_closed() {
+    let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+    let runner = BackgroundRunner::spawn(
+        move |_request: (), token| {
+            token.mark_completed();
+            ready_tx.send(()).unwrap();
+            Ok::<_, String>(9)
+        },
+        RuntimeConfig::default(),
+    );
+    let id = runner.try_submit(()).unwrap();
+    ready_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    runner.try_shutdown().unwrap();
+    let until = Instant::now() + Duration::from_secs(2);
+    // Do not consume Closed: exercise cleanup's final buffered-event drain.
+    loop {
+        match runner.try_cancel(id) {
+            Err(SubmitError::Closed | SubmitError::SpawnFailed) => break,
+            Ok(()) | Err(SubmitError::QueueFull) => {
+                assert!(Instant::now() < until);
+                thread::sleep(Duration::from_millis(1));
+            }
+        }
+    }
+    let mut closed = 0;
+    let mut completed = 0;
+    runner
+        .shutdown_and_join_with_events(Duration::ZERO, |event| {
+            if matches!(event, RuntimeEvent::Closed) {
+                closed += 1;
+            }
+            if matches!(event, RuntimeEvent::Completed { id: actual, outcome: JobOutcome::Succeeded(9) } if actual == id) {
+                completed += 1;
+            }
+        })
+        .unwrap();
+    assert_eq!(closed, 1);
+    assert_eq!(completed, 1);
+}
+
+#[test]
+fn shutdown_observer_keeps_saturated_channels_moving_without_dropping_terminals() {
+    let runner = BackgroundRunner::spawn(
+        |_request: u8, token| {
+            while !token.is_cancelled() {
+                thread::yield_now();
+            }
+            Ok::<_, String>(())
+        },
+        RuntimeConfig {
+            command_capacity: 1,
+            event_capacity: 1,
+            max_pending: 4,
+            ..RuntimeConfig::default()
+        },
+    );
+    let first = runner.try_submit(1).unwrap();
+    // Accepted fills the event queue, Started blocks the runtime, and the
+    // second submission fills the command queue before shutdown admission.
+    wait_event(
+        &runner,
+        |event| matches!(event, RuntimeEvent::Accepted { id, .. } if *id == first),
+    );
+    let second = runner.try_submit(2).unwrap();
+    let (done_tx, done_rx) = mpsc::sync_channel(1);
+    let worker = thread::spawn(move || {
+        let mut terminals = Vec::new();
+        runner
+            .shutdown_and_join_with_events(Duration::from_secs(1), |event| {
+                if let RuntimeEvent::Completed {
+                    id,
+                    outcome: JobOutcome::Cancelled,
+                } = event
+                {
+                    terminals.push(id);
+                }
+            })
+            .unwrap();
+        done_tx.send(terminals).unwrap();
+    });
+    assert_eq!(
+        done_rx.recv_timeout(Duration::from_secs(3)).unwrap(),
+        vec![first, second]
+    );
+    worker.join().unwrap();
+}
+
+#[test]
 fn shutdown_and_join_drains_saturated_command_and_event_queues() {
     let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let worker_started = Arc::clone(&started);
@@ -535,6 +652,7 @@ fn bounded_shutdown_detaches_a_noncooperative_job() {
     let release = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let worker_started = Arc::clone(&started);
     let worker_release = Arc::clone(&release);
+    let (finished_tx, finished_rx) = mpsc::sync_channel(1);
     let runner = BackgroundRunner::spawn(
         move |_request: (), _token| {
             worker_started.store(true, std::sync::atomic::Ordering::Release);
@@ -544,6 +662,7 @@ fn bounded_shutdown_detaches_a_noncooperative_job() {
             while !worker_release.load(std::sync::atomic::Ordering::Acquire) {
                 thread::yield_now();
             }
+            finished_tx.send(()).unwrap();
             Ok::<_, String>(())
         },
         RuntimeConfig::default(),
@@ -558,9 +677,15 @@ fn bounded_shutdown_detaches_a_noncooperative_job() {
     }
 
     let began = Instant::now();
+    let mut terminals = Vec::new();
     runner
-        .shutdown_and_join_with_grace(Duration::from_millis(25))
+        .shutdown_and_join_with_events(Duration::from_millis(25), |event| {
+            if let RuntimeEvent::Completed { id, outcome } = event {
+                terminals.push((id, outcome));
+            }
+        })
         .unwrap();
+    assert!(matches!(terminals.as_slice(), [(actual, JobOutcome::Cancelled)] if *actual == id));
     assert!(
         began.elapsed() < Duration::from_millis(500),
         "bounded shutdown waited for a non-cooperative job: {:?}",
@@ -570,4 +695,5 @@ fn bounded_shutdown_detaches_a_noncooperative_job() {
     // Let the detached fixture finish before the test exits. The runtime has
     // already dropped its result receiver, so this late result is ignored.
     release.store(true, std::sync::atomic::Ordering::Release);
+    finished_rx.recv_timeout(Duration::from_secs(2)).unwrap();
 }

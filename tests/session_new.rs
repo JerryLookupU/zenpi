@@ -318,6 +318,37 @@ fn running_request_rejects_new_without_cancelling_old_work_then_allows_retry() {
     wire.finish();
 }
 
+#[cfg(feature = "remote")]
+#[test]
+fn committed_new_session_wakes_other_workspace_subscribers_without_repeating_on_retry() {
+    let root = tempdir().unwrap();
+    let child = root.path().join("child");
+    fs::create_dir(&child).unwrap();
+    let mut wire = Wire::new(agent(root.path()));
+    let initial = wire.project("initial", json!({"action":"list"}))["project"].clone();
+    let opened = wire.project("child", json!({"action":"open","cwd":child}));
+    assert_eq!(opened["success"], true, "{opened}");
+    let child_signal =
+        zenpi::remote::wakeup::watch(opened["project"]["session_id"].as_str().unwrap()).unwrap();
+    let selected = wire.project(
+        "initial-again",
+        json!({"action":"select","id":initial["project_id"]}),
+    );
+    assert_eq!(selected["success"], true);
+    let observed = child_signal.revision();
+    let created = wire.command("new-on-initial", "/new");
+    assert_eq!(created["success"], true, "{created}");
+    assert_ne!(child_signal.revision(), observed);
+    let observed = child_signal.revision();
+    assert_eq!(wire.command("new-on-initial", "/new"), created);
+    assert_eq!(child_signal.revision(), observed);
+    assert_eq!(
+        wire.project("final", json!({"action":"list"}))["project"]["session_id"],
+        created["data"]["new_session_id"]
+    );
+    wire.finish();
+}
+
 #[test]
 fn failed_owner_checkpoint_preserves_old_session_and_removes_candidate() {
     let root = tempdir().unwrap();
@@ -672,34 +703,17 @@ fn durable_pending_input_blocks_new_but_unknown_operation_does_not() {
 // The provider is deterministic here; the JSONL owner, session checkpoint,
 // approval policy, immutable worker gate and filesystem tool are real.
 fn new_policy_agent(root: &Path) -> Agent {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use zenpi::backend::{Backend, BackendError, Completion, CompletionRequest};
-    struct Writes(AtomicUsize);
-    impl Backend for Writes {
-        crate::support::controlled_local_backend!();
-        fn complete(&self, _: CompletionRequest<'_>) -> Result<Completion, BackendError> {
-            let call = self.0.fetch_add(1, Ordering::SeqCst);
-            let mut response = Completion::text("policy fixture reply");
-            if call.is_multiple_of(2) {
-                response.content.clear();
-                response.tool_calls.push(zenpi::tools::ToolCall {
-                    id: format!("write-{}", call / 2),
-                    name: "write_file".into(),
-                    arguments: json!({
-                        "path": format!("note-{}.txt", call / 2),
-                        "content": "policy fixture write"
-                    }),
-                });
-            }
-            Ok(response)
-        }
-        fn name(&self) -> &str {
-            "new-policy-fixture"
-        }
-    }
+    use support::scripted::{ScriptedBackend, call, text};
+    let script = (0..16).flat_map(|n| {
+        let args = json!({"path": format!("note-{n}.txt"), "content": "policy fixture write"});
+        [
+            call(&format!("write-{n}"), "write_file", args),
+            text("policy fixture reply"),
+        ]
+    });
     let mut agent = Agent::new(
         SessionStore::open_in_workspace(root.join("initial.jsonl"), root).unwrap(),
-        Box::new(Writes(AtomicUsize::new(0))),
+        Box::new(ScriptedBackend::new(script)),
     );
     agent.set_tools(
         ToolRegistry::with_all_builtins().unwrap(),

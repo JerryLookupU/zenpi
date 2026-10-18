@@ -200,7 +200,12 @@ fn cancellation_during_slow_body_drops_one_connection_without_retry() {
         stream
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
-        assert_eq!(stream.read(&mut b).unwrap(), 0);
+        // Closed either way: FIN (0) or RST, never left open.
+        match stream.read(&mut b) {
+            Ok(0) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+            other => panic!("connection survived cancellation: {other:?}"),
+        }
     });
     let cancelled = Arc::new(AtomicBool::new(false));
     let flag = cancelled.clone();
@@ -334,7 +339,9 @@ fn streamed_parts_signatures_empty_text_and_parallel_calls_stay_ordered() {
 fn malformed_finish_signature_usage_and_candidate_never_publish_calls() {
     let base = answer(signed(), "STOP");
     let mut cases = vec![];
-    for stop in ["MAX_TOKENS", "SAFETY", "MALFORMED_FUNCTION_CALL", "OTHER"] {
+    // MAX_TOKENS is a length stop that keeps its content (ZE-221,
+    // tests/provider_replay.rs); the core never dispatches its calls.
+    for stop in ["SAFETY", "MALFORMED_FUNCTION_CALL", "OTHER"] {
         let mut v = base.clone();
         v["candidates"][0]["finishReason"] = json!(stop);
         cases.push(v);
@@ -363,9 +370,8 @@ fn malformed_finish_signature_usage_and_candidate_never_publish_calls() {
     let mut v = base.clone();
     v["candidates"][0]["index"] = json!(1);
     cases.push(v);
-    let mut wrong_model = base.clone();
-    wrong_model["modelVersion"] = json!("different-provider-model");
-    cases.push(wrong_model);
+    // ZE-223: a different served modelVersion is recorded, not rejected
+    // (see served_model_version_is_recorded_not_rejected).
     for v in cases {
         let (url, _, h) = serve(vec![("application/json".into(), v.to_string())]);
         let mut done = false;
@@ -381,6 +387,21 @@ fn malformed_finish_signature_usage_and_candidate_never_publish_calls() {
         assert!(!done);
         h.join().unwrap();
     }
+}
+#[test]
+fn served_model_version_is_recorded_not_rejected() {
+    let mut v = answer(signed(), "STOP");
+    v["modelVersion"] = json!("gemini-flash-latest-served-0915");
+    let (url, _, h) = serve(vec![("application/json".into(), v.to_string())]);
+    let c = backend(url)
+        .complete(CompletionRequest::new("u", &user(), None, &[tool()]))
+        .unwrap();
+    h.join().unwrap();
+    assert_eq!(c.model.as_deref(), Some(MODEL));
+    assert!(
+        c.annotations.iter().any(|a| a["type"] == "gemini_finish"
+            && a["model_version"] == "gemini-flash-latest-served-0915")
+    );
 }
 #[test]
 fn truncated_and_post_terminal_streams_fail_closed() {
@@ -726,7 +747,7 @@ fn first_text_precedes_finish_and_split_utf8_crlf_is_supported() {
 }
 
 #[test]
-fn model_selection_rejects_opaque_history_before_journal_but_plain_text_can_switch() {
+fn model_selection_moves_opaque_history_to_another_model_and_plain_text_can_switch() {
     use zenpi::{core::Agent, session::SessionStore};
     let (url, _, h) = serve(vec![(
         "application/json".into(),
@@ -744,9 +765,9 @@ fn model_selection_rejects_opaque_history_before_journal_but_plain_text_can_swit
     a.metadata = Some(json!({"annotations":c.annotations}));
     session.append_turn(a).unwrap();
     let mut agent = Agent::new(session, Box::new(backend("http://127.0.0.1:1".into())));
-    let before = std::fs::read(&path).unwrap();
-    assert!(agent.set_model(Some("compatible-future".into())).is_err());
-    assert_eq!(std::fs::read(&path).unwrap(), before);
+    // ZE-227: the signed turn replays on another model as plain text, so the
+    // switch is accepted (and switching back keeps the signed replay).
+    agent.set_model(Some("compatible-future".into())).unwrap();
     agent.set_model(Some(MODEL.into())).unwrap();
     let path = dir.path().join("plain.jsonl");
     let mut session = SessionStore::open(&path).unwrap();
@@ -789,7 +810,7 @@ fn production_incomplete_stream_never_executes_and_restart_stays_readable() {
 }
 
 #[test]
-fn resume_rejects_saved_model_incompatible_with_signed_history_without_changing_owner() {
+fn resume_moves_signed_history_to_the_saved_model() {
     use zenpi::{core::Agent, session::SessionStore};
     let dir = tempdir().unwrap();
     let target = dir.path().join("target.jsonl");
@@ -807,13 +828,14 @@ fn resume_rejects_saved_model_incompatible_with_signed_history_without_changing_
     let old = dir.path().join("old.jsonl");
     let mut agent = Agent::new(SessionStore::open(&old).unwrap(), Box::new(b));
     let before = agent.snapshot();
-    let bytes = std::fs::read(&old).unwrap();
-    assert!(agent.resume_session(&target).is_err());
-    assert_eq!(
+    // ZE-227: a saved model other than the signer is no longer a conflict;
+    // the signed turn is replayed to it as plain text.
+    agent.resume_session(&target).unwrap();
+    assert_ne!(
         agent.snapshot().session.session_id,
         before.session.session_id
     );
-    assert_eq!(std::fs::read(&old).unwrap(), bytes);
+    assert_eq!(agent.model(), Some("future-model"));
 }
 
 #[test]

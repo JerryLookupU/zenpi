@@ -23,7 +23,7 @@ fn snapshot(root: &Path) -> std::sync::Arc<zenpi::resource_loader::ResourceSnaps
         "---\ndescription: Greeting template\n---\nHello $1\n",
     )
     .unwrap();
-    fs::write(root.join("prompts/review.md"), "Reserved name body\n").unwrap();
+    fs::write(root.join("prompts/diff.md"), "Reserved name body\n").unwrap();
     ResourceLoader::new(ResourcePaths {
         user_skills: root.join("missing-user"),
         project_skills: root.join("skills"),
@@ -277,7 +277,7 @@ fn catalog_contains_actual_explicit_resources_and_source_but_not_bodies() {
         Ok(InputRoute::Prompt(_))
     ));
     assert!(matches!(
-        state.route_catalog_input("/review"),
+        state.route_catalog_input("/diff"),
         Ok(InputRoute::Slash(_))
     ));
     assert!(state.route_catalog_input("/not-a-resource").is_err());
@@ -520,7 +520,7 @@ fn reasoning_menu_intersects_wire_capability_and_registry() {
     use zenpi::{backend::OpenAiWireApi, tui::dispatch_reasoning_input};
     let root = tempdir().unwrap();
     let mut agent = model_agent(root.path(), OpenAiWireApi::ChatCompletions);
-    agent.set_model(Some("gpt-5.2".into())).unwrap();
+    // gpt-4.1 declares no levels, so Chat offers only the default.
     let mut s = state(root.path());
     s.update_model_catalog(&agent).unwrap();
     s.set_input("/reasoning ");
@@ -528,6 +528,13 @@ fn reasoning_menu_intersects_wire_capability_and_registry() {
     dispatch_reasoning_input(&mut s, Some(&mut agent), "/reasoning high");
     assert_eq!(agent.reasoning_effort(), None);
     assert_eq!(s.input(), "/reasoning high");
+    // ZE-224: a model with levels offers them on Chat too.
+    agent.set_model(Some("gpt-5.2".into())).unwrap();
+    s.update_model_catalog(&agent).unwrap();
+    s.set_input("/reasoning ");
+    assert!(s.slash_choices().contains(&"/reasoning high".to_string()));
+    assert!(!s.slash_choices().contains(&"/reasoning max".to_string()));
+    s.set_input("");
     dispatch_reasoning_input(&mut s, Some(&mut agent), "/reasoning high extra");
     assert_eq!(s.input(), "/reasoning high extra");
 }

@@ -424,7 +424,7 @@ fn only_a_host_answer_source_creates_a_standing_grant() {
     // missing source still restores.
     assert_eq!(
         policy
-            .with_remembered_events(&[base.clone()])
+            .with_remembered_events(std::slice::from_ref(&base))
             .per_tool
             .get("write_file"),
         Some(&ApprovalDecision::Allow)
@@ -517,4 +517,64 @@ fn remember_confirm_and_reject_feedback_are_explicit_steps() {
         s.approval_reject_message("stage2").as_deref(),
         Some("use a safer path")
     );
+}
+
+/// ZS1-182: the production approval view names the current stage and its
+/// keys, so the operator always knows what Enter and Esc will do.
+#[test]
+fn approval_view_shows_the_current_stage_and_its_keys() {
+    use ratatui::{Terminal, backend::TestBackend};
+    let screen = |s: &mut TuiState| {
+        let mut terminal = Terminal::new(TestBackend::new(160, 48)).unwrap();
+        terminal.draw(|f| s.render_bentobox(f, "test")).unwrap();
+        let b = terminal.backend().buffer();
+        (0..b.area.height)
+            .map(|y| {
+                (0..b.area.width)
+                    .map(|x| b[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let mut s = TuiState::default();
+    s.present_approval(request("hints"));
+    let select = screen(&mut s);
+    assert!(select.contains("Enter DENY now"), "{select}");
+    assert!(select.contains("r remember"), "{select}");
+
+    plain(&mut s, KeyCode::Char('r'));
+    let confirm = screen(&mut s);
+    assert!(
+        confirm.contains("Confirm remember? Enter allow+remember · Esc cancel"),
+        "{confirm}"
+    );
+
+    plain(&mut s, KeyCode::Esc);
+    plain(&mut s, KeyCode::Char('n'));
+    for character in "why".chars() {
+        plain(&mut s, KeyCode::Char(character));
+    }
+    let reject = screen(&mut s);
+    assert!(
+        reject.contains("Reject message (optional): why"),
+        "{reject}"
+    );
+    assert!(reject.contains("Enter deny · Esc back"), "{reject}");
+}
+
+#[test]
+fn retiring_from_another_tab_clears_the_owning_projects_modal() {
+    // ZE-251: the request lives in tab 0; it is retired while tab 1 is active.
+    let mut s = TuiState::default();
+    s.present_approval(request("bg"));
+    s.open_project_tab("other");
+    assert_eq!(s.approval_count(), 0);
+    s.retire_approval("bg");
+    s.select_project_tab(0);
+    assert_eq!(s.approval_count(), 0, "background modal must not survive");
+    assert!(!matches!(
+        plain(&mut s, KeyCode::Enter),
+        TuiAction::RespondApproval { .. }
+    ));
 }

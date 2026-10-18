@@ -11,7 +11,8 @@ use zenpi::{
         substitute_args,
     },
     resource_loader::{
-        ResourceError, ResourceKind, ResourceLoader, ResourcePaths, TextResourcePath,
+        ResourceError, ResourceKind, ResourceLoader, ResourcePaths, ResourceSnapshot,
+        TextResourcePath,
     },
     skills::{SkillInvocation, SkillScope},
 };
@@ -162,6 +163,10 @@ fn catalogue_discovery_frontmatter_source_and_nonrecursive_expansion() {
     assert_eq!(set.templates().count(), 2);
     let template = set.get("review").unwrap();
     assert_eq!(template.description, "first line\nsecond line\n");
+    assert_eq!(template.remote_description(), "first line\nsecond line\n");
+    let plain = set.get("plain").unwrap();
+    assert_eq!(plain.description, "日本語 first line");
+    assert_eq!(plain.remote_description(), "");
     assert_eq!(template.argument_hint.as_deref(), Some("<target>"));
     assert_eq!(template.scope, SkillScope::User);
     assert_eq!(template.source_hash.len(), 64);
@@ -173,6 +178,70 @@ fn catalogue_discovery_frontmatter_source_and_nonrecursive_expansion() {
         assert!(set.expand(unmatched, || false).unwrap().is_none());
     }
     assert!(!temp.path().join("marker").exists());
+}
+
+#[test]
+fn remote_description_requires_loader_verified_explicit_metadata_and_keeps_local_fallback() {
+    let temp = tempdir().unwrap();
+    for (name, source) in [
+        ("plain", "PRIVATE_BODY_FIRST_LINE\nnext body"),
+        ("empty", "---\ndescription: ''\n---\nPRIVATE_EMPTY_BODY\n"),
+        (
+            "whitespace",
+            "---\ndescription: '   '\n---\nPRIVATE_WHITESPACE_BODY\n",
+        ),
+        (
+            "absent",
+            "---\nargument-hint: '<target>'\n---\nPRIVATE_ABSENT_BODY\n",
+        ),
+        (
+            "explicit",
+            "\u{feff}---\r\ndescription: 'Public label'\r\n---\r\nPRIVATE_EXPLICIT_BODY\r\n",
+        ),
+    ] {
+        put(temp.path(), &format!("prompts/{name}.md"), source);
+    }
+    let set = PromptTemplates::load(
+        &temp.path().join("none"),
+        &temp.path().join("prompts"),
+        &[],
+        || false,
+    )
+    .unwrap();
+    for name in ["plain", "empty", "absent"] {
+        let item = set.get(name).unwrap();
+        assert!(item.description.starts_with("PRIVATE_"));
+        assert_eq!(item.remote_description(), "");
+        assert_eq!(
+            set.expand(&format!("/{name}"), || false)
+                .unwrap()
+                .unwrap()
+                .content,
+            item.content
+        );
+    }
+    assert_eq!(
+        set.get("explicit").unwrap().remote_description(),
+        "Public label"
+    );
+    assert_eq!(set.get("whitespace").unwrap().description, "   ");
+    assert_eq!(set.get("whitespace").unwrap().remote_description(), "");
+    let item = set.get("explicit").unwrap();
+    let serialized = serde_json::to_value(item).unwrap();
+    assert!(
+        !serialized
+            .as_object()
+            .unwrap()
+            .contains_key("description_explicit")
+    );
+    let restored: zenpi::prompt_templates::PromptTemplate =
+        serde_json::from_value(serialized).unwrap();
+    assert_eq!(restored.description, "Public label");
+    assert_eq!(restored.remote_description(), "");
+    let mut forged = serde_json::to_value(item).unwrap();
+    forged["description_explicit"] = serde_json::json!(true);
+    let restored: zenpi::prompt_templates::PromptTemplate = serde_json::from_value(forged).unwrap();
+    assert_eq!(restored.remote_description(), "");
 }
 
 #[test]
@@ -322,7 +391,7 @@ fn cancellation_at_every_candidate_checkpoint_keeps_old_arc() {
 }
 
 #[test]
-fn bad_yaml_duplicate_templates_and_duplicate_text_resources_do_not_publish() {
+fn bad_templates_are_skipped_and_duplicates_do_not_publish() {
     let temp = tempdir().unwrap();
     fixtures(temp.path(), "v1");
     let mut loader = ResourceLoader::new(config(temp.path())).unwrap();
@@ -335,9 +404,11 @@ fn bad_yaml_duplicate_templates_and_duplicate_text_resources_do_not_publish() {
         " ",
     ] {
         put(temp.path(), "user-prompts/review.md", invalid);
-        assert!(loader.reload(|| false).is_err(), "{invalid}");
-        assert!(Arc::ptr_eq(&first, &loader.snapshot()));
+        let snapshot = loader.reload(|| false).unwrap();
+        assert_skipped_template(&snapshot, "user-prompts/review.md", invalid);
     }
+    assert!(!Arc::ptr_eq(&first, &loader.snapshot()));
+    let published = loader.snapshot();
     fixtures(temp.path(), "v2");
     let a = put(temp.path(), "a/review.md", "a");
     let b = put(temp.path(), "b/review.md", "b");
@@ -347,13 +418,13 @@ fn bad_yaml_duplicate_templates_and_duplicate_text_resources_do_not_publish() {
         loader.reload_with_paths(bad, || false),
         Err(ResourceError::Template(TemplateError::Duplicate { .. }))
     ));
-    assert!(Arc::ptr_eq(&first, &loader.snapshot()));
+    assert!(Arc::ptr_eq(&published, &loader.snapshot()));
     let mut duplicate = loader.paths().clone();
     duplicate
         .text_resources
         .push(duplicate.text_resources[0].clone());
     assert!(loader.reload_with_paths(duplicate, || false).is_err());
-    assert!(Arc::ptr_eq(&first, &loader.snapshot()));
+    assert!(Arc::ptr_eq(&published, &loader.snapshot()));
 }
 
 #[test]
@@ -429,20 +500,21 @@ fn expansion_limits_and_cancellation_never_return_partial_prompt() {
 }
 
 #[test]
-fn bad_utf8_oversize_and_symlinks_preserve_previous_snapshot() {
+fn bad_utf8_oversize_and_symlink_templates_are_skipped() {
     let temp = tempdir().unwrap();
     fixtures(temp.path(), "v1");
     let mut loader = ResourceLoader::new(config(temp.path())).unwrap();
-    let first = loader.reload(|| false).unwrap();
+    loader.reload(|| false).unwrap();
     fs::write(temp.path().join("user-prompts/review.md"), [255u8]).unwrap();
-    assert!(loader.reload(|| false).is_err());
+    let snapshot = loader.reload(|| false).unwrap();
+    assert_skipped_template(&snapshot, "user-prompts/review.md", "utf-8");
     fs::write(
         temp.path().join("user-prompts/review.md"),
         vec![b'x'; 128 * 1024 + 1],
     )
     .unwrap();
-    assert!(loader.reload(|| false).is_err());
-    assert!(Arc::ptr_eq(&first, &loader.snapshot()));
+    let snapshot = loader.reload(|| false).unwrap();
+    assert_skipped_template(&snapshot, "user-prompts/review.md", "oversize");
     #[cfg(unix)]
     {
         fs::remove_file(temp.path().join("user-prompts/review.md")).unwrap();
@@ -451,7 +523,23 @@ fn bad_utf8_oversize_and_symlinks_preserve_previous_snapshot() {
             temp.path().join("user-prompts/review.md"),
         )
         .unwrap();
-        assert!(loader.reload(|| false).is_err());
-        assert!(Arc::ptr_eq(&first, &loader.snapshot()));
+        let snapshot = loader.reload(|| false).unwrap();
+        assert_skipped_template(&snapshot, "user-prompts/review.md", "symlink");
     }
+}
+
+fn assert_skipped_template(snapshot: &ResourceSnapshot, path: &str, label: &str) {
+    let diagnostics = snapshot.diagnostics();
+    assert_eq!(diagnostics.len(), 1, "{label}: {diagnostics:?}");
+    assert!(
+        diagnostics[0].path.ends_with(path),
+        "{label}: {diagnostics:?}"
+    );
+    assert!(
+        snapshot
+            .templates
+            .templates()
+            .all(|t| !t.source.ends_with(path)),
+        "{label}"
+    );
 }

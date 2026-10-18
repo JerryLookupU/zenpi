@@ -1,25 +1,26 @@
 # zenpi Execution Specification
 
-> Frozen repository-local policy for the `execution-cron-builder` workflow.
-> This file describes how work is claimed, isolated, validated, integrated,
-> and published. It is not a second product checklist; the authoritative
-> checklist is `Zenpi_Execution_Blueprint.md`. Its v1 receipt is a workflow
-> record, not proof of end-user product usability; the versioned v2.3.0 draft
-> (`Docs/Zenpi_Execution_Blueprint_v2.md`) is the current UX audit and re-plan.
+> Repository-local policy for the b3ehive execution workflow. This file
+> describes how work is claimed, isolated, validated, integrated and
+> published. It is not a second product checklist: the single authority is
+> `Docs/Zenpi_Execution_Blueprint_v2.md` (its §2 criteria, §4 gates and §7
+> frozen / not-do lists). The v1, Stage 1 and Stage 2 blueprints are
+> superseded records under `Docs/archive/`.
 
 ```yaml
 schema_version: execution-spec/v1
 repository_root: /Users/mac/Github/zenpi
-authoritative_blueprint: Docs/Zenpi_Execution_Blueprint.md
-gantt_projection: Docs/Zenpi_Execution_Gantt.md
+authoritative_blueprint: Docs/Zenpi_Execution_Blueprint_v2.md
+gantt_projection: Docs/Zenpi_Execution_Blueprint_v2_Gantt.md
+active_selector: Docs/execution/active_requirement.json
 gantt_naming: exact-prefix-Blueprint-to-Gantt
 checklist_marks: '[ ]|[_]|[x]'
-stable_id_pattern: '^(ZP|CF)-[0-9]{3}$'
+stable_id_pattern: '^ZE-[0-9]{3}$'
 worker_lifecycle: bounded
 desired_live_workers: 2
 hard_worker_cap: 2
 nested_agents: forbidden
-worker_transport: tmux_codex_tui
+worker_transport: isolated_git_worktree_subagent
 worker_goal_command: /goal
 app_server_workers: forbidden
 automatic_goal_continuation: forbidden
@@ -28,6 +29,20 @@ product_modes: [tui, headless]
 per_item_code_loc_cap: 5000
 loc_policy: "every Blueprint item has an integer Estimated LOC with 0 <= value < 5000; scope is a per-item forecast of implementation/test code attributable to the row (Rust/Python/Shell), not a current-file inventory; docs/config/generated artifacts count 0; the declared forecast has a strict upper bound of 5000 (exclusive); aggregate repository LOC is informational"
 ```
+
+## 0. Accepted capability (2026-10-15)
+
+Only items marked `[x]` in the v2 blueprint are claimed. In short: TUI and
+headless share one core; one OS process per agent with blocking IO (no
+tokio); pi-style sessions (`-c`, `--no-session`), compaction, tool semantics
+and skills/templates; the provider transport keeps one pooled agent per
+backend with calling-thread cancellation; journals and WAL fsync only at
+durability boundaries with POSIX `fsync`. `G-LOAD(2000)` passes the §2.1
+budget (`Docs/quality/load/g-load-2000.json`). Remote pairing and the
+Android host are behind the `remote` cargo feature (default off).
+Frozen modules are listed in the v2 blueprint §7.1 and are kept as-is. The
+Rust quality gate is G-RUST (fmt, clippy `-D warnings` for default and
+`--all-features`, no new `allow(dead_code|unused)`).
 
 ## 1. Product boundary
 
@@ -69,10 +84,11 @@ foundation row does not implicitly close any `CF-*` row. The 5,000 LOC cap is
 evaluated independently for each item; there is neither a 5,000-item target
 nor an aggregate 5,000-line cap.
 
-### 1.1 Proposed account service extension (2026-09-13)
+### 1.1 Account service extension (superseded)
 
-CF-901 through CF-910 add account routing and a shared connection service as
-unaccepted product work. Their detailed contracts are
+Not done: the v2 blueprint §7.2 rules out an account broker or multi-tenant
+service for a single-user CLI. The original proposal (CF-901..910) added
+account routing and a shared connection service as unaccepted product work. Their detailed contracts are
 [provider and account routing](feat-provider-account-routing.md),
 [scheduler plugins](feat-account-scheduler-plugins.md), and
 [local account broker](feat-account-broker.md). These documents specify
@@ -229,11 +245,12 @@ Input is framed strictly by LF (U+2028/U+2029 are payload characters). A
 malformed non-empty frame gets a stable error code, never mutates session state,
 and the loop remains usable; blank LF frames are ignored. Stdout is
 protocol-only; diagnostics and tracing go to stderr. EOF performs an orderly
-shutdown and flush. The borrowed synchronous embedding API (`run_stdio`) reads
-the next command after the current provider request; the production owned loop
-(`run_stdio_owned`/`run_async_streams`) uses a background worker and accepts
-cooperative `cancel`/live-steer control. Both remain subject to the documented
-blocking `ureq` socket-read limitation.
+shutdown and flush. The only loop is the owned async host
+(`run_stdio_owned`/`run_async_streams`): a background worker runs the turn
+while the host accepts `cancel` and live steering, sleeping until an event
+(ZE-300). Provider cancellation reaches DNS, connect, TLS, headers and body
+reads within one 250 ms poll slice (ZE-301); the synchronous `run_stdio`
+loop was removed (ZE-243).
 
 ### 3.4 Handoff
 

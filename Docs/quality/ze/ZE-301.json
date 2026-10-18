@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-301",
+  "claim_id": "ZE-301@blueprint-4.0.0",
+  "from": "master",
+  "to": "master",
+  "summary": "One ureq agent per backend (keep-alive pool) with per-request cancellation scoped to the calling thread; no send thread, no 5 ms park loop, no 100 ms body receive-timeout polling; socket polls fall back to 250 ms slices.",
+  "changed_files": [
+    "src/backend.rs",
+    "src/backend/transport.rs",
+    "src/auth/codex.rs",
+    "tests/stage1_transport.rs",
+    "tests/stage1_anthropic.rs",
+    "Docs/Zenpi_Execution_Blueprint_v2.md",
+    "Docs/quality/ze/ZE-301.json"
+  ],
+  "diff_stat": "6 files changed, 118 insertions(+), 84 deletions(-)",
+  "commands_run": [
+    "cargo fmt --all",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo clippy --locked --all-targets --all-features -- -D warnings",
+    "cargo test --locked --all-features --test stage1_transport --test backend --test provider_replay --test provider_admission --test provider_multimodal --test prompt_cache --test stage1_anthropic --test stage1_gemini --test stage1_chat_stream --test explicit_runtime --test length_truncation --test empty_final_answer",
+    "cargo test --locked --all-features --lib -- backend auth protocols",
+    "A/B: consecutive_requests_to_one_host_reuse_the_connection on old code",
+    "A/B: temporary getrusage probe over a 4 s delayed provider response"
+  ],
+  "validation_result": {
+    "fmt": "ok",
+    "clippy_default": "ok",
+    "clippy_all_features": "ok",
+    "stage1_transport": "10 passed",
+    "provider_suites": "all passed",
+    "lib_backend_auth_protocols": "129 passed",
+    "reuse_test_old_code": "fails: Connection refused (new connection per request)",
+    "context_switches_4s_wait_old": 712,
+    "context_switches_4s_wait_new": 21,
+    "threads_per_inflight_request": "caller only (no spawn in transport)"
+  },
+  "notes": "Zero wakeups would need a wake fd signalled by every canceller (runtime token, approval epoch, closures); cancellation is a plain flag, so a 250 ms fallback poll bounds latency (< 700 ms tests) at ~4 wakeups/s. A cancelled connection may now close with RST instead of FIN; stage1_anthropic accepts both, as stage1_transport already did. Outside owned paths: src/auth/codex.rs (3 lines, new client/send_bytes signature).",
+  "created_at": "2026-10-14T18:30:58Z",
+  "digest": "6f9365adb1d7e8349d4219e49e126235e5761610120c64a0309df5e4dcfa6916"
+}

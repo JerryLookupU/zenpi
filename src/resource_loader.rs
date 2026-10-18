@@ -69,6 +69,16 @@ pub struct ResourceSnapshot {
 }
 
 impl ResourceSnapshot {
+    /// Files skipped during load (bad SKILL.md, template or ignore file).
+    pub fn diagnostics(&self) -> Vec<crate::skills::LoadDiagnostic> {
+        self.skills
+            .diagnostics()
+            .iter()
+            .chain(self.templates.diagnostics())
+            .cloned()
+            .collect()
+    }
+
     pub fn collisions(&self) -> Vec<ResourceCollision> {
         self.skills
             .collisions()

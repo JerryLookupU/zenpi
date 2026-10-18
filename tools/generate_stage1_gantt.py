@@ -12,7 +12,7 @@ from pathlib import Path
 import validate_stage1_blueprint as v
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT = ROOT / 'Docs/stage_1_v3_pi_mono_gantt'
+OUT = ROOT / 'Docs/archive/stage1/stage_1_v3_pi_mono_gantt'
 # Additional evidence never replaces the authoritative three checkbox states.
 REPAIRS = {
     'ZS1-122': ('历史搜索Super误插入已修复：主控原1项失败→128项Rust通过，新debug真实PTY18项通过（草稿恢复/终端flags/退出/最终0HTTP）；普通输入与Ctrl-G既有修复保留，整项待验', 'history-super-integration-3.1.21', 'Docs/quality/stage1/ZS1-122/master-history-super-3.1.21/review.md'),

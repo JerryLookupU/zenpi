@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "read_operations": [
+    "inspect", "diff", "transcript_read", "files_list", "resources_list",
+    "terminal_read", "session_list", "model_status", "workspace_list", "subtab_list"
+  ],
+  "write_operations": [
+    "resources_reload", "terminal_open", "terminal_input", "terminal_resize",
+    "session_new", "session_resume", "session_rename", "model_select", "reasoning_select",
+    "workspace_open", "workspace_select", "workspace_close", "subtab_add", "subtab_select",
+    "subtab_move", "subtab_rename", "subtab_close", "set_concurrency", "prompt", "steer",
+    "approve", "cancel", "device_revoke_self"
+  ],
+  "execution_states": ["accepted", "running", "succeeded", "failed", "cancelled", "unknown_outcome"],
+  "messages": {
+    "hello": {"channel":"control","fields":["type","supported_versions"],"payload":{"type":"hello","supported_versions":[1]},"envelope":{}},
+    "welcome": {"channel":"control","fields":["type","selected_version"],"payload":{"type":"welcome","selected_version":1},"envelope":{}},
+    "challenge": {"channel":"control","fields":["type","nonce","host_fingerprint"],"payload":{"type":"challenge","nonce":"ccccccccccccccccccccccccccccccccccccccccccc","host_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"envelope":{}},
+    "authenticate": {"channel":"control","fields":["type","device_id","signature"],"payload":{"type":"authenticate","device_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","signature":"proof"},"envelope":{"id":"auth"}},
+    "revoke_status": {"channel":"control","fields":["type","device_id","request_id","signature"],"payload":{"type":"revoke_status","device_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","request_id":"revoke","signature":"proof"},"envelope":{"id":"status"}},
+    "pair": {"channel":"control","fields":["type","token","fingerprint","device_name","public_key","signature"],"payload":{"type":"pair","token":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","fingerprint":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","device_name":"phone","public_key":"BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","signature":"proof"},"envelope":{"id":"pair"}},
+    "request": {"channel":"control","fields":["type","operation","arguments"],"payload":{"type":"request","operation":"inspect","arguments":{}},"envelope":{"id":"read"}},
+    "response": {"channel":"control","fields":["type","result"],"payload":{"type":"response","result":{}},"envelope":{"id":"reply","execution_state":"succeeded"}},
+    "event": {"channel":"event","fields":["type","name","data"],"payload":{"type":"event","name":"transcript_turn","data":{}},"envelope":{"session_id":"session","sequence":0}},
+    "ack": {"channel":"control","fields":["type","cursor"],"payload":{"type":"ack","cursor":{"session_id":"session","next_sequence":0}},"envelope":{"session_id":"session"}},
+    "resume": {"channel":"control","fields":["type","cursor","limit"],"payload":{"type":"resume","cursor":{"session_id":"session","next_sequence":0},"limit":128},"envelope":{"session_id":"session"}},
+    "subscribe": {"channel":"control","fields":["type","cursor","limit","duration_ms"],"payload":{"type":"subscribe","cursor":{"session_id":"session","next_sequence":0},"limit":128,"duration_ms":1000},"envelope":{"id":"subscribe","project_id":"project","session_id":"session"}},
+    "snapshot": {"channel":"bulk","fields":["type","cursor","state"],"payload":{"type":"snapshot","cursor":{"session_id":"session","next_sequence":0},"state":{}},"envelope":{"session_id":"session"}}
+  },
+  "error_codes": [
+    "invalid_request", "unsupported_version", "unauthorized", "revoked_device", "owner_mismatch",
+    "session_changed", "revision_conflict", "request_id_conflict", "busy", "replay_gap",
+    "resource_limit", "internal_error"
+  ]
+}

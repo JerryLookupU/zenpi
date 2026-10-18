@@ -1,4 +1,7 @@
 #![cfg(unix)]
+#[path = "support/sequential_host.rs"]
+mod sequential_host;
+use sequential_host::run_headless_sequential;
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -710,15 +713,11 @@ fn failed_workspace_restore_still_adopts_the_checkpoint() {
     assert!(!first.restore_checkpoint().unwrap());
     first.open(Some(&one)).unwrap();
     let checkpoint = root.path().join("project-workspace.json");
-    let mut saved: Value = serde_json::from_slice(&fs::read(&checkpoint).unwrap()).unwrap();
-    // A session path that cannot load (a directory) fails owner preparation
-    // while the checkpoint itself stays valid.
-    let broken = root.path().join("broken");
-    fs::create_dir(&broken).unwrap();
-    let active = first.workspace().active().unwrap().id().as_str().to_owned();
-    saved["sessions"][active.as_str()] = json!(broken.display().to_string());
-    let stale = serde_json::to_vec(&saved).unwrap();
-    fs::write(&checkpoint, &stale).unwrap();
+    // Keep journals readable for request-identity import, but fail owner
+    // preparation through the selected project's invalid configuration.
+    fs::create_dir(one.join(".zenpi")).unwrap();
+    fs::write(one.join(".zenpi/config.toml"), "model = [ broken").unwrap();
+    let stale = fs::read(&checkpoint).unwrap();
 
     let mut second = ProjectOwnerPool::new(Arc::new(Mutex::new(agent(root.path())))).unwrap();
     assert!(second.restore_checkpoint().is_err());
@@ -730,6 +729,85 @@ fn failed_workspace_restore_still_adopts_the_checkpoint() {
     let rewritten = fs::read(&checkpoint).unwrap();
     assert_ne!(rewritten, stale);
     assert!(String::from_utf8_lossy(&rewritten).contains("two"));
+}
+
+/// ZE-510/ZE-520: whichever build wrote it, remote state lives in
+/// remote-state.json, so a build with or without `remote` restores the
+/// project checkpoint; a pre-split inline copy is moved out unchanged.
+#[test]
+fn project_checkpoint_restores_beside_remote_state_and_moves_legacy_inline_state_out() {
+    let root = tempdir().unwrap();
+    let one = root.path().join("one");
+    let two = root.path().join("two");
+    fs::create_dir(&one).unwrap();
+    fs::create_dir(&two).unwrap();
+    let mut first = ProjectOwnerPool::new(Arc::new(Mutex::new(agent(root.path())))).unwrap();
+    first.restore_checkpoint().unwrap();
+    first.open(Some(&one)).unwrap();
+    let context = first.active_context().clone();
+    drop(first);
+    let checkpoint = root.path().join("project-workspace.json");
+    let remote_path = root.path().join("remote-state.json");
+    let remote = json!({"receipts":[],"cancel_receipts":[],"steer_receipts":[],
+        "approval_receipts":[],"prompt_bindings":[],"event_acks":[{"device_id":"a".repeat(64),
+        "project_id":context.project_id,"cursor":{"session_id":context.session_id,"next_sequence":3}}]});
+    let remote_bytes = serde_json::to_vec(&remote).unwrap();
+    fs::write(&remote_path, &remote_bytes).unwrap();
+    let saved: Value = serde_json::from_slice(&fs::read(&checkpoint).unwrap()).unwrap();
+    assert!(saved.get("remote_workspace").is_none());
+    let revision = saved["workspace_revision"].clone();
+    assert!(revision.as_u64().unwrap() > 0);
+
+    let mut second = ProjectOwnerPool::new(Arc::new(Mutex::new(agent(root.path())))).unwrap();
+    assert!(second.restore_checkpoint().unwrap());
+    assert_eq!(second.active_context().project_id, context.project_id);
+    second.open(Some(&two)).unwrap();
+    assert_eq!(fs::read(&remote_path).unwrap(), remote_bytes);
+    drop(second);
+
+    let mut legacy = saved.clone();
+    legacy.as_object_mut().unwrap().remove("workspace_revision");
+    let mut inline = remote.clone();
+    inline["revision"] = revision.clone();
+    legacy["remote_workspace"] = inline;
+    fs::write(&checkpoint, serde_json::to_vec(&legacy).unwrap()).unwrap();
+    fs::remove_file(&remote_path).unwrap();
+    let mut third = ProjectOwnerPool::new(Arc::new(Mutex::new(agent(root.path())))).unwrap();
+    assert!(third.restore_checkpoint().unwrap());
+    assert_eq!(third.workspace_revision(), revision.as_u64().unwrap());
+    let migrated: Value = serde_json::from_slice(&fs::read(&checkpoint).unwrap()).unwrap();
+    assert_eq!(migrated, saved);
+    let moved: Value = serde_json::from_slice(&fs::read(&remote_path).unwrap()).unwrap();
+    assert_eq!(moved, remote);
+}
+#[test]
+fn unreadable_saved_journal_never_adopts_checkpoint_or_overwrites_request_identity() {
+    let root = tempdir().unwrap();
+    let one = root.path().join("one");
+    fs::create_dir(&one).unwrap();
+    let mut first = ProjectOwnerPool::new(Arc::new(Mutex::new(agent(root.path())))).unwrap();
+    first.restore_checkpoint().unwrap();
+    first.open(Some(&one)).unwrap();
+    let checkpoint = root.path().join("project-workspace.json");
+    let mut saved: Value = serde_json::from_slice(&fs::read(&checkpoint).unwrap()).unwrap();
+    let broken = root.path().join("broken");
+    fs::create_dir(&broken).unwrap();
+    let active = first.workspace().active().unwrap().id().as_str().to_owned();
+    saved["sessions"][active.as_str()] = json!(broken.display().to_string());
+    let durable = serde_json::to_vec(&saved).unwrap();
+    fs::write(&checkpoint, &durable).unwrap();
+    let mut second = ProjectOwnerPool::new(Arc::new(Mutex::new(agent(root.path())))).unwrap();
+    let before = second.workspace().clone();
+    #[cfg(feature = "remote")]
+    let signal = zenpi::remote::wakeup::watch(&second.active_context().session_id).unwrap();
+    #[cfg(feature = "remote")]
+    let observed = signal.revision();
+    assert!(second.restore_checkpoint().is_err());
+    assert!(!second.has_workspace_checkpoint());
+    assert_eq!(second.workspace(), &before);
+    #[cfg(feature = "remote")]
+    assert_eq!(signal.revision(), observed);
+    assert_eq!(fs::read(checkpoint).unwrap(), durable);
 }
 #[test]
 fn arch_new_resets_the_master_session_and_archives_the_journal() {
@@ -826,13 +904,12 @@ fn project_protocol_is_strict_versioned_bounded_and_owned() {
         );
     }
     let root = tempdir().unwrap();
-    let mut agent = agent(root.path());
     let mut output = Vec::new();
-    zenpi::headless::run_headless(&mut agent,std::io::Cursor::new("{\"schema_version\":2,\"type\":\"project\",\"id\":\"list\",\"project\":{\"action\":\"list\"}}\n"),&mut output).unwrap();
-    assert_eq!(
-        serde_json::from_slice::<Value>(&output).unwrap()["code"],
-        "requires_owned_host"
-    );
+    run_headless_sequential(agent(root.path()), "{\"schema_version\":2,\"type\":\"project\",\"id\":\"list\",\"project\":{\"action\":\"list\"}}\n",&mut output).unwrap();
+    // The only host owns the project pool, so a valid control is served.
+    let listed = serde_json::from_slice::<Value>(&output).unwrap();
+    assert_eq!(listed["success"], true, "{listed}");
+    assert!(listed["project"]["project_id"].is_string(), "{listed}");
 }
 
 #[test]
@@ -989,6 +1066,70 @@ fn resumed_journal_restores_as_the_real_agent_in_the_shared_project_pool() {
         2
     );
     wire.finish();
+}
+
+#[test]
+fn local_resume_refreshes_session_scoped_input_and_approval_routes() {
+    for slash in [false, true] {
+        let root = tempdir().unwrap();
+        let alternate = root.path().join("alternate.jsonl");
+        let target = SessionStore::open_in_workspace(&alternate, root.path()).unwrap();
+        let target_id = target.session_id().to_owned();
+        drop(target);
+        let mut initial = agent(root.path());
+        let previous_id = initial.session().session_id().to_owned();
+        initial.set_approval_policy(ApprovalPolicy {
+            mode: ApprovalMode::ReadOnly,
+            ..Default::default()
+        });
+        let mut wire = Wire::new(initial);
+        let request = if slash {
+            json!({"schema_version":2,"type":"command","id":"resume","text":format!("/session open {}", alternate.display())})
+        } else {
+            json!({"schema_version":2,"type":"resume","id":"resume","path":alternate})
+        };
+        wire.send(request);
+        let resumed = wire.response("resume");
+        assert_eq!(resumed["success"], true, "{resumed}");
+        assert_eq!(resumed["project"]["session_id"], target_id);
+        wire.send(json!({"schema_version":2,"type":"command","id":"queue","text":"/input follow-up replacement-input replacement text"}));
+        let queued = wire.response("queue");
+        assert_eq!(queued["success"], true, "{queued}");
+        assert_eq!(queued["project"]["session_id"], target_id);
+        assert_eq!(queued["data"]["input"]["id"], "replacement-input");
+        wire.send(json!({"schema_version":2,"type":"command","id":"list","text":"/input list"}));
+        let listed = wire.response("list");
+        assert_eq!(listed["success"], true, "{listed}");
+        assert_eq!(listed["data"]["inputs"].as_array().unwrap().len(), 1);
+        wire.send(json!({"schema_version":2,"type":"input_queue","id":"stale-input","session_id":previous_id,
+            "input_queue":{"action":"enqueue","input_id":"stale-input","kind":"follow_up","text":"must not migrate"}}));
+        assert_eq!(wire.response("stale-input")["success"], false);
+        wire.send(json!({"schema_version":2,"type":"user_shell","id":"shell","text":"!printf denied > should-not-exist.txt"}));
+        let approval = loop {
+            let value = wire.next();
+            if value["event"]["type"] == "approval_request" {
+                break value;
+            }
+        };
+        assert_eq!(approval["project"]["session_id"], target_id);
+        wire.send(json!({"schema_version":2,"type":"approve","id":"deny","approval_id":approval["event"]["approval"]["request_id"],"decision":"deny"}));
+        assert_eq!(wire.response("deny")["success"], true);
+        assert_eq!(wire.response("shell")["success"], false);
+        assert!(!root.path().join("should-not-exist.txt").exists());
+        wire.finish();
+        let old = SessionStore::open_existing(root.path().join("initial.jsonl")).unwrap();
+        assert!(
+            old.events()
+                .iter()
+                .all(|event| event["type"] != "input_queue")
+        );
+        let new = SessionStore::open_existing(&alternate).unwrap();
+        assert!(
+            new.events()
+                .iter()
+                .any(|event| event["type"] == "input_queue" && event["session_id"] == target_id)
+        );
+    }
 }
 
 #[test]

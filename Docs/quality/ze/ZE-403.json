@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-403",
+  "claim_id": "ZE-403@blueprint-4.0.0",
+  "from": "master",
+  "to": "master",
+  "summary": "G-LOAD(2000) passes the §2.1 budget on this 20-core Mac: 2000/2000 tasks, idle RSS p99 5.78 MiB (11 GB total), idle 0.35 cores, all-waiting 0.22 cores, idle wakeups p99 1.7/s, threads 3/4, fds 5, per-round overhead p99 49.9 ms. The harness found that F_FULLFSYNC (macOS sync_data/sync_all) serialized every agent; journal, WAL, tool output and writes now use POSIX fsync.",
+  "changed_files": [
+    "tools/load_agents.py",
+    "Docs/quality/load/g-load-2000.json",
+    "Docs/Zenpi_Execution_Blueprint_v2.md",
+    "Docs/quality/ze/ZE-403.json"
+  ],
+  "diff_stat": "2 files changed, 56 insertions(+), 31 deletions(-)",
+  "commands_run": [
+    "cargo build --locked --release",
+    "python3 tools/load_agents.py --agents 1|5|20|50|200 (phase timelines, fsync A/B)",
+    "python3 tools/load_agents.py --agents 2000 --idle-window 10 --report Docs/quality/load/g-load-2000.json",
+    "cargo test --locked --all-features --no-fail-fast --lib --test tools --test stage1_tool_output --test run_command_pi --test session_fsync --test session_recovery --test session_torn_tail --test headless_wal --test tasks --test tasks_headless --test tools_edit_paths"
+  ],
+  "validation_result": {
+    "g_load_2000": "pass (all 10 checks)",
+    "success_rate": 1.0,
+    "idle_rss_mib_p99": 5.78,
+    "idle_rss_gib_total": 11.045,
+    "idle_cpu_cores": 0.351,
+    "waiting_cpu_cores": 0.223,
+    "idle_wakeups_p99": 1.7,
+    "threads_idle_active": "3/4",
+    "fds_max": 5,
+    "round_overhead_ms_p99": 49.9,
+    "bash_exec_ms_N50_before_after": "1208 -> 195",
+    "write_exec_ms_N50_before_after": "227 -> 13"
+  },
+  "notes": "Master revised two §2.1 rows to the accepted ZE-303/304 designs (fsync <= 3 per tool call; WAL bytes reported, events buffered). Tasks are ramped over N/200 s; a lockstep start (--ramp 0) degrades on this shared Mac (XProtect scans every fresh exec, other workloads running) and is not a gate. The machine is a shared 20-core dev Mac, not a dedicated 16-core box.",
+  "created_at": "2026-10-14T21:50:01Z",
+  "digest": "579822b321dcc1f047719748006ce6f98c31241e8afc683cff3674bc2d658a67"
+}

@@ -778,18 +778,18 @@ impl Backend for CaptureOnly {
             .metadata
             .is_some_and(|v| v["purpose"] == "semantic_compaction")
         {
-            let data: Value = serde_json::from_str(&request.turns[0].content).unwrap();
+            // pi: a free-text summary of role-labelled conversation text.
+            assert!(request.turns[0].content.starts_with("<conversation>"));
             let mut completion = Completion::text(
-                json!({
-                    "goals":["Continue the original task"],"constraints":[],"decisions":[],
-                    "progress":["Earlier history reviewed"],"pending_tasks":[],"critical_facts":[],
-                    "read_files":data["read_files"],"modified_files":data["modified_files"],
-                    "unresolved_tools":data["unresolved_tools"],
-                })
-                .to_string(),
+                "## Goal\nContinue the original task\n\n## Progress\n- Earlier history reviewed",
             );
             completion.model = Some("fixture-summary".into());
-            completion.usage = Some(zenpi::backend::Usage::new(100, 100, 200));
+            completion.usage = Some(zenpi::backend::Usage {
+                input_tokens: 100,
+                output_tokens: 100,
+                total_tokens: 200,
+                ..Default::default()
+            });
             return Ok(completion);
         }
         self.0
@@ -1763,9 +1763,10 @@ fn acceptance101_sync_tui_probe() {
         "fixture",
     )
     .unwrap();
-    let mut agent = Agent::new(
+    let agent = Agent::new(
         SessionStore::open_in_workspace(root.join("session.jsonl"), &root).unwrap(),
         Box::new(backend),
     );
-    zenpi::tui::run(&mut agent).unwrap();
+    // ZE-254: the legacy sync loop is gone; probe the production TUI loop.
+    zenpi::tui::run_async_with_profile(agent, None).unwrap();
 }

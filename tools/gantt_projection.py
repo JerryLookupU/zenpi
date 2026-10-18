@@ -61,7 +61,7 @@ def depth(items, iid, visiting=frozenset()):
 
 
 def main(argv):
-    blueprint = Path(argv[0]) if argv else ROOT / "Docs/stage_1_v3_pi_mono_blueprint.md"
+    blueprint = Path(argv[0]) if argv else ROOT / "Docs/archive/stage1/stage_1_v3_pi_mono_blueprint.md"
     if not blueprint.is_absolute():
         blueprint = ROOT / blueprint
     stem = blueprint.stem

@@ -417,7 +417,7 @@ fn project_checkpoint_is_independent_from_feature_layouts() {
 }
 
 #[test]
-fn project_checkpoint_restores_isolated_transcript_and_layout() {
+fn project_checkpoint_restores_layout_but_not_the_transcript() {
     let mut state = TuiState::default();
     state.push_message(zenpi::tui::MessageRole::User, "default message");
     assert!(state.open_project_tab("api"));
@@ -436,8 +436,8 @@ fn project_checkpoint_restores_isolated_transcript_and_layout() {
     let mut restored = TuiState::default();
     assert!(restored.restore_project_checkpoint(&checkpoint));
     assert_eq!(restored.active_project(), "api");
-    assert_eq!(restored.message_count(), 1);
-    assert_eq!(restored.messages().next().unwrap().text, "api message");
+    // ZE-309: the session journal owns the transcript; the checkpoint does not.
+    assert_eq!(restored.message_count(), 0);
     assert_eq!(restored.project_metadata("api").unwrap().cwd, "/work/api");
     assert_eq!(
         restored.project_session_cursor("api"),
@@ -448,8 +448,9 @@ fn project_checkpoint_restores_isolated_transcript_and_layout() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|item| { item["name"] == "api" && item["messages"][0]["text"] == "api message" })
+            .all(|item| item.get("messages").is_none())
     );
+    assert!(!checkpoint.to_string().contains("api message"));
 }
 
 #[test]
@@ -1771,6 +1772,16 @@ fn thinking_animation_appears_and_advances_while_busy() {
 
     state.set_busy(false);
     assert!(state.thinking_frame().is_none());
+
+    // A new busy period restarts the animation on its first frame.
+    state.tick();
+    state.set_busy(true);
+    assert_eq!(
+        state.thinking_frame(),
+        Some(first),
+        "busy start resets phase"
+    );
+    state.set_busy(false);
 }
 
 #[test]
@@ -1843,5 +1854,28 @@ fn worker_tiles_are_visually_square_adapt_to_window_and_busy_workers_blink() {
         before,
         state.resources_zoom_blink_on(),
         "busy workers blink with the animation tick"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn ctrl_c_in_shell_then_conversation_does_not_force_kill() {
+    // ZE-252: escalation is counted per hot zone.
+    let mut state = TuiState::default();
+    let mut terminal = Terminal::new(TestBackend::new(160, 40)).unwrap();
+    terminal
+        .draw(|f| state.render_bentobox(f, "zenpi"))
+        .unwrap();
+    assert!(state.has_shell());
+    assert!(state.set_hot_zone(HotZone::Shell));
+    assert_eq!(
+        state.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+        TuiAction::Redraw
+    );
+    assert!(state.set_hot_zone(HotZone::Conversation));
+    assert_ne!(
+        state.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+        TuiAction::ForceKill,
+        "a Shell press plus a Conversation press is not a double Ctrl-C"
     );
 }

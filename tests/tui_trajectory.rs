@@ -287,6 +287,19 @@ fn core_persists_per_request_usage_timing_and_prefix_fingerprint() {
         metadata["request"]["instructions_digest"]
     );
 
+    // The request record never reaches the provider, so it must not count
+    // toward the context estimate that drives compaction.
+    let mut stripped = history.clone();
+    for turn in &mut stripped {
+        if let Some(metadata) = turn.metadata.as_mut().and_then(Value::as_object_mut) {
+            metadata.remove("request");
+        }
+    }
+    assert_eq!(
+        zenpi::context::estimate_tokens(&history),
+        zenpi::context::estimate_tokens(&stripped)
+    );
+
     let trajectory = Trajectory::from_turns(&history, None);
     assert_eq!(trajectory.stats.requests, 2);
     assert_eq!(trajectory.stats.kv_issues(), 0);

@@ -1,6 +1,21 @@
+use std::sync::Mutex;
 use std::time::Duration;
 use tempfile::tempdir;
 use zenpi::dag::{DagStore, send_to_worker, spawn_worker};
+
+/// Serializes tests that set `ZENPI_DAG_WORKER` (process-global env).
+static WORKER_ENV: Mutex<()> = Mutex::new(());
+
+fn stub_worker(dir: &std::path::Path, name: &str, script: &str) -> std::path::PathBuf {
+    let stub = dir.join(name);
+    std::fs::write(&stub, script).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    stub
+}
 
 #[test]
 fn dag_roles_addressing_and_mailbox_read() {
@@ -72,14 +87,11 @@ fn dag_close_gate_requires_a_green_subtree() {
 fn dag_spawn_keeps_a_live_worker_stdin() {
     // A stub worker echoes its stdin to the node log, proving the parent keeps
     // the pipe and can deliver follow-up work without restarting the child.
+    let _env = WORKER_ENV
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
     let dir = tempdir().unwrap();
-    let stub = dir.path().join("stub.sh");
-    std::fs::write(&stub, "#!/bin/sh\nexec cat\n").unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    let stub = stub_worker(dir.path(), "stub.sh", "#!/bin/sh\nexec cat\n");
     unsafe {
         std::env::set_var("ZENPI_DAG_WORKER", &stub);
     }
@@ -92,7 +104,9 @@ fn dag_spawn_keeps_a_live_worker_stdin() {
 
     let log = workers.join("child.log");
     let mut text = String::new();
-    for _ in 0..60 {
+    // Exec of a freshly written script can be held for seconds by host
+    // security scanning, so allow a generous bound.
+    for _ in 0..600 {
         text = std::fs::read_to_string(&log).unwrap_or_default();
         if text.contains("follow up") {
             break;
@@ -175,4 +189,201 @@ fn dag_claim_redelivery_and_ack_prevent_message_loss() {
     assert_eq!(store.ack("a", &[id]).unwrap(), 1);
     assert!(store.claim_inbox("a").unwrap().is_empty());
     assert_eq!(store.claimed_count("a").unwrap(), 0);
+}
+
+#[test]
+fn dag_send_full_mailbox_errors() {
+    use zenpi::dag::MAX_DAG_INBOX_MESSAGES;
+    let dir = tempdir().unwrap();
+    let store = DagStore::at(dir.path().join("dag.json"));
+    store.upsert("root", None).unwrap();
+    store.upsert("a", Some("root")).unwrap();
+    for index in 0..MAX_DAG_INBOX_MESSAGES {
+        store.send("root", "a", &format!("m{index}")).unwrap();
+    }
+    let error = store.send("root", "a", "one too many").unwrap_err();
+    assert!(error.contains("full"), "{error}");
+    assert_eq!(store.unread_count("a").unwrap(), MAX_DAG_INBOX_MESSAGES);
+    // Nothing was silently dropped: the newest accepted message is stored.
+    let inbox = store.claim_inbox("a").unwrap();
+    assert_eq!(inbox.len(), MAX_DAG_INBOX_MESSAGES);
+    assert_eq!(
+        inbox.last().unwrap().body,
+        format!("m{}", MAX_DAG_INBOX_MESSAGES - 1)
+    );
+    // Acking frees the mailbox again.
+    let ids: Vec<u64> = inbox.iter().map(|message| message.id).collect();
+    store.ack("a", &ids).unwrap();
+    store.send("root", "a", "after ack").unwrap();
+}
+
+#[test]
+fn dag_body_limit_is_enforced_in_bytes() {
+    use zenpi::dag::MAX_DAG_BODY_BYTES;
+    let dir = tempdir().unwrap();
+    let store = DagStore::at(dir.path().join("dag.json"));
+    store.upsert("root", None).unwrap();
+    store.upsert("a", Some("root")).unwrap();
+    // 2-byte chars: within the char count but over the byte limit.
+    let wide = "\u{e9}".repeat(MAX_DAG_BODY_BYTES);
+    assert!(store.send("root", "a", &wide).is_err());
+    let fits = "\u{e9}".repeat(MAX_DAG_BODY_BYTES / 2);
+    store.send("root", "a", &fits).unwrap();
+    assert_eq!(
+        store.claim_inbox("a").unwrap()[0].body.len(),
+        MAX_DAG_BODY_BYTES
+    );
+}
+
+#[test]
+fn dag_spawn_defaults_to_current_exe() {
+    let current = std::env::current_exe().unwrap();
+    assert_eq!(zenpi::dag::resolve_worker_binary(None).unwrap(), current);
+    assert_eq!(
+        zenpi::dag::resolve_worker_binary(Some("  ")).unwrap(),
+        current
+    );
+    assert_eq!(
+        zenpi::dag::resolve_worker_binary(Some("/opt/worker")).unwrap(),
+        std::path::PathBuf::from("/opt/worker")
+    );
+}
+
+#[test]
+fn dag_store_survives_a_truncated_temp_write() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("dag.json");
+    let store = DagStore::at(&path);
+    store.upsert("root", None).unwrap();
+    store.upsert("a", Some("root")).unwrap();
+    store.send("root", "a", "kept").unwrap();
+    assert!(!dir.path().join("dag.json.tmp").exists(), "temp is renamed");
+
+    // A crash halfway through the next write leaves a truncated temp file.
+    let committed = std::fs::read(&path).unwrap();
+    std::fs::write(
+        dir.path().join("dag.json.tmp"),
+        &committed[..committed.len() / 2],
+    )
+    .unwrap();
+
+    assert_eq!(store.nodes().unwrap().len(), 2, "store still parses");
+    assert_eq!(store.unread_count("a").unwrap(), 1);
+    // The next writer overwrites the stale temp file and commits normally.
+    store.upsert("b", Some("root")).unwrap();
+    assert_eq!(store.nodes().unwrap().len(), 3);
+    serde_json::from_slice::<serde_json::Value>(&std::fs::read(&path).unwrap()).unwrap();
+}
+
+#[test]
+fn dag_spawn_depth_and_fanout_are_bounded() {
+    use zenpi::dag::{MAX_DAG_FANOUT, MAX_DAG_SPAWN_DEPTH};
+    assert_eq!(MAX_DAG_SPAWN_DEPTH, 3);
+    let dir = tempdir().unwrap();
+    let store = DagStore::at(dir.path().join("dag.json"));
+    store.upsert("root", None).unwrap();
+    store.spawn_child("l1", Some("root")).unwrap();
+    store.spawn_child("l2", Some("l1")).unwrap();
+    store.spawn_child("l3", Some("l2")).unwrap();
+    let error = store.spawn_child("l4", Some("l3")).unwrap_err();
+    assert!(error.contains("depth"), "{error}");
+    assert!(
+        store.node("l4").unwrap().is_none(),
+        "rejected spawn is not stored"
+    );
+
+    for index in 1..MAX_DAG_FANOUT {
+        store
+            .spawn_child(&format!("c{index}"), Some("root"))
+            .unwrap();
+    }
+    let error = store.spawn_child("overflow", Some("root")).unwrap_err();
+    assert!(error.contains("fan-out"), "{error}");
+    // Re-spawning an existing child does not count against the fan-out.
+    store.spawn_child("c1", Some("root")).unwrap();
+}
+
+#[test]
+fn dag_spawned_workers_are_reaped_after_exit() {
+    let _env = WORKER_ENV
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let dir = tempdir().unwrap();
+    let stub = stub_worker(dir.path(), "once.sh", "#!/bin/sh\nread line\nexit 0\n");
+    unsafe {
+        std::env::set_var("ZENPI_DAG_WORKER", &stub);
+    }
+    let store = DagStore::at(dir.path().join("dag.json"));
+    store.upsert("root", None).unwrap();
+    let spawned = spawn_worker(&store, "reaped", "only task", &dir.path().join("workers"));
+    unsafe {
+        std::env::remove_var("ZENPI_DAG_WORKER");
+    }
+    spawned.unwrap();
+    let mut gone = false;
+    for _ in 0..600 {
+        zenpi::dag::reap_workers();
+        if !zenpi::dag::spawned_nodes().contains(&"reaped".to_string()) {
+            gone = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        gone,
+        "exited worker is reaped and dropped from the registry"
+    );
+    assert!(!send_to_worker("reaped", "late").unwrap());
+}
+
+#[test]
+fn dag_concurrent_send_and_receive_lose_and_duplicate_nothing() {
+    // ZE-308: pairs of nodes exchange messages through one store.
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("dag.json");
+    let (nodes, rounds) = (64, 20);
+    let store = DagStore::at(&path);
+    for index in 0..nodes {
+        store.upsert(&format!("n{index}"), None).unwrap();
+    }
+    let received: Vec<Vec<String>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..nodes)
+            .map(|index| {
+                let path = path.clone();
+                scope.spawn(move || {
+                    let store = DagStore::at(path);
+                    let (me, peer) = (format!("n{index}"), format!("n{}", index ^ 1));
+                    let mut got = Vec::new();
+                    for round in 0..rounds {
+                        store.send(&me, &peer, &format!("{me}:{round}")).unwrap();
+                    }
+                    while got.len() < rounds {
+                        let messages = zenpi::dag::wait_for_message(
+                            &store,
+                            &me,
+                            Duration::from_secs(10),
+                            &|| false,
+                        )
+                        .unwrap();
+                        let ids: Vec<u64> = messages.iter().map(|message| message.id).collect();
+                        got.extend(messages.into_iter().map(|message| message.body));
+                        store.ack(&me, &ids).unwrap();
+                    }
+                    got
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect()
+    });
+    for (index, mut got) in received.into_iter().enumerate() {
+        got.sort();
+        let mut expected: Vec<String> = (0..rounds)
+            .map(|round| format!("n{}:{round}", index ^ 1))
+            .collect();
+        expected.sort();
+        assert_eq!(got, expected, "node n{index}");
+    }
 }

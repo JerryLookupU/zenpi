@@ -1,6 +1,9 @@
 use serde_json::Value;
 use std::io::Cursor;
+#[path = "support/sequential_host.rs"]
+mod sequential_host;
 mod support;
+use sequential_host::run_headless_sequential;
 
 use std::{
     fs,
@@ -23,7 +26,6 @@ use zenpi::{
     core::{Agent, Turn, TurnRole},
     domain_store::DomainStore,
     domains::{Blueprint, BlueprintItem, Goal, Learn},
-    headless::run_headless,
     protocol::parse_line,
     session::{InterruptedOperation, OperationKind, SessionStore},
     tools::{SideEffectPolicy, ToolCall, ToolContext, ToolRegistry},
@@ -63,7 +65,7 @@ fn mailbox_retirement_is_confirmed_and_owned_in_both_hosts() {
         "/session retire-mailbox '{}' --yes",
         recipient_path.display()
     );
-    let mut agent = Agent::new(sender, Box::new(NoControlProvider));
+    let agent = Agent::new(sender, Box::new(NoControlProvider));
     let mut state = TuiState::default();
     let parsed = zenpi::slash::parse(&command).unwrap().unwrap();
     dispatch_slash_command(parsed.clone(), &mut state, None);
@@ -76,7 +78,7 @@ fn mailbox_retirement_is_confirmed_and_owned_in_both_hosts() {
         serde_json::json!({"type":"command","id":"retire","text":command}),
     ].iter().map(Value::to_string).collect::<Vec<_>>().join("\n") + "\n";
     let mut output = Vec::new();
-    run_headless(&mut agent, Cursor::new(input), &mut output).unwrap();
+    run_headless_sequential(agent, input, &mut output).unwrap();
     let records = json_lines(&output);
     assert_eq!(
         records.iter().find(|r| r["id"] == "unconfirmed").unwrap()["success"],
@@ -87,6 +89,11 @@ fn mailbox_retirement_is_confirmed_and_owned_in_both_hosts() {
         true
     );
     assert!(!mailbox.path().exists());
+    // The host released the session on EOF; the TUI owner reopens it.
+    let mut agent = Agent::new(
+        SessionStore::open(&active).unwrap(),
+        Box::new(NoControlProvider),
+    );
     dispatch_slash_command(parsed, &mut state, Some(&mut agent));
     assert!(!mailbox.path().exists());
     assert_eq!(
@@ -105,21 +112,20 @@ fn mailbox_retirement_is_confirmed_and_owned_in_both_hosts() {
 fn resumed_session_replays_old_status_ids_but_fresh_ids_inspect_current_history() {
     let dir = tempdir().unwrap();
     let source = dir.path().join("source.jsonl");
-    let mut agent = Agent::with_echo(SessionStore::open(&source).unwrap());
+    let agent = Agent::with_echo(SessionStore::open(&source).unwrap());
     let mut first_output = Vec::new();
-    run_headless(
-        &mut agent,
-        Cursor::new(concat!(
+    run_headless_sequential(
+        agent,
+        concat!(
             "{\"type\":\"status\",\"id\":\"old-status\"}\n",
             "{\"type\":\"prompt\",\"id\":\"prompt\",\"text\":\"persist once\"}\n"
-        )),
+        ),
         &mut first_output,
     )
     .unwrap();
     let first = json_lines(&first_output);
     let old_status = first.iter().find(|r| r["id"] == "old-status").unwrap();
     assert_eq!(old_status["data"]["session"]["turn_count"], 0);
-    drop(agent);
 
     let agent = Agent::new(
         SessionStore::open(dir.path().join("new.jsonl")).unwrap(),
@@ -172,7 +178,7 @@ fn recovery_slash_is_durable_confirmed_and_never_dispatches_retry() {
                 retry_requires_confirmation: true,
             })
             .unwrap();
-        let mut agent = Agent::with_echo(store);
+        let agent = Agent::with_echo(store);
         let requests = [
             serde_json::json!({"type":"command","id":"inspect","text":"/recovery inspect"}),
             serde_json::json!({"type":"command","id":"refuse","text":format!("/recovery {decision} uncertain-request")}),
@@ -181,7 +187,7 @@ fn recovery_slash_is_durable_confirmed_and_never_dispatches_retry() {
             serde_json::json!({"type":"command","id":"after","text":"/recovery inspect"}),
         ].iter().map(Value::to_string).collect::<Vec<_>>().join("\n") + "\n";
         let mut output = Vec::new();
-        run_headless(&mut agent, Cursor::new(requests), &mut output).unwrap();
+        run_headless_sequential(agent, requests, &mut output).unwrap();
         let records = json_lines(&output);
         let response = |id| {
             records
@@ -230,11 +236,8 @@ fn user_shell_echo_is_explicit_and_does_not_call_provider() {
         ..ApprovalPolicy::default()
     });
     let mut output = Vec::new();
-    run_headless(
-        &mut agent,
-        Cursor::new(
+    run_headless_sequential(agent,
             b"{\"schema_version\":2,\"type\":\"user_shell\",\"id\":\"echo\",\"text\":\"!echo hello\"}\n",
-        ),
         &mut output,
     )
     .unwrap();
@@ -307,8 +310,8 @@ fn reconnect_restores_terminal_events_ack_and_monotonic_sequence() {
     let path = directory.path().join("durable.jsonl");
     let prompt = b"{\"schema_version\":2,\"type\":\"prompt\",\"id\":\"once\",\"text\":\"hello\"}\n";
     let mut original = Vec::new();
-    let mut agent = Agent::with_echo(SessionStore::open(&path).unwrap());
-    run_headless(&mut agent, Cursor::new(prompt), &mut original).unwrap();
+    let agent = Agent::with_echo(SessionStore::open(&path).unwrap());
+    run_headless_sequential(agent, prompt, &mut original).unwrap();
     let original = json_lines(&original);
     let terminal = original
         .iter()
@@ -319,8 +322,9 @@ fn reconnect_restores_terminal_events_ack_and_monotonic_sequence() {
         .filter(|record| record["type"] == "event")
         .cloned()
         .collect();
-    let cursor = serde_json::json!({"session_id": agent.session().session_id(), "next_sequence": agent.session().next_sequence()});
-    drop(agent);
+    let store = SessionStore::open(&path).unwrap();
+    let cursor = serde_json::json!({"session_id": store.session_id(), "next_sequence": store.next_sequence()});
+    drop(store);
     let before = fs::read(&path).unwrap();
     let ack = serde_json::json!({"schema_version":2,"type":"checkpoint","id":"ack","checkpoint":{"action":"acknowledge","cursor":cursor}});
     let mut input = prompt.to_vec();
@@ -328,12 +332,12 @@ fn reconnect_restores_terminal_events_ack_and_monotonic_sequence() {
         b"{\"schema_version\":2,\"type\":\"resume\",\"id\":\"replay\",\"from_sequence\":0}\n",
     );
     input.extend_from_slice(format!("{ack}\n").as_bytes());
-    let mut agent = Agent::new(
+    let agent = Agent::new(
         SessionStore::open(&path).unwrap(),
         Box::new(NoControlProvider),
     );
     let mut output = Vec::new();
-    run_headless(&mut agent, Cursor::new(input), &mut output).unwrap();
+    run_headless_sequential(agent, input, &mut output).unwrap();
     let records = json_lines(&output);
     assert_eq!(&records[0], terminal);
     assert_eq!(
@@ -345,13 +349,12 @@ fn reconnect_restores_terminal_events_ack_and_monotonic_sequence() {
         events
     );
     assert_eq!(fs::read(&path).unwrap(), before);
-    drop(agent);
-    let mut agent = Agent::new(
+    let agent = Agent::new(
         SessionStore::open(&path).unwrap(),
         Box::new(NoControlProvider),
     );
     let mut output = Vec::new();
-    run_headless(&mut agent, Cursor::new(b"{\"schema_version\":2,\"type\":\"checkpoint\",\"id\":\"inspect\",\"checkpoint\":{\"action\":\"inspect\"}}\n"), &mut output).unwrap();
+    run_headless_sequential(agent, b"{\"schema_version\":2,\"type\":\"checkpoint\",\"id\":\"inspect\",\"checkpoint\":{\"action\":\"inspect\"}}\n", &mut output).unwrap();
     let record = &json_lines(&output)[0];
     assert_eq!(
         record["data"]["acknowledged_next_sequence"],
@@ -394,16 +397,22 @@ fn disconnected_wire_preserves_unknown_or_completed_outcome_without_retry() {
         let path = directory.path().join("disconnect.jsonl");
         let input =
             b"{\"schema_version\":2,\"type\":\"prompt\",\"id\":\"once\",\"text\":\"hello\"}\n";
-        let mut agent = Agent::with_echo(SessionStore::open(&path).unwrap());
-        assert!(run_headless(&mut agent, Cursor::new(input), FailWire { terminal_only }).is_err());
-        drop(agent);
+        let agent = Agent::with_echo(SessionStore::open(&path).unwrap());
+        assert!(
+            zenpi::headless::run_async_streams(
+                agent,
+                Cursor::new(input),
+                FailWire { terminal_only }
+            )
+            .is_err()
+        );
         let before = fs::read(&path).unwrap();
-        let mut agent = Agent::new(
+        let agent = Agent::new(
             SessionStore::open(&path).unwrap(),
             Box::new(NoControlProvider),
         );
         let mut output = Vec::new();
-        run_headless(&mut agent, Cursor::new(input), &mut output).unwrap();
+        run_headless_sequential(agent, input, &mut output).unwrap();
         let record = &json_lines(&output)[0];
         if terminal_only {
             assert_eq!(record["success"], true);
@@ -474,19 +483,17 @@ fn reconnect_process_fixture() {
                 .append_event(serde_json::json!({"type":"must-not-write"}))
                 .is_err()
         );
-        let mut agent = Agent::new(store, Box::new(NoControlProvider));
-        assert!(run_headless(&mut agent, Cursor::new(b""), Vec::new()).is_err());
+        let agent = Agent::new(store, Box::new(NoControlProvider));
+        assert!(zenpi::headless::run_async_streams(agent, Cursor::new(b""), Vec::new()).is_err());
     } else {
         let backend = ReconnectCrashBackend {
             marker: path.with_extension("ready"),
         };
-        let mut agent = Agent::new(SessionStore::open(&path).unwrap(), Box::new(backend));
-        run_headless(
-            &mut agent,
-            Cursor::new(
-                b"{\"schema_version\":2,\"type\":\"prompt\",\"id\":\"killed\",\"text\":\"once\"}\n",
-            ),
-            Vec::new(),
+        let agent = Agent::new(SessionStore::open(&path).unwrap(), Box::new(backend));
+        run_headless_sequential(
+            agent,
+            b"{\"schema_version\":2,\"type\":\"prompt\",\"id\":\"killed\",\"text\":\"once\"}\n",
+            &mut Vec::new(),
         )
         .unwrap();
     }
@@ -529,21 +536,24 @@ fn cross_process_owner_lock_survives_contention_and_releases_after_kill() {
         "{}",
         String::from_utf8_lossy(&probe.stderr)
     );
-    let mut agent = Agent::new(
+    let agent = Agent::new(
         SessionStore::open(&path).unwrap(),
         Box::new(NoControlProvider),
     );
     let mut output = Vec::new();
-    run_headless(
-        &mut agent,
-        Cursor::new(
-            b"{\"schema_version\":2,\"type\":\"prompt\",\"id\":\"killed\",\"text\":\"once\"}\n",
-        ),
+    run_headless_sequential(
+        agent,
+        b"{\"schema_version\":2,\"type\":\"prompt\",\"id\":\"killed\",\"text\":\"once\"}\n",
         &mut output,
     )
     .unwrap();
     assert_eq!(json_lines(&output)[0]["code"], "unknown_outcome");
-    assert!(agent.session().recovery_warnings().is_empty());
+    assert!(
+        SessionStore::open(&path)
+            .unwrap()
+            .recovery_warnings()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -558,12 +568,12 @@ fn checkpoint_pages_and_mailbox_are_local_durable_and_addressed() {
     let recipient_id = recipient.session_id().to_owned();
     drop(recipient);
     let send = serde_json::json!({"schema_version":2,"type":"mailbox","id":"send","mailbox":{"action":"send","recipient_session_id":recipient_id,"message_id":"work","text":"inspect this","ttl_ms":60000}});
-    let mut sender = Agent::new(
+    let sender = Agent::new(
         SessionStore::open(&source_path).unwrap(),
         Box::new(NoControlProvider),
     );
     let mut output = Vec::new();
-    run_headless(&mut sender, Cursor::new(format!("{send}\n")), &mut output).unwrap();
+    run_headless_sequential(sender, format!("{send}\n"), &mut output).unwrap();
     let send_response = &json_lines(&output)[0];
     assert_eq!(send_response["success"], true, "{send_response}");
     let message_id = send_response["data"]["message_id"].as_str().unwrap();
@@ -573,7 +583,7 @@ fn checkpoint_pages_and_mailbox_are_local_durable_and_addressed() {
         serde_json::json!({"schema_version":2,"type":"mailbox","id":"complete","mailbox":{"action":"complete","message_id":message_id,"outcome":"succeeded","result":"reviewed"}}),
         serde_json::json!({"schema_version":2,"type":"checkpoint","id":"page","checkpoint":{"action":"replay","cursor":{"session_id":recipient_id,"next_sequence":0},"limit":1}}),
     ];
-    let mut recipient = Agent::new(
+    let recipient = Agent::new(
         SessionStore::open(&recipient_path).unwrap(),
         Box::new(NoControlProvider),
     );
@@ -582,7 +592,7 @@ fn checkpoint_pages_and_mailbox_are_local_durable_and_addressed() {
         .map(|request| format!("{request}\n"))
         .collect::<String>();
     let mut output = Vec::new();
-    run_headless(&mut recipient, Cursor::new(input), &mut output).unwrap();
+    run_headless_sequential(recipient, input, &mut output).unwrap();
     let records = json_lines(&output);
     assert!(
         records.iter().all(|record| record["success"] == true),
@@ -594,16 +604,13 @@ fn checkpoint_pages_and_mailbox_are_local_durable_and_addressed() {
     assert_eq!(records[3]["data"]["cursor"]["next_sequence"], 1);
     assert_eq!(records[3]["data"]["has_more"], true);
 
-    let mut sender = Agent::new(
+    let sender = Agent::new(
         SessionStore::open_existing(&source_path).unwrap(),
         Box::new(NoControlProvider),
     );
     let mut reply_output = Vec::new();
-    run_headless(
-        &mut sender,
-        Cursor::new(
+    run_headless_sequential(sender,
             b"{\"schema_version\":2,\"type\":\"mailbox\",\"id\":\"reply\",\"mailbox\":{\"action\":\"receive\",\"after_sequence\":0,\"limit\":128}}\n",
-        ),
         &mut reply_output,
     )
     .unwrap();
@@ -685,6 +692,7 @@ impl Backend for EofApprovalBackend {
                 response_id: None,
                 refusal: None,
                 annotations: Vec::new(),
+                ..Completion::default()
             })
         } else {
             Ok(Completion::text("write denied safely"))
@@ -741,10 +749,10 @@ impl Backend for BurstSteerBackend {
 fn malformed_frame_isolated_from_all_commands() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("wire.jsonl");
-    let mut agent = Agent::with_echo(SessionStore::open(&path).unwrap());
+    let agent = Agent::with_echo(SessionStore::open(&path).unwrap());
     let input = b"{bad}\n{\"type\":\"prompt\",\"id\":\"p\",\"text\":\"a\\u2028b\",\"mode\":\"start_if_idle\"}\n{\"type\":\"status\",\"id\":\"s\"}\n{\"type\":\"handoff\",\"id\":\"h\",\"to\":\"worker\",\"summary\":\"ready\",\"artifacts\":[\"Docs/plan.md\"]}\n{\"type\":\"shutdown\",\"id\":\"q\"}\n";
     let mut output = Vec::new();
-    run_headless(&mut agent, Cursor::new(input), &mut output).unwrap();
+    run_headless_sequential(agent, input, &mut output).unwrap();
     let records = json_lines(&output);
     assert!(records.iter().any(|v| v["success"] == false));
     for id in ["p", "s", "h", "q"] {
@@ -765,13 +773,10 @@ fn status_snapshots_redact_session_paths_in_sync_and_async_hosts() {
     let dir = tempdir().unwrap();
 
     let sync_path = dir.path().join("sync-status.jsonl");
-    let mut sync_agent = Agent::with_echo(SessionStore::open(&sync_path).unwrap());
+    let sync_agent = Agent::with_echo(SessionStore::open(&sync_path).unwrap());
     let mut sync_output = Vec::new();
-    run_headless(
-        &mut sync_agent,
-        Cursor::new(
+    run_headless_sequential(sync_agent,
             b"{\"type\":\"status\",\"id\":\"sync-status\"}\n{\"type\":\"shutdown\",\"id\":\"sync-stop\"}\n",
-        ),
         &mut sync_output,
     )
     .unwrap();
@@ -924,7 +929,7 @@ fn resume_path_rejects_missing_journals_without_creating_them() {
     let dir = tempdir().unwrap();
     let missing_sync = dir.path().join("missing-sync.jsonl");
     let active_sync = dir.path().join("active-sync.jsonl");
-    let mut sync_agent = Agent::with_echo(SessionStore::open(&active_sync).unwrap());
+    let sync_agent = Agent::with_echo(SessionStore::open(&active_sync).unwrap());
     let sync_input = format!(
         "{}\n{}\n",
         serde_json::json!({
@@ -935,12 +940,7 @@ fn resume_path_rejects_missing_journals_without_creating_them() {
         serde_json::json!({"type":"shutdown","id":"shutdown-sync"}),
     );
     let mut sync_output = Vec::new();
-    run_headless(
-        &mut sync_agent,
-        Cursor::new(sync_input.into_bytes()),
-        &mut sync_output,
-    )
-    .unwrap();
+    run_headless_sequential(sync_agent, sync_input.into_bytes(), &mut sync_output).unwrap();
     let sync_records = json_lines(&sync_output);
     let sync_resume = sync_records
         .iter()
@@ -984,14 +984,14 @@ fn resume_path_rejects_missing_journals_without_creating_them() {
         fs::write(&path, contents).unwrap();
         let before = fs::read(&path).unwrap();
         let active = dir.path().join(format!("active-{name}.jsonl"));
-        let mut agent = Agent::with_echo(SessionStore::open(&active).unwrap());
+        let agent = Agent::with_echo(SessionStore::open(&active).unwrap());
         let input = format!(
             "{}\n{}\n",
             serde_json::json!({"type":"resume","id":"bad-existing","path":path}),
             serde_json::json!({"type":"shutdown","id":"done"}),
         );
         let mut output = Vec::new();
-        run_headless(&mut agent, Cursor::new(input.into_bytes()), &mut output).unwrap();
+        run_headless_sequential(agent, input.into_bytes(), &mut output).unwrap();
         let response = json_lines(&output)
             .into_iter()
             .find(|record| record["id"] == "bad-existing")
@@ -1257,10 +1257,10 @@ fn approval_command_is_typed_and_bounded() {
 fn sequential_steer_and_eof_are_safe_terminal_paths() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("steer-eof.jsonl");
-    let mut agent = Agent::with_echo(SessionStore::open(&path).unwrap());
+    let agent = Agent::with_echo(SessionStore::open(&path).unwrap());
     let input = b"{\"type\":\"prompt\",\"id\":\"p\",\"text\":\"hello\",\"mode\":\"start_if_idle\"}\n{\"type\":\"steer\",\"id\":\"s\",\"text\":\"follow-up\"}\n";
     let mut output = Vec::new();
-    run_headless(&mut agent, Cursor::new(input), &mut output).unwrap();
+    run_headless_sequential(agent, input, &mut output).unwrap();
     let records = json_lines(&output);
     assert!(
         records
@@ -1272,7 +1272,8 @@ fn sequential_steer_and_eof_are_safe_terminal_paths() {
             .iter()
             .any(|value| value["id"] == "s" && value["success"] == true)
     );
-    assert_eq!(agent.phase(), zenpi::core::AgentPhase::Closed);
+    // EOF closed the owner: a new writer can take the session lock.
+    SessionStore::open(&path).unwrap();
 }
 
 #[test]
@@ -1400,15 +1401,13 @@ fn checkpoint_inspection_uses_persisted_journal_identity_not_transport_sequence(
     let expected_id = session.session_id().to_owned();
     let expected_sequence = session.next_sequence();
     drop(session);
-    let mut agent = Agent::new(
+    let agent = Agent::new(
         SessionStore::open(&path).unwrap(),
         Box::new(NoControlProvider),
     );
     let before = fs::read(&path).unwrap();
     let mut output = Vec::new();
-    run_headless(
-        &mut agent,
-        Cursor::new(b"{\"schema_version\":2,\"type\":\"checkpoint\",\"id\":\"cursor\",\"checkpoint\":{\"action\":\"inspect\"}}\n"),
+    run_headless_sequential(agent, b"{\"schema_version\":2,\"type\":\"checkpoint\",\"id\":\"cursor\",\"checkpoint\":{\"action\":\"inspect\"}}\n",
         &mut output,
     ).unwrap();
     let records = json_lines(&output);
@@ -1437,7 +1436,7 @@ fn checkpoint_inspection_uses_persisted_journal_identity_not_transport_sequence(
 fn unowned_session_controls_are_fail_closed_without_session_or_provider_effects() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("unowned.jsonl");
-    let mut agent = Agent::new(
+    let agent = Agent::new(
         SessionStore::open(&path).unwrap(),
         Box::new(NoControlProvider),
     );
@@ -1449,7 +1448,7 @@ fn unowned_session_controls_are_fail_closed_without_session_or_provider_effects(
         "{\"schema_version\":1,\"type\":\"user_shell\",\"id\":\"shell-v1\",\"text\":\"!\"}\n",
     );
     let mut output = Vec::new();
-    run_headless(&mut agent, Cursor::new(input.as_bytes()), &mut output).unwrap();
+    run_headless_sequential(agent, input.as_bytes(), &mut output).unwrap();
     let records = json_lines(&output);
     {
         let (id, version) = ("shell", 2);
@@ -1481,7 +1480,12 @@ fn unowned_session_controls_are_fail_closed_without_session_or_provider_effects(
     assert_eq!(ack["code"], "checkpoint_cursor_invalid");
     assert!(!String::from_utf8(output).unwrap().contains("private "));
     assert_eq!(fs::read(&path).unwrap(), before);
-    assert!(agent.history().is_empty());
+    assert!(
+        SessionStore::open_existing(&path)
+            .unwrap()
+            .turns()
+            .is_empty()
+    );
 }
 
 #[cfg(unix)]
@@ -1563,7 +1567,7 @@ fn session_controls_remain_readable_while_provider_is_in_flight() {
 fn headless_slash_commands_are_control_plane_only() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("slash-command.jsonl");
-    let mut agent = Agent::with_echo(SessionStore::open(&path).unwrap());
+    let agent = Agent::with_echo(SessionStore::open(&path).unwrap());
     let input = concat!(
         "{\"type\":\"command\",\"id\":\"m\",\"text\":\"/model fixture\"}\n",
         "{\"type\":\"command\",\"id\":\"g\",\"text\":\"/goal keep bounded\"}\n",
@@ -1578,7 +1582,7 @@ fn headless_slash_commands_are_control_plane_only() {
         "{\"type\":\"shutdown\",\"id\":\"q\"}\n",
     );
     let mut output = Vec::new();
-    run_headless(&mut agent, Cursor::new(input.as_bytes()), &mut output).unwrap();
+    run_headless_sequential(agent, input.as_bytes(), &mut output).unwrap();
     let records = json_lines(&output);
     for id in ["m", "s", "h", "c", "r", "l", "after", "q"] {
         assert!(
@@ -1600,7 +1604,12 @@ fn headless_slash_commands_are_control_plane_only() {
         record["id"] == "bad"
             && record["type"] == "response"
             && record["success"] == false
-            && record["code"] == "slash_invalid"
+            // Unknown names are resolved against templates/skills by the
+            // runtime owner, which refuses them before any provider call.
+            && record["code"] == "invalid_turn"
+            && record["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("unknown resource slash command"))
     }));
     let unsupported_session = records.iter().find(|record| record["id"] == "e").unwrap();
     assert!(
@@ -1614,8 +1623,9 @@ fn headless_slash_commands_are_control_plane_only() {
             .to_string()
             .contains("/private/secret.jsonl")
     );
-    assert_eq!(agent.history().len(), 0, "slash input reached the model");
-    assert_eq!(agent.session().runtime_intents().len(), 2);
+    let session = SessionStore::open_existing(&path).unwrap();
+    assert_eq!(session.turns().len(), 0, "slash input reached the model");
+    assert_eq!(session.runtime_intents().len(), 2);
     for id in ["r", "l"] {
         let response = records.iter().find(|record| record["id"] == id).unwrap();
         assert_eq!(response["data"]["durable"], true);
@@ -1632,7 +1642,7 @@ fn headless_slash_commands_are_control_plane_only() {
 fn headless_common_model_and_doctor_commands_are_redacted_and_local() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("common-slash.jsonl");
-    let mut agent = Agent::with_echo(SessionStore::open(&path).unwrap());
+    let agent = Agent::with_echo(SessionStore::open(&path).unwrap());
     let input = concat!(
         "{\"type\":\"command\",\"id\":\"models\",\"text\":\"/models\"}\n",
         "{\"type\":\"command\",\"id\":\"doctor\",\"text\":\"/doctor\"}\n",
@@ -1640,7 +1650,7 @@ fn headless_common_model_and_doctor_commands_are_redacted_and_local() {
         "{\"type\":\"shutdown\",\"id\":\"shutdown\"}\n",
     );
     let mut output = Vec::new();
-    run_headless(&mut agent, Cursor::new(input.as_bytes()), &mut output).unwrap();
+    run_headless_sequential(agent, input.as_bytes(), &mut output).unwrap();
     let records = json_lines(&output);
     let models = records
         .iter()
@@ -1667,7 +1677,7 @@ fn headless_common_model_and_doctor_commands_are_redacted_and_local() {
     assert_eq!(help["success"], true);
     assert!(help["data"]["text"].as_str().unwrap().contains("/model"));
     assert_eq!(
-        agent.history().len(),
+        SessionStore::open_existing(&path).unwrap().turns().len(),
         0,
         "common slash commands reached model"
     );
@@ -1684,7 +1694,7 @@ fn session_slash_list_and_open_use_real_session_owner_paths() {
     drop(source);
 
     let active_path = dir.path().join("active.jsonl");
-    let mut agent = Agent::with_echo(SessionStore::open(&active_path).unwrap());
+    let agent = Agent::with_echo(SessionStore::open(&active_path).unwrap());
     let input = [
         serde_json::json!({"type":"command","id":"list","text":"/session list"}),
         serde_json::json!({
@@ -1701,7 +1711,7 @@ fn session_slash_list_and_open_use_real_session_owner_paths() {
     .join("\n")
         + "\n";
     let mut output = Vec::new();
-    run_headless(&mut agent, Cursor::new(input.into_bytes()), &mut output).unwrap();
+    run_headless_sequential(agent, input.into_bytes(), &mut output).unwrap();
     let records = json_lines(&output);
 
     let listed = records
@@ -1724,12 +1734,12 @@ fn session_slash_list_and_open_use_real_session_owner_paths() {
             .to_string()
             .contains(dir.path().to_string_lossy().as_ref())
     );
-    assert!(
-        agent
-            .history()
-            .iter()
-            .any(|turn| turn.content == "persisted")
-    );
+    let status = records
+        .iter()
+        .find(|record| record["id"] == "status")
+        .unwrap();
+    assert_eq!(status["data"]["session"]["path"], "<session:source.jsonl>");
+    assert_eq!(status["data"]["session"]["turn_count"], 1);
 }
 
 #[test]
@@ -1743,7 +1753,7 @@ fn headless_session_lifecycle_and_queue_slash_commands_use_typed_owner() {
     let recipient_id = recipient.session_id().to_owned();
     drop(source);
     drop(recipient);
-    let mut agent = Agent::with_echo(SessionStore::open(&active_path).unwrap());
+    let agent = Agent::with_echo(SessionStore::open(&active_path).unwrap());
     let input = [
         serde_json::json!({
             "type":"command",
@@ -1772,7 +1782,7 @@ fn headless_session_lifecycle_and_queue_slash_commands_use_typed_owner() {
     .join("\n")
         + "\n";
     let mut output = Vec::new();
-    run_headless(&mut agent, Cursor::new(input.into_bytes()), &mut output).unwrap();
+    run_headless_sequential(agent, input.into_bytes(), &mut output).unwrap();
     let records = json_lines(&output);
     for id in ["archive", "unarchive", "queue"] {
         let response = records.iter().find(|record| record["id"] == id).unwrap();
@@ -1803,7 +1813,7 @@ fn headless_session_lifecycle_and_queue_slash_commands_use_typed_owner() {
 fn inspection_responses_redact_paths_and_reject_domain_escape() {
     let dir = tempdir().unwrap();
     let session_path = dir.path().join("inspection.jsonl");
-    let mut agent = Agent::with_echo(SessionStore::open(&session_path).unwrap());
+    let agent = Agent::with_echo(SessionStore::open(&session_path).unwrap());
     let domain_path = zenpi::domain_store::path_for_session(&session_path);
     assert!(
         !domain_path.exists(),
@@ -1816,7 +1826,7 @@ fn inspection_responses_redact_paths_and_reject_domain_escape() {
         "{\"type\":\"shutdown\",\"id\":\"stop\"}\n",
     );
     let mut output = Vec::new();
-    run_headless(&mut agent, Cursor::new(input.as_bytes()), &mut output).unwrap();
+    run_headless_sequential(agent, input.as_bytes(), &mut output).unwrap();
     let records = json_lines(&output);
 
     let blueprint = records.iter().find(|record| record["id"] == "bp").unwrap();
@@ -1866,7 +1876,7 @@ fn headless_domain_put_commands_persist_and_round_trip() {
         workspace_domain_fixture("learn", &serde_json::to_string(&learn).unwrap());
 
     let session_path = blueprint_dir.join("session.jsonl");
-    let mut agent = Agent::with_echo(SessionStore::open(&session_path).unwrap());
+    let agent = Agent::with_echo(SessionStore::open(&session_path).unwrap());
     let input = [
         serde_json::json!({
             "type": "command",
@@ -1894,7 +1904,7 @@ fn headless_domain_put_commands_persist_and_round_trip() {
     .join("\n")
         + "\n";
     let mut output = Vec::new();
-    run_headless(&mut agent, Cursor::new(input.into_bytes()), &mut output).unwrap();
+    run_headless_sequential(agent, input.into_bytes(), &mut output).unwrap();
     let records = json_lines(&output);
 
     for id in [
@@ -1947,7 +1957,10 @@ fn headless_domain_put_commands_persist_and_round_trip() {
     assert_eq!(store.goals().len(), 1);
     assert_eq!(store.learns().len(), 1);
     assert_eq!(
-        agent.history().len(),
+        SessionStore::open_existing(&session_path)
+            .unwrap()
+            .turns()
+            .len(),
         0,
         "domain control commands must not become provider turns"
     );
@@ -2001,10 +2014,10 @@ fn async_shutdown_acknowledges_only_after_prior_turn_terminal_response() {
 }
 
 #[test]
-fn synchronous_replay_and_control_idempotency_are_explicit() {
+fn sequential_replay_and_control_idempotency_are_explicit() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("replay.jsonl");
-    let mut agent = Agent::with_echo(SessionStore::open(&path).unwrap());
+    let agent = Agent::with_echo(SessionStore::open(&path).unwrap());
     let input = concat!(
         "{\"type\":\"prompt\",\"id\":\"p\",\"text\":\"hello\"}\n",
         "{\"type\":\"status\",\"id\":\"same-status\"}\n",
@@ -2013,7 +2026,7 @@ fn synchronous_replay_and_control_idempotency_are_explicit() {
         "{\"type\":\"shutdown\",\"id\":\"stop\"}\n",
     );
     let mut output = Vec::new();
-    run_headless(&mut agent, Cursor::new(input.as_bytes()), &mut output).unwrap();
+    run_headless_sequential(agent, input.as_bytes(), &mut output).unwrap();
     let records = json_lines(&output);
 
     let statuses: Vec<&Value> = records
@@ -2468,7 +2481,7 @@ fn exercise_steer_shell_guard(extra: Value, should_execute: bool) {
         .unwrap()
         .extend(extra.as_object().unwrap().clone());
     let mut output = Vec::new();
-    run_headless(&mut agent, Cursor::new(format!("{request}\n")), &mut output).unwrap();
+    run_headless_sequential(agent, format!("{request}\n"), &mut output).unwrap();
     let records = json_lines(&output);
     let response = records
         .iter()
@@ -2488,7 +2501,12 @@ fn exercise_steer_shell_guard(extra: Value, should_execute: bool) {
     } else {
         assert_eq!(response["code"], "invalid_field");
         assert!(response["error"].as_str().unwrap().contains("user_shell"));
-        assert!(agent.history().is_empty());
+        assert!(
+            SessionStore::open_existing(root.path().join("journal.jsonl"))
+                .unwrap()
+                .turns()
+                .is_empty()
+        );
     }
 }
 
@@ -2522,7 +2540,7 @@ fn steer_shell_guard_preserves_valid_owned_shell_execution() {
 fn headless_connection_control_declares_capabilities_and_is_idempotent() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("connection.jsonl");
-    let mut agent = Agent::with_echo(SessionStore::open(&path).unwrap());
+    let agent = Agent::with_echo(SessionStore::open(&path).unwrap());
     let session_id = agent.session().session_id().to_owned();
     let input = format!(
         concat!(
@@ -2543,7 +2561,7 @@ fn headless_connection_control_declares_capabilities_and_is_idempotent() {
         session = session_id
     );
     let mut output = Vec::new();
-    run_headless(&mut agent, Cursor::new(input.as_bytes()), &mut output).unwrap();
+    run_headless_sequential(agent, input.as_bytes(), &mut output).unwrap();
     let records = json_lines(&output);
     let by_id = |id: &str| {
         records
@@ -2613,7 +2631,7 @@ fn headless_connection_control_declares_capabilities_and_is_idempotent() {
 fn headless_connection_selection_requires_and_checks_the_revision() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("connection-revision.jsonl");
-    let mut agent = Agent::with_echo(SessionStore::open(&path).unwrap());
+    let agent = Agent::with_echo(SessionStore::open(&path).unwrap());
     let session_id = agent.session().session_id().to_owned();
     // The selection fields are required: omitting the revision is a schema
     // error rather than an implicit "force".
@@ -2621,12 +2639,13 @@ fn headless_connection_selection_requires_and_checks_the_revision() {
         concat!(
             "{{\"schema_version\":2,\"type\":\"connection\",\"id\":\"missing\",\"session_id\":\"{session}\",\"connection\":{{\"action\":\"select\",\"owner\":\"discussion\",\"profile\":\"p\",\"model\":\"m\"}}}}\n",
             "{{\"schema_version\":2,\"type\":\"connection\",\"id\":\"neg\",\"session_id\":\"{session}\",\"connection\":{{\"action\":\"select\",\"owner\":\"discussion\",\"profile\":\"p\",\"model\":\"m\",\"expected_selection_revision\":-1}}}}\n",
+            "{{\"schema_version\":2,\"type\":\"connection\",\"id\":\"rev\",\"session_id\":\"{session}\",\"connection\":{{\"action\":\"status\",\"owner\":\"discussion\"}}}}\n",
             "{{\"schema_version\":2,\"type\":\"shutdown\",\"id\":\"q\"}}\n",
         ),
         session = session_id
     );
     let mut output = Vec::new();
-    run_headless(&mut agent, Cursor::new(input.as_bytes()), &mut output).unwrap();
+    run_headless_sequential(agent, input.as_bytes(), &mut output).unwrap();
     let records = json_lines(&output);
     // An unparseable request has no id to correlate a response to, so what
     // matters is that nothing was applied and the run still reached shutdown.
@@ -2637,5 +2656,304 @@ fn headless_connection_selection_requires_and_checks_the_revision() {
         "{records:?}"
     );
     assert!(records.iter().any(|record| record["id"] == "q"));
-    assert_eq!(agent.selection_revision(), 0);
+    let revision = records.iter().find(|record| record["id"] == "rev").unwrap();
+    assert_eq!(revision["data"]["selection_revision"], 0, "{revision}");
+}
+
+/// Holds the first provider call open until the test releases it, so the
+/// host is provably busy while follow-up prompts are admitted.
+struct GatedPromptBackend {
+    calls: AtomicUsize,
+    started: mpsc::SyncSender<()>,
+    release: Mutex<mpsc::Receiver<()>>,
+}
+
+impl Backend for GatedPromptBackend {
+    crate::support::controlled_local_backend!();
+    fn complete(&self, _: CompletionRequest<'_>) -> Result<Completion, BackendError> {
+        Ok(Completion::text("unused"))
+    }
+
+    fn complete_with_control(
+        &self,
+        _: CompletionRequest<'_>,
+        cancelled: &dyn Fn() -> bool,
+        _: &mut dyn FnMut(ProviderEvent) -> Result<(), BackendError>,
+    ) -> Result<Completion, BackendError> {
+        if self.calls.fetch_add(1, Ordering::AcqRel) == 0 {
+            let _ = self.started.send(());
+            let release = self.release.lock().unwrap();
+            loop {
+                if cancelled() {
+                    return Err(BackendError::Cancelled);
+                }
+                if release.recv_timeout(Duration::from_millis(5)).is_ok() {
+                    break;
+                }
+            }
+        }
+        Ok(Completion::text("gated answer"))
+    }
+
+    fn name(&self) -> &str {
+        "gated-prompt-fixture"
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn async_start_if_idle_is_rejected_at_admission_while_a_slow_prompt_runs() {
+    let (started_tx, started_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::channel();
+    let backend = GatedPromptBackend {
+        calls: AtomicUsize::new(0),
+        started: started_tx,
+        release: Mutex::new(release_rx),
+    };
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("start-if-idle.jsonl");
+    let agent = Agent::new(SessionStore::open(&path).unwrap(), Box::new(backend));
+    let (mut writer, reader) = std::os::unix::net::UnixStream::pair().unwrap();
+    let output = SharedWriter::default();
+    let captured = output.clone();
+    let host =
+        thread::spawn(move || zenpi::headless::run_async_streams(agent, reader, output).unwrap());
+    writeln!(
+        writer,
+        "{}",
+        serde_json::json!({"schema_version":2,"type":"prompt","id":"slow","text":"take a while"})
+    )
+    .unwrap();
+    started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    writeln!(
+        writer,
+        "{}",
+        serde_json::json!({"schema_version":2,"type":"prompt","id":"idle-only","text":"only if idle","mode":"start_if_idle"})
+    )
+    .unwrap();
+    writeln!(
+        writer,
+        "{}",
+        serde_json::json!({"schema_version":2,"type":"prompt","id":"stale","text":"stale turn","expected_turn_id":"turn-that-is-not-active"})
+    )
+    .unwrap();
+    // Both refusals must arrive while the first provider call is still held
+    // open: admission, not eventual execution, decides them.
+    wait_for_output(&captured, "\"id\":\"stale\"");
+    wait_for_output(&captured, "\"id\":\"idle-only\"");
+    let records = json_lines(&captured.0.lock().unwrap());
+    assert!(
+        !records
+            .iter()
+            .any(|record| record["id"] == "slow" && record["type"] == "response"),
+        "slow prompt finished before the refusals were checked: {records:?}"
+    );
+    for (id, code) in [
+        ("idle-only", "not_idle"),
+        ("stale", "expected_turn_mismatch"),
+    ] {
+        let responses: Vec<_> = records
+            .iter()
+            .filter(|record| record["id"] == id && record["type"] == "response")
+            .collect();
+        assert_eq!(responses.len(), 1, "{id}: {records:?}");
+        assert_eq!(responses[0]["success"], false);
+        assert_eq!(responses[0]["code"], code);
+        assert!(
+            !records
+                .iter()
+                .any(|record| record["id"] == id && record["type"] == "request_queued"),
+            "{id} was queued instead of refused"
+        );
+    }
+    release_tx.send(()).unwrap();
+    wait_for_output(&captured, "gated answer");
+    writeln!(
+        writer,
+        "{}",
+        serde_json::json!({"schema_version":2,"type":"shutdown","id":"stop"})
+    )
+    .unwrap();
+    drop(writer);
+    host.join().unwrap();
+    let records = json_lines(&captured.0.lock().unwrap());
+    let slow = records
+        .iter()
+        .find(|record| record["id"] == "slow" && record["type"] == "response")
+        .expect("slow prompt terminal response");
+    assert_eq!(slow["success"], true);
+    let session = SessionStore::open(&path).unwrap();
+    assert!(
+        session
+            .turns()
+            .iter()
+            .all(|turn| turn.content != "only if idle" && turn.content != "stale turn"),
+        "a refused prompt reached the journal"
+    );
+}
+
+/// Shared state for the causal-order fixture: the writer stalls on the first
+/// provider delta so the whole tool round and the following text are produced
+/// while the host cannot drain, i.e. they are all pending in one tick.
+#[derive(Default)]
+struct CausalGate {
+    writer_blocked: std::sync::atomic::AtomicBool,
+    produced_after_tool: std::sync::atomic::AtomicBool,
+    release_writer: std::sync::atomic::AtomicBool,
+}
+
+fn wait_for_gate(flag: &std::sync::atomic::AtomicBool) -> bool {
+    for _ in 0..1000 {
+        if flag.load(Ordering::Acquire) {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    false
+}
+
+struct CausalToolBackend {
+    calls: AtomicUsize,
+    gate: Arc<CausalGate>,
+}
+
+impl Backend for CausalToolBackend {
+    crate::support::controlled_local_backend!();
+    fn complete(&self, _: CompletionRequest<'_>) -> Result<Completion, BackendError> {
+        Ok(Completion::text("unused"))
+    }
+
+    fn complete_with_control(
+        &self,
+        _: CompletionRequest<'_>,
+        _: &dyn Fn() -> bool,
+        sink: &mut dyn FnMut(ProviderEvent) -> Result<(), BackendError>,
+    ) -> Result<Completion, BackendError> {
+        if self.calls.fetch_add(1, Ordering::AcqRel) == 0 {
+            sink(ProviderEvent::TextDelta {
+                delta: "before tool".into(),
+            })?;
+            if !wait_for_gate(&self.gate.writer_blocked) {
+                return Err(BackendError::Transport("writer gate never closed".into()));
+            }
+            let mut completion = Completion::text("");
+            completion.tool_calls.push(ToolCall {
+                id: "progress-call".into(),
+                name: "run_command".into(),
+                arguments: serde_json::json!({
+                    "command": "printf 'progress-line\\n'",
+                    "timeout_ms": 5000
+                }),
+            });
+            return Ok(completion);
+        }
+        sink(ProviderEvent::TextDelta {
+            delta: "after tool".into(),
+        })?;
+        self.gate.produced_after_tool.store(true, Ordering::Release);
+        Ok(Completion::text("after tool"))
+    }
+
+    fn name(&self) -> &str {
+        "causal-tool-fixture"
+    }
+}
+
+#[derive(Clone)]
+struct CausalGateWriter {
+    bytes: Arc<Mutex<Vec<u8>>>,
+    gate: Arc<CausalGate>,
+}
+
+impl Write for CausalGateWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.bytes.lock().unwrap().extend_from_slice(bytes);
+        let needle = b"\"delta\":\"before tool\"";
+        if bytes.windows(needle.len()).any(|window| window == needle)
+            && !self.gate.writer_blocked.swap(true, Ordering::AcqRel)
+        {
+            wait_for_gate(&self.gate.release_writer);
+        }
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn async_tool_events_precede_text_produced_after_the_tool_round() {
+    let gate = Arc::new(CausalGate::default());
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("causal-order.jsonl");
+    let mut agent = Agent::new(
+        SessionStore::open(&path).unwrap(),
+        Box::new(CausalToolBackend {
+            calls: AtomicUsize::new(0),
+            gate: Arc::clone(&gate),
+        }),
+    );
+    agent.set_tools(
+        ToolRegistry::with_all_builtins().unwrap(),
+        ToolContext::new(directory.path()).unwrap(),
+        SideEffectPolicy::all_builtins(),
+    );
+    agent.set_approval_policy(ApprovalPolicy {
+        mode: ApprovalMode::TrustedWorkspace,
+        trusted_tools: vec!["run_command".into()],
+        ..Default::default()
+    });
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let output = CausalGateWriter {
+        bytes: Arc::clone(&captured),
+        gate: Arc::clone(&gate),
+    };
+    let (mut writer, reader) = std::os::unix::net::UnixStream::pair().unwrap();
+    let host =
+        thread::spawn(move || zenpi::headless::run_async_streams(agent, reader, output).unwrap());
+    writeln!(
+        writer,
+        "{}",
+        serde_json::json!({"schema_version":2,"type":"prompt","id":"causal","text":"run a tool"})
+    )
+    .unwrap();
+    let produced = wait_for_gate(&gate.produced_after_tool);
+    gate.release_writer.store(true, Ordering::Release);
+    assert!(produced, "fixture never produced its post-tool text");
+    writeln!(
+        writer,
+        "{}",
+        serde_json::json!({"schema_version":2,"type":"shutdown","id":"stop"})
+    )
+    .unwrap();
+    drop(writer);
+    host.join().unwrap();
+
+    let records = json_lines(&captured.lock().unwrap());
+    let position = |predicate: &dyn Fn(&Value) -> bool| {
+        records
+            .iter()
+            .position(|record| record["type"] == "event" && predicate(&record["event"]))
+    };
+    let after_text = position(&|event| event["delta"] == "after tool")
+        .unwrap_or_else(|| panic!("missing post-tool delta: {records:?}"));
+    for kind in ["tool_call", "tool_progress", "tool_result"] {
+        let index = position(&|event| event["type"] == kind)
+            .unwrap_or_else(|| panic!("missing {kind}: {records:?}"));
+        assert!(
+            index < after_text,
+            "{kind} (line {index}) was emitted after text produced later (line {after_text}): {records:?}"
+        );
+    }
+    let sequences: Vec<u64> = records
+        .iter()
+        .filter(|record| record["type"] == "event")
+        .map(|record| record["sequence"].as_u64().unwrap())
+        .collect();
+    assert!(
+        sequences.windows(2).all(|pair| pair[0] < pair[1]),
+        "event sequence is not strictly increasing: {sequences:?}"
+    );
 }

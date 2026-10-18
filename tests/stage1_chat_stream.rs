@@ -12,6 +12,7 @@ use std::{
 };
 use zenpi::backend::{
     Backend, BackendError, Completion, CompletionRequest, OpenAiCompatibleBackend, ProviderEvent,
+    StopReason,
 };
 
 fn event(delta: Value, reason: Value) -> String {
@@ -174,8 +175,6 @@ fn incomplete_or_malformed_stream_never_publishes_success_or_ready_tools() {
         "data: [DONE]\n\n".into(),
         "data: {broken}\n\n".into(),
         event(partial_tool, json!("tool_calls")),
-        event(valid_tool.clone(), json!("length")),
-        event(valid_tool.clone(), json!("stop")),
         event(valid_tool.clone(), json!("tool_calls")) + "data: {broken}\n\n",
         event(json!({"content":"x"}), json!("stop")) + "data: partial",
         event(json!({"content":"x"}), json!("stop"))
@@ -194,6 +193,80 @@ fn incomplete_or_malformed_stream_never_publishes_success_or_ready_tools() {
             )),
             "{body}"
         );
+    }
+}
+
+#[test]
+fn stop_beside_complete_tool_calls_and_missing_choices_or_index_are_accepted() {
+    // ZE-226: compatible servers end complete tool calls with "stop", omit
+    // the choice index, or send chunks without choices.
+    let tool = json!({"tool_calls":[{"index":0,"id":"a","function":{"name":"write_file","arguments":"{}"}}]});
+    let body = format!(
+        "data: {}\n\n",
+        json!({"id":"stream-1","model":"fixture","choices":[{"delta":tool,"finish_reason":"stop"}]})
+    ) + "data: {\"id\":\"stream-1\",\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1}}\n\ndata: [DONE]\n\n";
+    let (result, events) = run(body);
+    let completion = result.unwrap();
+    assert_eq!(completion.tool_calls.len(), 1);
+    assert_eq!(completion.stop_reason, StopReason::ToolUse);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, ProviderEvent::ToolCallDone { .. }))
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let backend = OpenAiCompatibleBackend::new(
+        format!("http://{}", listener.local_addr().unwrap()),
+        None,
+        "fixture",
+    )
+    .unwrap();
+    let payload = json_completion(vec![json_call("call", "{}")], json!("stop"));
+    let peer = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        request_body(&mut stream);
+        write_json_response(&mut stream, &payload);
+    });
+    let completion = backend
+        .complete(CompletionRequest::new("json-stop", &[], None, &[]))
+        .unwrap();
+    peer.join().unwrap();
+    assert_eq!(completion.tool_calls.len(), 1);
+}
+
+#[test]
+fn length_finish_keeps_content_and_reports_length_stop() {
+    // ZE-221: finish_reason=length keeps what was generated; the core, not
+    // the decoder, refuses to dispatch tool calls from such a turn.
+    let valid_tool = json!({"tool_calls":[{"index":0,"id":"a","function":{"name":"write_file","arguments":"{}"}}]});
+    let (result, _) = run(event(valid_tool, json!("length")));
+    let completion = result.unwrap();
+    assert_eq!(completion.stop_reason, StopReason::Length);
+    assert_eq!(completion.tool_calls.len(), 1);
+    let (result, _) = run(event(json!({"content":"partial"}), json!("length")));
+    let completion = result.unwrap();
+    assert_eq!(completion.content, "partial");
+    assert_eq!(completion.stop_reason, StopReason::Length);
+    for calls in [vec![json_call("call", "{}")], vec![]] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let backend = OpenAiCompatibleBackend::new(
+            format!("http://{}", listener.local_addr().unwrap()),
+            None,
+            "fixture",
+        )
+        .unwrap();
+        let payload = json_completion(calls, json!("length"));
+        let peer = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            request_body(&mut stream);
+            write_json_response(&mut stream, &payload);
+        });
+        let completion = backend
+            .complete(CompletionRequest::new("json-length", &[], None, &[]))
+            .unwrap();
+        peer.join().unwrap();
+        assert_eq!(completion.content, "answer");
+        assert_eq!(completion.stop_reason, StopReason::Length);
     }
 }
 
@@ -611,7 +684,7 @@ fn malformed_or_oversized_reasoning_never_publishes_ready_tools() {
 }
 
 #[test]
-fn altered_duplicate_or_foreign_reasoning_history_fails_before_http() {
+fn altered_or_duplicate_reasoning_history_fails_before_http_and_foreign_history_is_accepted() {
     use zenpi::core::{Turn, TurnRole};
     let (c, _) = run(event(
         json!({"reasoning_details":[{"type":"reasoning.encrypted","data":"opaque"}],"content":"answer"}),
@@ -664,16 +737,6 @@ fn altered_duplicate_or_foreign_reasoning_history_fails_before_http() {
         zenpi::providers::registry::ModelRegistry::default(),
     )
     .unwrap();
-    assert!(
-        other_provider
-            .complete(CompletionRequest::new(
-                "provider",
-                &[original.clone()],
-                None,
-                &[]
-            ))
-            .is_err()
-    );
     let other_wire = OpenAiCompatibleBackend::new_with_wire_api(
         format!("http://{}", listener.local_addr().unwrap()),
         None,
@@ -681,29 +744,19 @@ fn altered_duplicate_or_foreign_reasoning_history_fails_before_http() {
         zenpi::backend::OpenAiWireApi::Responses,
     )
     .unwrap();
-    assert!(
-        other_wire
-            .complete(CompletionRequest::new(
-                "wire",
-                &[original.clone()],
-                None,
-                &[]
-            ))
-            .is_err()
-    );
-    assert!(
-        b.validate_history_model(&[original.clone()], Some("another-model"))
-            .is_err()
-    );
-    assert!(
-        b.complete(CompletionRequest::new(
-            "foreign",
-            &[original],
-            Some("another-model"),
-            &[]
-        ))
-        .is_err()
-    );
+    // ZE-227: another provider, wire or model no longer rejects the history;
+    // its opaque details are dropped and the turn replays as plain text.
+    for (backend, model) in [
+        (&other_provider, None),
+        (&other_wire, None),
+        (&b, Some("another-model")),
+    ] {
+        assert!(
+            backend
+                .validate_history_model(std::slice::from_ref(&original), model)
+                .is_ok()
+        );
+    }
     assert!(matches!(listener.accept(),Err(e) if e.kind()==std::io::ErrorKind::WouldBlock));
 }
 
@@ -955,11 +1008,9 @@ fn invalid_json_completions() -> Vec<(&'static str, Value)> {
         ));
     }
     for (label, reason) in [
-        ("length", json!("length")),
         ("filtered", json!("content_filter")),
         ("incomplete", json!("incomplete")),
         ("null terminal with tools", Value::Null),
-        ("stop with tools", json!("stop")),
     ] {
         cases.push((
             label,
@@ -972,7 +1023,6 @@ fn invalid_json_completions() -> Vec<(&'static str, Value)> {
     ));
     for (label, reason) in [
         ("null text terminal", Value::Null),
-        ("length text terminal", json!("length")),
         ("incomplete text terminal", json!("incomplete")),
     ] {
         cases.push((label, json_completion(vec![], reason)));

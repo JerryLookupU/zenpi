@@ -48,3 +48,7 @@ layout.json
 
 # Smoke/scratch output written by tools/stage1_host_smoke.py
 /.ops/
+
+# Agent worktrees (local only)
+.claude/worktrees/
+.claude/targets/

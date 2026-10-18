@@ -1,0 +1,73 @@
+{
+  "agents": 2000,
+  "latency_ms": 200,
+  "cores": 20,
+  "limits": {
+    "nofile_soft": 1048576,
+    "nofile_hard": "unlimited",
+    "kern.maxfiles": "491520",
+    "kern.maxfilesperproc": "245760",
+    "kern.maxproc": "16000",
+    "kern.maxprocperuid": "10666"
+  },
+  "spawn_s": 12.16,
+  "idle": {
+    "agents_sampled": 2000,
+    "machine_cpu_cores": 0.351,
+    "wakeups_per_s_p99": 1.7,
+    "wakeups_per_s_max": 2.1,
+    "threads_max": 3,
+    "fds_max": 4,
+    "rss_mib_p99": 5.78,
+    "rss_gib_total": 11.045
+  },
+  "ramp_s": 10.0,
+  "waiting_provider": {
+    "agents_sampled": 2000,
+    "machine_cpu_cores": 0.223,
+    "wakeups_per_s_p99": 6.89,
+    "wakeups_per_s_max": 7.88,
+    "threads_max": 4,
+    "fds_max": 5,
+    "rss_mib_p99": 7.02,
+    "rss_gib_total": 13.429
+  },
+  "probe_succeeded": 2000,
+  "tasks": {
+    "succeeded": 2000,
+    "success_rate": 1.0,
+    "task_s_p50": 0.627,
+    "task_s_p99": 0.75,
+    "round_overhead_ms_p99": 49.9,
+    "agent_cpu_ms_per_round": 4.63,
+    "provider_requests": 8000,
+    "files_written": 2000
+  },
+  "after": {
+    "agents_sampled": 2000,
+    "machine_cpu_cores": 0.29,
+    "wakeups_per_s_p99": 2.47,
+    "wakeups_per_s_max": 3.46,
+    "threads_max": 3,
+    "fds_max": 5,
+    "rss_mib_p99": 8.3,
+    "rss_gib_total": 15.201
+  },
+  "journal": {
+    "journal_synced_records_per_tool_call_p99": 9.5,
+    "wal_bytes_per_request_p99": 35105
+  },
+  "checks": {
+    "success_rate_100pct": true,
+    "idle_rss_p99_le_8MiB": true,
+    "idle_rss_total_le_24GiB": true,
+    "idle_cpu_le_1_core": true,
+    "waiting_cpu_le_1_core": true,
+    "idle_wakeups_le_5_per_s": true,
+    "idle_threads_le_3": true,
+    "active_threads_le_5": true,
+    "fds_le_16": true,
+    "round_overhead_p99_le_100ms": true
+  },
+  "pass": true
+}

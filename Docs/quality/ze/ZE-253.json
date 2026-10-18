@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-253",
+  "claim_id": "ZE-253@blueprint-4.0.0",
+  "from": "worker",
+  "to": "master",
+  "created_at": "2026-10-14T12:45:03Z",
+  "summary": "COMMAND_SPECS is now the single command catalog: parse() resolves the command through the spec table (exact name/alias) before dispatch, so no name parses without a spec. Added specs for /reasoning, /tree, /output, /input, /scheduled, /reload, /skills, /templates and the `resource` alias of /resources; removed the /review Diff alias (keep /diff). New SlashCommand::Reasoning{level} is handled by the shared headless dispatcher (so {\"type\":\"command\",\"text\":\"/reasoning high\"} sets the effort used by the next provider request) and by the TUI dispatcher; the TUI /help hand patch is gone. /approval with no argument only displays the current mode (Approval{mode:Option}); /yolo with no argument toggles (Yolo{enabled:Option}). Host-routed controls (tree/output/input/scheduled/reload/skills/templates) return SlashError::HostControl from parse; hosts still route them first via their dedicated grammars, and headless now gates /reload|/skills|/templates on resource_control() since they are no longer resource-template candidates.",
+  "changed_files": [
+    "src/headless.rs",
+    "src/slash.rs",
+    "src/tui.rs",
+    "tests/approval_owner.rs",
+    "tests/slash.rs",
+    "tests/tui_busy_diff.rs",
+    "tests/tui_command_palette.rs"
+  ],
+  "diff_stat": "7 files changed, 559 insertions(+), 125 deletions(-)",
+  "commands_run": [
+    "cargo fmt --all",
+    "cargo fmt --all -- --check",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo clippy --locked --all-targets --all-features -- -D warnings",
+    "python3 tools/check_modes.py",
+    "git diff -U0 origin/main -- src | grep -cE '^\\+.*#!?\\[allow\\((dead_code|unused)'",
+    "cargo test --locked --no-fail-fast",
+    "cargo test --locked --test slash",
+    "cargo test --locked --test tui_busy_diff --test tui_command_palette --test slash --test approval_owner --test stage1_extension_hooks --test dag",
+    "cargo test --locked --lib --test stage1_resource_host --test headless_protocol --test tui_command_palette",
+    "cargo test --locked --lib -- extension_resume_commit_tests"
+  ],
+  "validation_result": {
+    "every_parsable_command_name_has_a_spec_entry": "pass (tests/slash.rs)",
+    "headless_reasoning_command_changes_the_next_provider_request": "pass (tests/slash.rs; run_headless + OpenAI Responses recording server: request 1 has no reasoning.effort, request after /reasoning high has reasoning.effort=high)",
+    "headless_approval_without_argument_leaves_mode_unchanged_and_yolo_toggles": "pass (tests/slash.rs)",
+    "approval_slash_commands_mutate_configured_agent_policy": "pass (TUI: /approval no-arg keeps mode, /yolo toggles)",
+    "cargo_fmt_check": "pass",
+    "clippy_default": "pass",
+    "clippy_all_features": "pass",
+    "check_modes": "pass",
+    "new_allow_dead_code_unused": "0",
+    "cargo_test_full": "all pass except environment-sensitive tests: tests/dag.rs dag_spawn_keeps_a_live_worker_stdin fails consistently (spawns a /bin/sh stub worker; unrelated to slash); stage1_extension_hooks and core extension_resume_commit_tests timed out under full-suite load and pass on rerun; one PTY tui preview test flaked once and passed on rerun"
+  },
+  "notes": "Tests changed because they asserted old behavior: tests/slash.rs (Yolo/Approval now Option, /review now unknown), tests/approval_owner.rs (Yolo{enabled:Some(..)}), tests/tui_busy_diff.rs (dropped /review alias cases), tests/tui_command_palette.rs (template fixture renamed review.md->diff.md since /review is no longer a reserved built-in). Behavior notes: a template named review is now invocable; templates named tree/output/input/scheduled/reload/skills/templates/reasoning/resource are now reserved; /approval no-arg in headless returns {mode, policy_mode, changed:false}; added pub headless::approval_mode_label. No new non-test unwrap/expect/panic, no unsafe, no new Arc<Mutex>.",
+  "digest": "9b97149a0e0530ecfec43d94a925eb7d0dc38913931e7627c5adc973e9834fd4"
+}

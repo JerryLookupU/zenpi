@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-300",
+  "claim_id": "ZE-300@blueprint-4.0.0",
+  "from": "master",
+  "to": "master",
+  "summary": "Headless no longer polls: a process-wide HostWake generation (Mutex+Condvar) is bumped after every stdin line, provider/agent event push, runtime event emit (runtime::set_event_hook), approval request and input-queue reply; the main loop records the generation before draining and sleeps until it moves (max 1 s for the owner heartbeat/signal checks). The runtime worker blocks on its command channel and job threads wake it with Command::JobDone (try_send); a host_gone flag set in Drop replaces channel disconnection for shutdown. A failed job-thread spawn is a typed SubmitError::SpawnFailed (runtime_spawn_failed) instead of Closed, and the queue keeps draining.",
+  "changed_files": [
+    "src/headless.rs",
+    "src/runtime.rs",
+    "src/approval.rs",
+    "src/input_queue.rs",
+    "src/tui.rs",
+    "tests/runtime.rs",
+    "tools/measure_idle_headless.py",
+    "Docs/quality/ze/ZE-300.json"
+  ],
+  "diff_stat": "6 files changed, 193 insertions(+), 26 deletions(-)",
+  "commands_run": [
+    "python3 tools/measure_idle_headless.py --binary <new> --agents 20",
+    "git stash + rebuild + same measurement (A/B)",
+    "cargo test --locked --all-features --test runtime --test remote_concurrency --test headless_* --test remote_headless* --test cli_session --test stage1_input_queue --test stage1_input_host --test approval_owner --test stage1_tool_batch --test core_session --test tui_task",
+    "cargo test --locked --all-features --lib runtime headless",
+    "cargo fmt --all",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo clippy --locked --all-targets --all-features -- -D warnings"
+  ],
+  "validation_result": {
+    "idle_ab": "20 idle headless processes over 10 s: old 104.5 csw/s per process and 0.20 core total; new 1.5 csw/s and ~0 CPU (target <=5 wakeups/s)",
+    "suites": "runtime 12, headless_* (83), remote_headless* 13, input queue/host, approval_owner, tool_batch, core_session 41, tui_task all green",
+    "clippy": "0/0"
+  },
+  "notes": "Not yet covered: provider-wait CPU (the transport still parks every 5 ms until ZE-301), a paused-stdout cancel latency test, and an injected spawn-failure test; SIGTERM is now noticed within the 1 s idle wait.",
+  "created_at": "2026-10-14T17:01:08Z",
+  "digest": "64d36cadda7da793020e6e71a3b245afe80532ddfcaa042e709862146ab1a2b5"
+}

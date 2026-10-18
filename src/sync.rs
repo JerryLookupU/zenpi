@@ -3,7 +3,8 @@
 //! host's runtime-intent owner.
 //!
 //! The blueprint stays the only checklist authority. This module only appends
-//! a new row (stable `ZS1-NNN` id) plus a durable ledger entry; it never
+//! a new row (stable id in the blueprint's own `stable_id_pattern` prefix,
+//! `ZS1` when none is declared) plus a durable ledger entry; it never
 //! rewrites or reinterprets existing rows.
 
 use serde::{Deserialize, Serialize};
@@ -16,7 +17,7 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, thiserror::Error)]
 pub enum SyncError {
     #[error(
-        "no blueprint found (set ZENPI_BLUEPRINT or run inside a project with Docs/*blueprint*.md)"
+        "no blueprint found (set ZENPI_BLUEPRINT, activate Docs/execution/active_requirement.json, or add Docs/*blueprint*.md)"
     )]
     NoBlueprint,
     #[error("requirement is empty")]
@@ -54,6 +55,9 @@ pub fn discover_blueprint(workspace: &Path) -> Result<PathBuf, SyncError> {
             return Ok(path);
         }
     }
+    if let Some(path) = selected_blueprint(workspace) {
+        return Ok(path);
+    }
     let docs = workspace.join("Docs");
     if let Ok(entries) = fs::read_dir(&docs) {
         let mut candidates: Vec<PathBuf> = entries
@@ -64,7 +68,8 @@ pub fn discover_blueprint(workspace: &Path) -> Result<PathBuf, SyncError> {
                     && path
                         .file_name()
                         .and_then(|n| n.to_str())
-                        .is_some_and(|n| n.to_ascii_lowercase().contains("blueprint"))
+                        .map(str::to_ascii_lowercase)
+                        .is_some_and(|n| n.contains("blueprint") && !n.ends_with("_gantt.md"))
             })
             .collect();
         candidates.sort();
@@ -75,6 +80,46 @@ pub fn discover_blueprint(workspace: &Path) -> Result<PathBuf, SyncError> {
     Err(SyncError::NoBlueprint)
 }
 
+/// The blueprint named by an active `Docs/execution/active_requirement.json`.
+fn selected_blueprint(workspace: &Path) -> Option<PathBuf> {
+    let text = fs::read_to_string(workspace.join("Docs/execution/active_requirement.json")).ok()?;
+    let selector: serde_json::Value = serde_json::from_str(&text).ok()?;
+    if selector.get("active").and_then(serde_json::Value::as_bool) != Some(true) {
+        return None;
+    }
+    let relative = Path::new(selector.get("blueprint")?.as_str()?);
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return None;
+    }
+    let path = workspace.join(relative);
+    path.is_file().then_some(path)
+}
+
+/// Id prefix declared by the blueprint header, e.g. `stable_id_pattern: '^ZE-[0-9]{3}$'`.
+fn id_prefix(blueprint: &str) -> String {
+    blueprint
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("stable_id_pattern:"))
+        .and_then(|pattern| {
+            let pattern = pattern.trim().trim_matches(|c| c == '\'' || c == '"');
+            pattern
+                .strip_prefix('^')?
+                .split_once("-[0-9]")
+                .map(|(p, _)| p)
+        })
+        .filter(|p| {
+            !p.is_empty()
+                && p.chars()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+        })
+        .unwrap_or("ZS1")
+        .to_owned()
+}
+
 fn digest_of(requirement: &str) -> String {
     let normalized = requirement.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut hasher = Sha256::new();
@@ -83,17 +128,18 @@ fn digest_of(requirement: &str) -> String {
 }
 
 fn next_item_id(blueprint: &str) -> Result<String, SyncError> {
+    let prefix = format!("{}-", id_prefix(blueprint));
     let mut seen: BTreeSet<u32> = BTreeSet::new();
     let mut rest = blueprint;
-    while let Some(pos) = rest.find("ZS1-") {
-        let tail = &rest[pos + 4..];
+    while let Some(pos) = rest.find(&prefix) {
+        let tail = &rest[pos + prefix.len()..];
         if tail.len() >= 3
             && tail[..3].chars().all(|c| c.is_ascii_digit())
             && let Ok(number) = tail[..3].parse::<u32>()
         {
             seen.insert(number);
         }
-        rest = &rest[pos + 4..];
+        rest = &rest[pos + prefix.len()..];
     }
     // Reserve a dedicated sync range so generated ids never collide with the
     // hand-authored catalogue.
@@ -104,7 +150,7 @@ fn next_item_id(blueprint: &str) -> Result<String, SyncError> {
             return Err(SyncError::Ledger("sync id range exhausted".into()));
         }
     }
-    Ok(format!("ZS1-{candidate:03}"))
+    Ok(format!("{prefix}{candidate:03}"))
 }
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), SyncError> {

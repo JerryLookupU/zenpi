@@ -175,9 +175,21 @@ fn yaml_multiline_quotes_unknown_metadata_bom_and_crlf_are_supported() {
 }
 
 #[test]
-fn malformed_frontmatter_types_duplicate_fields_and_utf8_fail_closed() {
+fn malformed_skill_files_are_skipped_with_one_diagnostic_each() {
     let temp = tempdir().unwrap();
-    let path = temp.path().join("SKILL.md");
+    markdown(temp.path(), "good", "good", "valid sibling", "body");
+    fs::create_dir_all(temp.path().join("bad")).unwrap();
+    let path = temp.path().join("bad/SKILL.md");
+    let assert_skipped = |label: &str| {
+        let set = SkillSet::load(temp.path(), &temp.path().join("none")).unwrap();
+        let names: Vec<_> = set.metadata().map(|m| m.name.clone()).collect();
+        assert_eq!(names, ["good"], "{label}");
+        assert_eq!(set.diagnostics().len(), 1, "{label}");
+        assert!(
+            set.diagnostics()[0].path.ends_with("bad/SKILL.md"),
+            "{label}"
+        );
+    };
     for content in [
         "no frontmatter",
         "---\nname: x\ndescription: ok\n",
@@ -191,15 +203,23 @@ fn malformed_frontmatter_types_duplicate_fields_and_utf8_fail_closed() {
         "---\nname: x\ndescription: [broken\n---\nbody",
     ] {
         fs::write(&path, content).unwrap();
-        assert!(
-            SkillSet::load(temp.path(), &temp.path().join("none")).is_err(),
-            "{content}"
-        );
+        assert_skipped(content);
     }
     fs::write(&path, [255u8, 254, 0]).unwrap();
-    assert!(SkillSet::load(temp.path(), &temp.path().join("none")).is_err());
+    assert_skipped("invalid utf-8");
     fs::write(&path, vec![b'x'; MAX_SKILL_FILE_BYTES + 1]).unwrap();
-    assert!(SkillSet::load(temp.path(), &temp.path().join("none")).is_err());
+    assert_skipped("oversize");
+}
+
+#[test]
+fn unreadable_ignore_rules_are_skipped_with_a_diagnostic() {
+    let temp = tempdir().unwrap();
+    markdown(temp.path(), "good", "good", "valid sibling", "body");
+    fs::write(temp.path().join(".gitignore"), [255u8, 254, 0]).unwrap();
+    let set = SkillSet::load(temp.path(), &temp.path().join("none")).unwrap();
+    assert_eq!(set.metadata().count(), 1);
+    assert_eq!(set.diagnostics().len(), 1);
+    assert!(set.diagnostics()[0].path.ends_with(".gitignore"));
 }
 
 #[test]
@@ -304,7 +324,9 @@ fn relative_resources_remain_under_skill_and_symlinks_are_refused() {
             set.load_body("reader", SkillInvocation::Explicit, "", || false)
                 .is_err()
         );
-        assert!(SkillSet::load(temp.path(), &temp.path().join("none")).is_err());
+        let reloaded = SkillSet::load(temp.path(), &temp.path().join("none")).unwrap();
+        assert_eq!(reloaded.metadata().count(), 0);
+        assert_eq!(reloaded.diagnostics().len(), 1);
     }
 }
 
@@ -345,7 +367,6 @@ mod model_tools {
     };
     use tempfile::tempdir;
     use zenpi::{
-        backend::{Backend, BackendError, Completion, CompletionRequest},
         core::{Agent, TurnInputRequest},
         session::SessionStore,
         skills::{ModelSkillTools, SkillInvocation, SkillSet},
@@ -586,15 +607,6 @@ mod model_tools {
             Ok(json!({}))
         }
     }
-    struct NamesBackend(Arc<Mutex<Vec<String>>>);
-    impl Backend for NamesBackend {
-        crate::support::controlled_local_backend!();
-        fn complete(&self, request: CompletionRequest<'_>) -> Result<Completion, BackendError> {
-            *self.0.lock().unwrap() = request.tools.iter().map(|tool| tool.name.clone()).collect();
-            Ok(Completion::text("ok"))
-        }
-    }
-
     #[test]
     fn duplicate_tool_registration_preserves_registry_and_existing_agent_runtime() {
         let dir = tempdir().unwrap();
@@ -603,10 +615,11 @@ mod model_tools {
         registry.register(NamedTool("read_skill_resource")).unwrap();
         assert!(shared.register(&mut registry).is_err());
         assert!(registry.definition("load_skill").is_none());
-        let names = Arc::new(Mutex::new(Vec::new()));
+        let backend =
+            crate::support::scripted::ScriptedBackend::new([crate::support::scripted::text("ok")]);
         let mut agent = Agent::new(
             SessionStore::open(dir.path().join("s")).unwrap(),
-            Box::new(NamesBackend(names.clone())),
+            Box::new(backend.clone()),
         );
         let mut old = ToolRegistry::new();
         old.register(NamedTool("original")).unwrap();
@@ -625,7 +638,7 @@ mod model_tools {
                 .is_err()
         );
         agent.process(TurnInputRequest::new("inspect")).unwrap();
-        assert_eq!(*names.lock().unwrap(), ["original"]);
+        assert_eq!(backend.requests().last().unwrap().tools, ["original"]);
     }
 
     #[test]
@@ -763,7 +776,9 @@ mod model_tools {
             .unwrap()["content"]
             .as_str()
             .unwrap();
-        serde_json::from_str(content).unwrap()
+        // ZE-213: successful extension-style results keep their JSON record,
+        // while a failed call reaches the model as its plain error text.
+        serde_json::from_str(content).unwrap_or_else(|_| Value::String(content.into()))
     }
     struct Cli {
         child: Child,
@@ -878,7 +893,7 @@ mod model_tools {
             last_tool(&requests[2])["output"]["resource"]["content"],
             "RESOURCE_SENTINEL"
         );
-        assert_eq!(last_tool(&requests[3])["status"], "error");
+        assert!(last_tool(&requests[3]).is_string());
         assert!(!requests[3].to_string().contains("MANUAL_SENTINEL"));
         let journal = fs::read_to_string(dir.path().join("cli.jsonl")).unwrap();
         assert!(journal.contains("source_hash") && journal.contains("MODEL_BODY_SENTINEL"));
@@ -918,7 +933,7 @@ mod model_tools {
         assert_eq!(cli.send("fresh", "Use reader now")["success"], true);
         handle.join().unwrap();
         let requests = requests.lock().unwrap();
-        assert_eq!(last_tool(&requests[1])["status"], "error");
+        assert!(last_tool(&requests[1]).is_string());
         assert!(
             last_tool(&requests[1])
                 .to_string()

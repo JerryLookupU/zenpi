@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-404",
+  "claim_id": "ZE-404@blueprint-4.0.0",
+  "from": "master",
+  "to": "master",
+  "summary": "CI: every PR/push runs G-RUST (fmt, both clippy) and the full test matrix that contains G-TASK (tasks, tasks_headless, tui_task), plus G-LOAD(200) on the release binary in the stage1-host job; a new load.yml runs G-LOAD(2000) nightly (03:17 UTC) or on demand with an agents count and runner label. load_agents.py reads /proc on Linux.",
+  "changed_files": [
+    ".github/workflows/ci.yml",
+    ".github/workflows/load.yml",
+    "tools/load_agents.py",
+    "Docs/Zenpi_Execution_Blueprint_v2.md",
+    "Docs/quality/ze/ZE-404.json"
+  ],
+  "diff_stat": "3 files changed, 40 insertions(+), 6 deletions(-)",
+  "commands_run": [
+    "python3 tools/load_agents.py --agents 5 (macOS path)",
+    "yaml parse of ci.yml and load.yml",
+    "git push + gh run list/watch"
+  ],
+  "validation_result": {
+    "yaml": "ok",
+    "load_harness_local": "pass",
+    "ci": "see gh run after push"
+  },
+  "notes": "The §2.1 budget assumes 16 cores; GitHub ubuntu-latest has 4, so the scheduled 2000-agent run is a trend signal unless dispatched with a larger runner label.",
+  "created_at": "2026-10-14T21:57:27Z",
+  "digest": "317828877d079aa18773e32342342699def92212737b2cbc42f2cfad5bd8308b"
+}

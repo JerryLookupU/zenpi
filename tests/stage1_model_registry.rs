@@ -802,11 +802,15 @@ fn incomplete_json_or_stream_never_executes_a_complete_looking_tool_call() {
             "case {case}"
         );
         assert!(!dir.path().join("must-not-exist").exists());
+        // ZE-221: a length-cut turn (cases 0 and 2) answers its calls with an
+        // error result instead of running them; nothing else reaches a tool.
         assert!(
-            !agent
+            agent
                 .history()
                 .iter()
-                .any(|turn| turn.role == TurnRole::Tool)
+                .filter(|turn| turn.role == TurnRole::Tool)
+                .all(|turn| turn.content.contains("output token limit reached")),
+            "case {case}"
         );
         handle.join().unwrap();
     }

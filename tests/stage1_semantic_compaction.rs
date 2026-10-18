@@ -80,9 +80,13 @@ fn summary_data(request: &Value) -> Value {
         messages[0]["content"]
             .as_str()
             .unwrap()
-            .contains("do not continue")
+            .contains("Do NOT continue the conversation")
     );
-    serde_json::from_str(messages.last().unwrap()["content"].as_str().unwrap()).unwrap()
+    // pi: role-labelled conversation text, never raw records or metadata.
+    let text = messages.last().unwrap()["content"].as_str().unwrap();
+    assert!(text.starts_with("<conversation>\n"));
+    assert!(!text.contains("\"metadata\""));
+    json!(text)
 }
 fn good_summary(data: &Value) -> String {
     let all = data.to_string();
@@ -94,10 +98,7 @@ fn good_summary(data: &Value) -> String {
         all.contains("verify restart"),
         "lost pending work before summary"
     );
-    json!({"goals":["Improve project tabs"],"constraints":["Keep BentoBox and Unicode paths"],
-        "decisions":["Use the existing owner"],"progress":["Read constraints and wrote output"],
-        "pending_tasks":["verify restart"],"critical_facts":["No unknown tool outcome is completed"],
-        "read_files":data["read_files"],"modified_files":data["modified_files"],"unresolved_tools":data["unresolved_tools"]}).to_string()
+    "## Goal\nImprove project tabs\n\n## Constraints & Preferences\n- Keep BentoBox and Unicode paths\n\n## Next Steps\n1. verify restart".into()
 }
 fn completion(content: String) -> Value {
     json!({"id":"http-summary","model":"summary-test","choices":[{"message":{"role":"assistant","content":content},"finish_reason":"stop"}],"usage":{"prompt_tokens":210,"completion_tokens":130,"total_tokens":340}})
@@ -113,6 +114,12 @@ impl Peer {
         Self::with_status(200, handler)
     }
     fn with_status(status: u16, handler: impl Fn(usize, &Value) -> Value + Send + 'static) -> Self {
+        Self::with_statuses(move |_, _| status, handler)
+    }
+    fn with_statuses(
+        status_of: impl Fn(usize, &Value) -> u16 + Send + 'static,
+        handler: impl Fn(usize, &Value) -> Value + Send + 'static,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let url = format!("http://{}/v1", listener.local_addr().unwrap());
@@ -131,6 +138,7 @@ impl Peer {
                         let n = seen.len();
                         seen.push(request.clone());
                         drop(seen);
+                        let status = status_of(n, &request);
                         write!(stream, "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n").unwrap();
                         stream.flush().unwrap();
                         respond(&mut stream, handler(n, &request));
@@ -162,8 +170,12 @@ impl Drop for Peer {
     }
 }
 fn agent(path: &Path, url: &str, priced: bool) -> Agent {
+    agent_with_budget(path, url, priced, BUDGET)
+}
+fn agent_with_budget(path: &Path, url: &str, priced: bool, budget: ContextBudget) -> Agent {
+    let window = budget.max_tokens.max(8000);
     let price=priced.then(||json!({"input_micro_usd_per_million":1_000_000,"output_micro_usd_per_million":2_000_000,"cached_input_micro_usd_per_million":null,"source":"HTTP fixture","version":"1"}));
-    let override_:ModelOverride=serde_json::from_value(json!({"provider":"fixture","id":"summary-test","version":"1","context_window":8000,"max_output_tokens":1000,"text":true,"tools":true,"price":price})).unwrap();
+    let override_:ModelOverride=serde_json::from_value(json!({"provider":"fixture","id":"summary-test","version":"1","context_window":window,"max_output_tokens":1000,"text":true,"tools":true,"price":price})).unwrap();
     let backend = OpenAiCompatibleBackend::from_values_with_wire_api(
         url.into(),
         None,
@@ -179,7 +191,7 @@ fn agent(path: &Path, url: &str, priced: bool) -> Agent {
     .with_max_retries(3)
     .unwrap();
     let mut agent = Agent::new(SessionStore::open(path).unwrap(), Box::new(backend));
-    agent.set_context_budget(BUDGET);
+    agent.set_context_budget(budget);
     agent
 }
 fn seed(agent: &mut Agent) {
@@ -240,16 +252,13 @@ fn real_http_summary_preserves_constraints_files_usage_and_iterative_restart() {
     let peer = Peer::new(|n, request| {
         if n < 2 {
             let data = summary_data(request);
+            let text = data.as_str().unwrap();
             if n == 0 {
-                assert!(data["previous_summary"].is_null());
+                assert!(!text.contains("<previous-summary>"));
             } else {
-                assert!(
-                    data["previous_summary"]
-                        .as_str()
-                        .unwrap()
-                        .contains("Keep BentoBox")
-                );
-                assert!(!data["new_records"].to_string().contains("old-0"));
+                let (records, previous) = text.split_once("<previous-summary>").unwrap();
+                assert!(previous.contains("Keep BentoBox"));
+                assert!(!records.contains("Pending: verify restart"));
             }
             completion(good_summary(&data))
         } else {
@@ -266,7 +275,6 @@ fn real_http_summary_preserves_constraints_files_usage_and_iterative_restart() {
     a.set_summary_cost_limit(Some(20_000)).unwrap();
     let report = a.compact_context().unwrap();
     assert!(report.compacted);
-    assert!(report.checkpoint.is_none());
     let first = checkpoint(&a).unwrap();
     assert_eq!(first.summary_usage.output_tokens, 130);
     assert_eq!(first.summary_provider, "fixture");
@@ -297,12 +305,10 @@ fn real_http_summary_preserves_constraints_files_usage_and_iterative_restart() {
 fn actual_http_invalid_summary_never_replaces_previous_checkpoint() {
     for case in [
         "empty",
-        "json",
         "missing_usage",
         "missing_input_usage",
         "length",
         "over_output",
-        "file_loss",
         "refusal",
         "tool_call",
         "over_input",
@@ -316,7 +322,6 @@ fn actual_http_invalid_summary_never_replaces_previous_checkpoint() {
             if n == 1 {
                 match chosen.as_str() {
                     "empty" => body["choices"][0]["message"]["content"] = json!(""),
-                    "json" => body["choices"][0]["message"]["content"] = json!("partial {"),
                     "missing_usage" => body
                         .as_object_mut()
                         .unwrap()
@@ -337,14 +342,6 @@ fn actual_http_invalid_summary_never_replaces_previous_checkpoint() {
                     "over_output" => {
                         body["usage"]["completion_tokens"] = json!(1001);
                         body["usage"]["total_tokens"] = json!(1211);
-                    }
-                    "file_loss" => {
-                        let mut summary: Value = serde_json::from_str(
-                            body["choices"][0]["message"]["content"].as_str().unwrap(),
-                        )
-                        .unwrap();
-                        summary["read_files"] = json!([]);
-                        body["choices"][0]["message"]["content"] = json!(summary.to_string());
                     }
                     "refusal" => body["choices"][0]["message"]["refusal"] = json!("no"),
                     "tool_call" => {
@@ -544,7 +541,8 @@ fn separate_process_commit_and_reopen_use_semantic_context_on_real_wire() {
 fn unknown_tool_result_stays_in_retained_tail_and_summary_does_not_claim_success() {
     let peer = Peer::new(|_, request| {
         let data = summary_data(request);
-        assert_eq!(data["unresolved_tools"][0]["call_id"], "unknown-call");
+        // The unresolved call stays in the retained tail, unsummarized.
+        assert!(!data.as_str().unwrap().contains("unconfirmed.txt"));
         completion(good_summary(&data))
     });
     let dir = tempdir().unwrap();
@@ -785,21 +783,204 @@ fn summary_http_failure_does_not_use_configured_automatic_retries() {
 }
 
 #[test]
-fn opaque_state_before_every_cut_fails_without_losing_history_or_starting_http() {
-    let peer = Peer::new(|_, _| panic!("no safe native cut should reach provider"));
+fn anthropic_signed_prefix_compacts_and_drops_opaque_reasoning() {
+    let peer = Peer::new(|_, request| {
+        let data = summary_data(request);
+        let text = data.as_str().unwrap();
+        assert!(text.contains("[Assistant]: signed answer"));
+        assert!(!text.contains("signature") && !text.contains("opaque thinking"));
+        completion(good_summary(&data))
+    });
     let dir = tempdir().unwrap();
     let mut a = agent(&dir.path().join("journal.jsonl"), &peer.url, false);
-    let mut first = Turn::new("pinned", TurnRole::User, "original");
-    first.metadata = Some(
-        json!({"annotations":[{"type":"native_history","wire":"google_generative_ai","parts":[{"thoughtSignature":"opaque"}]}]}),
+    a.session_mut()
+        .append_turn(Turn::new("pinned", TurnRole::User, "original"))
+        .unwrap();
+    let mut signed = Turn::with_parent("signed", "pinned", TurnRole::Assistant, "signed answer");
+    signed.metadata = Some(
+        json!({"annotations":[{"type":"native_history","wire":"anthropic_messages","provider":"anthropic","model":"claude-sonnet-4-6","blocks":[{"type":"thinking","thinking":"opaque thinking","signature":"raw+signature/bytes=="},{"type":"text","text":"signed answer"}]}]}),
     );
-    a.session_mut().append_turn(first).unwrap();
+    assert!(context::has_opaque_provider_state(&signed));
+    a.session_mut().append_turn(signed).unwrap();
     seed(&mut a);
-    let original = a.history().to_vec();
-    assert!(a.compact_context().is_err());
-    assert_eq!(a.history(), original);
-    assert!(checkpoint(&a).is_none());
-    assert!(peer.seen.lock().unwrap().is_empty());
+    assert!(a.compact_context().unwrap().compacted);
+    assert!(checkpoint(&a).unwrap().source_end > 2);
+    assert_eq!(peer.seen.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn one_prompt_with_two_hundred_tool_calls_compacts_by_splitting_the_turn() {
+    let peer = Peer::new(|n, request| {
+        if n == 0 {
+            let text = summary_data(request);
+            let text = text.as_str().unwrap();
+            // Only the turn prefix: nothing precedes the split turn.
+            assert!(text.contains("This is the PREFIX of a turn"));
+            assert!(text.contains("[User]: inspect every file"));
+            assert!(text.contains("[Assistant tool calls]: read_file(path=\"f0.txt\")"));
+            completion("## Original Request\ninspect every file".into())
+        } else {
+            let messages = request["messages"].as_array().unwrap();
+            assert_eq!(messages[1]["role"], "user");
+            assert!(
+                messages[1]["content"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Turn Context (split turn)")
+            );
+            assert_eq!(messages[2]["role"], "assistant");
+            completion("done".into())
+        }
+    });
+    let dir = tempdir().unwrap();
+    let mut a = agent_with_budget(
+        &dir.path().join("journal.jsonl"),
+        &peer.url,
+        false,
+        ContextBudget {
+            max_tokens: 40_000,
+            reserved_output_tokens: 1000,
+        },
+    );
+    a.session_mut()
+        .append_turn(Turn::new("prompt", TurnRole::User, "inspect every file"))
+        .unwrap();
+    for n in 0..200 {
+        let mut call = Turn::with_parent(format!("call-{n}"), "prompt", TurnRole::Assistant, "");
+        call.metadata = Some(
+            json!({"tool_calls":[{"id":format!("c{n}"),"name":"read_file","arguments":{"path":format!("f{n}.txt")}}]}),
+        );
+        a.session_mut().append_turn(call).unwrap();
+        let mut result = Turn::with_parent(
+            format!("result-{n}"),
+            "prompt",
+            TurnRole::Tool,
+            "y".repeat(400),
+        );
+        result.metadata = Some(
+            json!({"tool_call_id":format!("c{n}"),"tool_name":"read_file","outcome":"succeeded"}),
+        );
+        a.session_mut().append_turn(result).unwrap();
+    }
+    assert!(a.compact_context().unwrap().compacted);
+    let cp = checkpoint(&a).unwrap();
+    assert!(cp.retained_ids[0].starts_with("call-"));
+    assert!(cp.summary.starts_with("No prior history."));
+    a.session_mut()
+        .append_turn(Turn::new("next", TurnRole::User, "continue"))
+        .unwrap();
+    let wire = context::restore_semantic_checkpoint(
+        a.history(),
+        &cp,
+        a.session().session_id(),
+        "linear",
+        ContextBudget {
+            max_tokens: 40_000,
+            reserved_output_tokens: 1000,
+        },
+    )
+    .unwrap();
+    assert_eq!(wire[0].role, TurnRole::User);
+    assert_eq!(wire[1].role, TurnRole::Assistant);
+    assert_eq!(peer.seen.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn raw_tool_output_larger_than_the_window_keeps_the_summary_request_inside_it() {
+    let peer = Peer::new(|_, request| {
+        let data = summary_data(request);
+        let text = data.as_str().unwrap();
+        assert!(text.contains("more characters truncated"));
+        // The whole request fits the 4000-token window with its output.
+        assert!(request.to_string().len() / 4 + 1000 < 4000);
+        completion(good_summary(&data))
+    });
+    let dir = tempdir().unwrap();
+    let mut a = agent(&dir.path().join("journal.jsonl"), &peer.url, false);
+    a.session_mut()
+        .append_turn(Turn::new(
+            "dump",
+            TurnRole::User,
+            "Keep BentoBox. verify restart. Dump the log.",
+        ))
+        .unwrap();
+    let mut call = Turn::with_parent("dump-call", "dump", TurnRole::Assistant, "");
+    call.metadata =
+        Some(json!({"tool_calls":[{"id":"d","name":"read_file","arguments":{"path":"huge.log"}}]}));
+    a.session_mut().append_turn(call).unwrap();
+    let mut result = Turn::with_parent("dump-result", "dump", TurnRole::Tool, "z".repeat(40_000));
+    result.metadata =
+        Some(json!({"tool_call_id":"d","tool_name":"read_file","outcome":"succeeded"}));
+    a.session_mut().append_turn(result).unwrap();
+    append_more(&mut a);
+    assert!(context::estimate_tokens(a.history()).input_tokens > 4000);
+    assert!(a.compact_context().unwrap().compacted);
+    assert_eq!(peer.seen.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn context_overflow_compacts_once_and_retries_once() {
+    for overflow_again in [false, true] {
+        let peer = Peer::with_statuses(
+            move |n, _| {
+                if n == 0 || (overflow_again && n == 2) {
+                    400
+                } else {
+                    200
+                }
+            },
+            move |n, request| match n {
+                1 => completion(good_summary(&summary_data(request))),
+                0 | 2 => {
+                    // The retry carries the compacted context.
+                    let messages = request["messages"].to_string();
+                    assert_eq!(n == 0, messages.contains("Pending: verify restart"));
+                    if n == 2 && !overflow_again {
+                        completion("recovered".into())
+                    } else {
+                        json!({"error":{"message":"This model's maximum context length is 8000 tokens","code":"context_length_exceeded"}})
+                    }
+                }
+                _ => panic!("unexpected request {n}"),
+            },
+        );
+        let dir = tempdir().unwrap();
+        let mut a = agent(&dir.path().join("journal.jsonl"), &peer.url, false);
+        a.session_mut()
+            .append_turn(Turn::new(
+                "goal",
+                TurnRole::User,
+                format!(
+                    "Keep BentoBox. Pending: verify restart. {}",
+                    "old history ".repeat(40)
+                ),
+            ))
+            .unwrap();
+        for n in 0..15 {
+            a.session_mut()
+                .append_turn(Turn::new(
+                    format!("old-{n}"),
+                    TurnRole::User,
+                    "old history ".repeat(40),
+                ))
+                .unwrap();
+        }
+        let result = a.process(TurnInputRequest::new("continue"));
+        assert_eq!(
+            peer.seen.lock().unwrap().len(),
+            3,
+            "{overflow_again} {result:?}"
+        );
+        assert!(checkpoint(&a).is_some());
+        if overflow_again {
+            let Err(zenpi::core::AgentError::Backend(error)) = result else {
+                panic!("{result:?}")
+            };
+            assert_eq!(error.code(), "context_overflow");
+        } else {
+            assert_eq!(result.unwrap().assistant.unwrap().content, "recovered");
+        }
+    }
 }
 
 #[test]

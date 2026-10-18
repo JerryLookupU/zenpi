@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-254",
+  "claim_id": "ZE-254@blueprint-4.0.0",
+  "from": "master",
+  "to": "master",
+  "summary": "Deleted the legacy synchronous TUI loops (tui::run, run_interactive, run_with_state, run_with_state_controls; ~317 lines net). The only caller was an #[ignore]d PTY probe, now pointed at the production run_async_with_profile. Remaining helpers (TuiConfig, reload_state_from_agent, dispatch_tree_input, apply_agent_tool_event, format_output_projection) are still used by the production loop.",
+  "changed_files": [
+    "src/tui.rs",
+    "tests/stage1_input_host.rs",
+    "Docs/quality/ze/ZE-254.json"
+  ],
+  "diff_stat": "2 files changed, 3 insertions(+), 320 deletions(-)",
+  "commands_run": [
+    "grep -n 'fn run_interactive' src/tui.rs (empty)",
+    "cargo test --locked --test tui_* --test stage1_input_host",
+    "cargo test --locked --lib tui -- --test-threads=1",
+    "cargo fmt --all",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo clippy --locked --all-targets --all-features -- -D warnings"
+  ],
+  "validation_result": {
+    "removed": "run_interactive and tui::run gone; net -317 lines",
+    "suites": "16 tui_* binaries + stage1_input_host 23 + lib tui 61 green",
+    "clippy": "0/0, no dead code left behind"
+  },
+  "notes": "",
+  "created_at": "2026-10-14T16:39:57Z",
+  "digest": "67c73e029384ed97232ccf4d3b11793bf0f50ad0bd684560ed5397ae09ec7a1e"
+}

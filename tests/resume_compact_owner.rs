@@ -1,16 +1,16 @@
+#[path = "support/sequential_host.rs"]
+mod sequential_host;
 mod support;
+use sequential_host::run_headless_sequential;
 
-use std::{
-    io::Cursor,
-    sync::{Arc, Mutex},
-};
+use std::sync::{Arc, Mutex};
 
 use tempfile::tempdir;
 use zenpi::{
     backend::{Backend, BackendError, Completion, CompletionRequest},
     context::{ContextBudget, restore_semantic_checkpoint},
     core::{Agent, Turn, TurnInputRequest, TurnRole},
-    headless::{resume_session_view, run_headless},
+    headless::resume_session_view,
     session::SessionStore,
     slash::SlashCommand,
     tui::{MessageRole, SlashDispatchAction, TuiState, dispatch_slash_command},
@@ -34,18 +34,17 @@ impl Backend for CaptureBackend {
             .metadata
             .is_some_and(|v| v["purpose"] == "semantic_compaction")
         {
-            let data: serde_json::Value = serde_json::from_str(&request.turns[0].content).unwrap();
-            let mut completion = Completion::text(
-                serde_json::json!({
-                    "goals":["Continue task"], "constraints":[], "decisions":[], "progress":[],
-                    "pending_tasks":["verify restart"], "critical_facts":[],
-                    "read_files":data["read_files"], "modified_files":data["modified_files"],
-                    "unresolved_tools":data["unresolved_tools"]
-                })
-                .to_string(),
-            );
+            // pi: a free-text summary of role-labelled conversation text.
+            assert!(request.turns[0].content.starts_with("<conversation>"));
+            let mut completion =
+                Completion::text("## Goal\nContinue task\n\n## Next Steps\n1. verify restart");
             completion.model = Some("fixture-summary".into());
-            completion.usage = Some(zenpi::backend::Usage::new(100, 80, 180));
+            completion.usage = Some(zenpi::backend::Usage {
+                input_tokens: 100,
+                output_tokens: 80,
+                total_tokens: 180,
+                ..Default::default()
+            });
             return Ok(completion);
         }
         self.0
@@ -99,14 +98,14 @@ fn headless_resume_replays_durable_records_and_writes_marker() {
 fn headless_slash_resume_and_compact_are_real_owner_commands() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("session.jsonl");
-    let mut agent = Agent::with_echo(SessionStore::open(&path).unwrap());
+    let agent = Agent::with_echo(SessionStore::open(&path).unwrap());
     let input = concat!(
         "{\"type\":\"command\",\"id\":\"r\",\"text\":\"/resume 0\"}\n",
         "{\"type\":\"command\",\"id\":\"c\",\"text\":\"/compact\"}\n",
         "{\"type\":\"shutdown\",\"id\":\"q\"}\n",
     );
     let mut output = Vec::new();
-    run_headless(&mut agent, Cursor::new(input.as_bytes()), &mut output).unwrap();
+    run_headless_sequential(agent, input.as_bytes(), &mut output).unwrap();
     let records = json_lines(&output);
     let resume = records.iter().find(|value| value["id"] == "r").unwrap();
     assert_eq!(resume["success"], true);
@@ -114,7 +113,8 @@ fn headless_slash_resume_and_compact_are_real_owner_commands() {
     let compact = records.iter().find(|value| value["id"] == "c").unwrap();
     assert_eq!(compact["success"], true);
     assert_eq!(compact["data"]["durable"], true);
-    assert!(agent.session().events().iter().any(|event| {
+    let journal = SessionStore::open_existing(&path).unwrap();
+    assert!(journal.events().iter().any(|event| {
         event["type"] == "context_compaction_skipped" || event["type"] == "context_compacted"
     }));
 }

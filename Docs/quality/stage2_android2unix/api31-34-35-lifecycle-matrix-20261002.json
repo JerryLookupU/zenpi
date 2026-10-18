@@ -1,0 +1,81 @@
+{
+  "apis": [
+    31,
+    34,
+    35
+  ],
+  "artifacts": {
+    "target/debug/zenpi": "f59f8cb78b9464bb6409ff1e5350cc90b3ef122fa1cf05795109a9012ca2d1b0",
+    "android/app/build/outputs/apk/debug/app-debug.apk": "d95d962091898f853d15e9887c45a72ca4f9e5f979dba4261a8636f98af4a4a4",
+    "android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk": "4a10dac0f2e1a9c35b276b25b641846e17b0c478002c655ea2ab804687e27da0"
+  },
+  "emulator_lifecycle_matrix_verified": true,
+  "physical_phone_lan_verified": false,
+  "camera_scanning_verified": false,
+  "whole_item_accepted": false,
+  "receipts": [
+    {
+      "path": "Docs/quality/stage2_android2unix/desktop-api31-lifecycle-20261002.json",
+      "sha256": "2e102ba2228cb17152fe48d29553d4f944f58ab5790b1cd04d9b73aa97e5cc95"
+    },
+    {
+      "path": "Docs/quality/stage2_android2unix/desktop-api34-lifecycle-20261002.json",
+      "sha256": "9711d9bdb5ebd58024fcd4abcc9fa4697deb2246f16e7c2e189d4e0605bafbd9"
+    },
+    {
+      "path": "Docs/quality/stage2_android2unix/desktop-api35-lifecycle-bounded-20261002.json",
+      "sha256": "f8ba02e519b1fb11dfb08b70be36f55be00bbb4a58678eed0483731fcbd21525"
+    },
+    {
+      "path": "Docs/quality/stage2_android2unix/headless-api31-lifecycle-20261002.json",
+      "sha256": "c45b5d986b61ab817977a1e5bc75edb6d98f0356315d749665c666d40a4dff5f"
+    },
+    {
+      "path": "Docs/quality/stage2_android2unix/headless-api34-lifecycle-20261002.json",
+      "sha256": "57ba7aa96dad92dc8cb16c0166e059897c35bec12ecb214b611634be94fcff5f"
+    },
+    {
+      "path": "Docs/quality/stage2_android2unix/headless-api35-lifecycle-20261002.json",
+      "sha256": "60ff4b8cbcb3aed32fdfbabda41fa92615d89dde0a737bedc8ea7a098bea11f2"
+    }
+  ],
+  "saved_assets": [
+    {
+      "path": "Docs/quality/stage2_android2unix/desktop-api31-lifecycle-20261002.png",
+      "sha256": "3e997f16ca832ed3f16fe4a25baf155c8fd6eb9ba2da117b79c665818b51b851"
+    },
+    {
+      "path": "Docs/quality/stage2_android2unix/desktop-api34-lifecycle-20261002.png",
+      "sha256": "34c4215687d4888b679745c961042f7991ae0964a7cadd59ab9a0684bcf4cd0a"
+    },
+    {
+      "path": "Docs/quality/stage2_android2unix/desktop-api35-lifecycle-bounded-20261002.png",
+      "sha256": "2704fcad3c3d1a59d6587e6932858b6dafd57e86e07314d86104a62ce6cc1c88"
+    },
+    {
+      "path": "Docs/quality/stage2_android2unix/headless-api31-lifecycle-20261002.png",
+      "sha256": "9bd305bcb7573564ef79944142aa0d702c559e078ead9a50d5813a0b01d6252e"
+    },
+    {
+      "path": "Docs/quality/stage2_android2unix/headless-api31-lifecycle-20261002.diff.png",
+      "sha256": "dbd17b38aeeb4b0f01a1fd3e6209c24fc8dc336de5acf5965593917ef0f18778"
+    },
+    {
+      "path": "Docs/quality/stage2_android2unix/headless-api34-lifecycle-20261002.png",
+      "sha256": "872ff5cc11a01611b0054929acb7bc959218fb85380bd386801e4eafca711f1f"
+    },
+    {
+      "path": "Docs/quality/stage2_android2unix/headless-api34-lifecycle-20261002.diff.png",
+      "sha256": "99d41eb4bcdb382f9674e0f9fe240cc72ed18409e6d12d45a3396e542e4b55b8"
+    },
+    {
+      "path": "Docs/quality/stage2_android2unix/headless-api35-lifecycle-20261002.png",
+      "sha256": "c128d9cfece093488c73398b08c3b84cff2a138a9c1231166d452637056e9ebd"
+    },
+    {
+      "path": "Docs/quality/stage2_android2unix/headless-api35-lifecycle-20261002.diff.png",
+      "sha256": "f0d1d15e144886e429503091fba33ff309be05ee198746c26c73ea40ee6983a4"
+    }
+  ],
+  "validator_sha256": "b94ed069f46d3b1ea37c9ab00c84b1679ead7323dbb0950676554ebae7e518ca"
+}

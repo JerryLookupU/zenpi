@@ -129,6 +129,8 @@ fn respond(writer: &mut impl Write, reply: &Reply) -> std::io::Result<()> {
     writer.flush()
 }
 
+type BeforeReply = Arc<Mutex<Box<dyn Fn(usize) + Send>>>;
+
 struct Peer {
     address: String,
     tls: bool,
@@ -136,7 +138,7 @@ struct Peer {
     accepted: Arc<AtomicUsize>,
     captured: Arc<Mutex<Vec<Captured>>>,
     errors: Arc<Mutex<Vec<String>>>,
-    before_reply: Arc<Mutex<Box<dyn Fn(usize) + Send>>>,
+    before_reply: BeforeReply,
     stop: Arc<AtomicBool>,
     join: Option<thread::JoinHandle<()>>,
 }
@@ -149,8 +151,7 @@ impl Peer {
         let accepted = Arc::new(AtomicUsize::new(0));
         let captured = Arc::new(Mutex::new(Vec::new()));
         let errors = Arc::new(Mutex::new(Vec::new()));
-        let before_reply: Arc<Mutex<Box<dyn Fn(usize) + Send>>> =
-            Arc::new(Mutex::new(Box::new(|_| {})));
+        let before_reply: BeforeReply = Arc::new(Mutex::new(Box::new(|_| {})));
         let stop = Arc::new(AtomicBool::new(false));
         let (count, requests, failures, stopped) = (
             accepted.clone(),
@@ -332,6 +333,16 @@ fn stored_backend(
     header: AuthHeaderPolicy,
     oauth: bool,
 ) -> (tempfile::TempDir, CredentialStore, OpenAiCompatibleBackend) {
+    stored_backend_for(peer, protocol, header, oauth, "test-model")
+}
+
+fn stored_backend_for(
+    peer: &Peer,
+    protocol: Protocol,
+    header: AuthHeaderPolicy,
+    oauth: bool,
+    model: &str,
+) -> (tempfile::TempDir, CredentialStore, OpenAiCompatibleBackend) {
     let dir = tempfile::tempdir().unwrap();
     std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let store = CredentialStore::new(dir.path().canonicalize().unwrap().join("auth.json")).unwrap();
@@ -379,7 +390,7 @@ fn stored_backend(
         connection,
         store.clone(),
         ModelRegistry::default(),
-        "test-model".into(),
+        model.into(),
         None,
         None,
         Duration::from_secs(3),
@@ -989,4 +1000,87 @@ fn codex_401_reload_uses_the_new_token_and_spends_the_only_retry_slot() {
     let after = store.identity("fixture").unwrap();
     assert_eq!(after.identity_generation, before.identity_generation);
     assert!(after.credential_revision > before.credential_revision);
+}
+
+fn codex_sse(events: &[Value]) -> Reply {
+    Reply {
+        status: 200,
+        body: events
+            .iter()
+            .map(|event| format!("data: {event}\n\n"))
+            .collect(),
+        sse: true,
+        location: None,
+    }
+}
+
+/// ZE-222: the default Codex profile model is catalogued with tools, so a task
+/// over the fixed Codex service advertises tools and runs the model's call.
+#[test]
+fn default_codex_profile_task_issues_a_tool_call() {
+    let model = crate::providers::registry::default_model("openai-codex").unwrap();
+    let peer = Peer::new(
+        true,
+        true,
+        vec![
+            codex_sse(&[
+                json!({"type":"response.created","response":{"id":"resp-call","model":model}}),
+                json!({"type":"response.output_item.done","item":{"type":"function_call","status":"completed","call_id":"call_read","name":"read_file","arguments":"{\"path\":\"note.txt\"}"}}),
+                json!({"type":"response.completed","response":{"id":"resp-call","model":model,"status":"completed","output":[{"type":"function_call","status":"completed","call_id":"call_read","name":"read_file","arguments":"{\"path\":\"note.txt\"}"}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}),
+            ]),
+            codex_sse(&[
+                json!({"type":"response.output_text.delta","delta":"the note says hello"}),
+                json!({"type":"response.completed","response":{"id":"resp-text","model":model,"status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}),
+            ]),
+        ],
+    );
+    let (_dir, _store, backend) = stored_backend_for(
+        &peer,
+        Protocol::OpenAiCodexResponses,
+        AuthHeaderPolicy::Codex,
+        true,
+        model,
+    );
+    let capabilities = backend.model_capabilities(None).unwrap().unwrap();
+    assert!(capabilities.tools && capabilities.reasoning);
+    let work = tempfile::tempdir().unwrap();
+    std::fs::write(work.path().join("note.txt"), "hello").unwrap();
+    let mut agent = crate::core::Agent::new(
+        crate::session::SessionStore::open(work.path().join("session.jsonl")).unwrap(),
+        Box::new(backend),
+    );
+    agent.set_tools(
+        crate::tools::ToolRegistry::with_all_builtins().unwrap(),
+        crate::tools::ToolContext::new(work.path()).unwrap(),
+        crate::tools::SideEffectPolicy::read_only(),
+    );
+    let outcome = agent
+        .process(crate::core::TurnInputRequest::new(
+            "what does note.txt say?",
+        ))
+        .unwrap();
+    assert_eq!(outcome.assistant.unwrap().content, "the note says hello");
+    let requests = peer.captured.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    // ZE-225: Codex keys its prompt cache by the session.
+    let session = agent.session().session_id().to_owned();
+    for request in requests.iter() {
+        assert_eq!(request.body["prompt_cache_key"], json!(session));
+    }
+    assert_eq!(requests[0].body["model"], model);
+    assert!(
+        requests[0].body["tools"]
+            .as_array()
+            .is_some_and(|tools| tools.iter().any(|tool| tool["name"] == "read_file"))
+    );
+    let output = requests[1].body["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["type"] == "function_call_output")
+        .cloned()
+        .unwrap();
+    assert_eq!(output["call_id"], "call_read");
+    assert!(output["output"].as_str().unwrap().contains("hello"));
+    assert!(peer.errors.lock().unwrap().is_empty());
 }

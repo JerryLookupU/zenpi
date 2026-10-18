@@ -3,7 +3,7 @@
 use crate::{
     backend::{
         BackendError, Completion, CompletionRequest, MAX_RESPONSE_BYTES, ProviderCapabilities,
-        ProviderEvent, Usage,
+        ProviderEvent, StopReason, Usage,
     },
     core::{Turn, TurnRole},
     tools::ToolCall,
@@ -77,12 +77,14 @@ fn call(block: &Value) -> Result<ToolCall, BackendError> {
     Ok(c)
 }
 
-/// Runtime effort is native adaptive effort only for the frozen supported
-/// model. Unknown models still work as conservative text-only registry entries.
+/// Runtime effort is native adaptive effort only for catalogued adaptive
+/// models and their levels. Unknown models run without an effort.
 pub(crate) fn validate_effort(model: &str, effort: Option<&str>) -> Result<(), BackendError> {
     if let Some(e) = effort
-        && (model != "claude-sonnet-4-6"
-            || !matches!(e, "none" | "low" | "medium" | "high" | "max"))
+        && !crate::providers::registry::ReasoningLevel::parse(e).is_ok_and(|level| {
+            crate::providers::registry::builtin_reasoning_levels("anthropic", model)
+                .contains(&level)
+        })
     {
         return Err(config("unsupported Anthropic model/effort combination"));
     }
@@ -231,11 +233,7 @@ fn assistant_blocks(
         if blocks
             .iter()
             .any(|b| matches!(b["type"].as_str(), Some("thinking" | "redacted_thinking")))
-            && if deepseek {
-                a.get("requested_model").unwrap_or(&a["model"]) != model
-            } else {
-                a["model"] != model
-            }
+            && a.get("requested_model").unwrap_or(&a["model"]) != model
         {
             return Err(config("signed Anthropic history belongs to another model"));
         }
@@ -405,17 +403,11 @@ fn request_body_inner(
                 if !pending.remove(id) {
                     return Err(config("unexpected or duplicate Anthropic tool result"));
                 }
-                let is_error = turn
-                    .metadata
-                    .as_ref()
-                    .and_then(|m| m.get("outcome"))
-                    .and_then(Value::as_str)
-                    .is_some_and(|v| v != "succeeded");
+                let (text, is_error) = super::tool_result_text(turn);
                 if deepseek && is_error {
                     return Err(config("DeepSeek does not enforce tool_result.is_error"));
                 }
-                let mut block =
-                    json!({"type":"tool_result","tool_use_id":id,"content":turn.content});
+                let mut block = json!({"type":"tool_result","tool_use_id":id,"content":text});
                 if !deepseek {
                     block["is_error"] = json!(is_error);
                 }
@@ -423,6 +415,15 @@ fn request_body_inner(
                 "user"
             }
         };
+        if role == "assistant"
+            && !blocks.iter().any(|b| {
+                b["type"] == "tool_use" || b["text"].as_str().is_some_and(|t| !t.is_empty())
+            })
+        {
+            // ZE-210: an empty or thinking-only final answer has nothing the
+            // API accepts on replay; omit it so the next user input follows.
+            continue;
+        }
         if blocks.is_empty() {
             return Err(config("empty Anthropic message"));
         }
@@ -448,6 +449,20 @@ fn request_body_inner(
         .unwrap_or(crate::context::DEFAULT_RESERVED_OUTPUT_TOKENS);
     if max == 0 {
         return Err(config("Anthropic max_tokens must be positive"));
+    }
+    if !deepseek {
+        // ZE-225: two ephemeral breakpoints — the stable system prefix and the
+        // newest user block — so every turn reads the previous turn's prefix.
+        if let Some(block) = system.last_mut() {
+            block["cache_control"] = json!({"type":"ephemeral"});
+        }
+        if let Some(block) = messages
+            .last_mut()
+            .and_then(|message| message["content"].as_array_mut())
+            .and_then(|blocks| blocks.last_mut())
+        {
+            block["cache_control"] = json!({"type":"ephemeral"});
+        }
     }
     let mut body = json!({"model":model,"messages":messages,"stream":true,"max_tokens":max});
     if !system.is_empty() {
@@ -508,6 +523,8 @@ struct Block {
     value: Value,
     partial: String,
     closed: bool,
+    /// Tool input JSON cut short; only valid under a length stop reason.
+    truncated: bool,
 }
 #[derive(Default)]
 struct Fold {
@@ -565,7 +582,7 @@ impl Fold {
             return Err(invalid("Anthropic data after message_stop"));
         }
         if kind == "error" {
-            return Err(invalid("Anthropic error event"));
+            return Err(super::provider_error("Anthropic", &v["error"]));
         }
         if kind == "message_start" {
             if self.id.is_some() {
@@ -579,10 +596,8 @@ impl Fold {
             {
                 return Err(invalid("invalid Anthropic message_start"));
             }
+            // An alias resolves to a dated serving ID; record both.
             let model = identity(m, "model")?;
-            if !self.deepseek && model != expected_model {
-                return Err(invalid("unexpected Anthropic serving model"));
-            }
             self.id = Some(identity(m, "id")?);
             self.model = Some(model);
             self.requested_model = Some(expected_model.to_owned());
@@ -662,8 +677,14 @@ impl Fold {
                     .ok_or_else(|| invalid("event for missing/closed Anthropic block"))?;
                 if kind == "content_block_stop" {
                     if !b.partial.is_empty() {
-                        b.value["input"] = serde_json::from_str(&b.partial)
-                            .map_err(|_| invalid("malformed Anthropic tool input JSON"))?;
+                        match serde_json::from_str::<Value>(&b.partial) {
+                            Ok(input) => b.value["input"] = input,
+                            Err(_) => {
+                                // Rejected at finish unless max_tokens cut it.
+                                b.value["input"] = json!({});
+                                b.truncated = true;
+                            }
+                        }
                     }
                     validate_blocks(std::slice::from_ref(&b.value), self.deepseek)?;
                     b.closed = true;
@@ -675,7 +696,14 @@ impl Fold {
                         (Some("thinking"), "thinking_delta") => ("thinking", "thinking"),
                         (Some("thinking"), "signature_delta") => ("signature", "signature"),
                         (Some("tool_use"), "input_json_delta") => ("input", "partial_json"),
-                        _ => return Err(invalid("Anthropic delta type does not match block")),
+                        (
+                            _,
+                            "text_delta" | "thinking_delta" | "signature_delta"
+                            | "input_json_delta",
+                        ) => return Err(invalid("Anthropic delta type does not match block")),
+                        // Newer delta kinds (e.g. citations) carry nothing this
+                        // adapter keeps; ignoring them keeps the turn alive.
+                        _ => return Ok(()),
                     };
                     let t = string(d, key)?;
                     if field == "input" {
@@ -719,7 +747,12 @@ impl Fold {
                         .ok_or_else(|| invalid("invalid Anthropic stop reason"))?;
                     if !matches!(
                         reason,
-                        "end_turn" | "tool_use" | "stop_sequence" | "refusal"
+                        "end_turn"
+                            | "tool_use"
+                            | "stop_sequence"
+                            | "refusal"
+                            | "max_tokens"
+                            | "model_context_window_exceeded"
                     ) {
                         return Err(invalid(format!(
                             "incomplete/unsupported Anthropic stop reason {reason}"
@@ -737,7 +770,9 @@ impl Fold {
                 }
                 self.done = true;
             }
-            _ => return Err(invalid("unsupported Anthropic stream event")),
+            // Unknown event types are ignored, as the Messages API asks of
+            // clients so new events can ship without breaking them.
+            _ => {}
         }
         Ok(())
     }
@@ -750,6 +785,7 @@ impl Fold {
         if !self.done {
             return Err(invalid("Anthropic stream missing message_stop"));
         }
+        let cut = self.blocks.values().any(|b| b.truncated);
         let mut blocks = self
             .blocks
             .into_values()
@@ -760,7 +796,11 @@ impl Fold {
             .stop
             .as_deref()
             .ok_or_else(|| invalid("missing Anthropic stop reason"))?;
-        if (stop == "tool_use") == tool_calls.is_empty() {
+        let truncated = matches!(stop, "max_tokens" | "model_context_window_exceeded");
+        if cut && !truncated {
+            return Err(invalid("malformed Anthropic tool input JSON"));
+        }
+        if !truncated && (stop == "tool_use") == tool_calls.is_empty() {
             return Err(invalid("Anthropic stop reason does not match tool calls"));
         }
         if (!caps.tools && !tool_calls.is_empty())
@@ -786,9 +826,8 @@ impl Fold {
             content = text.clone();
             blocks.push(json!({"type":"text","text":text}));
         }
-        if content.trim().is_empty() && tool_calls.is_empty() && refusal.is_none() {
-            return Err(BackendError::EmptyResponse);
-        }
+        // ZE-210: message_stop with no text (or thinking only) is a valid
+        // empty answer; the core decides whether it may end the turn.
         let input = self.usage[0]
             .checked_add(self.usage[2])
             .and_then(|n| n.checked_add(self.usage[3]))
@@ -797,15 +836,15 @@ impl Fold {
             .checked_add(self.usage[1])
             .ok_or_else(|| invalid("usage overflow"))?;
         let usage = self.saw_usage.then_some(Usage {
+            input_tokens: input,
+            output_tokens: self.usage[1],
+            total_tokens: total,
             cache_read_tokens: self.usage[2],
             cache_write_tokens: self.usage[3],
-            ..Usage::new(input, self.usage[1], total)
+            reasoning_tokens: 0,
         });
-        let mut native_history = json!({"type":"native_history","wire":WIRE,"provider":provider,"model":self.model,"blocks":blocks});
-        if self.deepseek {
-            native_history["requested_model"] = json!(self.requested_model);
-        }
-        let completion = Completion {
+        let native_history = json!({"type":"native_history","wire":WIRE,"provider":provider,"model":self.model,"requested_model":self.requested_model,"blocks":blocks});
+        let mut completion = Completion {
             content,
             tool_calls,
             usage,
@@ -816,7 +855,9 @@ impl Fold {
                 native_history,
                 json!({"type":"anthropic_stop_reason","stop_reason":stop}),
             ],
+            stop_reason: StopReason::Stop,
         };
+        completion.stop_reason = super::stop_reason(truncated, &completion);
         if !completion.content.is_empty() {
             sink(ProviderEvent::TextDone {
                 text: completion.content.clone(),

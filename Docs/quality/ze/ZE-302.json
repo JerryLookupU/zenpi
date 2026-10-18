@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-302",
+  "claim_id": "ZE-302@blueprint-4.0.0",
+  "from": "master",
+  "to": "master",
+  "summary": "run_command pumps both pipes and watches the child on one thread sleeping in poll(2) (timeout = min(deadline, 100 ms)); search and extension exchange sleep in poll(2) instead of 2/5 ms naps; the process group gets SIGKILL with no fixed 50 ms grace.",
+  "changed_files": [
+    "src/tools.rs",
+    "src/search.rs",
+    "src/extension_runtime.rs",
+    "Docs/Zenpi_Execution_Blueprint_v2.md",
+    "Docs/quality/ze/ZE-302.json"
+  ],
+  "diff_stat": "4 files changed, 202 insertions(+), 84 deletions(-)",
+  "commands_run": [
+    "cargo fmt --all",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo clippy --locked --all-targets --all-features -- -D warnings",
+    "cargo test --locked --all-features --test tools --test run_command_pi --test stage1_tool_output --test stage1_tool_batch --test stage1_search --test extensions --test stage1_extension_hooks --test child_environment --test security --test tool_scope",
+    "cargo test --locked --all-features --lib",
+    "cargo test --locked --all-features --test project_workspace --test tui_task --test stage1_host --test runtime",
+    "A/B temporary probe: 200 concurrent run_command sleep 12, getrusage CPU over the steady 7-8 s window"
+  ],
+  "validation_result": {
+    "fmt": "ok",
+    "clippy_default": "ok",
+    "clippy_all_features": "ok",
+    "tool_search_extension_suites": "all passed",
+    "lib": "all passed",
+    "steady_cpu_200_waiting_commands_old": "5.64 core-s/s (35.2% of 16 cores)",
+    "steady_cpu_200_waiting_commands_new": "0.13 core-s/s (0.8% of 16 cores)",
+    "threads_per_tool_call_old": 2,
+    "threads_per_tool_call_new": 0
+  },
+  "notes": "Spawning 200 commands still costs ~4 s of wall time on this host (fork/exec), separate from waiting. Post-kill drain is bounded by 100 ms; a pipe held by an escaped descendant ends as truncated (old code stopped at the first WouldBlock). SIGTERM grace dropped as in pi.",
+  "created_at": "2026-10-14T18:42:58Z",
+  "digest": "01faf32bdc613a6c22ad65a5927c279a38e2bd6b113b098442a1311f1f2be4b5"
+}

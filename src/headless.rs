@@ -9,7 +9,7 @@ use std::{
     fs::{self, File},
     io::{self, BufRead, Read, Write},
     path::{Component, Path, PathBuf},
-    sync::{Arc, Mutex, mpsc},
+    sync::{Arc, Condvar, Mutex, mpsc},
     thread,
     time::{Duration, Instant},
 };
@@ -146,10 +146,111 @@ struct ReplayState {
     replay_floor: Option<u64>,
     journal: Option<ReconnectJournal>,
     completed: HashMap<String, String>,
+    /// FIFO of `completed` ids so the ledger stays bounded (ZE-303).
+    completed_order: VecDeque<String>,
+    /// WAL size right after the last compaction; the next one waits until the
+    /// file doubles so live state near the threshold cannot rewrite per append.
+    compacted_bytes: u64,
     unknown: HashMap<String, String>,
     owner_epoch: u64,
     next_sequence: u64,
     acknowledged: u64,
+}
+
+/// WAL size that triggers an online rewrite (ZE-303). `ZENPI_WAL_COMPACT_BYTES`
+/// overrides it (read once), mainly so tests can exercise compaction.
+fn wal_compact_threshold() -> u64 {
+    static THRESHOLD: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *THRESHOLD.get_or_init(|| {
+        std::env::var("ZENPI_WAL_COMPACT_BYTES")
+            .ok()
+            .and_then(|value| value.trim().parse().ok())
+            .filter(|bytes| *bytes >= 4096)
+            .unwrap_or(32 * 1024 * 1024)
+    })
+}
+
+/// Default bound on how long a host keeps draining admitted work after stdin
+/// reaches EOF. One-shot pipelines (`printf … | zenpi --mode headless`) wait
+/// for their turn; a wedged provider can no longer hold the process forever.
+pub const DEFAULT_EOF_DRAIN: Duration = Duration::from_secs(600);
+/// Environment override for [`DEFAULT_EOF_DRAIN`], in whole seconds.
+pub const EOF_DRAIN_ENV: &str = "ZENPI_HEADLESS_EOF_DRAIN_SECS";
+/// Bound on waiting for close hooks of an owner still held by a detached job.
+const CLOSE_HOOK_DEADLINE: Duration = Duration::from_secs(10);
+
+/// Lifecycle knobs of the asynchronous headless host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeadlessOptions {
+    /// After stdin EOF, admitted requests may finish for this long before the
+    /// runtime is shut down (which cancels them with a terminal response).
+    pub eof_drain: Duration,
+}
+
+impl Default for HeadlessOptions {
+    fn default() -> Self {
+        Self {
+            eof_drain: DEFAULT_EOF_DRAIN,
+        }
+    }
+}
+
+impl HeadlessOptions {
+    /// Defaults overridden by `ZENPI_HEADLESS_EOF_DRAIN_SECS` when it holds a
+    /// whole number of seconds.
+    pub fn from_env() -> Result<Self, String> {
+        let mut options = Self::default();
+        if let Some(raw) = std::env::var_os(EOF_DRAIN_ENV) {
+            let seconds = raw
+                .to_str()
+                .and_then(|value| value.trim().parse::<u64>().ok())
+                .ok_or_else(|| format!("{EOF_DRAIN_ENV} must be a whole number of seconds"))?;
+            options.eof_drain = Duration::from_secs(seconds);
+        }
+        Ok(options)
+    }
+}
+
+/// Set by the SIGTERM handler; the async host loop treats it as `shutdown`.
+static TERMINATION_REQUESTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+fn termination_requested() -> bool {
+    TERMINATION_REQUESTED.load(std::sync::atomic::Ordering::Acquire)
+}
+
+#[cfg(unix)]
+extern "C" fn request_termination(_signal: libc::c_int) {
+    // Only an atomic store: async-signal-safe.
+    TERMINATION_REQUESTED.store(true, std::sync::atomic::Ordering::Release);
+}
+
+/// Make SIGTERM behave like a `shutdown` request for the process-wide headless
+/// host: admitted work gets its terminal response, the transport WAL is
+/// closed cleanly and the process exits 0. The handler is one-shot
+/// (`SA_RESETHAND`), so a second SIGTERM still terminates immediately.
+#[cfg(unix)]
+pub fn install_termination_handler() -> io::Result<()> {
+    let handler: extern "C" fn(libc::c_int) = request_termination;
+    // SAFETY: an all-zero `sigaction` is a valid starting value; the mask is
+    // then initialised by `sigemptyset`, and the installed handler only
+    // performs an atomic store, which is async-signal-safe.
+    unsafe {
+        let mut action: libc::sigaction = std::mem::zeroed();
+        action.sa_sigaction = handler as libc::sighandler_t;
+        action.sa_flags = libc::SA_RESTART | libc::SA_RESETHAND;
+        libc::sigemptyset(&mut action.sa_mask);
+        if libc::sigaction(libc::SIGTERM, &action, std::ptr::null_mut()) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+/// Signals are a Unix lifecycle; other platforms keep their default action.
+#[cfg(not(unix))]
+pub fn install_termination_handler() -> io::Result<()> {
+    Ok(())
 }
 
 /// Open the transport WAL, retrying the transient `EWOULDBLOCK` that a forked
@@ -163,9 +264,7 @@ fn open_reconnect_journal(
     for attempt in 0..MAX_ATTEMPTS {
         match ReconnectJournal::open(session) {
             Ok(opened) => return Ok(opened),
-            Err(crate::session::SessionError::Io(error))
-                if error.kind() == io::ErrorKind::WouldBlock && attempt + 1 < MAX_ATTEMPTS =>
-            {
+            Err(crate::session::SessionError::Locked) if attempt + 1 < MAX_ATTEMPTS => {
                 thread::sleep(delay);
                 delay = (delay * 2).min(Duration::from_millis(8));
             }
@@ -253,12 +352,65 @@ impl ReplayState {
         state.persist(ReconnectEntry::Owner {
             epoch: state.owner_epoch,
         })?;
+        state.compact_if_large()?;
         Ok(state)
     }
 
     fn persist(&mut self, entry: ReconnectEntry) -> Result<(), HeadlessError> {
         if let Some(journal) = &mut self.journal {
             journal.append(serde_json::to_value(entry)?)?;
+        }
+        self.compact_if_large()
+    }
+
+    /// Replayable stream events are written without fsync (redis AOF style):
+    /// the next durable commit flushes them, so a crash can only lose events
+    /// after the last reservation/terminal/ack, never an accepted outcome.
+    fn persist_buffered(&mut self, entry: ReconnectEntry) -> Result<(), HeadlessError> {
+        if let Some(journal) = &mut self.journal {
+            journal.append_buffered(serde_json::to_value(entry)?)?;
+        }
+        self.compact_if_large()
+    }
+
+    /// ZE-303: rewrite the WAL from the retained in-memory state once it
+    /// grows past the threshold, so a long-lived host never hits the cap.
+    fn compact_if_large(&mut self) -> Result<(), HeadlessError> {
+        if self.journal.as_ref().is_none_or(|journal| {
+            journal.bytes() <= wal_compact_threshold().max(self.compacted_bytes.saturating_mul(2))
+        }) {
+            return Ok(());
+        }
+        let mut entries = vec![serde_json::to_value(ReconnectEntry::Owner {
+            epoch: self.owner_epoch,
+        })?];
+        for id in &self.terminal_order {
+            if let Some(record) = self.terminals.get(id) {
+                entries.push(serde_json::to_value(ReconnectEntry::Terminal {
+                    id: id.clone(),
+                    fingerprint: record.fingerprint.clone(),
+                    line: record.line.clone(),
+                })?);
+            }
+        }
+        for (id, fingerprint) in self.in_flight.iter().chain(self.unknown.iter()) {
+            entries.push(serde_json::to_value(ReconnectEntry::Reserved {
+                id: id.clone(),
+                fingerprint: fingerprint.clone(),
+            })?);
+        }
+        for (sequence, line) in &self.events {
+            entries.push(serde_json::to_value(ReconnectEntry::Event {
+                sequence: *sequence,
+                line: line.clone(),
+            })?);
+        }
+        entries.push(serde_json::to_value(ReconnectEntry::Acknowledged {
+            next_sequence: self.acknowledged,
+        })?);
+        if let Some(journal) = &mut self.journal {
+            journal.rewrite(entries)?;
+            self.compacted_bytes = journal.bytes();
         }
         Ok(())
     }
@@ -274,7 +426,7 @@ impl ReplayState {
     }
 
     fn remember_event(&mut self, sequence: u64, line: String) -> Result<(), HeadlessError> {
-        self.persist(ReconnectEntry::Event {
+        self.persist_buffered(ReconnectEntry::Event {
             sequence,
             line: line.clone(),
         })?;
@@ -368,7 +520,8 @@ impl ReplayState {
             let _payload_matches = existing == fingerprint;
             return Ok(RequestIdAdmission::InFlightSame);
         }
-        if self.completed.len() + self.unknown.len() + self.in_flight.len() >= 16_384 {
+        // Only unresolved requests bound admission; `completed` is pruned FIFO.
+        if self.unknown.len() + self.in_flight.len() >= 16_384 {
             return Ok(RequestIdAdmission::LedgerFull);
         }
         self.persist(ReconnectEntry::Reserved {
@@ -474,8 +627,21 @@ impl ReplayState {
             self.terminal_order.retain(|id| id != &request_id);
         }
         self.terminal_bytes = self.terminal_bytes.saturating_add(line.len());
-        self.completed
-            .insert(request_id.clone(), fingerprint.clone());
+        if self
+            .completed
+            .insert(request_id.clone(), fingerprint.clone())
+            .is_none()
+        {
+            self.completed_order.push_back(request_id.clone());
+            const MAX_COMPLETED_IDS: usize = 16_384;
+            while self.completed_order.len() > MAX_COMPLETED_IDS {
+                if let Some(oldest) = self.completed_order.pop_front()
+                    && !self.terminals.contains_key(&oldest)
+                {
+                    self.completed.remove(&oldest);
+                }
+            }
+        }
         self.terminals
             .insert(request_id.clone(), TerminalRecord { fingerprint, line });
         self.terminal_order.push_back(request_id);
@@ -550,180 +716,6 @@ pub enum HeadlessError {
     View(#[from] crate::view_model::ViewModelError),
 }
 
-/// Run the headless loop over arbitrary buffered input/output.  This generic
-/// form is used by integration tests and embedders; `run_stdio` supplies the
-/// process stdin/stdout handles.
-pub fn run_headless<R: BufRead, W: Write>(
-    agent: &mut Agent,
-    mut input: R,
-    mut output: W,
-) -> Result<(), HeadlessError> {
-    let mut replay = ReplayState::open(agent.session())?;
-    let workspace = fs::canonicalize(&agent.session().header().cwd)?;
-    agent.register_live_owner(
-        replay.owner_epoch,
-        workspace.display().to_string(),
-        unix_time_ms(),
-    )?;
-    let mut event_sequence = replay.next_sequence;
-    // Keep at most one bounded frame in memory. `BufRead::read_line` grows its
-    // destination until LF, which lets an untrusted peer force an arbitrarily
-    // large allocation before the protocol limit is checked. The chunked
-    // reader below consumes an overlong frame through the caller's buffer but
-    // retains no more than `MAX_LINE_BYTES + 1` bytes.
-    let mut frame = Vec::with_capacity(crate::protocol::MAX_LINE_BYTES.min(8 * 1024));
-    loop {
-        match read_frame(&mut input, &mut frame)? {
-            Frame::Eof => {
-                agent.unregister_live_owner(replay.owner_epoch);
-                replay.close()?;
-                agent.close();
-                return Ok(());
-            }
-            Frame::TooLong => {
-                write_response(
-                    &mut output,
-                    StdioResponse::error_with_code(
-                        None,
-                        "invalid",
-                        "line_too_long",
-                        "input frame exceeds maximum size",
-                    ),
-                )?;
-                continue;
-            }
-            Frame::Data => {}
-        }
-        let frame_text = match std::str::from_utf8(&frame) {
-            Ok(frame) => frame,
-            Err(_) => {
-                write_response(
-                    &mut output,
-                    StdioResponse::error_with_code(
-                        None,
-                        "invalid",
-                        "invalid_utf8",
-                        "input frame is not valid UTF-8",
-                    ),
-                )?;
-                continue;
-            }
-        };
-        // The reader excludes LF; parse_line intentionally accepts an
-        // optional CR for CRLF clients.
-        if frame_text.trim().is_empty() {
-            continue;
-        }
-        let request = match parse_line(frame_text) {
-            Ok(request) => request,
-            Err(error) => {
-                write_response(
-                    &mut output,
-                    StdioResponse::error_with_code(
-                        None,
-                        "invalid",
-                        error.code(),
-                        error.to_string(),
-                    ),
-                )?;
-                continue;
-            }
-        };
-        let id = request.id().map(str::to_owned);
-        let command_kind = request.kind.clone();
-        let request_version = request.schema_version;
-        let fingerprint = request_fingerprint(&request)?;
-        // Validate a clone before consulting the replay cache. This prevents
-        // a reused ID with an unsupported version or malformed payload from
-        // bypassing protocol validation by replaying an old response.
-        let parsed_command = request.clone().into_command();
-        match replay.admit(id.as_deref(), &fingerprint)? {
-            RequestIdAdmission::Replay => {
-                if let Some(request_id) = id.as_deref()
-                    && let Some(cached) = replay.cached_line(request_id)
-                {
-                    output.write_all(replay_terminal_line(cached, request_version)?.as_bytes())?;
-                    output.flush()?;
-                    continue;
-                }
-            }
-            RequestIdAdmission::Conflict => {
-                write_response(
-                    &mut output,
-                    StdioResponse::error_with_code(
-                        id.clone(),
-                        command_kind,
-                        if is_runtime_intent_request(&request) {
-                            "runtime_intent_conflict"
-                        } else {
-                            "request_id_conflict"
-                        },
-                        "request ID was already used for a different request",
-                    )
-                    .for_version(request_version),
-                )?;
-                continue;
-            }
-            RequestIdAdmission::InFlightSame => {
-                // The synchronous host never has a concurrent operation, but
-                // retaining the explicit branch makes the invariant obvious
-                // if an embedding caller re-enters the dispatcher.
-                write_response(
-                    &mut output,
-                    StdioResponse::error_with_code(
-                        id,
-                        command_kind,
-                        "duplicate_request_in_flight",
-                        "request ID is already in flight",
-                    )
-                    .for_version(request_version),
-                )?;
-                continue;
-            }
-            RequestIdAdmission::New => {}
-            admission => {
-                write_response(
-                    &mut output,
-                    admission_error(id, command_kind, admission).for_version(request_version),
-                )?;
-                continue;
-            }
-        }
-        let command = match parsed_command {
-            Ok(command) => command,
-            Err(error) => {
-                write_cached_response(
-                    &mut output,
-                    StdioResponse::error_with_code(
-                        id,
-                        command_kind,
-                        error.code(),
-                        error.to_string(),
-                    )
-                    .for_version(request_version),
-                    &mut replay,
-                )?;
-                continue;
-            }
-        };
-        let should_stop = handle_command(
-            agent,
-            id,
-            command,
-            &mut output,
-            &mut event_sequence,
-            &mut replay,
-            request_version,
-        )?;
-        if should_stop {
-            agent.unregister_live_owner(replay.owner_epoch);
-            replay.close()?;
-            agent.close();
-            return Ok(());
-        }
-    }
-}
-
 /// Result of consuming one LF-delimited frame. The frame bytes themselves are
 /// retained in the caller-provided buffer so the loop can reuse its capacity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -782,22 +774,31 @@ fn read_frame<R: BufRead>(input: &mut R, frame: &mut Vec<u8>) -> io::Result<Fram
     }
 }
 
-/// Process stdin/stdout without printing any diagnostics to stdout.
-pub fn run_stdio(agent: &mut Agent) -> Result<(), HeadlessError> {
-    let stdin = io::stdin();
+/// Report a startup failure that happens before the host loop exists (for
+/// example `session_locked`) as one protocol error frame on stdout.
+pub fn write_startup_error(code: &str, message: &str) {
     let stdout = io::stdout();
-    run_headless(agent, stdin.lock(), stdout.lock())
+    let mut output = stdout.lock();
+    let response = StdioResponse::error_with_code(None, "stdio", code, message)
+        .for_version(crate::protocol::PROTOCOL_VERSION);
+    if let Err(error) = write_response(&mut output, response) {
+        eprintln!("zenpi: could not report {code} on stdout: {error}");
+    }
 }
 
 /// Owned stdio entry point used by the binary. Input is read on a dedicated
 /// thread while provider/tool work runs through the bounded runtime, so a
 /// slow provider cannot stop headless clients from sending status or follow-up
-/// commands. The borrowed `run_stdio` above remains the deterministic
-/// synchronous embedding API.
+/// commands.
 pub fn run_stdio_owned(agent: Agent) -> Result<(), HeadlessError> {
+    run_stdio_owned_with(agent, HeadlessOptions::default())
+}
+
+/// [`run_stdio_owned`] with explicit lifecycle options.
+pub fn run_stdio_owned_with(agent: Agent, options: HeadlessOptions) -> Result<(), HeadlessError> {
     let stdin = io::stdin();
     let stdout = io::stdout();
-    run_async_stdio(agent, stdin, stdout)
+    run_async_stdio(agent, stdin, stdout, options)
 }
 
 /// Asynchronous transport over caller-owned streams. This is public so PTY
@@ -808,7 +809,17 @@ pub fn run_async_streams<R: io::Read + Send + 'static, W: Write>(
     input: R,
     output: W,
 ) -> Result<(), HeadlessError> {
-    run_async_stdio(agent, input, output)
+    run_async_stdio(agent, input, output, HeadlessOptions::default())
+}
+
+/// [`run_async_streams`] with explicit lifecycle options.
+pub fn run_async_streams_with<R: io::Read + Send + 'static, W: Write>(
+    agent: Agent,
+    input: R,
+    output: W,
+    options: HeadlessOptions,
+) -> Result<(), HeadlessError> {
+    run_async_stdio(agent, input, output, options)
 }
 
 struct AsyncWork {
@@ -837,6 +848,23 @@ enum AsyncProcessResult {
 struct BufferedEvent<T> {
     event: T,
     serialized_bytes: usize,
+    /// Position in the request's single production order. Provider deltas
+    /// and agent/tool lifecycle events keep separate byte budgets, but are
+    /// merged by this value so the wire shows them in causal order.
+    order: u64,
+}
+
+/// One entry of a request mailbox, in the order the worker produced it.
+enum MailboxEvent {
+    Provider(ProviderEvent),
+    Agent(AgentEvent),
+}
+
+/// Everything detached from a request mailbox by one drain.
+struct MailboxDrain {
+    events: Vec<MailboxEvent>,
+    provider_dropped: DroppedEvents,
+    agent_dropped: DroppedEvents,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -858,6 +886,67 @@ impl DroppedEvents {
     }
 }
 
+/// ZE-300: the async host sleeps until a producer bumps this generation
+/// (stdin line, runtime event, provider/agent event, approval, input reply)
+/// instead of waking every 10 ms. Shared by every host in the process;
+/// a wake meant for another host is only a spurious, harmless loop turn.
+struct HostWake {
+    generation: Mutex<u64>,
+    changed: Condvar,
+}
+
+static HOST_WAKE: HostWake = HostWake {
+    generation: Mutex::new(0),
+    changed: Condvar::new(),
+};
+
+/// Longest idle sleep: the owner heartbeat and signal checks still run.
+const HOST_IDLE_WAIT: Duration = Duration::from_secs(1);
+
+fn wake_host() {
+    let mut generation = HOST_WAKE
+        .generation
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    *generation = generation.wrapping_add(1);
+    HOST_WAKE.changed.notify_all();
+}
+
+fn host_generation() -> u64 {
+    *HOST_WAKE
+        .generation
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+}
+
+/// Sleep until the generation moves past `seen` or `timeout` elapses.
+fn wait_host(seen: u64, timeout: Duration) {
+    let generation = HOST_WAKE
+        .generation
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let _ = HOST_WAKE
+        .changed
+        .wait_timeout_while(generation, timeout, |current| *current == seen);
+}
+
+/// Take the next reader message, sleeping on the host wake when idle.
+fn next_reader_message(
+    line_rx: &mpsc::Receiver<ReaderMessage>,
+    seen: u64,
+) -> Result<ReaderMessage, mpsc::RecvTimeoutError> {
+    match line_rx.try_recv() {
+        Ok(message) => return Ok(message),
+        Err(mpsc::TryRecvError::Disconnected) => return Err(mpsc::RecvTimeoutError::Disconnected),
+        Err(mpsc::TryRecvError::Empty) => {}
+    }
+    wait_host(seen, HOST_IDLE_WAIT);
+    line_rx.try_recv().map_err(|error| match error {
+        mpsc::TryRecvError::Empty => mpsc::RecvTimeoutError::Timeout,
+        mpsc::TryRecvError::Disconnected => mpsc::RecvTimeoutError::Disconnected,
+    })
+}
+
 #[derive(Default)]
 struct AsyncEventBuffer {
     provider: Vec<BufferedEvent<ProviderEvent>>,
@@ -866,6 +955,7 @@ struct AsyncEventBuffer {
     agent_bytes: usize,
     provider_dropped: DroppedEvents,
     agent_dropped: DroppedEvents,
+    next_order: u64,
 }
 
 const EVENT_MAILBOX_POISONED: &str = "headless event mailbox mutex poisoned";
@@ -919,26 +1009,25 @@ fn is_priority_agent_event(event: &AgentEvent) -> bool {
         )
 }
 
-fn buffered_admission_prefix_len(events: &[BufferedEvent<AgentEvent>]) -> Option<usize> {
-    // A request normally publishes one marker, but a recovery/reissue path
-    // may append more than one lifecycle event before the host polls. Drain
-    // through the *last* marker so every admission remains ahead of provider
-    // output even when ordinary agent events are interleaved.
-    events
-        .iter()
-        .rposition(|event| is_admission_event(&event.event))
-        .map(|last_admission| last_admission.saturating_add(1))
-}
-
-fn admission_prefix_len(events: &[AgentEvent]) -> Option<usize> {
-    events
-        .iter()
-        .rposition(is_admission_event)
-        .map(|last_admission| last_admission.saturating_add(1))
-}
-
 impl AsyncEventBuffer {
+    fn next_order(&mut self) -> u64 {
+        let order = self.next_order;
+        self.next_order = self.next_order.saturating_add(1);
+        order
+    }
+
     fn push_provider(&mut self, event: ProviderEvent) {
+        self.push_provider_inner(event);
+        wake_host();
+    }
+
+    fn push_agent(&mut self, event: AgentEvent) {
+        self.push_agent_inner(event);
+        wake_host();
+    }
+
+    fn push_provider_inner(&mut self, event: ProviderEvent) {
+        let order = self.next_order();
         let serialized_bytes = serialized_event_len(&event);
         let next_bytes = self.provider_bytes.checked_add(serialized_bytes);
         if self.provider.len() < MAX_ASYNC_PROVIDER_EVENTS
@@ -948,13 +1037,15 @@ impl AsyncEventBuffer {
             self.provider.push(BufferedEvent {
                 event,
                 serialized_bytes,
+                order,
             });
         } else {
             self.provider_dropped.record(serialized_bytes);
         }
     }
 
-    fn push_agent(&mut self, event: AgentEvent) {
+    fn push_agent_inner(&mut self, event: AgentEvent) {
+        let order = self.next_order();
         let serialized_bytes = serialized_event_len(&event);
         if is_priority_agent_event(&event) {
             // Admission and tool lifecycle boundaries take priority over
@@ -982,6 +1073,7 @@ impl AsyncEventBuffer {
                     self.agent.push(BufferedEvent {
                         event,
                         serialized_bytes,
+                        order,
                     });
                     return;
                 }
@@ -1014,50 +1106,45 @@ impl AsyncEventBuffer {
             self.agent.push(BufferedEvent {
                 event,
                 serialized_bytes,
+                order,
             });
         } else {
             self.agent_dropped.record(serialized_bytes);
         }
     }
 
-    fn take_provider(&mut self) -> (Vec<ProviderEvent>, DroppedEvents) {
-        let events = std::mem::take(&mut self.provider)
-            .into_iter()
-            .map(|buffered| buffered.event)
-            .collect();
+    /// Detach every buffered event as one causally ordered sequence. Both
+    /// queues are already sorted by production order (pushes append and
+    /// eviction only removes), so a linear merge restores the interleaving
+    /// in which the worker produced provider deltas and tool lifecycle.
+    fn take_ordered(&mut self) -> MailboxDrain {
+        let provider = std::mem::take(&mut self.provider);
+        let agent = std::mem::take(&mut self.agent);
         self.provider_bytes = 0;
-        let dropped = std::mem::take(&mut self.provider_dropped);
-        (events, dropped)
-    }
-
-    fn take_agent(&mut self) -> (Vec<AgentEvent>, DroppedEvents) {
-        let events = std::mem::take(&mut self.agent)
-            .into_iter()
-            .map(|buffered| buffered.event)
-            .collect();
         self.agent_bytes = 0;
-        let dropped = std::mem::take(&mut self.agent_dropped);
-        (events, dropped)
-    }
-
-    /// Admission markers are produced immediately after `Agent::submit`,
-    /// before the provider starts. Keep them ahead of streamed provider
-    /// events even when the host polls the request before it completes. Agent
-    /// construction may also preload recovery errors, so include any prefix
-    /// before the first admission marker rather than requiring the marker to
-    /// be the first queued event. Drain through the last marker to cover
-    /// interleaved recovery/reissue events; any later AgentEvents remain
-    /// buffered until the provider trace is drained.
-    fn take_admission(&mut self) -> Vec<AgentEvent> {
-        let Some(admission_end) = buffered_admission_prefix_len(&self.agent) else {
-            return Vec::new();
-        };
-        let drained = self.agent.drain(..admission_end).collect::<Vec<_>>();
-        let drained_bytes = drained.iter().fold(0_usize, |total, buffered| {
-            total.saturating_add(buffered.serialized_bytes)
-        });
-        self.agent_bytes = self.agent_bytes.saturating_sub(drained_bytes);
-        drained.into_iter().map(|buffered| buffered.event).collect()
+        let mut events = Vec::with_capacity(provider.len().saturating_add(agent.len()));
+        let mut provider = provider.into_iter().peekable();
+        let mut agent = agent.into_iter().peekable();
+        loop {
+            let take_provider = match (provider.peek(), agent.peek()) {
+                (Some(next_provider), Some(next_agent)) => next_provider.order < next_agent.order,
+                (Some(_), None) => true,
+                (None, Some(_)) => false,
+                (None, None) => break,
+            };
+            if take_provider {
+                if let Some(buffered) = provider.next() {
+                    events.push(MailboxEvent::Provider(buffered.event));
+                }
+            } else if let Some(buffered) = agent.next() {
+                events.push(MailboxEvent::Agent(buffered.event));
+            }
+        }
+        MailboxDrain {
+            events,
+            provider_dropped: std::mem::take(&mut self.provider_dropped),
+            agent_dropped: std::mem::take(&mut self.agent_dropped),
+        }
     }
 }
 
@@ -1070,6 +1157,9 @@ struct PendingSteer {
     owner: Arc<Mutex<Agent>>,
     project: ProjectContext,
     id: Option<String>,
+    /// Wire command that admitted the steer (`steer`, or a `prompt` sent
+    /// with `mode: "steer"`), echoed on every response for this request.
+    command: &'static str,
     version: u16,
     text: String,
     expected_turn_id: Option<String>,
@@ -2369,11 +2459,12 @@ fn project_session_record(record: &crate::session::SessionRecord) -> serde_json:
         "session" => json!({
             "sequence": record.sequence,
             "kind": "session",
-            "session_id": record.value.get("session_id"),
-            "version": record.value.get("version"),
+            "session_id": record.value().get("session_id"),
+            "version": record.value().get("version"),
         }),
         "turn" => {
-            let turn = record.value.get("turn");
+            let value = record.value();
+            let turn = value.get("turn");
             let content = turn
                 .and_then(|value| value.get("content"))
                 .and_then(serde_json::Value::as_str)
@@ -2393,7 +2484,7 @@ fn project_session_record(record: &crate::session::SessionRecord) -> serde_json:
             })
         }
         "event" => {
-            let event = record.value.get("event").cloned().unwrap_or_default();
+            let event = record.value().get("event").cloned().unwrap_or_default();
             let encoded_len = serde_json::to_vec(&event).map_or(0, |bytes| bytes.len());
             if encoded_len > MAX_SLASH_RESUME_EVENT_BYTES {
                 json!({
@@ -3174,10 +3265,38 @@ pub fn import_learn_manifest_for_tui(
 }
 
 /// Execute one deterministic, dependency-aware Blueprint item through the
-/// local receipt owner.  This operation is deliberately provider/shell-free:
-/// it proves durable admission, budget accounting, dependency ordering, and
-/// restart-safe evidence without pretending that zenpi is a b3ehive scheduler.
+/// local receipt owner without running the task.  This operation is
+/// deliberately provider/shell-free: it proves durable admission, budget
+/// accounting, dependency ordering, and restart-safe evidence without
+/// pretending that zenpi is a b3ehive scheduler.
 pub fn run_blueprint_next(agent: &mut Agent, target: &str) -> Result<serde_json::Value, String> {
+    run_blueprint_next_inner(agent, target, |_, _| Ok(()), false)
+}
+
+/// Execute one dependency-ready Blueprint item through the local receipt
+/// owner and delegate the task to `execute`.  The closure receives the owner
+/// agent and the selected item; it must run the instruction and its acceptance
+/// commands.  A closure error becomes a durable `failed` receipt.
+pub fn run_blueprint_next_with<F>(
+    agent: &mut Agent,
+    target: &str,
+    execute: F,
+) -> Result<serde_json::Value, String>
+where
+    F: FnMut(&mut Agent, &crate::domains::BlueprintItem) -> Result<(), String>,
+{
+    run_blueprint_next_inner(agent, target, execute, true)
+}
+
+fn run_blueprint_next_inner<F>(
+    agent: &mut Agent,
+    target: &str,
+    mut execute: F,
+    executed: bool,
+) -> Result<serde_json::Value, String>
+where
+    F: FnMut(&mut Agent, &crate::domains::BlueprintItem) -> Result<(), String>,
+{
     if agent.phase() != crate::core::AgentPhase::Idle {
         return Err("blueprint execution is available only while the agent is idle".into());
     }
@@ -3247,9 +3366,15 @@ pub fn run_blueprint_next(agent: &mut Agent, target: &str) -> Result<serde_json:
     let execution_store = crate::domain_execution::ExecutionStore::open(&execution_path)
         .map_err(|error| error.to_string())?;
     let mut executor = crate::domain_execution::BlueprintExecutor::new(execution_store);
-    let outcome = executor
-        .run_next(&goal, &blueprint, || false)
-        .map_err(|error| error.to_string())?;
+    let outcome = if executed {
+        executor
+            .run_next_with(&goal, &blueprint, || false, |item| execute(agent, item))
+            .map_err(|error| error.to_string())?
+    } else {
+        executor
+            .run_next(&goal, &blueprint, || false)
+            .map_err(|error| error.to_string())?
+    };
     let mut value = match &outcome {
         crate::domain_execution::RunOutcome::Executed {
             receipt,
@@ -3262,7 +3387,12 @@ pub fn run_blueprint_next(agent: &mut Agent, target: &str) -> Result<serde_json:
             "target": target,
             "goal_id": goal.id,
             "status": "recorded",
-            "execution_scope": "control_plane_only",
+            "execution_scope": if executed {
+                "local_goal_runner"
+            } else {
+                "control_plane_only"
+            },
+            "task_executed": executed,
             "external_work_executed": false,
             "resumed_running": resumed_running,
             "receipt": receipt,
@@ -3302,10 +3432,12 @@ pub fn run_blueprint_next(agent: &mut Agent, target: &str) -> Result<serde_json:
             "attempt": attempt,
         }),
     };
+    let all_items_succeeded = executor.is_complete(&goal, &blueprint);
     let goal_status =
         sync_goal_status_after_execution(agent, &goal, &blueprint, executor.store(), &outcome)?;
     if let Some(object) = value.as_object_mut() {
         object.insert("goal_status".into(), json!(goal_status));
+        object.insert("all_items_succeeded".into(), json!(all_items_succeeded));
         object.insert(
             "receipt_store_generation".into(),
             json!(executor.store().generation()),
@@ -3323,10 +3455,33 @@ pub fn run_goal_steps_for_tui(
     target: &str,
     steps: usize,
 ) -> Result<serde_json::Value, String> {
+    if let Some(goal_id) = exhausted_goal_for_target(agent, target)? {
+        block_goal_locally(agent, &goal_id)?;
+        return Ok(serde_json::json!({
+            "command": "blueprint",
+            "route": "local",
+            "accepted": true,
+            "action": "run",
+            "target": target,
+            "goal_id": goal_id,
+            "status": "blocked",
+            "goal_status": "blocked",
+            "completion_basis": "attempts_exhausted",
+            "goal_outcome": "could_not_be_achieved",
+            "steps_requested": steps,
+            "steps_recorded": 0,
+            "receipts": [],
+            "execution_scope": "local_goal_runner",
+            "task_executed": false,
+            "external_work_executed": false,
+        }));
+    }
     let mut receipts = Vec::new();
     let mut last = serde_json::json!({"status":"queued"});
+    let mut completed = false;
+    let mut attempts_exhausted = false;
     for _ in 0..steps {
-        let value = run_blueprint_next(agent, target)?;
+        let mut value = run_blueprint_next_with(agent, target, execute_blueprint_task)?;
         let status = value
             .get("status")
             .and_then(serde_json::Value::as_str)
@@ -3335,8 +3490,46 @@ pub fn run_goal_steps_for_tui(
         if let Some(receipt) = value.get("receipt") {
             receipts.push(receipt.clone());
         }
+        let all_items_succeeded = value
+            .get("all_items_succeeded")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        if (status == "complete" || all_items_succeeded)
+            && let Some(goal_id) = value.get("goal_id").and_then(serde_json::Value::as_str)
+        {
+            complete_goal_locally(agent, goal_id)?;
+            completed = true;
+            if let Some(object) = value.as_object_mut() {
+                object.insert("status".into(), serde_json::json!("complete"));
+            }
+        }
+        let failed = value
+            .get("receipt")
+            .and_then(|receipt| receipt.get("status"))
+            .and_then(serde_json::Value::as_str)
+            == Some("failed");
+        if failed
+            && let Some(goal_id) = value.get("goal_id").and_then(serde_json::Value::as_str)
+        {
+            let attempt = value
+                .get("receipt")
+                .and_then(|receipt| receipt.get("attempt"))
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0) as u32;
+            if attempt >= goal_attempt_budget(agent, goal_id)? {
+                block_goal_locally(agent, goal_id)?;
+                attempts_exhausted = true;
+                if let Some(object) = value.as_object_mut() {
+                    object.insert("status".into(), serde_json::json!("blocked"));
+                    object.insert("goal_status".into(), serde_json::json!("blocked"));
+                }
+            }
+        }
         last = value;
-        if matches!(status.as_str(), "blocked" | "cancelled" | "complete") {
+        if completed
+            || attempts_exhausted
+            || matches!(status.as_str(), "blocked" | "cancelled" | "complete")
+        {
             break;
         }
     }
@@ -3344,8 +3537,162 @@ pub fn run_goal_steps_for_tui(
         object.insert("steps_requested".into(), serde_json::json!(steps));
         object.insert("steps_recorded".into(), serde_json::json!(receipts.len()));
         object.insert("receipts".into(), serde_json::Value::Array(receipts));
+        object.insert(
+            "completion_basis".into(),
+            serde_json::json!(if completed {
+                "local_acceptance_commands"
+            } else if attempts_exhausted {
+                "attempts_exhausted"
+            } else {
+                "not_complete"
+            }),
+        );
+        if completed {
+            object.insert("goal_status".into(), serde_json::json!("done"));
+        }
+        if attempts_exhausted {
+            object.insert("goal_status".into(), serde_json::json!("blocked"));
+            object.insert(
+                "goal_outcome".into(),
+                serde_json::json!("could_not_be_achieved"),
+            );
+        }
     }
     Ok(last)
+}
+
+fn exhausted_goal_for_target(agent: &Agent, target: &str) -> Result<Option<String>, String> {
+    let target = target.trim();
+    let (blueprint_id, version) = target
+        .split_once('@')
+        .map_or((target, None), |(id, version)| (id, Some(version)));
+    let store = DomainStore::open_read_only(domain_store::path_for_session(agent.session().path()))
+        .map_err(|error| error.to_string())?;
+    let goals = store
+        .goals()
+        .into_iter()
+        .filter(|goal| {
+            goal.blueprint_id == blueprint_id
+                && version.is_none_or(|version| goal.blueprint_version == version)
+        })
+        .collect::<Vec<_>>();
+    let [goal] = goals.as_slice() else {
+        return Ok(None);
+    };
+    if goal.budget.attempts == 0 {
+        return Ok(None);
+    }
+    let execution_path = crate::domain_execution::path_for_session(agent.session().path());
+    let execution = crate::domain_execution::ExecutionStore::open(&execution_path)
+        .map_err(|error| error.to_string())?;
+    let exhausted = execution.receipts().iter().any(|receipt| {
+        receipt.goal_id == goal.id
+            && receipt.status == crate::domain_execution::ExecutionStatus::Failed
+            && receipt.attempt >= goal.budget.attempts
+    });
+    Ok(exhausted.then(|| goal.id.clone()))
+}
+
+fn goal_attempt_budget(agent: &Agent, goal_id: &str) -> Result<u32, String> {
+    let store = DomainStore::open_read_only(domain_store::path_for_session(agent.session().path()))
+        .map_err(|error| error.to_string())?;
+    store
+        .goal(goal_id)
+        .map(|goal| goal.budget.attempts)
+        .ok_or_else(|| format!("goal `{goal_id}` disappeared during execution"))
+}
+
+fn block_goal_locally(agent: &Agent, goal_id: &str) -> Result<(), String> {
+    let mut store = DomainStore::open(domain_store::path_for_session(agent.session().path()))
+        .map_err(|error| error.to_string())?;
+    store
+        .transition_goal(goal_id, crate::domains::GoalStatus::Blocked)
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn complete_goal_locally(agent: &Agent, goal_id: &str) -> Result<(), String> {
+    let mut store = DomainStore::open(domain_store::path_for_session(agent.session().path()))
+        .map_err(|error| error.to_string())?;
+    store
+        .transition_goal(goal_id, crate::domains::GoalStatus::Done)
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+/// Run one Blueprint task with the owner agent and verify its acceptance
+/// commands in the session workspace.  This is the local executor used by
+/// `/goal run`; it is deliberately absent from the control-plane handoff
+/// path, which must never execute a task.
+fn execute_blueprint_task(
+    agent: &mut Agent,
+    item: &crate::domains::BlueprintItem,
+) -> Result<(), String> {
+    let task = item.task.as_ref().ok_or_else(|| {
+        format!(
+            "blueprint item `{}` has no executable task; add instruction and acceptance commands",
+            item.id
+        )
+    })?;
+    if agent.phase() != crate::core::AgentPhase::Idle {
+        return Err("goal execution requires an idle agent".into());
+    }
+    let workspace = PathBuf::from(&agent.session().header().cwd);
+    let acceptance = task
+        .acceptance_commands
+        .iter()
+        .map(|command| format!("- `{command}`"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let prompt = format!(
+        "You are executing one b3ehive Blueprint item.\n\
+         Item: {item_id}\n\
+         Workspace: {workspace}\n\n\
+         Instruction:\n{instruction}\n\n\
+         The host will run these acceptance commands after your turn:\n{acceptance}\n\n\
+         Use your tools to make the change and run the acceptance commands yourself when possible. \
+         Do not reply with a plan only; leave the workspace in the stated condition. \
+         Finish with a concise evidence summary.",
+        item_id = item.id,
+        workspace = workspace.display(),
+        instruction = task.instruction,
+        acceptance = acceptance,
+    );
+    let submission = agent
+        .submit(TurnInputRequest::new(prompt))
+        .map_err(|error| error.to_string())?;
+    if !submission.accepted() {
+        return Err(format!("agent refused the goal turn: {submission:?}"));
+    }
+    let _turn = agent
+        .run_active_turn()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "agent completed the goal turn without an assistant response".to_owned())?;
+    for command in &task.acceptance_commands {
+        let output = std::process::Command::new("sh")
+            .arg("-lc")
+            .arg(command)
+            .current_dir(&workspace)
+            .output()
+            .map_err(|error| format!("could not run acceptance command `{command}`: {error}"))?;
+        if !output.status.success() {
+            let stdout = bounded_command_output(&output.stdout);
+            let stderr = bounded_command_output(&output.stderr);
+            return Err(format!(
+                "acceptance command `{command}` failed with {}; stdout: {stdout}; stderr: {stderr}",
+                output.status
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn bounded_command_output(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes)
+        .chars()
+        .take(2_000)
+        .collect::<String>()
+        .replace('\n', " ")
 }
 
 fn run_goal_steps(
@@ -3782,6 +4129,30 @@ pub fn resume_learn(agent: &Agent, id: &str) -> Result<serde_json::Value, String
     resume_learn_view(Some(agent), id).map_err(|error| error.message)
 }
 
+/// The oldest prompt/steer job of `project` (the one currently owning the
+/// turn) and its published turn ID, if the worker has submitted it yet.
+fn active_turn_job(
+    jobs: &HashMap<crate::runtime::JobId, AsyncWork>,
+    project: &ProjectContext,
+) -> Result<Option<(crate::runtime::JobId, Option<String>)>, HeadlessError> {
+    let Some((job_id, work)) = jobs
+        .iter()
+        .filter(|(_, work)| {
+            work.project.project_id == project.project_id
+                && (work.command == "prompt" || work.command == "steer")
+        })
+        .min_by_key(|(job_id, _)| job_id.get())
+    else {
+        return Ok(None);
+    };
+    let turn_id = work
+        .turn_id
+        .lock()
+        .map_err(|_| event_mailbox_headless_error())?
+        .clone();
+    Ok(Some((*job_id, turn_id)))
+}
+
 fn request_in_flight(
     id: Option<&str>,
     request_to_job: &HashMap<String, crate::runtime::JobId>,
@@ -3811,7 +4182,7 @@ fn cancel_pending_steers_for_job<W: Write>(
                 output,
                 StdioResponse::error_with_code(
                     pending.id,
-                    "steer",
+                    pending.command,
                     "request_cancelled",
                     "deferred steer was cancelled before reissue",
                 ),
@@ -3847,7 +4218,7 @@ fn cancel_pending_steer_by_id<W: Write>(
         output,
         StdioResponse::error_with_code(
             pending.id,
-            "steer",
+            pending.command,
             "request_cancelled",
             "deferred steer was cancelled before reissue",
         ),
@@ -3866,6 +4237,10 @@ fn runtime_error_details(reason: crate::runtime::SubmitError) -> (&'static str, 
         crate::runtime::SubmitError::Closed => (
             "runtime_closed",
             "runtime rejected the request because it is closed",
+        ),
+        crate::runtime::SubmitError::SpawnFailed => (
+            "runtime_spawn_failed",
+            "runtime could not start a job thread; retry",
         ),
     }
 }
@@ -3914,6 +4289,8 @@ fn write_cached_versioned_response<W: Write>(
     write_cached_response(output, response.for_version(version), replay)
 }
 
+// One value per admitted request, moved straight into the runner.
+#[allow(clippy::large_enum_variant)]
 enum AsyncTurn {
     NewSession(crate::project_workspace::NewSessionPlan),
     ToolOutput(crate::protocol::OutputRequest),
@@ -4081,99 +4458,13 @@ fn drain_provider_events<W: Write>(
     sequence: &mut u64,
     replay: &mut ReplayState,
 ) -> Result<(), HeadlessError> {
-    for work in jobs.values() {
-        replay.emission_project = Some(work.project.clone());
-        // `ProviderEvent` deliberately contains no turn ID.  The async
-        // request owns the correlation captured from `TurnSubmission`, so
-        // read it from `AsyncWork` rather than probing the event JSON.
-        // Snapshot the mailbox before doing JSON encoding or writing to the
-        // client. A slow stdout consumer must not hold the request lock and
-        // stall the provider worker (or a future lifecycle callback).
-        let (work_turn_id, agent_events, (provider_events, dropped), (live_events, live_dropped)) =
-            match work.events.lock() {
-                Ok(mut events) => {
-                    // Admission markers must be observed before any provider delta
-                    // for the same request. `Agent::submit` publishes them before
-                    // it enters the provider, and the per-request buffer preserves
-                    // that relationship.
-                    // Read correlation after acquiring the publication lock. Reading
-                    // it before the mailbox could capture None, then drain events
-                    // published by a just-admitted turn with missing correlation.
-                    let turn_id = work
-                        .turn_id
-                        .lock()
-                        .map_err(|_| event_mailbox_headless_error())?
-                        .clone();
-                    (
-                        turn_id,
-                        events.take_admission(),
-                        events.take_provider(),
-                        events.take_agent(),
-                    )
-                }
-                Err(_) => return Err(event_mailbox_headless_error()),
-            };
-        write_buffered_events(
-            output,
-            sequence,
-            work.id.clone(),
-            agent_events,
-            Some(replay),
-        )?;
-        for event in provider_events {
-            let mut value = serde_json::to_value(&event)?;
-            let current = *sequence;
-            if let Some(block) = provider_event_block(&event)
-                && let Some(object) = value.as_object_mut()
-            {
-                object.insert("block".into(), block);
-            }
-            match crate::view_model::ViewEvent::from_provider_event(
-                current,
-                work.id.clone(),
-                work_turn_id.as_deref(),
-                None,
-                &event,
-            ) {
-                Ok(view) => value
-                    .as_object_mut()
-                    .expect("provider event is an object")
-                    .insert("view".into(), serde_json::to_value(view)?),
-                Err(error) => value
-                    .as_object_mut()
-                    .expect("provider event is an object")
-                    .insert(
-                        "view_error".into(),
-                        json!({"code":"view_model_error","message": error.to_string()}),
-                    ),
-            };
-            let mut envelope =
-                StdioEvent::new(current, work.id.clone(), work_turn_id.clone(), value);
-            envelope.project = replay.emission_project.clone();
-            *sequence = sequence.saturating_add(1);
-            let line = encode_line(&envelope)?;
-            replay.remember_event(current, line.clone())?;
-            output.write_all(line.as_bytes())?;
-        }
-        write_buffered_events(output, sequence, work.id.clone(), live_events, Some(replay))?;
-        write_dropped_event(
-            output,
-            sequence,
-            replay,
-            work.id.clone(),
-            work_turn_id.clone(),
-            EventMailboxStream::Agent,
-            live_dropped,
-        )?;
-        write_dropped_event(
-            output,
-            sequence,
-            replay,
-            work.id.clone(),
-            work_turn_id,
-            EventMailboxStream::Provider,
-            dropped,
-        )?;
+    // Runtime job IDs are allocated in admission order; iterate them in that
+    // order rather than in HashMap order so concurrent requests interleave
+    // deterministically on the wire.
+    let mut ordered: Vec<_> = jobs.iter().collect();
+    ordered.sort_unstable_by_key(|(job_id, _)| job_id.get());
+    for (_, work) in ordered {
+        drain_job_mailbox(work, output, sequence, replay)?;
     }
     output.flush()?;
     Ok(())
@@ -4253,73 +4544,46 @@ fn drain_approval_events<W: Write>(
     Ok(())
 }
 
-fn drain_provider_events_for_job<W: Write>(
+/// Write one request's mailbox in production order. `ProviderEvent`
+/// deliberately contains no turn ID; correlation is carried by the request
+/// metadata captured when the submission was accepted.
+fn drain_job_mailbox<W: Write>(
     work: &AsyncWork,
     output: &mut W,
     sequence: &mut u64,
     replay: &mut ReplayState,
 ) -> Result<(), HeadlessError> {
     replay.emission_project = Some(work.project.clone());
-    // Raw provider events have no turn_id field; correlation is carried by
-    // the request metadata captured when the submission was accepted.
-    let work_turn_id = work
-        .turn_id
-        .lock()
-        .map_err(|_| event_mailbox_headless_error())?
-        .clone();
     // Detach all buffered data before serializing or writing. Holding this
-    // mutex across client I/O would let a slow consumer pause the worker.
-    let (admission_events, (provider_events, dropped), (live_events, live_dropped)) =
-        match work.events.lock() {
-            Ok(mut events) => (
-                events.take_admission(),
-                events.take_provider(),
-                events.take_agent(),
-            ),
-            Err(_) => return Err(event_mailbox_headless_error()),
-        };
-    write_buffered_events(
-        output,
-        sequence,
-        work.id.clone(),
-        admission_events,
-        Some(replay),
-    )?;
-    for event in provider_events {
-        let mut value = serde_json::to_value(&event)?;
-        if let Some(block) = provider_event_block(&event)
-            && let Some(object) = value.as_object_mut()
-        {
-            object.insert("block".into(), block);
+    // mutex across client I/O would let a slow consumer stall the worker.
+    // Read the turn correlation under the publication lock: reading it first
+    // could capture None and then drain events of a just-admitted turn.
+    let (work_turn_id, drained) = match work.events.lock() {
+        Ok(mut events) => {
+            let turn_id = work
+                .turn_id
+                .lock()
+                .map_err(|_| event_mailbox_headless_error())?
+                .clone();
+            (turn_id, events.take_ordered())
         }
-        let current = *sequence;
-        match crate::view_model::ViewEvent::from_provider_event(
-            current,
-            work.id.clone(),
-            work_turn_id.as_deref(),
-            None,
-            &event,
-        ) {
-            Ok(view) => value
-                .as_object_mut()
-                .expect("provider event is an object")
-                .insert("view".into(), serde_json::to_value(view)?),
-            Err(error) => value
-                .as_object_mut()
-                .expect("provider event is an object")
-                .insert(
-                    "view_error".into(),
-                    json!({"code":"view_model_error","message": error.to_string()}),
-                ),
-        };
-        let mut envelope = StdioEvent::new(current, work.id.clone(), work_turn_id.clone(), value);
-        envelope.project = replay.emission_project.clone();
-        *sequence = sequence.saturating_add(1);
-        let line = encode_line(&envelope)?;
-        replay.remember_event(current, line.clone())?;
-        output.write_all(line.as_bytes())?;
+        Err(_) => return Err(event_mailbox_headless_error()),
+    };
+    for event in drained.events {
+        match event {
+            MailboxEvent::Agent(event) => {
+                write_agent_event_line(output, sequence, work.id.clone(), &event, Some(replay))?;
+            }
+            MailboxEvent::Provider(event) => write_provider_event_line(
+                output,
+                sequence,
+                replay,
+                work.id.clone(),
+                work_turn_id.clone(),
+                &event,
+            )?,
+        }
     }
-    write_buffered_events(output, sequence, work.id.clone(), live_events, Some(replay))?;
     write_dropped_event(
         output,
         sequence,
@@ -4327,7 +4591,7 @@ fn drain_provider_events_for_job<W: Write>(
         work.id.clone(),
         work_turn_id.clone(),
         EventMailboxStream::Agent,
-        live_dropped,
+        drained.agent_dropped,
     )?;
     write_dropped_event(
         output,
@@ -4336,8 +4600,48 @@ fn drain_provider_events_for_job<W: Write>(
         work.id.clone(),
         work_turn_id,
         EventMailboxStream::Provider,
-        dropped,
+        drained.provider_dropped,
     )?;
+    Ok(())
+}
+
+fn write_provider_event_line<W: Write>(
+    output: &mut W,
+    sequence: &mut u64,
+    replay: &mut ReplayState,
+    request_id: Option<String>,
+    turn_id: Option<String>,
+    event: &ProviderEvent,
+) -> Result<(), HeadlessError> {
+    let mut value = serde_json::to_value(event)?;
+    if let Some(block) = provider_event_block(event)
+        && let Some(object) = value.as_object_mut()
+    {
+        object.insert("block".into(), block);
+    }
+    let current = *sequence;
+    let view = match crate::view_model::ViewEvent::from_provider_event(
+        current,
+        request_id.clone(),
+        turn_id.as_deref(),
+        None,
+        event,
+    ) {
+        Ok(view) => ("view", serde_json::to_value(view)?),
+        Err(error) => (
+            "view_error",
+            json!({"code":"view_model_error","message": error.to_string()}),
+        ),
+    };
+    if let Some(object) = value.as_object_mut() {
+        object.insert(view.0.into(), view.1);
+    }
+    let mut envelope = StdioEvent::new(current, request_id, turn_id, value);
+    envelope.project = replay.emission_project.clone();
+    *sequence = sequence.saturating_add(1);
+    let line = encode_line(&envelope)?;
+    replay.remember_event(current, line.clone())?;
+    output.write_all(line.as_bytes())?;
     Ok(())
 }
 
@@ -4351,11 +4655,13 @@ fn provider_event_block(event: &crate::backend::ProviderEvent) -> Option<serde_j
             message: text.clone(),
             retryable: false,
         },
-        crate::backend::ProviderEvent::Failed { message } => crate::view_model::ViewBlock::Error {
-            code: Some("provider_failed".into()),
-            message: message.clone(),
-            retryable: true,
-        },
+        crate::backend::ProviderEvent::Failed { message, retryable } => {
+            crate::view_model::ViewBlock::Error {
+                code: Some("provider_failed".into()),
+                message: message.clone(),
+                retryable: *retryable,
+            }
+        }
         crate::backend::ProviderEvent::ToolCallDone { call } => {
             crate::view_model::ViewBlock::ToolStatus {
                 call_id: call.id.clone(),
@@ -4412,6 +4718,7 @@ fn run_async_stdio<R: io::Read + Send + 'static, W: Write>(
     agent: Agent,
     input: R,
     mut output: W,
+    options: HeadlessOptions,
 ) -> Result<(), HeadlessError> {
     let root_owner = Arc::new(Mutex::new(agent));
     let mut pool = ProjectOwnerPool::new(Arc::clone(&root_owner)).map_err(io::Error::other)?;
@@ -4419,7 +4726,21 @@ fn run_async_stdio<R: io::Read + Send + 'static, W: Write>(
     let mut shared = pool.active();
     let mut replay = {
         let mut agent = shared.lock().map_err(|_| event_mailbox_headless_error())?;
-        let replay = ReplayState::open(agent.session())?;
+        let replay = match ReplayState::open(agent.session()) {
+            Ok(replay) => replay,
+            Err(HeadlessError::Session(crate::session::SessionError::Locked)) => {
+                // Tell the client why the transport ends before any request
+                // is read, using the stable machine-readable code.
+                let error = crate::session::SessionError::Locked;
+                write_response(
+                    &mut output,
+                    StdioResponse::error_with_code(None, "stdio", error.code(), error.to_string())
+                        .for_version(crate::protocol::PROTOCOL_VERSION),
+                )?;
+                return Err(error.into());
+            }
+            Err(error) => return Err(error),
+        };
         let workspace = fs::canonicalize(&agent.session().header().cwd)?;
         agent.register_live_owner(
             replay.owner_epoch,
@@ -4429,6 +4750,7 @@ fn run_async_stdio<R: io::Read + Send + 'static, W: Write>(
         replay
     };
     let mut event_sequence = replay.next_sequence;
+    crate::runtime::set_event_hook(wake_host);
     let (line_tx, line_rx) = mpsc::sync_channel::<ReaderMessage>(32);
     thread::Builder::new()
         .name("zenpi-stdin-reader".into())
@@ -4439,12 +4761,14 @@ fn run_async_stdio<R: io::Read + Send + 'static, W: Write>(
                 match read_frame(&mut reader, &mut frame) {
                     Ok(Frame::Eof) => {
                         let _ = line_tx.send(ReaderMessage::Eof);
+                        wake_host();
                         break;
                     }
                     Ok(Frame::TooLong) => {
                         if line_tx.send(ReaderMessage::TooLong).is_err() {
                             break;
                         }
+                        wake_host();
                     }
                     Ok(Frame::Data) => {
                         let message = match std::str::from_utf8(&frame) {
@@ -4454,9 +4778,11 @@ fn run_async_stdio<R: io::Read + Send + 'static, W: Write>(
                         if line_tx.send(message).is_err() {
                             break;
                         }
+                        wake_host();
                     }
                     Err(error) => {
                         let _ = line_tx.send(ReaderMessage::Error(error));
+                        wake_host();
                         break;
                     }
                 }
@@ -4574,6 +4900,8 @@ fn run_async_stdio<R: io::Read + Send + 'static, W: Write>(
                             Ok(AsyncProcessResult::Turn(ProcessResult {
                                 submission,
                                 assistant,
+                                #[cfg(feature = "remote")]
+                                worker_history_evidence: None,
                             }))
                         }
                         AsyncTurn::Reissue {
@@ -4604,6 +4932,8 @@ fn run_async_stdio<R: io::Read + Send + 'static, W: Write>(
                             Ok(AsyncProcessResult::Turn(ProcessResult {
                                 submission,
                                 assistant,
+                                #[cfg(feature = "remote")]
+                                worker_history_evidence: None,
                             }))
                         }
                         AsyncTurn::UserShell(input) => {
@@ -4646,8 +4976,31 @@ fn run_async_stdio<R: io::Read + Send + 'static, W: Write>(
     let mut stopping_since: Option<Instant> = None;
     let mut shutdown_sent = false;
     let mut pending_shutdown: Option<(Option<String>, String, u16)> = None;
+    // An explicit shutdown (request or SIGTERM) cancels after a short grace;
+    // EOF lets admitted work finish, bounded by the configured drain.
+    let drain_deadline = |explicit: bool| {
+        if explicit {
+            SHUTDOWN_GRACE
+        } else {
+            options.eof_drain
+        }
+    };
     let loop_result = (|| -> Result<(), HeadlessError> {
         loop {
+            // Read before draining so a wake that lands mid-drain is not lost.
+            let seen_wake = host_generation();
+            if termination_requested() && !explicit_shutdown && !shutdown_sent {
+                // SIGTERM is an implicit `shutdown`: stop reading input,
+                // cancel unanswerable approvals, give admitted work the
+                // shutdown grace, then acknowledge once the runtime closed.
+                // An EOF drain already in progress is upgraded to it.
+                stopping = true;
+                explicit_shutdown = true;
+                pending_shutdown.get_or_insert_with(|| {
+                    (None, "shutdown".into(), crate::protocol::PROTOCOL_VERSION)
+                });
+                stopping_since = Some(Instant::now());
+            }
             shared = pool.active();
             access.retain(|id, _| pool.context(id).is_some());
             for (id, owner) in pool.owner_handles() {
@@ -4730,8 +5083,8 @@ fn run_async_stdio<R: io::Read + Send + 'static, W: Write>(
             // cancel/reissue promotion; once the grace period expires,
             // `promote_pending_steers` reports an explicit runtime_closed
             // error instead of silently dropping it.
-            let steer_grace_elapsed = explicit_shutdown
-                && stopping_since.is_some_and(|started| started.elapsed() >= SHUTDOWN_GRACE);
+            let steer_grace_elapsed = stopping_since
+                .is_some_and(|started| started.elapsed() >= drain_deadline(explicit_shutdown));
             promote_pending_steers(
                 &runner,
                 &mut jobs,
@@ -4747,13 +5100,17 @@ fn run_async_stdio<R: io::Read + Send + 'static, W: Write>(
                 // after `jobs` became empty would strand an active provider
                 // forever: jobs can become empty only after the worker has
                 // observed shutdown and emitted their terminal events.
-                let grace_elapsed = explicit_shutdown
-                    && stopping_since.is_some_and(|started| started.elapsed() >= SHUTDOWN_GRACE);
+                let grace_elapsed = stopping_since
+                    .is_some_and(|started| started.elapsed() >= drain_deadline(explicit_shutdown));
                 if !shutdown_sent
                     && ((jobs.is_empty() && pending_steers.is_empty()) || grace_elapsed)
                 {
                     match runner.try_shutdown() {
-                        Ok(()) | Err(crate::runtime::SubmitError::Closed) => {
+                        Ok(())
+                        | Err(
+                            crate::runtime::SubmitError::Closed
+                            | crate::runtime::SubmitError::SpawnFailed,
+                        ) => {
                             shutdown_sent = true;
                         }
                         Err(crate::runtime::SubmitError::QueueFull) => {
@@ -4788,7 +5145,7 @@ fn run_async_stdio<R: io::Read + Send + 'static, W: Write>(
                 }
                 continue;
             }
-            match line_rx.recv_timeout(Duration::from_millis(10)) {
+            match next_reader_message(&line_rx, seen_wake) {
                 Ok(ReaderMessage::Line(line)) => {
                     process_async_line(
                         line,
@@ -4812,9 +5169,9 @@ fn run_async_stdio<R: io::Read + Send + 'static, W: Write>(
                         explicit_shutdown = pending_shutdown.is_some();
                         stopping_since.get_or_insert_with(Instant::now);
                     }
-                    let steer_grace_elapsed = explicit_shutdown
-                        && stopping_since
-                            .is_some_and(|started| started.elapsed() >= SHUTDOWN_GRACE);
+                    let steer_grace_elapsed = stopping_since.is_some_and(|started| {
+                        started.elapsed() >= drain_deadline(explicit_shutdown)
+                    });
                     promote_pending_steers(
                         &runner,
                         &mut jobs,
@@ -4883,11 +5240,22 @@ fn run_async_stdio<R: io::Read + Send + 'static, W: Write>(
         if loop_result.is_ok() {
             replay.close()?;
         }
-        close_async_owners(
+        let deferred = close_async_owners(
             std::iter::once(root_owner)
                 .chain(pool.owner_handles().into_iter().map(|(_, owner)| owner)),
             replay.owner_epoch,
-        )
+        )?;
+        // The binary exits as soon as this host returns; wait (bounded) so
+        // close hooks of an owner released late by a detached job still run.
+        if let Some(done) = deferred
+            && done.recv_timeout(CLOSE_HOOK_DEADLINE).is_err()
+        {
+            eprintln!(
+                "zenpi: owner close hooks did not finish within {}s",
+                CLOSE_HOOK_DEADLINE.as_secs()
+            );
+        }
+        Ok(())
     })();
     match loop_result {
         Err(error) => {
@@ -4905,10 +5273,13 @@ fn run_async_stdio<R: io::Read + Send + 'static, W: Write>(
     }
 }
 
+/// Close every owner now when possible. Owners still locked by a detached job
+/// are closed by one cleanup thread; the returned receiver yields once that
+/// thread has run their close hooks.
 fn close_async_owners(
     owners: impl IntoIterator<Item = Arc<Mutex<Agent>>>,
     owner_epoch: u64,
-) -> Result<(), HeadlessError> {
+) -> Result<Option<mpsc::Receiver<()>>, HeadlessError> {
     let mut unique = Vec::new();
     for owner in owners {
         if !unique.iter().any(|other| Arc::ptr_eq(other, &owner)) {
@@ -4933,10 +5304,13 @@ fn close_async_owners(
             }
         }
     }
+    let mut cleanup_done = None;
     if !deferred.is_empty() {
         // At most one cleanup thread per host, using only captured owners.
-        // The process may exit before a detached job releases its lock; an
-        // embedding that remains alive can still run its final close hooks.
+        // The caller waits for it with a bound; an embedding that remains
+        // alive past that bound still runs the final close hooks.
+        let (done_tx, done_rx) = mpsc::channel();
+        cleanup_done = Some(done_rx);
         thread::Builder::new()
             .name("zenpi-owner-cleanup".into())
             .spawn(move || {
@@ -4953,9 +5327,10 @@ fn close_async_owners(
                         }
                     }
                 }
+                let _ = done_tx.send(());
             })?;
     }
-    close_error.map_or(Ok(()), Err)
+    close_error.map_or(Ok(cleanup_done), Err)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -5080,50 +5455,17 @@ fn handle_runtime_event<W: Write>(
                     .map_err(|error| io::Error::other(format!("new session created and committed at {}; reconnect to recover receipt: {error}", committed.path.display())))?;
                 *event_sequence = (*event_sequence).max(replay.next_sequence);
             }
-            let event_request_id = meta.id.clone();
             if let Some(request_id) = meta.id.as_ref() {
                 request_to_job.remove(request_id);
             }
-            // Snapshot all lifecycle events before writing the terminal
-            // response.  A client must be able to treat that response as a
-            // strict completion boundary: once it is observed, no progress
-            // event for the same request may still be waiting behind it.
-            let (agent_events, agent_dropped) = meta
-                .events
-                .lock()
-                .map_err(|_| event_mailbox_headless_error())
-                .map(|mut events| events.take_agent())?;
-            let mut agent_events = agent_events;
-            let admission_end = admission_prefix_len(&agent_events).unwrap_or(0);
-            let admission_events = agent_events.drain(..admission_end).collect::<Vec<_>>();
-            // Provider deltas and lifecycle markers precede the one terminal
-            // response, even when the worker and output loop become ready on
-            // the same tick.  The two buffers are drained here (rather than
-            // from the global Agent) so queued jobs cannot be mis-correlated.
-            write_buffered_events(
-                output,
-                event_sequence,
-                event_request_id.clone(),
-                admission_events,
-                Some(replay),
-            )?;
-            drain_provider_events_for_job(&meta, output, event_sequence, replay)?;
-            write_buffered_events(
-                output,
-                event_sequence,
-                event_request_id.clone(),
-                agent_events,
-                Some(replay),
-            )?;
-            write_dropped_event(
-                output,
-                event_sequence,
-                replay,
-                event_request_id,
-                completed_turn_id,
-                EventMailboxStream::Agent,
-                agent_dropped,
-            )?;
+            // Drain the whole mailbox before writing the terminal response.
+            // A client must be able to treat that response as a strict
+            // completion boundary: once it is observed, no progress event
+            // for the same request may still be waiting behind it. The
+            // per-request mailbox (rather than the global Agent queue) keeps
+            // queued jobs from being mis-correlated.
+            drain_job_mailbox(&meta, output, event_sequence, replay)?;
+            output.flush()?;
             match outcome {
                 JobOutcome::Succeeded(result) => {
                     let data = match result {
@@ -5193,6 +5535,10 @@ fn handle_runtime_event<W: Write>(
                 crate::runtime::SubmitError::Closed => (
                     "runtime_closed",
                     "runtime rejected the request while shutting down",
+                ),
+                crate::runtime::SubmitError::SpawnFailed => (
+                    "runtime_spawn_failed",
+                    "runtime could not start a job thread; retry",
                 ),
             };
             replay.emission_project = Some(meta.project.clone());
@@ -5667,6 +6013,7 @@ where
             }
 
             if crate::slash::resource_input_candidate(&input)
+                || crate::slash::resource_control(&input).is_some()
                 || input.trim() == "/compact"
                 || crate::slash::external_evidence_control(&input)
             {
@@ -6018,6 +6365,7 @@ where
                     if session_open && response.success {
                         request_to_job.clear();
                         let agent = shared.lock().map_err(|_| event_mailbox_headless_error())?;
+                        pool.refresh_owner_control(&project.project_id, &agent);
                         replay.emission_project = pool.context(&project.project_id).cloned();
                         if let Some(id) = &id {
                             replay.request_projects.insert(
@@ -6151,6 +6499,73 @@ where
                 )?;
                 return Ok(());
             }
+            // Decide `mode` and `expected_turn_id` at admission against the
+            // host's own view of this project's turn work. Deferring the
+            // check to `Agent::submit` would queue a `start_if_idle` behind
+            // the busy turn and then start it once idle, which is exactly
+            // what the caller asked not to happen.
+            let active = active_turn_job(jobs, project)?;
+            let busy = active.is_some()
+                || pending_steers
+                    .iter()
+                    .any(|pending| pending.project.project_id == project.project_id);
+            if mode == crate::protocol::TurnMode::StartIfIdle && busy {
+                write_retryable_response(
+                    output,
+                    StdioResponse::error_with_code(
+                        id,
+                        name,
+                        "not_idle",
+                        "start_if_idle was refused because a turn is active",
+                    )
+                    .for_version(request_version),
+                    replay,
+                )?;
+                return Ok(());
+            }
+            if let (Some(expected), Some((_, Some(active_turn_id)))) =
+                (expected_turn_id.as_deref(), active.as_ref())
+                && expected != active_turn_id
+            {
+                write_retryable_response(
+                    output,
+                    StdioResponse::error_with_code(
+                        id,
+                        name,
+                        "expected_turn_mismatch",
+                        "expected turn does not match the active request",
+                    )
+                    .for_version(request_version),
+                    replay,
+                )?;
+                return Ok(());
+            }
+            if mode == crate::protocol::TurnMode::Steer
+                && attachments.is_empty()
+                && let Some((job_id, active_turn_id)) = active
+            {
+                // An explicit steer while a turn runs takes the same
+                // cancel-and-reissue path as the `steer` command instead of
+                // queueing behind the turn it was meant to redirect.
+                enqueue_pending_steer(
+                    pending_steers,
+                    PendingSteer {
+                        owner: Arc::clone(shared),
+                        project: project.clone(),
+                        id,
+                        command: "prompt",
+                        version: request_version,
+                        text,
+                        expected_turn_id,
+                        target_job: job_id,
+                        cancel_sent: false,
+                        superseded_turn_id: active_turn_id,
+                    },
+                    output,
+                    replay,
+                )?;
+                return Ok(());
+            }
             let request = TurnInputRequest {
                 message: text,
                 expected_turn_id,
@@ -6204,23 +6619,7 @@ where
                 )?;
                 return Ok(());
             }
-            let active = if let Some((job_id, work)) = jobs
-                .iter()
-                .filter(|(_, work)| {
-                    work.project.project_id == project.project_id
-                        && (work.command == "prompt" || work.command == "steer")
-                })
-                .min_by_key(|(job_id, _)| job_id.get())
-            {
-                let active_turn_id = work
-                    .turn_id
-                    .lock()
-                    .map_err(|_| event_mailbox_headless_error())?
-                    .clone();
-                Some((*job_id, active_turn_id))
-            } else {
-                None
-            };
+            let active = active_turn_job(jobs, project)?;
             if let Some((job_id, active_turn_id)) = active {
                 if expected_turn_id.as_deref().is_some_and(|expected| {
                     active_turn_id
@@ -6249,6 +6648,7 @@ where
                         owner: Arc::clone(shared),
                         project: project.clone(),
                         id,
+                        command: "steer",
                         version: request_version,
                         text,
                         expected_turn_id,
@@ -6624,6 +7024,7 @@ where
             }) {
                 Ok(()) => {
                     agent.take_events();
+                    pool.refresh_owner_control(&project.project_id, &agent);
                     replay.emission_project = Some(pool.active_context().clone());
                     if let Some(id) = &id {
                         replay
@@ -6648,33 +7049,32 @@ where
                 )?,
             }
         }
-        other => match shared.try_lock() {
-            Ok(mut agent) => {
-                let should_stop = handle_command(
-                    &mut agent,
-                    id,
-                    other,
-                    output,
-                    event_sequence,
-                    replay,
-                    request_version,
-                )?;
-                if should_stop {
-                    *stopping = true;
+        other @ (Command::Connection(_) | Command::Handoff { .. } | Command::Resume { .. }) => {
+            match shared.try_lock() {
+                Ok(mut agent) => {
+                    handle_command(
+                        &mut agent,
+                        id,
+                        other,
+                        output,
+                        event_sequence,
+                        replay,
+                        request_version,
+                    )?;
                 }
+                Err(_) => write_retryable_response(
+                    output,
+                    StdioResponse::error_with_code(
+                        id,
+                        name,
+                        "agent_busy",
+                        "command cannot run while a turn owns the session",
+                    )
+                    .for_version(request_version),
+                    replay,
+                )?,
             }
-            Err(_) => write_retryable_response(
-                output,
-                StdioResponse::error_with_code(
-                    id,
-                    name,
-                    "agent_busy",
-                    "command cannot run while a turn owns the session",
-                )
-                .for_version(request_version),
-                replay,
-            )?,
-        },
+        }
     }
     Ok(())
 }
@@ -6719,7 +7119,7 @@ where
                 output,
                 StdioResponse::error_with_code(
                     pending.id,
-                    "steer",
+                    pending.command,
                     "runtime_closed",
                     "steer was discarded while shutting down",
                 ),
@@ -6749,7 +7149,7 @@ where
                     output,
                     StdioResponse::error_with_code(
                         pending.id,
-                        "steer",
+                        pending.command,
                         "expected_turn_mismatch",
                         "expected turn does not match the active request",
                     ),
@@ -6778,12 +7178,15 @@ where
                         enqueue_pending_steer(pending_steers, pending, output, replay)?;
                         continue;
                     }
-                    Err(crate::runtime::SubmitError::Closed) => {
+                    Err(
+                        crate::runtime::SubmitError::Closed
+                        | crate::runtime::SubmitError::SpawnFailed,
+                    ) => {
                         write_cached_versioned_response(
                             output,
                             StdioResponse::error_with_code(
                                 pending.id,
-                                "steer",
+                                pending.command,
                                 "runtime_closed",
                                 "runtime closed before steer cancellation was admitted",
                             ),
@@ -6806,7 +7209,7 @@ where
                         AsyncWork {
                             project: pending.project.clone(),
                             id: pending.id.clone(),
-                            command: "steer",
+                            command: pending.command,
                             version: pending.version,
                             events,
                             turn_id: started_turn_id,
@@ -6822,12 +7225,14 @@ where
                     // full for the replacement request.
                     enqueue_pending_steer(pending_steers, pending, output, replay)?;
                 }
-                Err(crate::runtime::SubmitError::Closed) => {
+                Err(
+                    crate::runtime::SubmitError::Closed | crate::runtime::SubmitError::SpawnFailed,
+                ) => {
                     write_cached_versioned_response(
                         output,
                         StdioResponse::error_with_code(
                             pending.id,
-                            "steer",
+                            pending.command,
                             "runtime_closed",
                             "runtime closed before steer reissue was admitted",
                         ),
@@ -6855,7 +7260,7 @@ where
                         AsyncWork {
                             project: pending.project.clone(),
                             id: pending.id.clone(),
-                            command: "steer",
+                            command: pending.command,
                             version: pending.version,
                             events,
                             turn_id: started_turn_id,
@@ -6868,12 +7273,14 @@ where
                 Err(crate::runtime::SubmitError::QueueFull) => {
                     enqueue_pending_steer(pending_steers, pending, output, replay)?;
                 }
-                Err(crate::runtime::SubmitError::Closed) => {
+                Err(
+                    crate::runtime::SubmitError::Closed | crate::runtime::SubmitError::SpawnFailed,
+                ) => {
                     write_cached_versioned_response(
                         output,
                         StdioResponse::error_with_code(
                             pending.id,
-                            "steer",
+                            pending.command,
                             "runtime_closed",
                             "runtime closed before steer was admitted",
                         ),
@@ -7002,7 +7409,7 @@ fn parse_goal_owner_action(
     let invalid_usage = || {
         SlashDispatchError {
         code: "goal_status_usage",
-        message: "use `/goal status [<goal-id>]`, `/goal run|resume|cancel <goal-id>`, or `/goal transition <goal-id> <queued|running|paused|blocked|cancelled|done>`".into(),
+        message: "use `/goal status [<goal-id>]`, `/goal run|resume|cancel <goal-id> [until|N]`, or `/goal transition <goal-id> <queued|running|paused|blocked|cancelled|done>`".into(),
     }
     };
     let validate_id = |raw: &str| {
@@ -7083,14 +7490,20 @@ fn parse_goal_owner_action(
         }
         let id = validate_id(tokens[1])?;
         let steps = if action.eq_ignore_ascii_case("run") && tokens.len() == 3 {
-            tokens[2]
-                .parse::<usize>()
-                .ok()
-                .filter(|value| (1..=32).contains(value))
-                .ok_or_else(|| SlashDispatchError {
-                    code: "goal_invalid_steps",
-                    message: "goal run steps must be between 1 and 32".into(),
-                })?
+            if tokens[2].eq_ignore_ascii_case("until")
+                || tokens[2].eq_ignore_ascii_case("--until-done")
+            {
+                32
+            } else {
+                tokens[2]
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|value| (1..=32).contains(value))
+                    .ok_or_else(|| SlashDispatchError {
+                        code: "goal_invalid_steps",
+                        message: "goal run steps must be between 1 and 32, or `until`".into(),
+                    })?
+            }
         } else {
             1
         };
@@ -7400,6 +7813,21 @@ pub fn respond_to_slash_approval(
     }))
 }
 
+/// User-facing `/approval` spelling for a configured policy mode. Modes that
+/// `/approval` cannot select are reported by their policy name.
+pub fn approval_mode_label(mode: crate::approval::ApprovalMode) -> String {
+    use crate::approval::ApprovalMode as M;
+    match mode {
+        M::ReadOnly => "ask".into(),
+        M::Always => "always".into(),
+        M::Never => "never".into(),
+        other => serde_json::to_value(other)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .unwrap_or_else(|| format!("{other:?}")),
+    }
+}
+
 /// Execute the transport-independent portion of a slash command.  Commands
 /// that inspect mutable agent state require a lock; view/runtime acknowledgements
 /// deliberately do not, so they remain usable while a provider turn is busy.
@@ -7422,6 +7850,8 @@ fn execute_headless_slash(
                 });
             };
             let mut policy = agent.configured_approval_policy().unwrap_or_default();
+            // No argument toggles the current posture, as `/help yolo` says.
+            let enabled = enabled.unwrap_or(policy.mode != crate::approval::ApprovalMode::Never);
             policy.mode = if enabled {
                 crate::approval::ApprovalMode::Never
             } else {
@@ -7433,8 +7863,10 @@ fn execute_headless_slash(
             ))
         }
         SlashCommand::Approval { mode } => {
-            let mode = mode.to_ascii_lowercase();
-            if !matches!(mode.as_str(), "ask" | "always" | "never") {
+            let mode = mode.map(|mode| mode.to_ascii_lowercase());
+            if let Some(mode) = &mode
+                && !matches!(mode.as_str(), "ask" | "always" | "never")
+            {
                 return Err(SlashDispatchError {
                     code: "invalid_approval_mode",
                     message: "approval mode must be ask, always, or never".into(),
@@ -7447,6 +7879,15 @@ fn execute_headless_slash(
                 });
             };
             let mut policy = agent.configured_approval_policy().unwrap_or_default();
+            let Some(mode) = mode else {
+                // Display only: an omitted mode never changes the policy.
+                return Ok(SlashExecution::Response(json!({
+                    "command": "approval",
+                    "mode": approval_mode_label(policy.mode),
+                    "policy_mode": policy.mode,
+                    "changed": false,
+                })));
+            };
             policy.mode = match mode.as_str() {
                 "ask" => crate::approval::ApprovalMode::ReadOnly,
                 "always" => crate::approval::ApprovalMode::Always,
@@ -7454,8 +7895,35 @@ fn execute_headless_slash(
             };
             agent.set_approval_policy(policy);
             Ok(SlashExecution::Response(
-                json!({ "command": "approval", "mode": mode }),
+                json!({ "command": "approval", "mode": mode, "changed": true }),
             ))
+        }
+        SlashCommand::Reasoning { level } => {
+            let Some(agent) = agent else {
+                return Err(SlashDispatchError {
+                    code: "agent_busy",
+                    message: "reasoning command cannot run while the agent is busy".into(),
+                });
+            };
+            if let Some(level) = level {
+                agent
+                    .set_reasoning_effort((level != "default").then_some(level))
+                    .map_err(|error| SlashDispatchError {
+                        code: "reasoning_error",
+                        message: error.to_string(),
+                    })?;
+            }
+            let choices = agent
+                .reasoning_choices()
+                .map_err(|error| SlashDispatchError {
+                    code: "reasoning_error",
+                    message: error.to_string(),
+                })?;
+            Ok(SlashExecution::Response(json!({
+                "command": "reasoning",
+                "reasoning_effort": agent.reasoning_effort(),
+                "choices": choices,
+            })))
         }
         SlashCommand::Help { topic } => {
             let text = crate::slash::help(topic.as_deref()).ok_or_else(|| SlashDispatchError {
@@ -8451,6 +8919,8 @@ fn connection_response(
     }
 }
 
+/// Commands the async host answers inline under the session lock because
+/// they neither start runtime work nor switch the owned session.
 fn handle_command<W: Write>(
     agent: &mut Agent,
     id: Option<String>,
@@ -8459,382 +8929,12 @@ fn handle_command<W: Write>(
     event_sequence: &mut u64,
     replay: &mut ReplayState,
     request_version: u16,
-) -> Result<bool, HeadlessError> {
-    let command = match queue_slash_command(command, agent.session().session_id(), id.as_deref()) {
-        Ok(command) => command,
-        Err(error) => {
-            write_cached_versioned_response(
-                output,
-                StdioResponse::error_with_code(id, "input_queue", error.code(), error.to_string()),
-                request_version,
-                replay,
-            )?;
-            return Ok(false);
-        }
-    };
+) -> Result<(), HeadlessError> {
     let name = crate::protocol::command_name(&command);
     match command {
         Command::Connection(request) => {
             let response = connection_response(agent, request);
             write_cached_versioned_response(output, response, request_version, replay)?;
-        }
-        Command::ToolOutput(request) => {
-            let response = match agent.tool_output_control(request, &|| false) {
-                Ok(value) => StdioResponse::success(id, "tool_output", Some(value)),
-                Err(error) => StdioResponse::error_with_code(
-                    id,
-                    "tool_output",
-                    error.code(),
-                    error.to_string(),
-                ),
-            };
-            write_cached_versioned_response(output, response, request_version, replay)?;
-        }
-        Command::Tree(request) => {
-            let response = match agent.tree_request(request, &|| false) {
-                Ok(value) => StdioResponse::success(id, "tree", Some(value)),
-                Err(error) => {
-                    StdioResponse::error_with_code(id, "tree", error.code(), error.to_string())
-                }
-            };
-            write_cached_versioned_response(output, response, request_version, replay)?;
-        }
-        Command::Project(_) => {
-            write_cached_versioned_response(
-                output,
-                StdioResponse::error_with_code(
-                    id,
-                    "project",
-                    "requires_owned_host",
-                    "project controls require run_stdio_owned or run_async_streams",
-                ),
-                request_version,
-                replay,
-            )?;
-        }
-
-        Command::InputQueue(request) => {
-            let result = agent
-                .input_queue_request(request)
-                .map_err(|e| e.to_string());
-            write_cached_versioned_response(
-                output,
-                input_response(id, result),
-                request_version,
-                replay,
-            )?;
-        }
-        Command::Slash { input }
-            if crate::slash::resource_input_candidate(&input)
-                && (crate::slash::resource_control(&input).is_some()
-                    || matches!(
-                        crate::slash_actions::route_input_for_agent(agent, &input),
-                        Ok(crate::slash::InputRoute::Prompt(_))
-                    )) =>
-        {
-            let result = match crate::slash_actions::resource_control_value(agent, &input, || false)
-            {
-                Ok(Some(value)) => Ok(value),
-                Ok(None) => agent.process(TurnInputRequest::new(input)).map(|result| {
-                    json!({
-                        "submission": result.submission, "assistant": result.assistant,
-                    })
-                }),
-                Err(error) => Err(error),
-            };
-            write_events(agent, output, event_sequence, id.clone(), replay)?;
-            let response = match result {
-                Ok(value) => StdioResponse::success(id, name, Some(value)),
-                Err(error) => {
-                    StdioResponse::error_with_code(id, name, error.code(), error.to_string())
-                }
-            };
-            write_cached_versioned_response(output, response, request_version, replay)?;
-        }
-        Command::Slash { input } => match crate::slash::route_input(&input) {
-            Err(error) => {
-                let special = unsupported_session_maintenance_parse_error(&error);
-                let code = special
-                    .as_ref()
-                    .map_or("slash_invalid", |_| "unsupported_command");
-                let message = special.unwrap_or_else(|| error.to_string());
-                write_cached_versioned_response(
-                    output,
-                    StdioResponse::error_with_code(id, name, code, message),
-                    request_version,
-                    replay,
-                )?
-            }
-            Ok(crate::slash::InputRoute::Prompt(_)) => write_cached_versioned_response(
-                output,
-                StdioResponse::error_with_code(
-                    id,
-                    name,
-                    "not_slash_command",
-                    "command input must begin with `/`",
-                ),
-                request_version,
-                replay,
-            )?,
-            Ok(crate::slash::InputRoute::UserShell(input)) => {
-                match agent.run_user_shell_with_cancel(&input, || false) {
-                    Ok(data) => {
-                        write_events(agent, output, event_sequence, id.clone(), replay)?;
-                        write_cached_versioned_response(
-                            output,
-                            StdioResponse::success(id, name, Some(data)),
-                            request_version,
-                            replay,
-                        )?
-                    }
-                    Err(error) => {
-                        write_events(agent, output, event_sequence, id.clone(), replay)?;
-                        write_cached_versioned_response(
-                            output,
-                            StdioResponse::error_with_code(
-                                id,
-                                name,
-                                error.code(),
-                                error.to_string(),
-                            ),
-                            request_version,
-                            replay,
-                        )?;
-                    }
-                }
-            }
-            Ok(crate::slash::InputRoute::Slash(command)) => {
-                let command_name = command.name();
-                let session_open = matches!(
-                    &command,
-                    crate::slash::SlashCommand::Session {
-                        action: crate::slash::SessionAction::Open { .. }
-                            | crate::slash::SessionAction::ResumeLast
-                    }
-                );
-                let durable_fingerprint = slash_runtime_fingerprint(&command)?;
-                let runtime_source = id.as_deref().and_then(|request_id| {
-                    durable_fingerprint.as_deref().map(|fingerprint| {
-                        crate::runtime_intent::RuntimeIntentSource {
-                            request_id,
-                            fingerprint,
-                        }
-                    })
-                });
-                match execute_headless_slash(Some(agent), command, runtime_source) {
-                    Ok(SlashExecution::Response(data)) => {
-                        let response = slash_execution_response(
-                            id.clone(),
-                            command_name,
-                            data,
-                            request_version,
-                        );
-                        if session_open && response.success {
-                            replay.reset_for_session(
-                                agent.session(),
-                                id.as_deref(),
-                                *event_sequence,
-                            )?;
-                            *event_sequence = (*event_sequence).max(replay.next_sequence);
-                        }
-                        write_cached_response(output, response, replay)?
-                    }
-                    Ok(SlashExecution::Cancel) => write_cached_versioned_response(
-                        output,
-                        StdioResponse::error_with_code(
-                            id,
-                            command_name,
-                            "unsupported_sync_command",
-                            "cancel is available in asynchronous headless mode",
-                        ),
-                        request_version,
-                        replay,
-                    )?,
-                    Ok(SlashExecution::Exit) => {
-                        agent.close();
-                        write_cached_versioned_response(
-                            output,
-                            StdioResponse::success(
-                                id,
-                                command_name,
-                                Some(json!({"closing": true})),
-                            ),
-                            request_version,
-                            replay,
-                        )?;
-                        return Ok(true);
-                    }
-                    Err(error) => write_cached_versioned_response(
-                        output,
-                        StdioResponse::error_with_code(id, command_name, error.code, error.message),
-                        request_version,
-                        replay,
-                    )?,
-                }
-            }
-        },
-        Command::Resources { path } => match collect_resource_snapshot_at(
-            path.as_deref(),
-            agent
-                .attachment_workspace_root()
-                .unwrap_or_else(|| Path::new(&agent.session().header().cwd)),
-        ) {
-            Ok(snapshot) => write_cached_versioned_response(
-                output,
-                StdioResponse::success(id, name, Some(serialized_resource_snapshot(snapshot)?)),
-                request_version,
-                replay,
-            )?,
-            Err(error) => write_cached_versioned_response(
-                output,
-                StdioResponse::error_with_code(id, name, "resource_error", error.to_string()),
-                request_version,
-                replay,
-            )?,
-        },
-        Command::Prompt {
-            text,
-            mode,
-            expected_turn_id,
-            attachments,
-        } => {
-            let result = agent.process(TurnInputRequest {
-                message: text,
-                expected_turn_id,
-                mode,
-                attachments,
-            });
-            match result {
-                Ok(result) => {
-                    let data = json!({
-                        "submission": result.submission,
-                        "assistant": result.assistant,
-                    });
-                    // A turn's terminal response is the wire completion
-                    // boundary. Flush every lifecycle/provider event first.
-                    write_events(agent, output, event_sequence, id.clone(), replay)?;
-                    write_cached_versioned_response(
-                        output,
-                        StdioResponse::success(id.clone(), name, Some(data)),
-                        request_version,
-                        replay,
-                    )?;
-                }
-                Err(error) => {
-                    // Failed admission/provider calls can still leave a
-                    // TurnRejected or Error marker; never emit it after the
-                    // terminal error response.
-                    write_events(agent, output, event_sequence, id.clone(), replay)?;
-                    write_cached_versioned_response(
-                        output,
-                        StdioResponse::error_with_code(
-                            id.clone(),
-                            name,
-                            error.code(),
-                            error.to_string(),
-                        ),
-                        request_version,
-                        replay,
-                    )?;
-                }
-            }
-        }
-        Command::Steer {
-            text,
-            expected_turn_id,
-        } => {
-            let result = agent.process(TurnInputRequest {
-                message: text,
-                expected_turn_id,
-                mode: crate::protocol::TurnMode::Steer,
-                attachments: Vec::new(),
-            });
-            match result {
-                Ok(result) => {
-                    let data = json!({
-                        "submission": result.submission,
-                        "assistant": result.assistant,
-                    });
-                    write_events(agent, output, event_sequence, id.clone(), replay)?;
-                    write_cached_versioned_response(
-                        output,
-                        StdioResponse::success(id.clone(), name, Some(data)),
-                        request_version,
-                        replay,
-                    )?;
-                }
-                Err(error) => {
-                    write_events(agent, output, event_sequence, id.clone(), replay)?;
-                    write_cached_versioned_response(
-                        output,
-                        StdioResponse::error_with_code(
-                            id.clone(),
-                            name,
-                            error.code(),
-                            error.to_string(),
-                        ),
-                        request_version,
-                        replay,
-                    )?;
-                }
-            }
-        }
-        Command::Cancel { .. } => write_cached_versioned_response(
-            output,
-            StdioResponse::error_with_code(
-                id,
-                name,
-                "unsupported_sync_command",
-                "cancel is available in asynchronous stdio mode",
-            ),
-            request_version,
-            replay,
-        )?,
-        Command::Checkpoint(ref request) => {
-            let response = checkpoint_response(agent, request, id, name, replay)?;
-            write_cached_versioned_response(output, response, request_version, replay)?;
-        }
-        Command::Mailbox(ref request) => {
-            write_cached_versioned_response(
-                output,
-                mailbox_response(agent, request, id, name),
-                request_version,
-                replay,
-            )?;
-        }
-        Command::UserShell(_) => {
-            let input = match command {
-                Command::UserShell(request) => request.input,
-                _ => unreachable!(),
-            };
-            match agent.run_user_shell_with_cancel(&input, || false) {
-                Ok(data) => {
-                    write_events(agent, output, event_sequence, id.clone(), replay)?;
-                    write_cached_versioned_response(
-                        output,
-                        StdioResponse::success(id, name, Some(data)),
-                        request_version,
-                        replay,
-                    )?;
-                }
-                Err(error) => {
-                    write_events(agent, output, event_sequence, id.clone(), replay)?;
-                    write_cached_versioned_response(
-                        output,
-                        StdioResponse::error_with_code(id, name, error.code(), error.to_string()),
-                        request_version,
-                        replay,
-                    )?;
-                }
-            }
-        }
-        Command::Status => {
-            write_cached_versioned_response(
-                output,
-                StdioResponse::success(id, name, Some(serialized_agent_snapshot(agent)?)),
-                request_version,
-                replay,
-            )?;
         }
         Command::Handoff {
             to,
@@ -8897,111 +8997,20 @@ fn handle_command<W: Write>(
             }
         }
         Command::Resume {
-            path,
-            from_sequence,
-        } => match (path, from_sequence) {
-            (Some(path), None) => {
-                let path = match validate_existing_session_path(&path) {
-                    Ok(path) => path,
-                    Err(message) => {
-                        write_cached_versioned_response(
-                            output,
-                            StdioResponse::error_with_code(
-                                id,
-                                name,
-                                "session_path_denied",
-                                message,
-                            )
-                            .for_version(request_version),
-                            request_version,
-                            replay,
-                        )?;
-                        return Ok(false);
-                    }
-                };
-                match agent.resume_session(path) {
-                    Ok(()) => {
-                        // A session switch invalidates the old transport replay
-                        // namespace. Keep sequence monotonic while dropping old
-                        // events and terminal IDs before exposing the new
-                        // snapshot.
-                        agent.take_events();
-                        replay.reset_for_session(
-                            agent.session(),
-                            id.as_deref(),
-                            *event_sequence,
-                        )?;
-                        *event_sequence = (*event_sequence).max(replay.next_sequence);
-                        write_cached_versioned_response(
-                            output,
-                            StdioResponse::success(
-                                id,
-                                name,
-                                Some(serialized_agent_snapshot(agent)?),
-                            ),
-                            request_version,
-                            replay,
-                        )?;
-                    }
-                    Err(error) => write_cached_versioned_response(
-                        output,
-                        StdioResponse::error_with_code(id, name, error.code(), error.to_string()),
-                        request_version,
-                        replay,
-                    )?,
-                }
-            }
-            (None, Some(from_sequence)) => {
-                let report = replay.replay_from(from_sequence, output)?;
-                write_response(
-                    output,
-                    StdioResponse::success(
-                        id.clone(),
-                        name,
-                        Some(json!({
-                            "from_sequence": from_sequence,
-                            "replayed": report.replayed,
-                            "replay_gap": report.gap,
-                            "first_available_sequence": report.first_available,
-                            "last_available_sequence": report.last_available,
-                            "next_sequence": *event_sequence,
-                        })),
-                    )
-                    .for_version(request_version),
-                )?;
-                replay.release(id.as_deref())?;
-            }
-            (None, None) => write_cached_versioned_response(
-                output,
-                StdioResponse::success(id, name, Some(serialized_agent_snapshot(agent)?)),
-                request_version,
-                replay,
-            )?,
-            (Some(_), Some(_)) => unreachable!("protocol rejects path plus from_sequence"),
-        },
-        Command::Approve { .. } => write_cached_versioned_response(
+            path: None,
+            from_sequence: None,
+        } => write_cached_versioned_response(
             output,
-            StdioResponse::error_with_code(
-                id,
-                name,
-                "approval_unavailable",
-                "approval responses require the asynchronous headless host",
-            ),
+            StdioResponse::success(id, name, Some(serialized_agent_snapshot(agent)?)),
             request_version,
             replay,
         )?,
-        Command::Shutdown => {
-            agent.close();
-            write_cached_versioned_response(
-                output,
-                StdioResponse::success(id, name, Some(json!({"closed": true}))),
-                request_version,
-                replay,
-            )?;
-            return Ok(true);
-        }
+        other => unreachable!(
+            "async host dispatches {} before the inline owner",
+            crate::protocol::command_name(&other)
+        ),
     }
-    Ok(false)
+    Ok(())
 }
 
 /// The checkpoint cursor names the transcript journal. Transport replay has
@@ -9334,37 +9343,53 @@ fn write_buffered_events<W: Write>(
 ) -> Result<(), HeadlessError> {
     let mut replay = replay;
     for event in events {
-        let mut value = serde_json::to_value(&event)?;
-        if let Some(block) = agent_event_block(&event)
-            && let Some(object) = value.as_object_mut()
-        {
-            object.insert("block".into(), block);
-        }
-        let turn_id = value
-            .get("turn_id")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned);
-        let current = *sequence;
-        let view =
-            crate::view_model::ViewEvent::from_agent_event(current, request_id.clone(), &event)?;
-        value
-            .as_object_mut()
-            .expect("agent event is an object")
-            .insert("view".into(), serde_json::to_value(view)?);
-        let mut envelope = StdioEvent::new(current, request_id.clone(), turn_id, value);
-        envelope.project = replay
-            .as_ref()
-            .and_then(|state| state.emission_project.clone());
-        let line = encode_line(&envelope)?;
-        *sequence = sequence.saturating_add(1);
-        // Lifecycle events are replayable just like provider deltas. This
-        // keeps resume suffixes complete after a reconnect.
-        if let Some(replay) = replay.as_deref_mut() {
-            replay.remember_event(current, line.clone())?;
-        }
-        output.write_all(line.as_bytes())?;
+        write_agent_event_line(
+            output,
+            sequence,
+            request_id.clone(),
+            &event,
+            replay.as_deref_mut(),
+        )?;
     }
     output.flush()?;
+    Ok(())
+}
+
+fn write_agent_event_line<W: Write>(
+    output: &mut W,
+    sequence: &mut u64,
+    request_id: Option<String>,
+    event: &AgentEvent,
+    replay: Option<&mut ReplayState>,
+) -> Result<(), HeadlessError> {
+    let mut value = serde_json::to_value(event)?;
+    if let Some(block) = agent_event_block(event)
+        && let Some(object) = value.as_object_mut()
+    {
+        object.insert("block".into(), block);
+    }
+    let turn_id = value
+        .get("turn_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let current = *sequence;
+    let view = crate::view_model::ViewEvent::from_agent_event(current, request_id.clone(), event)?;
+    value
+        .as_object_mut()
+        .expect("agent event is an object")
+        .insert("view".into(), serde_json::to_value(view)?);
+    let mut envelope = StdioEvent::new(current, request_id, turn_id, value);
+    envelope.project = replay
+        .as_ref()
+        .and_then(|state| state.emission_project.clone());
+    let line = encode_line(&envelope)?;
+    *sequence = sequence.saturating_add(1);
+    // Lifecycle events are replayable just like provider deltas. This keeps
+    // resume suffixes complete after a reconnect.
+    if let Some(replay) = replay {
+        replay.remember_event(current, line.clone())?;
+    }
+    output.write_all(line.as_bytes())?;
     Ok(())
 }
 
@@ -9521,7 +9546,67 @@ mod replay_session_tests {
 
 #[cfg(test)]
 mod async_event_buffer_tests {
+    #[test]
+    fn identified_request_ledger_never_fills_permanently() {
+        // ZE-303: completed ids are pruned FIFO; only unresolved ones bound admission.
+        let mut state = ReplayState::default();
+        for index in 0..20_000 {
+            let id = format!("s{index}");
+            assert!(matches!(
+                state.admit(Some(&id), "fp").unwrap(),
+                RequestIdAdmission::New
+            ));
+            state.remember_terminal(id, "{}\n".into()).unwrap();
+        }
+        assert!(state.completed.len() <= 16_384 + MAX_REPLAY_TERMINALS);
+        // The newest id still replays; a fresh id is still admitted.
+        assert!(matches!(
+            state.admit(Some("s19999"), "fp").unwrap(),
+            RequestIdAdmission::Replay
+        ));
+        assert!(matches!(
+            state.admit(Some("fresh"), "fp").unwrap(),
+            RequestIdAdmission::New
+        ));
+    }
+
     use super::*;
+
+    #[test]
+    fn provider_failed_block_reports_the_error_retryability() {
+        for retryable in [false, true] {
+            let block = provider_event_block(&ProviderEvent::Failed {
+                message: "context_length_exceeded".into(),
+                retryable,
+            })
+            .unwrap();
+            assert_eq!(block["retryable"], retryable, "{block}");
+        }
+    }
+
+    fn agent_events(drained: MailboxDrain) -> (Vec<AgentEvent>, DroppedEvents) {
+        let events = drained
+            .events
+            .into_iter()
+            .filter_map(|event| match event {
+                MailboxEvent::Agent(event) => Some(event),
+                MailboxEvent::Provider(_) => None,
+            })
+            .collect();
+        (events, drained.agent_dropped)
+    }
+
+    fn provider_events(drained: MailboxDrain) -> (Vec<ProviderEvent>, DroppedEvents) {
+        let events = drained
+            .events
+            .into_iter()
+            .filter_map(|event| match event {
+                MailboxEvent::Provider(event) => Some(event),
+                MailboxEvent::Agent(_) => None,
+            })
+            .collect();
+        (events, drained.provider_dropped)
+    }
 
     #[test]
     fn admission_still_takes_priority_over_a_full_tool_lifecycle_mailbox() {
@@ -9537,9 +9622,10 @@ mod async_event_buffer_tests {
             turn_id: "admitted".into(),
             mode: crate::protocol::TurnMode::StartIfIdle,
         });
-        assert!(buffer.take_admission().iter().any(|e| matches!(e,
+        let (events, dropped) = agent_events(buffer.take_ordered());
+        assert!(events.iter().any(|e| matches!(e,
             AgentEvent::TurnAccepted { turn_id, .. } if turn_id == "admitted")));
-        assert!(buffer.agent_dropped.count > 0);
+        assert!(dropped.count > 0);
     }
 
     #[test]
@@ -9574,7 +9660,7 @@ mod async_event_buffer_tests {
         assert!(buffer.provider.is_empty());
         assert_eq!(buffer.provider_bytes, 0);
 
-        let (events, dropped) = buffer.take_provider();
+        let (events, dropped) = provider_events(buffer.take_ordered());
         assert!(events.is_empty());
         assert_eq!(
             dropped,
@@ -9605,7 +9691,7 @@ mod async_event_buffer_tests {
         assert_eq!(buffer.provider.len(), 1);
         assert_eq!(buffer.provider_bytes, first_bytes);
 
-        let (events, dropped) = buffer.take_provider();
+        let (events, dropped) = provider_events(buffer.take_ordered());
         assert_eq!(events.len(), 1);
         assert_eq!(dropped.count, 1);
         assert_eq!(dropped.bytes, second_bytes as u64);
@@ -9617,7 +9703,7 @@ mod async_event_buffer_tests {
             response_id: None,
             model: None,
         });
-        assert_eq!(buffer.take_provider().0.len(), 1);
+        assert_eq!(provider_events(buffer.take_ordered()).0.len(), 1);
     }
 
     #[test]
@@ -9636,7 +9722,7 @@ mod async_event_buffer_tests {
         buffer.push_agent(accepted);
         assert_eq!(buffer.agent_bytes, recovery_bytes + accepted_bytes);
 
-        let admission = buffer.take_admission();
+        let admission = agent_events(buffer.take_ordered()).0;
         assert_eq!(admission.len(), 2);
         assert!(buffer.agent.is_empty());
         assert_eq!(buffer.agent_bytes, 0);
@@ -9650,7 +9736,7 @@ mod async_event_buffer_tests {
         assert!(buffer.agent.is_empty());
         assert_eq!(buffer.agent_bytes, 0);
 
-        let (events, dropped) = buffer.take_agent();
+        let (events, dropped) = agent_events(buffer.take_ordered());
         assert!(events.is_empty());
         assert_eq!(dropped.count, 1);
         assert_eq!(dropped.bytes, oversized_bytes as u64);
@@ -9678,7 +9764,7 @@ mod async_event_buffer_tests {
         assert_eq!(buffer.agent.len(), MAX_ASYNC_AGENT_EVENTS);
         assert!(buffer.agent.iter().any(|event| event.event == accepted));
         assert_eq!(buffer.agent_dropped.count, 1);
-        let admission = buffer.take_admission();
+        let admission = agent_events(buffer.take_ordered()).0;
         assert!(admission.iter().any(|event| event == &accepted));
     }
 
@@ -9713,11 +9799,52 @@ mod async_event_buffer_tests {
         assert_eq!(buffer.agent_dropped.count, 1);
         assert_eq!(buffer.agent_dropped.bytes, filler_bytes as u64);
         assert!(
-            buffer
-                .take_admission()
+            agent_events(buffer.take_ordered())
+                .0
                 .iter()
                 .any(|event| event == &accepted)
         );
+    }
+
+    #[test]
+    fn mailbox_drains_provider_and_tool_events_in_production_order() {
+        let mut buffer = AsyncEventBuffer::default();
+        buffer.push_agent(AgentEvent::TurnAccepted {
+            turn_id: "turn".into(),
+            mode: crate::protocol::TurnMode::StartOrSteer,
+        });
+        buffer.push_provider(ProviderEvent::TextDelta {
+            delta: "before".into(),
+        });
+        buffer.push_agent(AgentEvent::ToolCall {
+            turn_id: "turn".into(),
+            call_id: "call".into(),
+            tool: "run_command".into(),
+        });
+        buffer.push_agent(AgentEvent::ToolResult {
+            turn_id: "turn".into(),
+            call_id: "call".into(),
+            success: true,
+        });
+        buffer.push_provider(ProviderEvent::TextDelta {
+            delta: "after".into(),
+        });
+        let labels: Vec<String> = buffer
+            .take_ordered()
+            .events
+            .into_iter()
+            .map(|event| match event {
+                MailboxEvent::Provider(ProviderEvent::TextDelta { delta }) => delta,
+                MailboxEvent::Provider(_) => "provider".into(),
+                MailboxEvent::Agent(AgentEvent::TurnAccepted { .. }) => "accepted".into(),
+                MailboxEvent::Agent(AgentEvent::ToolCall { .. }) => "call".into(),
+                MailboxEvent::Agent(AgentEvent::ToolResult { .. }) => "result".into(),
+                MailboxEvent::Agent(_) => "agent".into(),
+            })
+            .collect();
+        assert_eq!(labels, ["accepted", "before", "call", "result", "after"]);
+        assert!(buffer.provider.is_empty() && buffer.agent.is_empty());
+        assert_eq!((buffer.provider_bytes, buffer.agent_bytes), (0, 0));
     }
 
     #[test]
@@ -9736,8 +9863,22 @@ mod async_event_buffer_tests {
         buffer.push_agent(first.clone());
         buffer.push_agent(middle.clone());
         buffer.push_agent(second.clone());
+        buffer.push_provider(ProviderEvent::TextDelta {
+            delta: "after admission".into(),
+        });
 
-        let drained = buffer.take_admission();
+        let drained = buffer.take_ordered().events;
+        assert!(matches!(
+            drained.last(),
+            Some(MailboxEvent::Provider(ProviderEvent::TextDelta { .. }))
+        ));
+        let drained = drained
+            .into_iter()
+            .filter_map(|event| match event {
+                MailboxEvent::Agent(event) => Some(event),
+                MailboxEvent::Provider(_) => None,
+            })
+            .collect::<Vec<_>>();
         assert_eq!(drained, vec![first, middle, second]);
         assert!(buffer.agent.is_empty());
         assert_eq!(buffer.agent_bytes, 0);

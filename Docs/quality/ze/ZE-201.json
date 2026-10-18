@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-201",
+  "claim_id": "ZE-201@blueprint-4.0.0",
+  "from": "master",
+  "to": "master",
+  "summary": "run_command follows pi: non-zero exit is an error result carrying stdout+stderr and the exit code; each stream keeps its TAIL (amortized trim) with the full output in the artifact; the model sees the last 2000 lines / 50 KiB; timeout_ms is optional with no default (explicit max 24 h; worker gates keep their policy ceiling).",
+  "changed_files": [
+    "src/tools.rs",
+    "src/system_prompt.rs",
+    "tests/run_command_pi.rs",
+    "tests/system_prompt.rs",
+    "Docs/quality/ze/ZE-201.json"
+  ],
+  "diff_stat": "3 files changed, 83 insertions(+), 35 deletions(-)",
+  "commands_run": [
+    "cargo test --locked --test run_command_pi",
+    "cargo test --locked --no-fail-fast --test tools --test tool_result_text --test core_session --test system_prompt --test stage1_tool_output --test child_environment --test tools_edit_paths --test config --test stage1_external_evidence --test stage1_host --test headless_protocol --test tui_task",
+    "cargo test --locked --test core_session -- --test-threads=1 user_shell_preserves (x2)",
+    "cargo fmt --all",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo clippy --locked --all-targets --all-features -- -D warnings"
+  ],
+  "validation_result": {
+    "echo_out_exit_3": "error text contains out, err and Command exited with code 3",
+    "seq_100000": "stdout_truncated=true, tail ends with 100000, head dropped",
+    "no_default_timeout": "timeout_ms=0 recorded; explicit 100 ms still times out",
+    "suites": "all green; user_shell flake passes serially 2/2",
+    "clippy": "0/0"
+  },
+  "notes": "Kept stdout/stderr as separate captured streams (CommandOutcome shape is shared by user shell, TUI and tests) and merged them only in the model-facing text.",
+  "created_at": "2026-10-14T15:38:33Z",
+  "digest": "54f76f7ae2f17db18078ede047b4af38ddb1db0672f82150c378ddeb14350d44"
+}

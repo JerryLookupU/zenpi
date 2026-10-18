@@ -1,0 +1,7 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Waits for airplane mode to take effect (OfflineCacheBenchmark). -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <queries>
+        <package android:name="app.zenpi.android" />
+    </queries>
+</manifest>

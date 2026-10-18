@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-304",
+  "claim_id": "ZE-304@blueprint-4.0.0",
+  "from": "master",
+  "to": "master",
+  "summary": "Session journal fsyncs only at boundaries: turns, operation start/finish and all other records stay synced; authorization_decided and tool_execution_started/finished ride the next boundary. Append lock waits (blocking flock) instead of failing. journal_fsync_count() exposes the counter.",
+  "changed_files": [
+    "src/session.rs",
+    "tests/session_fsync.rs",
+    "tests/core_session.rs",
+    "Docs/Zenpi_Execution_Blueprint_v2.md",
+    "Docs/quality/ze/ZE-304.json"
+  ],
+  "diff_stat": "3 files changed, 52 insertions(+), 4 deletions(-)",
+  "commands_run": [
+    "cargo fmt --all",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo clippy --locked --all-targets --all-features -- -D warnings",
+    "cargo test --locked --all-features --test session_fsync -- --nocapture (x3)",
+    "A/B session_fsync with every record synced",
+    "cargo test --locked --all-features --lib",
+    "cargo test --locked --all-features --test core_session (x3) --test session_recovery --test session_torn_tail --test session_cli --test session_new --test stage1_session_tree --test headless_lifecycle --test session_maintenance_owner --test cli_session --test resume_compact_owner"
+  ],
+  "validation_result": {
+    "fmt": "ok",
+    "clippy_default": "ok",
+    "clippy_all_features": "ok",
+    "fsyncs_8_tool_calls_old": 54,
+    "fsyncs_8_tool_calls_new": 36,
+    "turn_ms_old": "268-285",
+    "turn_ms_new": "190-237",
+    "per_tool_call_fsyncs": 3,
+    "session_suites": "all passed",
+    "lib": "all passed"
+  },
+  "notes": "Deviation: the row asks <= 2 fsyncs per tool call. operation_finished stays synced because the provider operation_finished is the last record of a turn; losing it would make recovery mark a completed turn interrupted. core_session user_shell cancel test now cancels when the child provably started (a fixed 50 ms could expire during pre-spawn journal fsyncs and exercise the pre-spawn path instead); exposed while bisecting after ZE-302.",
+  "created_at": "2026-10-14T19:00:07Z",
+  "digest": "0c0d1d2c8a4e0b193e2240fbeac82aba10eda4ea962e22a8efd3a95819b0f179"
+}

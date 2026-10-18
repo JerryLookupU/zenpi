@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-107",
+  "claim_id": "ZE-107@blueprint-4.0.0",
+  "from": "worker",
+  "to": "master",
+  "summary": "Accepted ZS1-180/181/182/184 by running their registered validators and adding missing proof tests. Fixed one real ZS1-180 defect: `zenpi --auto` set the root owner's mode to Never but never recorded the explicit auto choice (regression from 6d22c34), so ProjectOwnerPool.auto_approve() was false and the arch owner / newly prepared project owners fell back to ReadOnly. New Agent::enable_auto_approve() (keeps per-tool rules, sets Never + auto flag) is called on the --auto path. Also added Agent::max_tool_iterations() getter and fixed a misplaced doc comment on set_max_tool_iterations.",
+  "changed_files": [
+    "src/core.rs",
+    "tests/approval_owner.rs",
+    "tests/core_session.rs",
+    "tests/project_workspace.rs",
+    "tests/tui_approval_focus.rs",
+    "tests/tui_interaction.rs"
+  ],
+  "diff_stat": "6 files changed, 309 insertions(+), 3 deletions(-) (shared ZE-107/ZE-212 commit, code + tests)",
+  "commands_run": [
+    "cargo test --locked --test config --test core_session --test project_workspace --test approval_owner --test approval_cap --test tui_approval_focus --test tui_interaction --test tui_transcript_ux",
+    "cargo fmt --all -- --check",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo clippy --locked --all-targets --all-features -- -D warnings",
+    "python3 tools/check_modes.py",
+    "git diff -U0 origin/main -- 'src/*.rs' 'src/**/*.rs' | grep -E '^\\+.*#!?\\[allow\\((dead_code|unused)'",
+    "cargo test --locked --test headless_project_workspace --test remote_worker_owner --test headless_protocol --test session_new",
+    "cargo test --locked --lib"
+  ],
+  "validation_result": {
+    "ZS1-180": "pass: config 33/33, project_workspace 11/11 (+auto_flag_on_a_constructed_root_reaches_the_arch_owner), approval_owner 15/15 (auto_approval_executes_side_effects_without_pending_requests); FIXED --auto root not arming pool/arch owners",
+    "ZS1-181": "pass: tui_interaction 59/59 (thinking_animation_appears_and_advances_while_busy now also asserts busy start resets phase; arch_lane_shows_the_thinking_animation), tui_transcript_ux 17/17",
+    "ZS1-182": "pass: approval_cap 9/9, tui_approval_focus 16/16 (+approval_view_shows_the_current_stage_and_its_keys), approval_owner (+reject_feedback_reaches_the_model_as_the_tool_result)",
+    "ZS1-184": "pass: config max_tool_iterations_flag_is_bounded_and_defaults_high, core_session 41/41 (+tool_iteration_budget_defaults_high_and_is_clamped)",
+    "regression": "headless_project_workspace 21/21, remote_worker_owner 45/45, headless_protocol 12/12, session_new 14/14",
+    "lib": "459 pass / 2 fail, both pre-existing on origin/main 68c9bcb (verified by reverting src/core.rs): tui::local_remote_preview_tests::existing_terminal_projects_only_matching_live_session_and_root, core::extension_resume_commit_tests::rejected_resume_commit_keeps_old_extension_live_until_successful_retry (CommandTimeout(1000) in this environment)",
+    "G-RUST": {
+      "fmt": "pass",
+      "clippy_default": "pass (-D warnings)",
+      "clippy_all_features": "pass (-D warnings)",
+      "check_modes": "pass",
+      "new_allow_dead_code_or_unused": "none"
+    }
+  },
+  "notes": "Open gap outside owned paths (not fixed): ZS1-182 says headless/JSONL approval responses also carry the reject message, but src/headless.rs (stdio approve at ~5812/6528 and respond_to_slash_approval ~7386) hardcodes `message: None` and SlashCommand::Approve (src/slash.rs) has no message field, so a headless deny cannot pass feedback to the model. Needs a follow-up item owning src/headless.rs + src/slash.rs. The /yolo TUI toggle only updates TuiState.auto_approve, not the pool flag; project switches honour it via state, but newly prepared arch owners follow pool.auto_approve() - noted, not changed. No new non-test unwrap/expect/panic, unsafe, or Arc<Mutex> in src.",
+  "created_at": "2026-10-14T12:24:56Z",
+  "digest": "2bb4697e878ed28d471a138fcda46736ccb3750ad7cd54bdb03485e52c4ae2fc"
+}

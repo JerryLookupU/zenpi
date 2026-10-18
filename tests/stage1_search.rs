@@ -54,27 +54,35 @@ fn code(result: ToolResult) -> ToolErrorCode {
     }
 }
 #[test]
-fn default_search_keeps_original_literal_behavior_without_rg() {
+fn without_rg_only_literal_search_falls_back_in_process() {
     let (_root, context, registry) = fixture();
     let context = context.with_search_backend(SearchBackend::configured(None).unwrap());
     let value = output(run(
         &registry,
         &context,
         "search_text",
-        json!({"query":"needle.*"}),
+        json!({"query":"needle.*","literal":true}),
     ));
     assert_eq!(value["matches"].as_array().unwrap().len(), 1);
     assert_eq!(value["matches"][0]["text"], "needle.*");
     assert!(value.get("engine").is_none());
-    assert_eq!(
-        code(run(
-            &registry,
-            &context,
-            "search_text",
-            json!({"query":"needle","regex":true})
-        )),
-        ToolErrorCode::Unsupported
-    );
+    // A metacharacter-free default (regex) query means the same as a literal.
+    let value = output(run(
+        &registry,
+        &context,
+        "search_text",
+        json!({"query":"needle12"}),
+    ));
+    assert_eq!(value["matches"][0]["path"], "src/a.rs");
+    for args in [
+        json!({"query":"needle.*"}),
+        json!({"query":"needle","glob":"*.rs"}),
+    ] {
+        assert_eq!(
+            code(run(&registry, &context, "search_text", args)),
+            ToolErrorCode::Unsupported
+        );
+    }
     assert_eq!(
         code(run(&registry, &context, "find", json!({"pattern":"*.rs"}))),
         ToolErrorCode::Unsupported
@@ -90,10 +98,14 @@ fn regex_glob_ignore_and_context_use_actual_rg_and_workspace_paths() {
         json!({"query":"^needle[0-9]+$","regex":true,"glob":"src/**/*.rs","context":1,"case_sensitive":false}),
     ));
     let matches = value["matches"].as_array().unwrap();
-    assert_eq!(matches.len(), 2);
+    // One rg run: a positive --glob selects gitignored files, as in rg/pi.
+    assert_eq!(matches.len(), 3, "{value}");
     assert_eq!(matches[0]["path"], "src/a.rs");
     assert_eq!(matches[0]["line"], 2);
     assert!(matches.iter().any(|m| m["path"] == "src/nested/b.rs"));
+    assert!(matches.iter().any(|m| m["path"] == "src/ignored.rs"));
+    // hidden=false still holds under a positive glob.
+    assert!(!matches.iter().any(|m| m["path"] == "src/.hidden.rs"));
     let lines = value["context"].as_array().unwrap();
     assert!(
         lines
@@ -273,12 +285,7 @@ fn oversized_binary_and_deep_tree_are_bounded_without_partial_index() {
     assert!(began.elapsed() < Duration::from_secs(3));
     assert!(value["matches"].as_array().unwrap().is_empty());
     assert_eq!(value["max_depth"], 64);
-    assert!(
-        value["truncation_reasons"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("file_bytes"))
-    );
+    assert_eq!(value["max_file_bytes"], 1024 * 1024);
     assert!(!root.path().join(".zenpi").exists());
 }
 #[test]
@@ -331,21 +338,11 @@ fn cancellation_reaps_the_actual_search_process_and_its_descendant() {
     // descendants; this adapter must reuse that same cleanup owner.
 }
 #[test]
-fn search_subprocess_budget_hook_distinguishes_default_literal() {
-    assert!(!search_requires_subprocess(
-        json!({"query":"x"}).as_object().unwrap()
-    ));
-    assert!(search_requires_subprocess(
-        json!({"query":"x","regex":false}).as_object().unwrap()
-    ));
-}
-
-#[test]
-fn cumulative_process_budget_includes_preflight_listings_and_search_chunks() {
+fn cumulative_process_budget_is_one_start_per_search_call() {
     let plain = json!({"query":"x"});
     assert_eq!(
         search_process_budget("search_text", plain.as_object().unwrap()),
-        0
+        1
     );
     assert_eq!(
         search_process_budget("find", json!({"pattern":"*"}).as_object().unwrap()),
@@ -353,7 +350,7 @@ fn cumulative_process_budget_includes_preflight_listings_and_search_chunks() {
     );
     let full = json!({"query":"^needle","regex":true,"glob":"*.rs"});
     let budget = search_process_budget("search_text", full.as_object().unwrap());
-    assert_eq!(budget, 19);
+    assert_eq!(budget, 1);
     let (root, context, registry) = fixture();
     let real = SearchBackend::discover()
         .executable_path()
@@ -374,7 +371,7 @@ fn cumulative_process_budget_includes_preflight_listings_and_search_chunks() {
         .unwrap()
         .matches("start")
         .count() as u64;
-    assert_eq!(starts, 4);
+    assert_eq!(starts, 1);
     assert!(starts <= budget);
 }
 
@@ -427,15 +424,15 @@ fn a_live_worker_gate_denies_unconfined_advanced_search_before_any_spawn() {
     )
     .unwrap();
     let context = context.with_blueprint_gate(gate).unwrap();
-    assert_eq!(
-        code(run(
-            &registry,
-            &context,
-            "search_text",
-            json!({"query":"needle","regex":true})
-        )),
-        ToolErrorCode::PolicyDenied
-    );
+    for args in [
+        json!({"query":"needle","glob":"*.rs"}),
+        json!({"query":"need.e"}),
+    ] {
+        assert_eq!(
+            code(run(&registry, &context, "search_text", args)),
+            ToolErrorCode::PolicyDenied
+        );
+    }
     assert_eq!(
         code(run(&registry, &context, "find", json!({"pattern":"*"}))),
         ToolErrorCode::PolicyDenied
@@ -579,13 +576,13 @@ fn persisted_processes(path: &std::path::Path) -> u64 {
 fn actual_agent_reserves_all_search_starts_before_spawn_and_retains_usage_after_reopen() {
     use std::os::unix::fs::PermissionsExt;
     for (name, args, cap, reserved, starts) in [
-        ("search_text", json!({"query":"needle"}), 0, 0, 0),
+        ("search_text", json!({"query":"needle"}), 1, 1, 1),
         (
             "search_text",
             json!({"query":"^needle[0-9]+$","regex":true,"glob":"*.rs"}),
-            19,
-            19,
-            4,
+            1,
+            1,
+            1,
         ),
         ("find", json!({"pattern":"*.rs"}), 2, 2, 2),
     ] {
@@ -665,7 +662,7 @@ fn actual_agent_rejects_insufficient_search_budget_before_any_spawn() {
         (
             "search_text",
             json!({"query":"needle","regex":true,"glob":"*.rs"}),
-            18,
+            0,
         ),
     ] {
         let root = tempdir().unwrap();
@@ -758,7 +755,7 @@ fn actual_headless_queue_returns_search_results_and_durable_budget() {
         root.path(),
         backend,
         ToolContext::new(root.path()).unwrap(),
-        19,
+        1,
     );
     let (mut input, reader) = UnixStream::pair().unwrap();
     let (writer, output) = UnixStream::pair().unwrap();
@@ -797,7 +794,7 @@ fn actual_headless_queue_returns_search_results_and_durable_budget() {
         .find(|m| m["role"] == "tool")
         .unwrap();
     assert!(tool.to_string().contains("src/real.rs") && tool.to_string().contains("needle42"));
-    assert_eq!(persisted_processes(&root.path().join("session.jsonl")), 19);
+    assert_eq!(persisted_processes(&root.path().join("session.jsonl")), 1);
     let reopened =
         zenpi::session::SessionStore::open_existing(root.path().join("session.jsonl")).unwrap();
     assert!(
@@ -841,28 +838,30 @@ fn deep_search_fixture(root: &std::path::Path) {
 }
 
 #[test]
-fn pure_depth_cutoff_is_reported_by_search_and_find() {
+fn pure_depth_cutoff_is_reported_by_find_and_bounded_in_search() {
     let root = tempdir().unwrap();
     deep_search_fixture(root.path());
     let context = ToolContext::new(root.path()).unwrap();
     let registry = ToolRegistry::with_read_only_builtins().unwrap();
-    for (tool, args) in [
-        (
-            "search_text",
-            json!({"query":"depth_only_needle","regex":true}),
-        ),
-        ("find", json!({"pattern":"*.txt"})),
-    ] {
-        let value = output(run(&registry, &context, tool, args));
-        assert_eq!(value["truncated"], true, "{value}");
-        assert!(
-            value["truncation_reasons"]
-                .as_array()
-                .unwrap()
-                .contains(&json!("depth_limit")),
-            "{value}"
-        );
-    }
+    // search_text is a single rg run: it reports its depth bound instead of
+    // spending extra processes on a depth probe.
+    let value = output(run(
+        &registry,
+        &context,
+        "search_text",
+        json!({"query":"depth_only_needle"}),
+    ));
+    assert_eq!(value["matches"], json!([]));
+    assert_eq!(value["max_depth"], 64);
+    let value = output(run(&registry, &context, "find", json!({"pattern":"*.txt"})));
+    assert_eq!(value["truncated"], true, "{value}");
+    assert!(
+        value["truncation_reasons"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("depth_limit")),
+        "{value}"
+    );
 }
 
 #[test]
@@ -927,4 +926,186 @@ fn depth_probe_respects_ignored_hidden_and_empty_boundary_directories() {
         value["truncated"], false,
         "empty depth boundary is not evidence of omitted entries: {value}"
     );
+}
+
+fn counting_wrapper(dir: &std::path::Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let real = SearchBackend::discover()
+        .executable_path()
+        .unwrap()
+        .to_owned();
+    let script = dir.join("rg-counter");
+    let log = dir.join("starts.log");
+    fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nprintf 'start\\n' >> '{}'\nexec '{}' \"$@\"\n",
+            log.to_str().unwrap().replace('\'', "'\"'\"'"),
+            real.to_str().unwrap().replace('\'', "'\"'\"'")
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+    script
+}
+fn starts(dir: &std::path::Path) -> usize {
+    fs::read_to_string(dir.join("starts.log"))
+        .unwrap_or_default()
+        .matches("start")
+        .count()
+}
+
+#[test]
+fn glob_search_finds_a_match_in_the_thousandth_file_with_one_rg_process() {
+    let (root, context, registry) = fixture();
+    let many = root.path().join("many");
+    fs::create_dir(&many).unwrap();
+    for i in 1..=1200 {
+        let body = if i == 1000 {
+            "thousandth_needle\n"
+        } else {
+            "nothing here\n"
+        };
+        fs::write(many.join(format!("f{i:04}.txt")), body).unwrap();
+    }
+    let tools = tempdir().unwrap();
+    let context = context.with_search_backend(
+        SearchBackend::configured(Some(counting_wrapper(tools.path()))).unwrap(),
+    );
+    let value = output(run(
+        &registry,
+        &context,
+        "search_text",
+        json!({"query":"thousandth_needle","glob":"many/*.txt"}),
+    ));
+    assert_eq!(value["matches"].as_array().unwrap().len(), 1, "{value}");
+    assert_eq!(value["matches"][0]["path"], "many/f1000.txt");
+    assert_eq!(value["truncated"], false, "{value}");
+    assert!(value["files_searched"].as_u64().unwrap() >= 1200, "{value}");
+    assert_eq!(starts(tools.path()), 1);
+}
+
+#[test]
+fn every_search_call_starts_exactly_one_rg_process() {
+    let (root, context, registry) = fixture();
+    for i in 0..40 {
+        fs::write(root.path().join(format!("m{i:02}.txt")), "needle0\n").unwrap();
+    }
+    let tools = tempdir().unwrap();
+    let context = context.with_search_backend(
+        SearchBackend::configured(Some(counting_wrapper(tools.path()))).unwrap(),
+    );
+    for (index, args) in [
+        json!({"query":"needle"}),
+        json!({"query":"needle","literal":true}),
+        json!({"query":"^needle[0-9]+$","glob":"**/*.rs","context":2}),
+        json!({"query":"needle","ignore":false,"hidden":true,"case_sensitive":false}),
+        json!({"query":"needle","max_matches":3}),
+        json!({"query":"absent_from_every_file"}),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert!(run(&registry, &context, "search_text", args.clone()).is_success());
+        assert_eq!(starts(tools.path()), index + 1, "{args}");
+    }
+    // Invalid regex still fails, still with a single start.
+    assert_eq!(
+        code(run(
+            &registry,
+            &context,
+            "search_text",
+            json!({"query":"["})
+        )),
+        ToolErrorCode::InvalidArguments
+    );
+    assert_eq!(starts(tools.path()), 7);
+}
+
+#[test]
+fn default_query_is_a_regex_and_literal_option_escapes_it() {
+    let (_root, context, registry) = fixture();
+    let value = output(run(
+        &registry,
+        &context,
+        "search_text",
+        json!({"query":"needle[0-9]+"}),
+    ));
+    let texts: Vec<_> = value["matches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["text"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(texts, ["needle12", "needle55"], "{value}");
+    assert_eq!(value["regex"], true);
+    for args in [
+        json!({"query":"needle.*","literal":true}),
+        json!({"query":"needle.*","regex":false}),
+    ] {
+        let value = output(run(&registry, &context, "search_text", args));
+        assert_eq!(value["regex"], false);
+        assert_eq!(value["matches"].as_array().unwrap().len(), 1, "{value}");
+        assert_eq!(value["matches"][0]["text"], "needle.*");
+    }
+    // As a regex, "needle.*" also matches needle12 and needle55.
+    let value = output(run(
+        &registry,
+        &context,
+        "search_text",
+        json!({"query":"needle.*"}),
+    ));
+    assert_eq!(value["matches"].as_array().unwrap().len(), 3, "{value}");
+    assert_eq!(
+        code(run(
+            &registry,
+            &context,
+            "search_text",
+            json!({"query":"x","literal":true,"regex":true})
+        )),
+        ToolErrorCode::InvalidArguments
+    );
+}
+
+#[test]
+fn match_limit_stops_the_single_run_early_and_keeps_trailing_context() {
+    let (root, context, registry) = fixture();
+    let mut body = String::new();
+    for i in 0..50 {
+        body.push_str(&format!("hit{i}\nfill{i}\n"));
+    }
+    fs::write(root.path().join("hits.txt"), body).unwrap();
+    for i in 0..30 {
+        fs::write(root.path().join(format!("z{i:02}.txt")), "hit\n").unwrap();
+    }
+    let value = output(run(
+        &registry,
+        &context,
+        "search_text",
+        json!({"query":"^hit","path":"hits.txt","max_matches":2,"context":1}),
+    ));
+    assert_eq!(value["matches"].as_array().unwrap().len(), 2);
+    let context_lines: Vec<_> = value["context"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|line| line["text"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(context_lines, ["fill0", "fill1"], "{value}");
+    assert!(
+        value["truncation_reasons"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("match_limit"))
+    );
+    let value = output(run(
+        &registry,
+        &context,
+        "search_text",
+        json!({"query":"^hit","max_matches":5}),
+    ));
+    assert_eq!(value["matches"].as_array().unwrap().len(), 5);
+    assert_eq!(value["truncated"], true);
+    // Stopped before rg finished: no summary was read.
+    assert!(value["files_searched"].is_null(), "{value}");
 }

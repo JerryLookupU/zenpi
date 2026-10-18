@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-236",
+  "claim_id": "ZE-236@blueprint-4.0.0",
+  "from": "master",
+  "to": "master",
+  "summary": "pi session semantics: without --session/ZENPI_SESSION/-s each launch creates a fresh journal ~/.zenpi/sessions/<ms>-<pid>.jsonl (flat, so the catalog and -s find it); -c/--continue reopens the newest journal whose header cwd equals the current cwd (header line only); --no-session uses a private temp dir removed on exit. The shared global ~/.zenpi/session.jsonl is no longer the default.",
+  "changed_files": [
+    "src/core.rs",
+    "src/session.rs",
+    "tests/cli_session.rs",
+    "Docs/quality/ze/ZE-236.json"
+  ],
+  "diff_stat": "2 files changed, 134 insertions(+), 2 deletions(-)",
+  "commands_run": [
+    "cargo test --locked --features dev-fixtures --test cli_session",
+    "cargo test --locked --all-features --no-fail-fast --test headless_protocol --test headless_lifecycle --test headless_project_workspace --test session_new --test session_recovery --test session_cli --test stage1_host --test tui_task --test session_torn_tail --test stage1_session_tree --test resume_compact_owner",
+    "cargo fmt --all -- --check",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo clippy --locked --all-targets --all-features -- -D warnings"
+  ],
+  "validation_result": {
+    "distinct_cwds": "two launches in two cwds -> two journals; no global session.jsonl",
+    "continue": "-c in repo-a appends to repo-a only, journal count unchanged",
+    "no_session": "no journal written",
+    "parallel_default": "24 concurrent default launches, zero session_locked, 24 journals",
+    "suites": "all green",
+    "clippy": "0/0"
+  },
+  "notes": "Default opens still use SessionStore::open rather than open_in_workspace (the new journal is created for the current cwd, so the workspace check adds little); request ids are idempotency keys in a resumed session, so the test uses a fresh id per run.",
+  "created_at": "2026-10-14T15:53:42Z",
+  "digest": "d425dbd143ac086c99e4ba40a0d1b9f530b0edadafe913fa2dbba647d6bb766b"
+}

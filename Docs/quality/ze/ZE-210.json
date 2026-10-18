@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-210",
+  "claim_id": "ZE-210@blueprint-4.0.0",
+  "from": "worker",
+  "to": "master",
+  "summary": "An empty or reasoning-only final answer after successful tool calls now ends the turn normally. Protocol layer: Chat (stream finish + JSON; null content accepted when a message object exists), Responses (stream + JSON; extract_responses_content no longer rejects text-less output) and Anthropic (message_stop) no longer return EmptyResponse once a terminal/completion event was seen; missing completion events stay InvalidResponse. Core: the post-completion EmptyResponse check moved into complete_with_tools and only fires when no tool ran this turn (tool_iterations == 0); otherwise an assistant turn with empty content is persisted. Replay: empty assistant turns without tool calls are omitted on Responses/Chat, and Anthropic omits assistant messages with no non-empty text and no tool_use (empty/thinking-only), so the next turn encodes valid history. Gemini unchanged (already accepts thought/empty parts and replays native parts).",
+  "changed_files": [
+    "src/core.rs",
+    "src/protocols/anthropic.rs",
+    "src/protocols/chat.rs",
+    "src/protocols/responses.rs",
+    "tests/empty_final_answer.rs",
+    "tests/support/scripted.rs",
+    "Docs/quality/ze/ZE-210.json"
+  ],
+  "diff_stat": "6 files changed, 175 insertions(+), 54 deletions(-) (code commit, excluding this handoff)",
+  "commands_run": [
+    "git fetch && git merge --ff-only origin/main",
+    "cargo fmt --all",
+    "CARGO_TARGET_DIR=/Users/mac/Github/zenpi/target CARGO_INCREMENTAL=0 cargo clippy --locked --all-targets -- -D warnings",
+    "CARGO_TARGET_DIR=/Users/mac/Github/zenpi/target CARGO_INCREMENTAL=0 cargo clippy --locked --all-targets --all-features -- -D warnings",
+    "CARGO_TARGET_DIR=/Users/mac/Github/zenpi/target CARGO_INCREMENTAL=0 cargo test --locked --test stage1_chat_stream --test stage1_gemini",
+    "CARGO_TARGET_DIR=/Users/mac/Github/zenpi/target CARGO_INCREMENTAL=0 cargo test --locked --test stage1_anthropic --test backend --test core_session --test provider_replay --test empty_final_answer --test tool_result_text",
+    "CARGO_TARGET_DIR=/Users/mac/Github/zenpi/target CARGO_INCREMENTAL=0 cargo test --locked --lib protocols",
+    "cargo test --locked --test stage1_semantic_compaction"
+  ],
+  "validation_result": {
+    "fmt": "pass",
+    "clippy": "pass (default and --all-features, -D warnings)",
+    "task_test": "pass: tests/empty_final_answer.rs empty_final_text_after_tools_completes_turn over HTTP FakeServer for Responses, Chat, Anthropic (turn Ok with empty assistant persisted; next turn replays user/tool history with no empty assistant message and succeeds); empty_answer_without_tools_still_fails keeps EmptyResponse for a tool-less empty answer",
+    "stage1_chat_stream": "22 passed",
+    "stage1_gemini": "19 passed",
+    "stage1_anthropic": "19 passed",
+    "backend": "27 passed",
+    "core_session": "41 passed",
+    "provider_replay": "21 passed",
+    "tool_result_text": "5 passed",
+    "lib_protocols": "18 passed"
+  },
+  "notes": "tests/support/scripted.rs extended minimally: FakeServer records raw request bodies (bodies()). Earlier production_* (binary-spawning) timeouts in stage1_chat_stream/stage1_gemini were caused by the disk being full; they pass after space was freed. Policy: an empty answer on a turn that ran no tools still fails with backend_empty_response (now raised inside complete_with_tools, so the AgentEnd hook reports 'failed').",
+  "created_at": "2026-10-14T15:09:19Z",
+  "digest": "e9939dd53e636585829befb7c3db36cbf93c61e018eb0640da8e75e635ee4c40"
+}

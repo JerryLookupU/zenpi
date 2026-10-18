@@ -14,6 +14,48 @@ fn seed(s: &mut TuiState, text: &str) {
     ));
 }
 #[test]
+fn pairing_shortcut_is_explicit_preserves_draft_and_cannot_escape_modal() {
+    let mut state = TuiState::default();
+    state.set_input("unsent pairing draft");
+    key(&mut state, KeyCode::Left, KeyModifiers::NONE);
+    let cursor = state.cursor();
+    assert_eq!(
+        key(&mut state, KeyCode::F(3), KeyModifiers::NONE),
+        TuiAction::OpenPairing
+    );
+    assert_eq!(state.input(), "unsent pairing draft");
+    assert_eq!(state.cursor(), cursor);
+    assert_ne!(
+        key(&mut state, KeyCode::F(3), KeyModifiers::CONTROL),
+        TuiAction::OpenPairing
+    );
+    let release = KeyEvent {
+        kind: KeyEventKind::Release,
+        ..KeyEvent::new(KeyCode::F(3), KeyModifiers::NONE)
+    };
+    assert_ne!(
+        state.handle_event(Event::Key(release)),
+        TuiAction::OpenPairing
+    );
+    state.open_directory_picker();
+    assert_ne!(
+        key(&mut state, KeyCode::F(3), KeyModifiers::NONE),
+        TuiAction::OpenPairing
+    );
+    key(&mut state, KeyCode::Esc, KeyModifiers::NONE);
+    state.open_transcript_browser();
+    assert_ne!(
+        key(&mut state, KeyCode::F(3), KeyModifiers::NONE),
+        TuiAction::OpenPairing
+    );
+    key(&mut state, KeyCode::Esc, KeyModifiers::NONE);
+    assert_eq!(
+        state.handle_event(Event::Key(KeyEvent::new(KeyCode::F(3), KeyModifiers::NONE))),
+        TuiAction::OpenPairing
+    );
+    assert_eq!(state.input(), "unsent pairing draft");
+}
+#[test]
 fn grapheme_cursor_and_deletion_keep_combining_emoji_and_flags_whole() {
     let mut s = TuiState::default();
     s.set_input("a👨‍👩‍👧‍👦e\u{301}🇯🇵z");
@@ -279,6 +321,52 @@ fn actual_owner_receipts_drive_queue_menu_and_lossless_edits() {
     state.open_project_tab("other");
     state.set_input("/input edit ");
     assert!(state.slash_choices().is_empty());
+}
+
+#[test]
+fn text_only_input_owner_rejects_commands_without_catalog_and_restores_original_draft() {
+    use std::sync::{Arc, Mutex};
+    use zenpi::{
+        core::Agent, input_queue::InputKind, protocol::InputQueueAction, session::SessionStore,
+        tui::TuiInputControls,
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let owner = Arc::new(Mutex::new(Agent::with_echo(
+        SessionStore::open_in_workspace(temp.path().join("inputs.jsonl"), temp.path()).unwrap(),
+    )));
+    let mut state = TuiState::default();
+    let mut controls = TuiInputControls::default();
+    let before = std::fs::read(owner.lock().unwrap().session().path()).unwrap();
+    for text in [
+        "/skill:research",
+        " /review literal",
+        "\u{85}/unknown",
+        "/help",
+        "!command",
+    ] {
+        for action in [
+            InputQueueAction::Enqueue {
+                input_id: "refused".into(),
+                kind: InputKind::Steer,
+                text: text.into(),
+            },
+            InputQueueAction::Edit {
+                input_id: "refused".into(),
+                expected_revision: 0,
+                text: text.into(),
+            },
+        ] {
+            let original = format!("/input steer refused {text}");
+            state.set_input(original.clone());
+            let displayed = state.input().to_owned();
+            controls.submit(&mut state, &owner, action, original.clone());
+            assert_eq!(state.input(), displayed);
+            assert_eq!(
+                std::fs::read(owner.lock().unwrap().session().path()).unwrap(),
+                before
+            );
+        }
+    }
 }
 
 #[test]
@@ -759,7 +847,8 @@ fn folded_payload_counts_toward_input_and_pretty_checkpoint_budgets() {
     assert_eq!(saved_draft(&s)["paste_folds"], metadata);
     let mut crowded = TuiState::default();
     for _ in 0..15 {
-        crowded.push_message(
+        // The transcript is not checkpointed (ZE-309); the arch console is.
+        crowded.push_arch_message(
             zenpi::tui::MessageRole::System,
             "m".repeat(MAX_MESSAGE_BYTES),
         );
@@ -993,7 +1082,7 @@ fn yank_input_and_pretty_checkpoint_rejections_preserve_full_buffer_and_draft() 
     assert_eq!(s.input().len(), MAX_MESSAGE_BYTES);
     ctrl(&mut s, 'u');
     for _ in 0..15 {
-        s.push_message(
+        s.push_arch_message(
             zenpi::tui::MessageRole::System,
             "m".repeat(MAX_MESSAGE_BYTES),
         );
@@ -1013,7 +1102,7 @@ fn yank_input_and_pretty_checkpoint_rejections_preserve_full_buffer_and_draft() 
     s.select_project_tab(0);
     ctrl(&mut s, 'y');
     assert_eq!(saved_draft(&s), before);
-    s.clear_messages();
+    s.clear_arch_messages();
     ctrl(&mut s, 'y');
     assert_eq!(s.input(), "x".repeat(MAX_MESSAGE_BYTES));
 }
@@ -1079,7 +1168,7 @@ fn external_edit_noop_cancel_empty_and_capacity_failure_are_atomic() {
     assert!(s.finish_external_edit(token, Ok(String::new())).unwrap());
     assert_eq!(s.input(), "");
     for _ in 0..15 {
-        s.push_message(
+        s.push_arch_message(
             zenpi::tui::MessageRole::System,
             "m".repeat(MAX_MESSAGE_BYTES),
         );

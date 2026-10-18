@@ -11,8 +11,8 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-BLUEPRINT = ROOT / "Docs/Zenpi_Execution_Blueprint.md"
-GANTT = ROOT / "Docs/Zenpi_Execution_Gantt.md"
+BLUEPRINT = ROOT / "Docs/archive/v1/Zenpi_Execution_Blueprint.md"
+GANTT = ROOT / "Docs/archive/v1/Zenpi_Execution_Gantt.md"
 STATES = {" ": "unclaimed", "_": "self_tested", "x": "master_accepted"}
 ROW = re.compile(r"^- \[([ _x])\] \*\*((?:ZP|CF)-[0-9]{3})\*\*")
 

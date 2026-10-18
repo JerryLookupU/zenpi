@@ -173,12 +173,19 @@ fn native_headers_system_tool_schema_effort_and_usage_are_exact() {
     assert!(
         r[0].0
             .to_ascii_lowercase()
-            .contains("authorization: bearer native-fixture-key")
+            .contains("x-api-key: native-fixture-key")
     );
+    // ZE-223: the legacy Anthropic path never sends a Bearer credential.
+    assert!(!r[0].0.to_ascii_lowercase().contains("authorization:"));
     let p = &r[0].1;
     assert_eq!(
         p["system"],
-        json!([{"type":"text","text":"instructions"},{"type":"text","text":"system turn"}])
+        json!([{"type":"text","text":"instructions"},{"type":"text","text":"system turn","cache_control":{"type":"ephemeral"}}])
+    );
+    // ZE-225: the newest user block is the second cache breakpoint.
+    assert_eq!(
+        p["messages"],
+        json!([{"role":"user","content":[{"type":"text","text":"hello","cache_control":{"type":"ephemeral"}}]}])
     );
     assert_eq!(p["tools"][0]["input_schema"], tools[0].input_schema);
     assert_eq!(p["output_config"]["effort"], "max");
@@ -233,7 +240,9 @@ fn streamed_text_tool_arguments_and_opaque_thinking_are_folded_separately() {
 #[test]
 fn malformed_terminal_and_signature_never_publish_executable_tools() {
     let mut cases = vec![];
-    for reason in ["max_tokens", "pause_turn", "unknown", "end_turn"] {
+    // max_tokens is a length stop that keeps its content (ZE-221,
+    // tests/provider_replay.rs); the core never dispatches its calls.
+    for reason in ["pause_turn", "unknown", "end_turn"] {
         cases.push(events(vec![tool_block()], reason));
     }
     let mut missing = events(vec![tool_block()], "tool_use");
@@ -379,25 +388,29 @@ fn native_history_integrity_and_cross_wire_are_authoritative() {
         )),
         Err(BackendError::Configuration(_))
     ));
+    // ZE-227: another wire or model replays the turn as text and tool calls,
+    // so encoding succeeds and only the closed fixture port fails.
     let chat = OpenAiCompatibleBackend::new("http://127.0.0.1:1", None, "gpt-4.1").unwrap();
-    assert!(matches!(
-        chat.complete(CompletionRequest::new(
-            "u",
-            &[user.clone(), a.clone(), result.clone()],
-            None,
-            &[tool()]
-        )),
-        Err(BackendError::Configuration(_))
+    let cross_wire = chat.complete(CompletionRequest::new(
+        "u",
+        &[user.clone(), a.clone(), result.clone()],
+        None,
+        &[tool()],
     ));
-    assert!(matches!(
-        b.complete(CompletionRequest::new(
-            "u",
-            &[user, a, result],
-            Some("other"),
-            &[tool()]
-        )),
-        Err(BackendError::Configuration(_))
+    assert!(
+        matches!(cross_wire, Err(ref e) if !matches!(e, BackendError::Configuration(_))),
+        "{cross_wire:?}"
+    );
+    let other_model = b.complete(CompletionRequest::new(
+        "u",
+        &[user, a, result],
+        Some("other"),
+        &[tool()],
     ));
+    assert!(
+        matches!(other_model, Err(ref e) if !matches!(e, BackendError::Configuration(_))),
+        "{other_model:?}"
+    );
 }
 
 #[test]
@@ -429,7 +442,7 @@ fn image_input_uses_native_base64_part() {
     h.join().unwrap();
     assert_eq!(
         requests.lock().unwrap()[0].1["messages"][0]["content"][1],
-        json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":"AQID"}})
+        json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":"AQID"},"cache_control":{"type":"ephemeral"}})
     );
 }
 
@@ -473,7 +486,12 @@ fn cancellation_during_slow_body_drops_one_connection_without_retry() {
         stream
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
-        assert_eq!(stream.read(&mut b).unwrap(), 0);
+        // Closed either way: FIN (0) or RST, never left open.
+        match stream.read(&mut b) {
+            Ok(0) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+            other => panic!("connection survived cancellation: {other:?}"),
+        }
     });
     let cancelled = Arc::new(AtomicBool::new(false));
     let flag = cancelled.clone();
@@ -696,8 +714,9 @@ fn secret_handle_uses_native_headers_and_http_auth_failure_stays_typed() {
         assert!(
             headers
                 .to_ascii_lowercase()
-                .contains("authorization: bearer opaque-native-key")
+                .contains("x-api-key: opaque-native-key")
         );
+        assert!(!headers.to_ascii_lowercase().contains("authorization:"));
         stream
             .write_all(
                 b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",

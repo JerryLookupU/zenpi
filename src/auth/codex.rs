@@ -1,8 +1,7 @@
 //! Fixed-endpoint Codex OAuth. No credential discovery, browser shell, or API-key exchange.
-use std::sync::{
-    Arc, Mutex, Weak,
-    atomic::{AtomicBool, Ordering},
-};
+#[cfg(test)]
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex, Weak, atomic::AtomicBool};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -29,11 +28,6 @@ pub(crate) struct BrowserLogin {
     authorization_url: String,
     submission: ManualSubmission,
 }
-impl BrowserLogin {
-    pub(crate) fn flow_id(&self) -> &LoginFlowId {
-        &self.flow_id
-    }
-}
 impl Drop for BrowserLogin {
     fn drop(&mut self) {
         self.submission.close();
@@ -43,6 +37,7 @@ pub(crate) struct DeviceLogin {
     flow_id: LoginFlowId,
 }
 impl DeviceLogin {
+    #[cfg(test)]
     pub(crate) fn flow_id(&self) -> &LoginFlowId {
         &self.flow_id
     }
@@ -128,11 +123,13 @@ impl Drop for ActiveLogin {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum CancelDisposition {
     Requested,
     NotActive,
 }
+#[cfg(test)]
 pub(crate) fn cancel_login(flow_id: &LoginFlowId) -> CancelDisposition {
     if let Ok(active) = ACTIVE.lock()
         && let Some(cancelled) = active
@@ -151,17 +148,13 @@ fn notice(
     id: &LoginFlowId,
     state: LoginState,
 ) -> Result<(), AuthError> {
-    control.emit(AuthInteraction::Notify {
-        flow_id: id.clone(),
-        state,
-    })
+    let _ = id;
+    control.emit(AuthInteraction::Notify { state })
 }
 fn dismiss(control: &mut LoginControl<'_>, id: &LoginFlowId, open: &mut bool) {
     if std::mem::take(open) {
-        let _ = control.emit(AuthInteraction::CancelPrompt {
-            flow_id: id.clone(),
-            prompt_id: PROMPT_ID,
-        });
+        let _ = id;
+        let _ = control.emit(AuthInteraction::CancelPrompt);
     }
 }
 fn finish(
@@ -235,15 +228,15 @@ pub(crate) fn login_device(
     device_login_with(flow, request, control, &mut post)
 }
 
+/// Transport hook for the login HTTP exchanges (real client or test double).
+type AuthSend<'s> =
+    dyn FnMut(AuthHttpKind, &[u8], &mut LoginControl<'_>) -> Result<HttpResponse, AuthError> + 's;
+
 fn device_login_with(
     flow: DeviceLogin,
     request: LoginRequest<'_>,
     control: &mut LoginControl<'_>,
-    send: &mut dyn FnMut(
-        AuthHttpKind,
-        &[u8],
-        &mut LoginControl<'_>,
-    ) -> Result<HttpResponse, AuthError>,
+    send: &mut AuthSend<'_>,
 ) -> LoginOutcome {
     let active = ActiveLogin::acquire(&flow.flow_id)?;
     control.flow_cancelled = Some(active.cancelled.clone());
@@ -315,10 +308,7 @@ fn commit(
         &wait,
     )?;
     // No cancellation check after durable success: do not misreport a saved login.
-    Ok(LoginSuccess {
-        flow_id: id.clone(),
-        credential,
-    })
+    Ok(credential)
 }
 
 fn sleep(control: &LoginControl<'_>, duration: Duration) -> Result<(), AuthError> {
@@ -351,11 +341,7 @@ fn dispatch(
     kind: AuthHttpKind,
     body: &[u8],
     control: &mut LoginControl<'_>,
-    send: &mut dyn FnMut(
-        AuthHttpKind,
-        &[u8],
-        &mut LoginControl<'_>,
-    ) -> Result<HttpResponse, AuthError>,
+    send: &mut AuthSend<'_>,
 ) -> Result<HttpResponse, AuthError> {
     control.admit(kind)?;
     send(kind, body, control)
@@ -368,7 +354,7 @@ fn post(
     let endpoint = match kind {
         AuthHttpKind::DeviceBegin => definition::DEVICE_BEGIN_ENDPOINT,
         AuthHttpKind::DevicePoll => definition::DEVICE_POLL_ENDPOINT,
-        AuthHttpKind::CodeExchange | AuthHttpKind::Refresh => definition::TOKEN_ENDPOINT,
+        AuthHttpKind::CodeExchange => definition::TOKEN_ENDPOINT,
     };
     send_http(
         endpoint,
@@ -399,12 +385,11 @@ fn send_http_with_control(
     let deadline = deadline.min(Instant::now() + Duration::from_secs(15));
     let config = ureq::Agent::config_builder()
         .timeout_global(Some(deadline.saturating_duration_since(Instant::now())))
-        .timeout_recv_body(Some(Duration::from_millis(100)))
         .max_redirects(0)
         .max_redirects_will_error(false)
         .http_status_as_error(false)
         .build();
-    let (client, cancel) = transport::client(config);
+    let client = transport::client(config);
     let user_agent = format!(
         "zenpi/{} ({}; {})",
         env!("CARGO_PKG_VERSION"),
@@ -436,8 +421,7 @@ fn send_http_with_control(
             AuthError::Transport
         }
     };
-    let mut response =
-        transport::send_bytes(builder, body, &cancelled, cancel).map_err(&map_error)?;
+    let mut response = transport::send_bytes(builder, body, &cancelled).map_err(map_error)?;
     let status = response.status().as_u16();
     let body =
         transport::read_bytes(response.body_mut(), MAX_RESPONSE, &cancelled).map_err(map_error)?;
@@ -1127,7 +1111,7 @@ mod tests {
                         assert_eq!(user_code, "synthetic-user-code");
                         prompts.set(prompts.get() + 1);
                     }
-                    AuthInteraction::CancelPrompt { .. } => dismissals.set(dismissals.get() + 1),
+                    AuthInteraction::CancelPrompt => dismissals.set(dismissals.get() + 1),
                     _ => panic!("unexpected synthetic prompt"),
                 }
                 Ok(())
@@ -1163,7 +1147,6 @@ mod tests {
                         assert_eq!(fields["redirect_uri"], definition::DEVICE_REDIRECT_URI);
                         token_response(serde_json::json!(60), Value::Null)
                     }
-                    _ => panic!("unexpected synthetic send"),
                 };
                 Ok(HttpResponse { status: 200, body })
             };
@@ -1196,13 +1179,7 @@ mod tests {
             assert_eq!(states.borrow().last(), Some(&expected));
             match outcome_case {
                 0 => assert_eq!(
-                    result
-                        .unwrap()
-                        .credential
-                        .identity()
-                        .unwrap()
-                        .account_id
-                        .as_deref(),
+                    result.unwrap().identity().unwrap().account_id.as_deref(),
                     Some("synthetic-account")
                 ),
                 1 => {
@@ -1335,13 +1312,7 @@ mod tests {
         let success = commit(request(), &id, pending(), &mut control);
         assert!(success.is_ok());
         assert_eq!(
-            success
-                .as_ref()
-                .unwrap()
-                .credential
-                .identity()
-                .unwrap()
-                .provider,
+            success.as_ref().unwrap().identity().unwrap().provider,
             "openai-codex"
         );
         cancelled.set(true);
@@ -1377,6 +1348,11 @@ mod tests {
                             && Instant::now() < deadline =>
                     {
                         std::thread::sleep(Duration::from_millis(2))
+                    }
+                    // A client whose short deadline expired before it
+                    // connected never arrives; callers assert its error.
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        return String::new();
                     }
                     Err(error) => panic!("synthetic loopback accept: {error}"),
                 }

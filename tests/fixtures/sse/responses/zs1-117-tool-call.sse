@@ -1,0 +1,6 @@
+data: {"type": "response.created", "response": {"id": "1", "model": "gpt-4.1"}}
+
+data: {"type": "response.output_item.done", "item": {"type": "function_call", "call_id": "SLOW_A", "name": "write_file", "arguments": "{\"path\": \"marker.txt\", \"content\": \"SLOW_A\"}"}}
+
+data: {"type": "response.completed", "response": {"id": "1", "status": "completed", "model": "gpt-4.1"}}
+

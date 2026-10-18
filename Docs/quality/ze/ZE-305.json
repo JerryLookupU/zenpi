@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-305",
+  "claim_id": "ZE-305@blueprint-4.0.0",
+  "from": "master",
+  "to": "master",
+  "summary": "SessionRecord keeps the validated JSON line and parses on demand (serialization shape and record digests unchanged); tree_ancestry_turns borrows the live tree and clones only ancestry turns.",
+  "changed_files": [
+    "src/session.rs",
+    "src/core.rs",
+    "src/headless.rs",
+    "src/tui.rs",
+    "src/remote/sessions.rs",
+    "src/session_tree.rs",
+    "tests/session_memory.rs",
+    "Docs/Zenpi_Execution_Blueprint_v2.md",
+    "Docs/quality/ze/ZE-305.json"
+  ],
+  "diff_stat": "7 files changed, 108 insertions(+), 73 deletions(-)",
+  "commands_run": [
+    "cargo fmt --all",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo clippy --locked --all-targets --all-features -- -D warnings",
+    "release probe with counting allocator (10k records mixed / turns-only / events-only)",
+    "cargo test --locked --all-features --test session_memory",
+    "cargo test --locked --all-features --no-fail-fast --lib --test session_recovery --test session_torn_tail --test stage1_session_tree --test core_session --test headless_protocol --test remote_project_inspection --test stage1_branch_owner --test session_cli"
+  ],
+  "validation_result": {
+    "fmt": "ok",
+    "clippy_default": "ok",
+    "clippy_all_features": "ok",
+    "resident_ratio_mixed_before": 6.52,
+    "resident_ratio_mixed_after": 2.91,
+    "resident_ratio_turns_only_after": 2.07,
+    "resident_ratio_events_only_after": 4.25,
+    "lib": "472 passed",
+    "session_suites": "all passed"
+  },
+  "notes": "Deviation: < 2x is met only for turn-heavy sessions. events() returns &[Value] to 142 call sites; replacing it is a separate API change. Verified-checkpoint caching was not done: no hot path was measured for it. Outside owned paths: .value -> .value() in headless.rs, tui.rs, remote/sessions.rs, session_tree.rs.",
+  "created_at": "2026-10-14T19:52:26Z",
+  "digest": "f6506340a28e59165813909e7df51de08f2054da6137166c8649a538e1cb8dc2"
+}

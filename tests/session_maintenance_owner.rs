@@ -1,10 +1,13 @@
-use std::{fs, io::Cursor, path::Path, thread, time::Duration};
+#[path = "support/sequential_host.rs"]
+mod sequential_host;
+use sequential_host::run_headless_sequential;
+use std::{fs, path::Path, thread, time::Duration};
 
 use serde_json::Value;
 use tempfile::tempdir;
 use zenpi::{
     core::{Agent, Turn, TurnRole},
-    headless::{run_headless, session_gc_view_at, session_maintenance_view},
+    headless::{session_gc_view_at, session_maintenance_view},
     session::SessionStore,
     slash::{SessionAction, SessionGcPolicy, SlashCommand, SlashError, parse},
     tui::{MessageRole, SlashDispatchAction, TuiState, dispatch_slash_command},
@@ -217,13 +220,35 @@ fn session_maintenance_refuses_export_with_reconnect_sidecar() {
         b"transport-owner-marker\n",
     )
     .unwrap();
-    let error = session_maintenance_view(&SessionAction::Export {
-        source: source_path.display().to_string(),
-        destination: directory.path().join("export.jsonl").display().to_string(),
-    })
-    .unwrap_err();
-    assert!(error.contains("active reconnect WAL"));
+    // ZE-303: a live owner (the WAL lock is held) blocks export.
+    let wal_path = format!("{}.reconnect", source_path.display());
+    let held = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&wal_path)
+        .unwrap();
+    // SAFETY: `held` is a live descriptor for the whole call.
+    assert_eq!(
+        unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&held), libc::LOCK_EX) },
+        0
+    );
+    let export = || {
+        session_maintenance_view(&SessionAction::Export {
+            source: source_path.display().to_string(),
+            destination: directory.path().join("export.jsonl").display().to_string(),
+        })
+    };
+    assert!(export().unwrap_err().contains("unresolved reconnect WAL"));
+    // Closed but unreadable evidence still blocks it.
+    drop(held);
+    assert!(export().unwrap_err().contains("unresolved reconnect WAL"));
     assert!(!directory.path().join("export.jsonl").exists());
+    // A closed WAL with nothing unresolved is plain transport state: export
+    // succeeds and never copies it.
+    fs::write(&wal_path, b"").unwrap();
+    export().unwrap();
+    assert!(directory.path().join("export.jsonl").exists());
+    assert!(!directory.path().join("export.jsonl.reconnect").exists());
 }
 
 #[test]
@@ -233,7 +258,7 @@ fn headless_and_tui_dispatch_execute_typed_session_maintenance_locally() {
     let source_bytes = seed_session(&source_path);
 
     let active_path = directory.path().join("active.jsonl");
-    let mut agent = Agent::with_echo(SessionStore::open(&active_path).unwrap());
+    let agent = Agent::with_echo(SessionStore::open(&active_path).unwrap());
     let exported_path = directory.path().join("headless-export.jsonl");
     let requests = [
         serde_json::json!({
@@ -253,7 +278,7 @@ fn headless_and_tui_dispatch_execute_typed_session_maintenance_locally() {
     .join("\n")
         + "\n";
     let mut output = Vec::new();
-    run_headless(&mut agent, Cursor::new(requests.into_bytes()), &mut output).unwrap();
+    run_headless_sequential(agent, requests.into_bytes(), &mut output).unwrap();
     let response = response_lines(&output)
         .into_iter()
         .find(|value| value["id"] == "export")

@@ -1,0 +1,6 @@
+data: {"type": "response.created", "response": {"id": "cache-1", "model": "gpt-4.1"}}
+
+data: {"type": "response.output_text.delta", "delta": "CACHED_319"}
+
+data: {"type": "response.completed", "response": {"id": "cache-1", "model": "gpt-4.1", "status": "completed", "usage": {"input_tokens": 2500, "input_tokens_details": {"cached_tokens": 2048}, "output_tokens": 150, "output_tokens_details": {"reasoning_tokens": 0}, "total_tokens": 2650}}}
+

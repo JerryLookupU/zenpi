@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-233",
+  "claim_id": "ZE-233@blueprint-4.0.0",
+  "from": "master",
+  "to": "master",
+  "summary": "Template and skill turns on the current branch are sent expanded in their user turns at request time (re-rendered from the snapshot by source hash, never journaled); skill bodies left the instructions, so the system prompt is byte-identical across turns. The extension input hook now also receives the expanded skill text, which had been overwriting the current turn with the raw /skill: line.",
+  "changed_files": [
+    "src/core.rs",
+    "tests/stage1_resource_host.rs",
+    "tests/remote_headless_commands.rs",
+    "tests/stage1_gemini.rs",
+    "Docs/Zenpi_Execution_Blueprint_v2.md",
+    "Docs/quality/ze/ZE-233.json"
+  ],
+  "diff_stat": "5 files changed, 31 insertions(+), 25 deletions(-)",
+  "commands_run": [
+    "cargo fmt --all",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo clippy --locked --all-targets --all-features -- -D warnings",
+    "cargo test --locked --all-features --test stage1_resource_host --test remote_headless_commands --test stage1_skill_md --test stage1_prompt_resources --test skills --test resources --test stage1_gemini"
+  ],
+  "validation_result": {
+    "fmt": "ok",
+    "clippy_default": "ok",
+    "clippy_all_features": "ok",
+    "stage1_resource_host": "6 passed (system message of request 1 == request 0; skill body absent from system)",
+    "remote_headless_commands": "12 passed (skill body in user turn, not instructions)",
+    "skill_and_resource_suites": "passed"
+  },
+  "notes": "selected_skills used to scan every journaled turn (not just the branch) and read an in-memory map, so skills silently vanished from the system prompt after a restart; branch scoping now comes from the prepared context. Also fixes stage1_gemini slow-body cancel to accept RST (ZE-301 follow-up).",
+  "created_at": "2026-10-14T19:25:53Z",
+  "digest": "db274972b50fd1cd5fe5a58ad000eb52d9ecf20590eda434f234cdfe56ea8f2f"
+}

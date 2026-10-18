@@ -111,6 +111,9 @@ enum HookResult {
 }
 
 impl ExtensionRuntime {
+    pub(crate) fn has_loaded_extensions(&self) -> bool {
+        !self.catalog.loaded.is_empty()
+    }
     /// Every fallible candidate step happens while the old runtime stays live.
     pub fn prepare(
         root: &Path,
@@ -120,6 +123,32 @@ impl ExtensionRuntime {
     ) -> Result<Self, ToolError> {
         let catalog = ExtensionCatalog::load(root)
             .map_err(|e| ToolError::InvalidDefinition(e.to_string()))?;
+        Self::prepare_catalog(root, workspace, session_id, catalog, cancelled)
+    }
+
+    /// A workspace change does not discover or grant newly installed extensions.
+    pub(crate) fn prepare_workspace(
+        &self,
+        workspace: &Path,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Self, ToolError> {
+        self.lease.check()?;
+        Self::prepare_catalog(
+            &self.root,
+            workspace,
+            &self.lease.identity.session_id,
+            self.catalog.clone(),
+            cancelled,
+        )
+    }
+
+    fn prepare_catalog(
+        root: &Path,
+        workspace: &Path,
+        session_id: &str,
+        catalog: ExtensionCatalog,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Self, ToolError> {
         let runtime = Self {
             root: root.into(),
             workspace: workspace.into(),
@@ -634,8 +663,25 @@ fn exchange_frame(
             };
         }
         if !progress {
-            std::thread::sleep(
-                Duration::from_millis(5).min(timeout.saturating_sub(started.elapsed())),
+            // Sleep in poll(2) until stdin drains, stdout has data or closes,
+            // or the next cancellation check.
+            use std::os::fd::AsRawFd;
+            let read: Vec<_> = (!eof).then(|| stdout.as_raw_fd()).into_iter().collect();
+            let write: Vec<_> = stdin
+                .as_ref()
+                .map(|pipe| pipe.as_raw_fd())
+                .into_iter()
+                .collect();
+            let wait = if read.is_empty() && write.is_empty() {
+                // Exchange done: the child is exiting, so reap it promptly.
+                Duration::from_millis(5)
+            } else {
+                crate::tools::CANCEL_POLL
+            };
+            crate::tools::wait_ready(
+                &read,
+                &write,
+                wait.min(timeout.saturating_sub(started.elapsed())),
             );
         }
     }
@@ -868,14 +914,12 @@ os._exit(0)
     impl Drop for FixturePids {
         fn drop(&mut self) {
             // Only IDs written by this test's own children in its private directory.
-            for name in ["escaped.pid"] {
-                if let Ok(text) = fs::read_to_string(self.0.join(name))
-                    && let Ok(pid) = text.parse::<i32>()
-                    && pid > 1
-                {
-                    // SAFETY: these are the fixture's recorded process IDs; no broad process scan.
-                    unsafe { libc::kill(pid, libc::SIGKILL) };
-                }
+            if let Ok(text) = fs::read_to_string(self.0.join("escaped.pid"))
+                && let Ok(pid) = text.parse::<i32>()
+                && pid > 1
+            {
+                // SAFETY: the fixture's recorded process ID; no broad process scan.
+                unsafe { libc::kill(pid, libc::SIGKILL) };
             }
         }
     }

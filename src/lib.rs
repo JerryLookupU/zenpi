@@ -20,6 +20,8 @@ pub mod extensions;
 pub mod folder_source;
 pub mod governance;
 pub mod headless;
+#[cfg(feature = "remote")]
+pub mod host_pair;
 pub mod input_queue;
 pub mod layout;
 pub mod net_probe;
@@ -30,6 +32,8 @@ pub mod protocol;
 pub(crate) mod protocols;
 pub mod providers;
 pub mod pty_shell;
+#[cfg(feature = "remote")]
+pub mod remote;
 pub mod render;
 pub mod resource_loader;
 pub mod resources;
@@ -43,12 +47,14 @@ pub mod skills;
 pub mod slash;
 pub mod slash_actions;
 pub mod sync;
+pub mod system_prompt;
 pub mod tool_output;
 pub mod tool_runtime;
 pub mod tools;
 pub mod trajectory;
 pub mod tui;
 pub mod view_model;
+pub mod worktree;
 
 #[cfg(unix)]
 mod external_editor;

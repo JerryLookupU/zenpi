@@ -1,3 +1,6 @@
+#[path = "support/sequential_host.rs"]
+mod sequential_host;
+use sequential_host::run_headless_sequential;
 use tempfile::tempdir;
 use zenpi::approval::ApprovalMode;
 use zenpi::core::{Agent, Turn, TurnRole};
@@ -77,17 +80,33 @@ fn core_slash_commands_parse_to_typed_values() {
     assert!(!parse("/status").unwrap().unwrap().is_first_class());
     assert_eq!(
         parse("/yolo").unwrap(),
-        Some(SlashCommand::Yolo { enabled: true })
+        Some(SlashCommand::Yolo { enabled: None })
     );
     assert_eq!(
         parse("/yolo off").unwrap(),
-        Some(SlashCommand::Yolo { enabled: false })
+        Some(SlashCommand::Yolo {
+            enabled: Some(false)
+        })
     );
     assert_eq!(
         parse("/approval never").unwrap(),
         Some(SlashCommand::Approval {
-            mode: "never".into()
+            mode: Some("never".into())
         })
+    );
+    assert_eq!(
+        parse("/approval").unwrap(),
+        Some(SlashCommand::Approval { mode: None })
+    );
+    assert_eq!(
+        parse("/reasoning high").unwrap(),
+        Some(SlashCommand::Reasoning {
+            level: Some("high".into())
+        })
+    );
+    assert_eq!(
+        parse("/reasoning").unwrap(),
+        Some(SlashCommand::Reasoning { level: None })
     );
     assert!(parse("/approval invalid").is_err());
     assert_eq!(
@@ -96,16 +115,74 @@ fn core_slash_commands_parse_to_typed_values() {
             action: zenpi::slash::ProjectAction::Open { name: "api".into() }
         })
     );
+    // `/review` was an undocumented Diff alias; `/diff` is the one spelling.
     assert_eq!(
-        parse("/review").unwrap(),
-        Some(SlashCommand::Diff { path: None })
+        parse("/review"),
+        Err(SlashError::UnknownCommand("review".into()))
     );
     assert_eq!(
-        parse("/review src/lib.rs").unwrap(),
+        parse("/diff src/lib.rs").unwrap(),
         Some(SlashCommand::Diff {
             path: Some("src/lib.rs".into())
         })
     );
+}
+
+#[test]
+fn every_parsable_command_name_has_a_spec_entry() {
+    // The parser dispatches through COMMAND_SPECS, so every spec name and
+    // alias must be recognized, and nothing outside the catalog is.
+    for command in zenpi::slash::COMMAND_SPECS {
+        for name in std::iter::once(command.name).chain(command.aliases.iter().copied()) {
+            assert!(
+                !matches!(
+                    parse(&format!("/{name}")),
+                    Err(SlashError::UnknownCommand(_))
+                ),
+                "spec name /{name} is not parsable"
+            );
+            assert!(complete(name).contains(&command.name), "/{name} completes");
+        }
+    }
+    // Commands that used to be parsed outside the table now complete and
+    // have help, including the `resource` alias.
+    for name in [
+        "reasoning",
+        "tree",
+        "output",
+        "input",
+        "reload",
+        "skills",
+        "templates",
+        "resource",
+        "scheduled",
+    ] {
+        assert!(spec(name).is_some(), "missing spec for /{name}");
+        assert!(help(Some(name)).is_some(), "missing help for /{name}");
+        assert!(!complete(name).is_empty(), "/{name} does not complete");
+    }
+    let all = help(None).unwrap();
+    assert!(all.contains("/reasoning"));
+    assert!(!all.contains("/review"));
+    for name in ["review", "not-a-command", "foo"] {
+        assert!(spec(name).is_none());
+        assert_eq!(
+            parse(&format!("/{name}")),
+            Err(SlashError::UnknownCommand(name.into()))
+        );
+    }
+    // Host-routed controls never parse as typed commands or prompts.
+    for input in [
+        "/tree",
+        "/output",
+        "/input list",
+        "/reload",
+        "/skills",
+        "/templates",
+    ] {
+        assert!(parse(input).is_err(), "{input}");
+        assert!(!zenpi::slash::resource_input_candidate(input), "{input}");
+    }
 }
 
 #[test]
@@ -611,17 +688,195 @@ fn approval_slash_commands_mutate_configured_agent_policy() {
     agent.set_attachment_workspace(zenpi::tools::ToolContext::new(directory.path()).unwrap());
     let mut state = TuiState::default();
     dispatch_slash_command(
-        SlashCommand::Yolo { enabled: true },
+        SlashCommand::Yolo {
+            enabled: Some(true),
+        },
         &mut state,
         Some(&mut agent),
     );
     assert_eq!(agent.approval_policy().unwrap().mode, ApprovalMode::Never);
     dispatch_slash_command(
         SlashCommand::Approval {
-            mode: "always".into(),
+            mode: Some("always".into()),
         },
         &mut state,
         Some(&mut agent),
     );
     assert_eq!(agent.approval_policy().unwrap().mode, ApprovalMode::Always);
+    // `/approval` with no argument only displays the mode.
+    dispatch_slash_command(
+        parse("/approval").unwrap().unwrap(),
+        &mut state,
+        Some(&mut agent),
+    );
+    assert_eq!(agent.approval_policy().unwrap().mode, ApprovalMode::Always);
+    assert!(
+        state
+            .messages()
+            .last()
+            .unwrap()
+            .text
+            .contains("approval mode: always")
+    );
+    // `/yolo` with no argument toggles.
+    let yolo = parse("/yolo").unwrap().unwrap();
+    dispatch_slash_command(yolo.clone(), &mut state, Some(&mut agent));
+    assert_eq!(agent.approval_policy().unwrap().mode, ApprovalMode::Never);
+    dispatch_slash_command(yolo, &mut state, Some(&mut agent));
+    assert_eq!(
+        agent.approval_policy().unwrap().mode,
+        ApprovalMode::ReadOnly
+    );
+}
+
+fn headless_responses(agent: Agent, frames: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    let input = frames
+        .iter()
+        .map(|frame| frame.to_string() + "\n")
+        .collect::<String>();
+    let mut output = Vec::new();
+    run_headless_sequential(agent, input, &mut output).unwrap();
+    String::from_utf8(output)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .filter(|value| value["type"] == "response")
+        .collect()
+}
+
+#[test]
+fn headless_approval_without_argument_leaves_mode_unchanged_and_yolo_toggles() {
+    let directory = tempdir().unwrap();
+    let mut agent =
+        Agent::with_echo(SessionStore::open(directory.path().join("active.jsonl")).unwrap());
+    agent.set_attachment_workspace(zenpi::tools::ToolContext::new(directory.path()).unwrap());
+    let mut policy = agent.configured_approval_policy().unwrap_or_default();
+    policy.mode = ApprovalMode::Always;
+    agent.set_approval_policy(policy);
+    let responses = headless_responses(
+        agent,
+        &[
+            serde_json::json!({"type":"command","id":"show","text":"/approval"}),
+            serde_json::json!({"type":"command","id":"toggle-on","text":"/yolo"}),
+            serde_json::json!({"type":"command","id":"toggle-off","text":"/yolo"}),
+            serde_json::json!({"type":"command","id":"final","text":"/approval"}),
+            serde_json::json!({"type":"shutdown","id":"shutdown"}),
+        ],
+    );
+    let response = |id: &str| responses.iter().find(|r| r["id"] == id).unwrap().clone();
+    let show = response("show");
+    assert_eq!(show["success"], true, "{show}");
+    assert_eq!(show["data"]["mode"], "always");
+    assert_eq!(show["data"]["changed"], false);
+    assert_eq!(response("toggle-on")["data"]["enabled"], true);
+    assert_eq!(response("toggle-off")["data"]["enabled"], false);
+    // Toggling yolo off lands on the interactive (read-only) mode.
+    assert_eq!(response("final")["data"]["mode"], "ask");
+}
+
+/// Minimal Responses-API server that records each request body.
+fn recording_server(
+    count: usize,
+) -> (
+    String,
+    std::sync::mpsc::Receiver<serde_json::Value>,
+    std::thread::JoinHandle<()>,
+) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let (send, recv) = std::sync::mpsc::channel();
+    let handle = std::thread::spawn(move || {
+        for _ in 0..count {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                .unwrap();
+            let mut bytes = Vec::new();
+            let mut chunk = [0; 4096];
+            let end = loop {
+                let read = stream.read(&mut chunk).unwrap();
+                assert!(read > 0);
+                bytes.extend_from_slice(&chunk[..read]);
+                if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                    break end + 4;
+                }
+            };
+            let length: usize = String::from_utf8_lossy(&bytes[..end])
+                .lines()
+                .find_map(|line| {
+                    line.to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                        .map(|value| value.trim().parse().unwrap())
+                })
+                .unwrap();
+            while bytes.len() < end + length {
+                let read = stream.read(&mut chunk).unwrap();
+                assert!(read > 0);
+                bytes.extend_from_slice(&chunk[..read]);
+            }
+            let request: serde_json::Value =
+                serde_json::from_slice(&bytes[end..end + length]).unwrap();
+            let body = format!(
+                "data: {}\n\ndata: {}\n\n",
+                serde_json::json!({"type":"response.output_text.delta","delta":"ok"}),
+                serde_json::json!({"type":"response.completed","response":{"id":"r","model":request["model"],"status":"completed"}})
+            );
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+            stream.flush().unwrap();
+            send.send(request).unwrap();
+        }
+    });
+    (url, recv, handle)
+}
+
+#[test]
+fn headless_reasoning_command_changes_the_next_provider_request() {
+    use zenpi::backend::{OpenAiCompatibleBackend, OpenAiWireApi};
+    let directory = tempdir().unwrap();
+    let (url, requests, server) = recording_server(2);
+    let backend = OpenAiCompatibleBackend::new_with_settings(
+        &url,
+        None,
+        "gpt-5.2",
+        OpenAiWireApi::Responses,
+        None,
+        None,
+    )
+    .unwrap()
+    .with_model_registry(
+        "openai".into(),
+        zenpi::providers::registry::ModelRegistry::default(),
+    )
+    .unwrap();
+    let agent = Agent::new(
+        SessionStore::open(directory.path().join("active.jsonl")).unwrap(),
+        Box::new(backend),
+    );
+    let responses = headless_responses(
+        agent,
+        &[
+            serde_json::json!({"type":"prompt","id":"before","text":"first"}),
+            serde_json::json!({"type":"command","id":"reasoning","text":"/reasoning high"}),
+            serde_json::json!({"type":"prompt","id":"after","text":"second"}),
+            serde_json::json!({"type":"command","id":"effort","text":"/reasoning"}),
+            serde_json::json!({"type":"shutdown","id":"shutdown"}),
+        ],
+    );
+    let reasoning = responses.iter().find(|r| r["id"] == "reasoning").unwrap();
+    assert_eq!(reasoning["success"], true, "{reasoning}");
+    assert_eq!(reasoning["data"]["reasoning_effort"], "high");
+    let timeout = std::time::Duration::from_secs(10);
+    let before = requests.recv_timeout(timeout).unwrap();
+    let after = requests.recv_timeout(timeout).unwrap();
+    server.join().unwrap();
+    assert!(before["reasoning"]["effort"].is_null(), "{before}");
+    assert_eq!(after["reasoning"]["effort"], "high", "{after}");
+    let effort = responses.iter().find(|r| r["id"] == "effort").unwrap();
+    assert_eq!(effort["data"]["reasoning_effort"], "high", "{effort}");
 }

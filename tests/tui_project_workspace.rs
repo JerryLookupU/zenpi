@@ -50,24 +50,26 @@ fn project_status_footer_keeps_selected_directory_tail_on_narrow_terminal() {
 }
 
 #[test]
-fn asynchronous_transcript_mutations_schedule_checkpoints_without_keyboard_input() {
+fn asynchronous_transcript_mutations_never_schedule_or_enter_checkpoints() {
     use zenpi::tui::ToolRunStatus;
+    // ZE-309: the session journal owns the transcript. Streaming and other
+    // transcript mutations update the view but never dirty or enter the
+    // project checkpoint, so a long transcript is not rewritten every tick.
     let mut state = TuiState::default();
-    let checkpoint = |state: &mut TuiState, marker: &str| {
+    let unchanged = |state: &mut TuiState, marker: &str| {
         assert!(
-            state.project_checkpoint_dirty(),
-            "missing checkpoint for {marker}"
+            state.messages().any(|m| m.text.contains(marker)),
+            "transcript lost {marker}"
         );
-        let value = state.project_checkpoint();
-        assert!(value.to_string().contains(marker));
-        let mut restored = TuiState::default();
-        assert!(restored.restore_project_checkpoint(&value));
-        assert!(restored.project_checkpoint().to_string().contains(marker));
-        state.clear_project_checkpoint_dirty();
+        assert!(
+            !state.project_checkpoint_dirty(),
+            "{marker} scheduled a checkpoint"
+        );
+        assert!(!state.project_checkpoint().to_string().contains(marker));
     };
     state.clear_project_checkpoint_dirty();
     state.push_message(MessageRole::System, "owner notice");
-    checkpoint(&mut state, "owner notice");
+    unchanged(&mut state, "owner notice");
     state.push_message_block(
         MessageRole::Tool,
         "block notice",
@@ -75,41 +77,25 @@ fn asynchronous_transcript_mutations_schedule_checkpoints_without_keyboard_input
             text: "block payload".into(),
         },
     );
-    checkpoint(&mut state, "block payload");
+    unchanged(&mut state, "block notice");
     state.append_stream(MessageRole::Assistant, "legacy first ");
-    checkpoint(&mut state, "legacy first");
     state.append_stream(MessageRole::Assistant, "legacy second");
-    checkpoint(&mut state, "legacy second");
+    unchanged(&mut state, "legacy second");
     state.finish_stream(MessageRole::Assistant, "legacy final");
-    checkpoint(&mut state, "legacy final");
+    unchanged(&mut state, "legacy final");
     state.begin_stream_for_job(7);
     state.append_stream_for_job(7, MessageRole::Assistant, "first chunk ");
-    checkpoint(&mut state, "first chunk");
     state.append_stream_for_job(7, MessageRole::Assistant, "second chunk");
-    checkpoint(&mut state, "second chunk");
+    unchanged(&mut state, "second chunk");
     state.append_reasoning_for_job(7, "first reasoning ");
-    checkpoint(&mut state, "first reasoning");
     state.append_reasoning_for_job(7, "second reasoning");
-    checkpoint(&mut state, "second reasoning");
+    unchanged(&mut state, "second reasoning");
     state.tool_call_started("call", "fixture_tool");
-    checkpoint(&mut state, "fixture_tool");
+    unchanged(&mut state, "fixture_tool");
     state.tool_call_finished("call", ToolRunStatus::Failed);
-    checkpoint(&mut state, "failed");
+    unchanged(&mut state, "failed");
     state.finish_stream_for_job(7, MessageRole::Assistant, "final answer");
-    checkpoint(&mut state, "final answer");
-    state.append_stream_for_job(6, MessageRole::Assistant, "stale");
-    assert!(!state.project_checkpoint_dirty());
-    assert!(state.open_project_tab("other"));
-    state.clear_project_checkpoint_dirty();
-    assert!(state.select_project_tab(0));
-    state.push_message(MessageRole::System, "background result");
-    assert!(state.select_project_tab(1));
-    checkpoint(&mut state, "background result");
-    assert!(
-        !state
-            .messages()
-            .any(|m| m.text.contains("background result"))
-    );
+    unchanged(&mut state, "final answer");
 }
 
 #[test]
@@ -355,6 +341,12 @@ fn shared_resume_checkpoint_failure_preserves_actual_owner_draft_layout_and_meta
     let owner = host.active(&state);
     owner.lock().unwrap().set_persona("ESFP").unwrap();
     let old_session = owner.lock().unwrap().session().session_id().to_owned();
+    #[cfg(feature = "remote")]
+    let old_signal = zenpi::remote::wakeup::watch(&old_session).unwrap();
+    #[cfg(feature = "remote")]
+    let target_signal = zenpi::remote::wakeup::watch(&target_id).unwrap();
+    #[cfg(feature = "remote")]
+    let observed = (old_signal.revision(), target_signal.revision());
     state.set_input("keep unsent draft 世界");
     state.push_message(MessageRole::Assistant, "keep old transcript");
     let before = state.project_checkpoint();
@@ -369,6 +361,8 @@ fn shared_resume_checkpoint_failure_preserves_actual_owner_draft_layout_and_meta
     );
     fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
     assert!(result.is_err());
+    #[cfg(feature = "remote")]
+    assert_eq!((old_signal.revision(), target_signal.revision()), observed);
     assert_eq!(state.project_checkpoint(), before);
     assert_eq!(fs::read(&checkpoint).unwrap(), saved);
     assert!(Arc::ptr_eq(&owner, &host.active(&state)));
@@ -381,6 +375,10 @@ fn shared_resume_checkpoint_failure_preserves_actual_owner_draft_layout_and_meta
         },
     )
     .unwrap();
+    #[cfg(feature = "remote")]
+    assert_ne!(old_signal.revision(), observed.0);
+    #[cfg(feature = "remote")]
+    assert_ne!(target_signal.revision(), observed.1);
     assert_eq!(owner.lock().unwrap().session().session_id(), target_id);
     assert_eq!(owner.lock().unwrap().persona(), "ISTJ");
     assert_eq!(state.input(), "keep unsent draft 世界");
@@ -404,7 +402,10 @@ fn shared_resume_checkpoint_failure_preserves_actual_owner_draft_layout_and_meta
 fn stale_resume_writer_and_busy_owner_leave_the_tui_checkpoint_unchanged() {
     let root = tempdir().unwrap();
     let target = root.path().join("alternate.jsonl");
-    drop(SessionStore::open_in_workspace(&target, root.path()).unwrap());
+    let replacement = SessionStore::open_in_workspace(&target, root.path()).unwrap();
+    #[cfg(feature = "remote")]
+    let target_signal = zenpi::remote::wakeup::watch(replacement.session_id()).unwrap();
+    drop(replacement);
     let (mut state, mut host) = host(root.path());
     host.restore_shared_workspace(&mut state).unwrap();
     state.set_input("retained draft");
@@ -412,6 +413,12 @@ fn stale_resume_writer_and_busy_owner_leave_the_tui_checkpoint_unchanged() {
     let action = zenpi::slash::SessionAction::Open {
         path: target.display().to_string(),
     };
+    let owner = host.active(&state);
+    #[cfg(feature = "remote")]
+    let old_signal =
+        zenpi::remote::wakeup::watch(owner.lock().unwrap().session().session_id()).unwrap();
+    #[cfg(feature = "remote")]
+    let observed = (old_signal.revision(), target_signal.revision());
     state.set_busy(true);
     assert!(
         host.resume_session(&mut state, &action)
@@ -419,7 +426,6 @@ fn stale_resume_writer_and_busy_owner_leave_the_tui_checkpoint_unchanged() {
             .contains("busy")
     );
     state.set_busy(false);
-    let owner = host.active(&state);
     let guard = owner.lock().unwrap();
     assert!(
         host.resume_session(&mut state, &action)
@@ -439,6 +445,8 @@ fn stale_resume_writer_and_busy_owner_leave_the_tui_checkpoint_unchanged() {
     );
     assert_eq!(state.project_checkpoint(), before);
     assert_eq!(fs::read(checkpoint).unwrap(), changed);
+    #[cfg(feature = "remote")]
+    assert_eq!((old_signal.revision(), target_signal.revision()), observed);
 }
 
 #[test]
@@ -1036,4 +1044,90 @@ fn right_click_renames_a_worktree_card() {
     }
     let _ = state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(state.subtabs()[0].name, "trunk");
+}
+
+/// Screen cells of every layer-1 `[-]` control, left to right.
+fn layer1_close_controls(state: &mut TuiState) -> Vec<(u16, u16)> {
+    let mut terminal = Terminal::new(TestBackend::new(160, 40)).unwrap();
+    terminal
+        .draw(|frame| state.render_bentobox(frame, "zenpi"))
+        .unwrap();
+    let buffer = terminal.backend().buffer().clone();
+    let row: Vec<String> = (0..160)
+        .map(|x| buffer[(x, 0)].symbol().to_owned())
+        .collect();
+    (0..158)
+        .filter(|&x| row[x] == "[" && row[x + 1] == "-" && row[x + 2] == "]")
+        .map(|x| (x as u16 + 1, 0))
+        .collect()
+}
+
+fn click(state: &mut TuiState, (column, row): (u16, u16)) -> zenpi::tui::TuiAction {
+    state.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    })
+}
+
+#[test]
+fn layer1_tabs_are_one_per_folder_and_close_removes_only_that_folder() {
+    let root = tempdir().unwrap();
+    let (b, c) = (root.path().join("b"), root.path().join("c"));
+    fs::create_dir_all(&b).unwrap();
+    fs::create_dir_all(&c).unwrap();
+    let (mut state, mut host) = host(root.path());
+    host.apply(&mut state, ProjectIntent::Open(b.clone()))
+        .unwrap();
+    host.apply(&mut state, ProjectIntent::Open(c.clone()))
+        .unwrap();
+    // Reopening a folder (through any alias) selects its tab.
+    host.apply(&mut state, ProjectIntent::Open(c.join("../b")))
+        .unwrap();
+    host.apply(&mut state, ProjectIntent::Open(root.path().into()))
+        .unwrap();
+    assert_eq!(state.project_tab_count(), 3);
+    let controls = layer1_close_controls(&mut state);
+    assert_eq!(controls.len(), 3, "one close control per folder");
+
+    // `[-]` on the middle tab closes that folder in the host, not only in
+    // the view, so it cannot come back from the checkpoint.
+    assert_eq!(
+        click(&mut state, controls[1]),
+        zenpi::tui::TuiAction::Redraw
+    );
+    let intent = state
+        .take_project_intent()
+        .expect("close goes through host");
+    host.apply(&mut state, intent).unwrap();
+    assert_eq!(state.project_tab_count(), 2);
+    let checkpoint = state.project_checkpoint().to_string();
+    let b = b.canonicalize().unwrap().display().to_string();
+    let c = c.canonicalize().unwrap().display().to_string();
+    assert!(!checkpoint.contains(&format!("\"{b}\"")), "{checkpoint}");
+    assert!(checkpoint.contains(&format!("\"{c}\"")), "{checkpoint}");
+    assert_eq!(layer1_close_controls(&mut state).len(), 2);
+}
+
+#[test]
+fn closing_the_last_layer1_tab_keeps_state_and_quits() {
+    let root = tempdir().unwrap();
+    let (mut state, _host) = host(root.path());
+    state.handle_event(Event::Paste("unsent draft".into()));
+    let before = state.project_checkpoint();
+    let controls = layer1_close_controls(&mut state);
+    assert_eq!(controls.len(), 1);
+    assert_eq!(click(&mut state, controls[0]), zenpi::tui::TuiAction::Quit);
+    assert!(state.take_project_intent().is_none());
+    assert_eq!(state.project_tab_count(), 1);
+    assert_eq!(state.input(), "unsent draft");
+    assert_eq!(state.project_checkpoint(), before);
+
+    let other = tempdir().unwrap();
+    let (mut state, _host) = host(other.path());
+    assert_eq!(
+        state.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL)),
+        zenpi::tui::TuiAction::Quit
+    );
 }

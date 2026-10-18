@@ -1,0 +1,11 @@
+pluginManagement {
+    repositories { google(); mavenCentral(); gradlePluginPortal() }
+}
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories { google(); mavenCentral() }
+}
+rootProject.name = "ZenpiAndroid"
+include(":app")
+// ZE-591: Macrobenchmark of the conversation (runs against the :app benchmark build type).
+include(":macrobenchmark")

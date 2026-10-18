@@ -1,0 +1,1706 @@
+{
+  "requests": [
+    {
+      "input": [
+        {
+          "content": "Reply with the fixture transcript",
+          "role": "user"
+        },
+        {
+          "content": "STAGE2_ANDROID_REAL_PROVIDER_TRANSCRIPT",
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "text": "STAGE2_HEADLESS_ANDROID_FIRST @\"documents/fixture note.txt\"",
+              "type": "input_text"
+            },
+            {
+              "file_data": "data:text/plain;base64,U1RBR0UyX0hPU1RfQVRUQUNITUVOVF9QQVlMT0FECg==",
+              "filename": "fixture note.txt",
+              "type": "input_file"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "instructions": "<available_skills>\n  <skill><name>stage2-research</name><description>Catalog skill fixture</description><location>/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-headless-android-1jq9wivt/workspace/.zenpi/skills/stage2-research/SKILL.md</location></skill>\n</available_skills>\nCommunication preference: INTJ (Analysts). Treat this MBTI label only as a requested writing style, not a diagnosis or identity. Coding/work style: Architecture, systems thinking, and precise tradeoffs. Be reflective and concise. Explain patterns and possibilities. Make reasoning and tradeoffs explicit. Organize clear next steps. Never change permissions, factual accuracy, or task requirements for this style.\n\n",
+      "model": "gpt-5.2",
+      "reasoning": {
+        "effort": "high"
+      },
+      "store": false,
+      "stream": true,
+      "tool_choice": "auto",
+      "tools": [
+        {
+          "description": "Report your DAG node status (green/red/open). The result says whether the node may close: it may close only when the node is green and every child/grandchild is green. When can_close is false the worker must stay alive and handle the unfinished work (spawn workers, send messages, keep polling).",
+          "name": "dag_finish",
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "node": {
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "open",
+                  "green",
+                  "red"
+                ],
+                "type": "string"
+              },
+              "summary": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "status"
+            ],
+            "type": "object"
+          },
+          "type": "function"
+        },
+        {
+          "description": "Wait (bounded, <=30s) for messages addressed to your DAG node and claim them (ack/claim semantics: claimed-but-unacked messages are redelivered on the next call; pass ack:[ids] once processed). Use it to stay alive while children or parents still need you.",
+          "name": "dag_recv",
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "ack": {
+                "description": "message ids already processed",
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              "node": {
+                "type": "string"
+              },
+              "wait_seconds": {
+                "maximum": 30,
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "type": "function"
+        },
+        {
+          "description": "Send a bounded message to another DAG worker: `to` is a node id or one of parent, grandparent, sibling, child, all (parent + grandparent + direct siblings + direct children). Messages to a child spawned by this process are also piped to its live headless stdin.",
+          "name": "dag_send",
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "body": {
+                "type": "string"
+              },
+              "from": {
+                "type": "string"
+              },
+              "to": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "to",
+              "body"
+            ],
+            "type": "object"
+          },
+          "type": "function"
+        },
+        {
+          "description": "Create a child DAG node and spawn a live headless worker for it. The child gets ZENPI_DAG_NODE/ZENPI_DAG_STORE, and this process keeps its stdin so dag_send can deliver follow-up work while it stays alive.",
+          "name": "dag_spawn",
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "node": {
+                "type": "string"
+              },
+              "parent": {
+                "type": "string"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "session_dir": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "node",
+              "prompt"
+            ],
+            "type": "object"
+          },
+          "type": "function"
+        },
+        {
+          "description": "Read the DAG node you own: parent, children statuses, whether the node may close (node green and all descendants green), unfinished descendants, and unread message count.",
+          "name": "dag_status",
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "node": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "type": "function"
+        },
+        {
+          "description": "Replace one exact UTF-8 text occurrence atomically and return a bounded unified diff.",
+          "name": "edit_file",
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "new": {
+                "maxLength": 524288,
+                "type": "string"
+              },
+              "old": {
+                "maxLength": 524288,
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "old",
+              "new"
+            ],
+            "type": "object"
+          },
+          "type": "function"
+        },
+        {
+          "description": "Find workspace files by glob using installed ripgrep, with explicit ignore/hidden options and bounded results.",
+          "name": "find",
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "hidden": {
+                "default": false,
+                "type": "boolean"
+              },
+              "ignore": {
+                "default": true,
+                "type": "boolean"
+              },
+              "limit": {
+                "maximum": 256,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "path": {
+                "default": ".",
+                "type": "string"
+              },
+              "pattern": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "pattern"
+            ],
+            "type": "object"
+          },
+          "type": "function"
+        },
+        {
+          "description": "List one workspace directory without recursively following links.",
+          "name": "list_directory",
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "max_entries": {
+                "maximum": 128,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "path": {
+                "default": ".",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "type": "function"
+        },
+        {
+          "description": "Load the body of one available skill by exact name. Optional arguments are literal text. Disabled skills cannot be model-invoked. Load again in each new turn before using read_skill_resource.",
+          "name": "load_skill",
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "arguments": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "type": "object"
+          },
+          "type": "function"
+        },
+        {
+          "description": "Read a UTF-8 text file inside the workspace with a byte limit.",
+          "name": "read_file",
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "max_bytes": {
+                "maximum": 524288,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "type": "object"
+          },
+          "type": "function"
+        },
+        {
+          "description": "Read a bounded UTF-8 resource relative to a skill loaded with load_skill in this turn. Paths stay inside that skill directory; SKILL.md must use load_skill.",
+          "name": "read_skill_resource",
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "skill": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "skill",
+              "path"
+            ],
+            "type": "object"
+          },
+          "type": "function"
+        },
+        {
+          "description": "Read a bounded redacted range of a recorded output artifact in this session. Use the artifact_id and call_id from its capture result; offsets count original raw bytes.",
+          "name": "read_tool_output",
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "artifact_id": {
+                "maxLength": 64,
+                "minLength": 64,
+                "type": "string"
+              },
+              "call_id": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "length": {
+                "maximum": 8192,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "offset": {
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "artifact_id",
+              "call_id",
+              "offset",
+              "length"
+            ],
+            "type": "object"
+          },
+          "type": "function"
+        },
+        {
+          "description": "Run a bounded shell command in the workspace.",
+          "name": "run_command",
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "command": {
+                "maxLength": 16384,
+                "type": "string"
+              },
+              "timeout_ms": {
+                "maximum": 120000,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "type": "object"
+          },
+          "type": "function"
+        },
+        {
+          "description": "Search literal text by default. Explicit regex/glob/ignore/hidden/context options use installed ripgrep with bounded traversal.",
+          "name": "search_text",
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "case_sensitive": {
+                "default": true,
+                "type": "boolean"
+              },
+              "context": {
+                "maximum": 10,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "glob": {
+                "type": "string"
+              },
+              "hidden": {
+                "default": false,
+                "type": "boolean"
+              },
+              "ignore": {
+                "default": true,
+                "type": "boolean"
+              },
+              "max_matches": {
+                "maximum": 100,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "path": {
+                "default": ".",
+                "type": "string"
+              },
+              "query": {
+                "type": "string"
+              },
+              "regex": {
+                "default": false,
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "query"
+            ],
+            "type": "object"
+          },
+          "type": "function"
+        },
+        {
+          "description": "Search the web (Exa) for current information and return bounded title/url/snippet results. Use it for up-to-date facts, papers and news; cite the returned URLs.",
+          "name": "websearch",
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "num_results": {
+                "default": 5,
+                "maximum": 10,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "query": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "query"
+            ],
+            "type": "object"
+          },
+          "type": "function"
+        },
+        {
+          "description": "Atomically write UTF-8 text inside the workspace and return a bounded unified diff.",
+          "name": "write_file",
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "content": {
+                "maxLength": 524288,
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "content"
+            ],
+            "type": "object"
+          },
+          "type": "function"
+        }
+      ]
+    },
+    {
+      "input": [
+        {
+          "content": "Reply with the fixture transcript",
+          "role": "user"
+        },
+        {
+          "content": "STAGE2_ANDROID_REAL_PROVIDER_TRANSCRIPT",
+          "role": "assistant"
+        },
+        {
+          "content": "STAGE2_HEADLESS_ANDROID_FIRST @\"documents/fixture note.txt\"",
+          "role": "user"
+        },
+        {
+          "content": "STAGE2_HEADLESS_ANDROID_FIRST_DONE",
+          "role": "assistant"
+        },
+        {
+          "content": "STAGE2_HOST_TEMPLATE_BODY\nSTAGE2_HEADLESS_ANDROID_SECOND literal $1 $(touch never-created)",
+          "role": "user"
+        }
+      ],
+      "instructions": "<available_skills>\n  <skill><name>stage2-research</name><description>Catalog skill fixture</description><location>/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-headless-android-1jq9wivt/workspace/.zenpi/skills/stage2-research/SKILL.md</location></skill>\n</available_skills>\nCommunication preference: INTJ (Analysts). Treat this MBTI label only as a requested writing style, not a diagnosis or identity. Coding/work style: Architecture, systems thinking, and precise tradeoffs. Be reflective and concise. Explain patterns and possibilities. Make reasoning and tradeoffs explicit. Organize clear next steps. Never change permissions, factual accuracy, or task requirements for this style.\n\n",
+      "model": "gpt-5.2-2025-12-11",
+      "reasoning": {
+        "effort": "low"
+      },
+      "store": false,
+      "stream": true,
+      "tool_choice": "auto",
+      "tools": [
+        {
+          "description": "Report your DAG node status (green/red/open). The result says whether the node may close: it may close only when the node is green and every child/grandchild is green. When can_close is false the worker must stay alive and handle the unfinished work (spawn workers, send messages, keep polling).",
+          "name": "dag_finish",
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "node": {
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "open",
+                  "green",
+                  "red"
+                ],
+                "type": "string"
+              },
+              "summary": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "status"
+            ],
+            "type": "object"
+          },
+          "type": "function"
+        },
+        {
+          "description": "Wait (bounded, <=30s) for messages addressed to your DAG node and claim them (ack/claim semantics: claimed-but-unacked messages are redelivered on the next call; pass ack:[ids] once processed). Use it to stay alive while children or parents still need you.",
+          "name": "dag_recv",
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "ack": {
+                "description": "message ids already processed",
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              "node": {
+                "type": "string"
+              },
+              "wait_seconds": {
+                "maximum": 30,
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "type": "function"
+        },
+        {
+          "description": "Send a bounded message to another DAG worker: `to` is a node id or one of parent, grandparent, sibling, child, all (parent + grandparent + direct siblings + direct children). Messages to a child spawned by this process are also piped to its live headless stdin.",
+          "name": "dag_send",
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "body": {
+                "type": "string"
+              },
+              "from": {
+                "type": "string"
+              },
+              "to": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "to",
+              "body"
+            ],
+            "type": "object"
+          },
+          "type": "function"
+        },
+        {
+          "description": "Create a child DAG node and spawn a live headless worker for it. The child gets ZENPI_DAG_NODE/ZENPI_DAG_STORE, and this process keeps its stdin so dag_send can deliver follow-up work while it stays alive.",
+          "name": "dag_spawn",
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "node": {
+                "type": "string"
+              },
+              "parent": {
+                "type": "string"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "session_dir": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "node",
+              "prompt"
+            ],
+            "type": "object"
+          },
+          "type": "function"
+        },
+        {
+          "description": "Read the DAG node you own: parent, children statuses, whether the node may close (node green and all descendants green), unfinished descendants, and unread message count.",
+          "name": "dag_status",
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "node": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "type": "function"
+        },
+        {
+          "description": "Replace one exact UTF-8 text occurrence atomically and return a bounded unified diff.",
+          "name": "edit_file",
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "new": {
+                "maxLength": 524288,
+                "type": "string"
+              },
+              "old": {
+                "maxLength": 524288,
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "old",
+              "new"
+            ],
+            "type": "object"
+          },
+          "type": "function"
+        },
+        {
+          "description": "Find workspace files by glob using installed ripgrep, with explicit ignore/hidden options and bounded results.",
+          "name": "find",
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "hidden": {
+                "default": false,
+                "type": "boolean"
+              },
+              "ignore": {
+                "default": true,
+                "type": "boolean"
+              },
+              "limit": {
+                "maximum": 256,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "path": {
+                "default": ".",
+                "type": "string"
+              },
+              "pattern": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "pattern"
+            ],
+            "type": "object"
+          },
+          "type": "function"
+        },
+        {
+          "description": "List one workspace directory without recursively following links.",
+          "name": "list_directory",
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "max_entries": {
+                "maximum": 128,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "path": {
+                "default": ".",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "type": "function"
+        },
+        {
+          "description": "Load the body of one available skill by exact name. Optional arguments are literal text. Disabled skills cannot be model-invoked. Load again in each new turn before using read_skill_resource.",
+          "name": "load_skill",
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "arguments": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "type": "object"
+          },
+          "type": "function"
+        },
+        {
+          "description": "Read a UTF-8 text file inside the workspace with a byte limit.",
+          "name": "read_file",
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "max_bytes": {
+                "maximum": 524288,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "type": "object"
+          },
+          "type": "function"
+        },
+        {
+          "description": "Read a bounded UTF-8 resource relative to a skill loaded with load_skill in this turn. Paths stay inside that skill directory; SKILL.md must use load_skill.",
+          "name": "read_skill_resource",
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "skill": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "skill",
+              "path"
+            ],
+            "type": "object"
+          },
+          "type": "function"
+        },
+        {
+          "description": "Read a bounded redacted range of a recorded output artifact in this session. Use the artifact_id and call_id from its capture result; offsets count original raw bytes.",
+          "name": "read_tool_output",
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "artifact_id": {
+                "maxLength": 64,
+                "minLength": 64,
+                "type": "string"
+              },
+              "call_id": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "length": {
+                "maximum": 8192,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "offset": {
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "artifact_id",
+              "call_id",
+              "offset",
+              "length"
+            ],
+            "type": "object"
+          },
+          "type": "function"
+        },
+        {
+          "description": "Run a bounded shell command in the workspace.",
+          "name": "run_command",
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "command": {
+                "maxLength": 16384,
+                "type": "string"
+              },
+              "timeout_ms": {
+                "maximum": 120000,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "type": "object"
+          },
+          "type": "function"
+        },
+        {
+          "description": "Search literal text by default. Explicit regex/glob/ignore/hidden/context options use installed ripgrep with bounded traversal.",
+          "name": "search_text",
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "case_sensitive": {
+                "default": true,
+                "type": "boolean"
+              },
+              "context": {
+                "maximum": 10,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "glob": {
+                "type": "string"
+              },
+              "hidden": {
+                "default": false,
+                "type": "boolean"
+              },
+              "ignore": {
+                "default": true,
+                "type": "boolean"
+              },
+              "max_matches": {
+                "maximum": 100,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "path": {
+                "default": ".",
+                "type": "string"
+              },
+              "query": {
+                "type": "string"
+              },
+              "regex": {
+                "default": false,
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "query"
+            ],
+            "type": "object"
+          },
+          "type": "function"
+        },
+        {
+          "description": "Search the web (Exa) for current information and return bounded title/url/snippet results. Use it for up-to-date facts, papers and news; cite the returned URLs.",
+          "name": "websearch",
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "num_results": {
+                "default": 5,
+                "maximum": 10,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "query": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "query"
+            ],
+            "type": "object"
+          },
+          "type": "function"
+        },
+        {
+          "description": "Atomically write UTF-8 text inside the workspace and return a bounded unified diff.",
+          "name": "write_file",
+          "parameters": {
+            "additionalProperties": false,
+            "properties": {
+              "content": {
+                "maxLength": 524288,
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "content"
+            ],
+            "type": "object"
+          },
+          "type": "function"
+        }
+      ]
+    }
+  ],
+  "records": [
+    {
+      "created_at_ms": 1791146634395,
+      "cwd": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-headless-android-1jq9wivt/workspace",
+      "kind": "session",
+      "schema_version": 1,
+      "seq": 0,
+      "session_id": "session-1791146634395-62619-0",
+      "timestamp": "2026-10-04T20:43:54Z",
+      "timestamp_ms": 1791146634396,
+      "version": 1
+    },
+    {
+      "event": {
+        "generation": 1,
+        "tools": [],
+        "type": "extensions_selected"
+      },
+      "kind": "event",
+      "schema_version": 1,
+      "seq": 1,
+      "session_id": "session-1791146634395-62619-0",
+      "timestamp": "2026-10-04T20:43:54Z",
+      "timestamp_ms": 1791146634403
+    },
+    {
+      "kind": "turn",
+      "schema_version": 1,
+      "seq": 2,
+      "session_id": "session-1791146634395-62619-0",
+      "timestamp": "2026-10-04T20:43:54Z",
+      "timestamp_ms": 1791146634419,
+      "turn": {
+        "content": "Reply with the fixture transcript",
+        "created_at_ms": 1791146634419,
+        "id": "turn-1791146634419-2",
+        "metadata": {
+          "zenpi_content_v1": {
+            "parts": [
+              {
+                "text": "Reply with the fixture transcript",
+                "type": "text"
+              }
+            ],
+            "version": 1
+          }
+        },
+        "parent_id": null,
+        "role": "user"
+      }
+    },
+    {
+      "event": {
+        "idempotency_key": "provider-bf52346348d8c0996f9465583608d340a892949c0188e04c90125e6edfa7bdc6",
+        "operation_id": "provider-turn-1791146634419-2",
+        "operation_kind": "provider",
+        "retry_requires_confirmation": false,
+        "turn_id": "turn-1791146634419-2",
+        "type": "operation_started"
+      },
+      "kind": "event",
+      "schema_version": 1,
+      "seq": 3,
+      "session_id": "session-1791146634395-62619-0",
+      "timestamp": "2026-10-04T20:43:54Z",
+      "timestamp_ms": 1791146634428
+    },
+    {
+      "kind": "turn",
+      "schema_version": 1,
+      "seq": 4,
+      "session_id": "session-1791146634395-62619-0",
+      "timestamp": "2026-10-04T20:43:54Z",
+      "timestamp_ms": 1791146634444,
+      "turn": {
+        "content": "STAGE2_ANDROID_REAL_PROVIDER_TRANSCRIPT",
+        "created_at_ms": 1791146634444,
+        "id": "assistant-1791146634444-4",
+        "metadata": {
+          "model": "gpt-4.1",
+          "response_id": "stage2-fixture"
+        },
+        "parent_id": "turn-1791146634419-2",
+        "role": "assistant"
+      }
+    },
+    {
+      "event": {
+        "operation_id": "provider-turn-1791146634419-2",
+        "outcome": "succeeded",
+        "type": "operation_finished"
+      },
+      "kind": "event",
+      "schema_version": 1,
+      "seq": 5,
+      "session_id": "session-1791146634395-62619-0",
+      "timestamp": "2026-10-04T20:43:54Z",
+      "timestamp_ms": 1791146634449
+    },
+    {
+      "event": {
+        "generation": 1,
+        "tools": [],
+        "type": "extensions_selected"
+      },
+      "kind": "event",
+      "schema_version": 1,
+      "seq": 6,
+      "session_id": "session-1791146634395-62619-0",
+      "timestamp": "2026-10-04T20:43:55Z",
+      "timestamp_ms": 1791146635034
+    },
+    {
+      "event": {
+        "device_id": "123b05fe8dfb4a08fead666e7b486de9534057b2a1066d5f7ceebea32d6c752f",
+        "execution_subtab": {
+          "id": "070bc6cf815199fca2ef4cca0718b20f07e5ad26848f4be2ada9245390443223",
+          "kind": "main",
+          "root": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-headless-android-1jq9wivt/workspace"
+        },
+        "fingerprint": "9f60d249bfc74b3cc9608c0434b68d2262f5c5165f6f2d5ce167362575aa3e18",
+        "request_id": "34611ca9-ccfc-4468-865b-0f2936a8c156",
+        "result": null,
+        "state": "reserved",
+        "type": "remote_prompt_admission_v1"
+      },
+      "kind": "event",
+      "schema_version": 1,
+      "seq": 7,
+      "session_id": "session-1791146634395-62619-0",
+      "timestamp": "2026-10-04T20:44:18Z",
+      "timestamp_ms": 1791146658769
+    },
+    {
+      "event": {
+        "device_id": "123b05fe8dfb4a08fead666e7b486de9534057b2a1066d5f7ceebea32d6c752f",
+        "execution_subtab": {
+          "id": "070bc6cf815199fca2ef4cca0718b20f07e5ad26848f4be2ada9245390443223",
+          "kind": "main",
+          "root": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-headless-android-1jq9wivt/workspace"
+        },
+        "fingerprint": "9f60d249bfc74b3cc9608c0434b68d2262f5c5165f6f2d5ce167362575aa3e18",
+        "request_id": "34611ca9-ccfc-4468-865b-0f2936a8c156",
+        "result": {
+          "job_id": "1",
+          "project_id": "f52da3617b309985b47f00812418d372514ae32f211fdac9cb07627c77a258c7",
+          "request_id": "34611ca9-ccfc-4468-865b-0f2936a8c156",
+          "session_id": "session-1791146634395-62619-0"
+        },
+        "state": "accepted",
+        "type": "remote_prompt_admission_v1"
+      },
+      "kind": "event",
+      "schema_version": 1,
+      "seq": 8,
+      "session_id": "session-1791146634395-62619-0",
+      "timestamp": "2026-10-04T20:44:18Z",
+      "timestamp_ms": 1791146658774
+    },
+    {
+      "event": {
+        "device_id": "123b05fe8dfb4a08fead666e7b486de9534057b2a1066d5f7ceebea32d6c752f",
+        "project_id": "f52da3617b309985b47f00812418d372514ae32f211fdac9cb07627c77a258c7",
+        "request_id": "34611ca9-ccfc-4468-865b-0f2936a8c156",
+        "session_id": "session-1791146634395-62619-0",
+        "state": "running",
+        "type": "remote_prompt_progress_v1"
+      },
+      "kind": "event",
+      "schema_version": 1,
+      "seq": 9,
+      "session_id": "session-1791146634395-62619-0",
+      "timestamp": "2026-10-04T20:44:18Z",
+      "timestamp_ms": 1791146658781
+    },
+    {
+      "kind": "turn",
+      "schema_version": 1,
+      "seq": 10,
+      "session_id": "session-1791146634395-62619-0",
+      "timestamp": "2026-10-04T20:44:18Z",
+      "timestamp_ms": 1791146658786,
+      "turn": {
+        "content": "STAGE2_HEADLESS_ANDROID_FIRST @\"documents/fixture note.txt\"",
+        "created_at_ms": 1791146658786,
+        "id": "turn-1791146658786-2",
+        "metadata": {
+          "attachments": [
+            {
+              "file_id": null,
+              "kind": "file",
+              "mime_type": "text/plain",
+              "path": "documents/fixture note.txt",
+              "sha256": "022814652183b0c0ae162e461ed21a59353b9bb4e5476acd9fc2f079a10eee2e",
+              "size_bytes": 31,
+              "url": null
+            }
+          ],
+          "zenpi_content_v1": {
+            "parts": [
+              {
+                "text": "STAGE2_HEADLESS_ANDROID_FIRST @\"documents/fixture note.txt\"",
+                "type": "text"
+              },
+              {
+                "media": {
+                  "filename": "fixture note.txt",
+                  "id": "documents/fixture note.txt",
+                  "mime_type": "text/plain",
+                  "source": {
+                    "path": "documents/fixture note.txt",
+                    "sha256": "022814652183b0c0ae162e461ed21a59353b9bb4e5476acd9fc2f079a10eee2e",
+                    "size_bytes": 31,
+                    "type": "workspace_file"
+                  }
+                },
+                "type": "file"
+              }
+            ],
+            "version": 1
+          }
+        },
+        "parent_id": null,
+        "role": "user"
+      }
+    },
+    {
+      "event": {
+        "idempotency_key": "provider-42d5caf6a2e15843f7bac5f1de7296a46687fef2da008484c4c5bf8ac8ce47a1",
+        "operation_id": "provider-turn-1791146658786-2",
+        "operation_kind": "provider",
+        "retry_requires_confirmation": false,
+        "turn_id": "turn-1791146658786-2",
+        "type": "operation_started"
+      },
+      "kind": "event",
+      "schema_version": 1,
+      "seq": 11,
+      "session_id": "session-1791146634395-62619-0",
+      "timestamp": "2026-10-04T20:44:18Z",
+      "timestamp_ms": 1791146658791
+    },
+    {
+      "kind": "turn",
+      "schema_version": 1,
+      "seq": 12,
+      "session_id": "session-1791146634395-62619-0",
+      "timestamp": "2026-10-04T20:44:23Z",
+      "timestamp_ms": 1791146663838,
+      "turn": {
+        "content": "STAGE2_HEADLESS_ANDROID_FIRST_DONE",
+        "created_at_ms": 1791146663838,
+        "id": "assistant-1791146663838-4",
+        "metadata": {
+          "model": "gpt-5.2",
+          "response_id": "headless"
+        },
+        "parent_id": "turn-1791146658786-2",
+        "role": "assistant"
+      }
+    },
+    {
+      "event": {
+        "operation_id": "provider-turn-1791146658786-2",
+        "outcome": "succeeded",
+        "type": "operation_finished"
+      },
+      "kind": "event",
+      "schema_version": 1,
+      "seq": 13,
+      "session_id": "session-1791146634395-62619-0",
+      "timestamp": "2026-10-04T20:44:23Z",
+      "timestamp_ms": 1791146663844
+    },
+    {
+      "event": {
+        "device_id": "123b05fe8dfb4a08fead666e7b486de9534057b2a1066d5f7ceebea32d6c752f",
+        "project_id": "f52da3617b309985b47f00812418d372514ae32f211fdac9cb07627c77a258c7",
+        "request_id": "34611ca9-ccfc-4468-865b-0f2936a8c156",
+        "session_id": "session-1791146634395-62619-0",
+        "state": "succeeded",
+        "type": "remote_prompt_progress_v1"
+      },
+      "kind": "event",
+      "schema_version": 1,
+      "seq": 14,
+      "session_id": "session-1791146634395-62619-0",
+      "timestamp": "2026-10-04T20:44:23Z",
+      "timestamp_ms": 1791146663858
+    },
+    {
+      "event": {
+        "code": null,
+        "device_id": "123b05fe8dfb4a08fead666e7b486de9534057b2a1066d5f7ceebea32d6c752f",
+        "fingerprint": "5c1a74cffbcc06431cdd3bea2d71ee41d3aa14277fdc744f5c95dd7ac47ad3db",
+        "request_id": "47ecad1f-f03d-40b2-a1c4-975e51947b2f",
+        "result": null,
+        "state": "reserved",
+        "type": "remote_model_admission_v1"
+      },
+      "kind": "event",
+      "schema_version": 1,
+      "seq": 15,
+      "session_id": "session-1791146634395-62619-0",
+      "timestamp": "2026-10-04T20:44:29Z",
+      "timestamp_ms": 1791146669948
+    },
+    {
+      "event": {
+        "auth_kind": "legacy",
+        "config_revision": 0,
+        "credential_ref": null,
+        "definition_version": 0,
+        "descriptor": {
+          "capabilities": {
+            "files": true,
+            "images": true,
+            "reasoning": true,
+            "streaming": true,
+            "structured_output": true,
+            "text": true,
+            "tools": true
+          },
+          "context_window": 400000,
+          "id": "gpt-5.2-2025-12-11",
+          "max_output_tokens": 128000,
+          "price": null,
+          "provider": "openai",
+          "reasoning_levels": [
+            "none",
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ],
+          "sources": {
+            "context_window": {
+              "kind": "builtin",
+              "reference": "https://developers.openai.com/api/docs/models/gpt-5.2",
+              "version": "zenpi-models-2026-09-11.1"
+            },
+            "files": {
+              "kind": "builtin",
+              "reference": "https://developers.openai.com/api/docs/guides/file-inputs",
+              "version": "zenpi-models-2026-09-11.1"
+            },
+            "images": {
+              "kind": "builtin",
+              "reference": "https://developers.openai.com/api/docs/models/gpt-5.2",
+              "version": "zenpi-models-2026-09-11.1"
+            },
+            "max_output_tokens": {
+              "kind": "builtin",
+              "reference": "https://developers.openai.com/api/docs/models/gpt-5.2",
+              "version": "zenpi-models-2026-09-11.1"
+            },
+            "price": {
+              "kind": "conservative",
+              "version": "zenpi-models-2026-09-11.1"
+            },
+            "reasoning_levels": {
+              "kind": "builtin",
+              "reference": "https://developers.openai.com/api/docs/models/gpt-5.2",
+              "version": "zenpi-models-2026-09-11.1"
+            },
+            "streaming": {
+              "kind": "builtin",
+              "reference": "https://developers.openai.com/api/docs/models/gpt-5.2",
+              "version": "zenpi-models-2026-09-11.1"
+            },
+            "structured_output": {
+              "kind": "builtin",
+              "reference": "https://developers.openai.com/api/docs/models/gpt-5.2",
+              "version": "zenpi-models-2026-09-11.1"
+            },
+            "text": {
+              "kind": "builtin",
+              "reference": "https://developers.openai.com/api/docs/models/gpt-5.2",
+              "version": "zenpi-models-2026-09-11.1"
+            },
+            "tools": {
+              "kind": "builtin",
+              "reference": "https://developers.openai.com/api/docs/models/gpt-5.2",
+              "version": "zenpi-models-2026-09-11.1"
+            }
+          },
+          "status": "active"
+        },
+        "digest": "357f6ab3ac8ca6522a2a64cde0a1b0f3f4be9b68ca3011e6376f5a9a867a6fd6",
+        "identity_scope": "",
+        "model": "gpt-5.2-2025-12-11",
+        "profile": "",
+        "protocol": "",
+        "provider": "",
+        "reasoning_effort": "high",
+        "route_digest": "",
+        "selection_version": 1,
+        "type": "model_selected"
+      },
+      "kind": "event",
+      "schema_version": 1,
+      "seq": 16,
+      "session_id": "session-1791146634395-62619-0",
+      "timestamp": "2026-10-04T20:44:29Z",
+      "timestamp_ms": 1791146669957
+    },
+    {
+      "event": {
+        "code": null,
+        "device_id": "123b05fe8dfb4a08fead666e7b486de9534057b2a1066d5f7ceebea32d6c752f",
+        "fingerprint": "5c1a74cffbcc06431cdd3bea2d71ee41d3aa14277fdc744f5c95dd7ac47ad3db",
+        "request_id": "47ecad1f-f03d-40b2-a1c4-975e51947b2f",
+        "result": {
+          "model": "gpt-5.2-2025-12-11",
+          "project_id": "f52da3617b309985b47f00812418d372514ae32f211fdac9cb07627c77a258c7",
+          "request_id": "47ecad1f-f03d-40b2-a1c4-975e51947b2f",
+          "selection_revision": 16,
+          "session_id": "session-1791146634395-62619-0"
+        },
+        "state": "succeeded",
+        "type": "remote_model_admission_v1"
+      },
+      "kind": "event",
+      "schema_version": 1,
+      "seq": 17,
+      "session_id": "session-1791146634395-62619-0",
+      "timestamp": "2026-10-04T20:44:29Z",
+      "timestamp_ms": 1791146669962
+    },
+    {
+      "event": {
+        "code": null,
+        "device_id": "123b05fe8dfb4a08fead666e7b486de9534057b2a1066d5f7ceebea32d6c752f",
+        "fingerprint": "d58132766a129d3717ac52ca83ccf111d60875306d4be5cf434077ddf07ba60e",
+        "request_id": "3e9199f6-d190-42b2-ae91-651d8b339849",
+        "result": null,
+        "state": "reserved",
+        "type": "remote_reasoning_admission_v1"
+      },
+      "kind": "event",
+      "schema_version": 1,
+      "seq": 18,
+      "session_id": "session-1791146634395-62619-0",
+      "timestamp": "2026-10-04T20:44:37Z",
+      "timestamp_ms": 1791146677442
+    },
+    {
+      "event": {
+        "auth_kind": "legacy",
+        "config_revision": 0,
+        "credential_ref": null,
+        "definition_version": 0,
+        "descriptor": {
+          "capabilities": {
+            "files": true,
+            "images": true,
+            "reasoning": true,
+            "streaming": true,
+            "structured_output": true,
+            "text": true,
+            "tools": true
+          },
+          "context_window": 400000,
+          "id": "gpt-5.2-2025-12-11",
+          "max_output_tokens": 128000,
+          "price": null,
+          "provider": "openai",
+          "reasoning_levels": [
+            "none",
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ],
+          "sources": {
+            "context_window": {
+              "kind": "builtin",
+              "reference": "https://developers.openai.com/api/docs/models/gpt-5.2",
+              "version": "zenpi-models-2026-09-11.1"
+            },
+            "files": {
+              "kind": "builtin",
+              "reference": "https://developers.openai.com/api/docs/guides/file-inputs",
+              "version": "zenpi-models-2026-09-11.1"
+            },
+            "images": {
+              "kind": "builtin",
+              "reference": "https://developers.openai.com/api/docs/models/gpt-5.2",
+              "version": "zenpi-models-2026-09-11.1"
+            },
+            "max_output_tokens": {
+              "kind": "builtin",
+              "reference": "https://developers.openai.com/api/docs/models/gpt-5.2",
+              "version": "zenpi-models-2026-09-11.1"
+            },
+            "price": {
+              "kind": "conservative",
+              "version": "zenpi-models-2026-09-11.1"
+            },
+            "reasoning_levels": {
+              "kind": "builtin",
+              "reference": "https://developers.openai.com/api/docs/models/gpt-5.2",
+              "version": "zenpi-models-2026-09-11.1"
+            },
+            "streaming": {
+              "kind": "builtin",
+              "reference": "https://developers.openai.com/api/docs/models/gpt-5.2",
+              "version": "zenpi-models-2026-09-11.1"
+            },
+            "structured_output": {
+              "kind": "builtin",
+              "reference": "https://developers.openai.com/api/docs/models/gpt-5.2",
+              "version": "zenpi-models-2026-09-11.1"
+            },
+            "text": {
+              "kind": "builtin",
+              "reference": "https://developers.openai.com/api/docs/models/gpt-5.2",
+              "version": "zenpi-models-2026-09-11.1"
+            },
+            "tools": {
+              "kind": "builtin",
+              "reference": "https://developers.openai.com/api/docs/models/gpt-5.2",
+              "version": "zenpi-models-2026-09-11.1"
+            }
+          },
+          "status": "active"
+        },
+        "digest": "357f6ab3ac8ca6522a2a64cde0a1b0f3f4be9b68ca3011e6376f5a9a867a6fd6",
+        "identity_scope": "",
+        "model": "gpt-5.2-2025-12-11",
+        "profile": "",
+        "protocol": "",
+        "provider": "",
+        "reasoning_effort": "low",
+        "route_digest": "",
+        "selection_version": 1,
+        "type": "model_selected"
+      },
+      "kind": "event",
+      "schema_version": 1,
+      "seq": 19,
+      "session_id": "session-1791146634395-62619-0",
+      "timestamp": "2026-10-04T20:44:37Z",
+      "timestamp_ms": 1791146677450
+    },
+    {
+      "event": {
+        "code": null,
+        "device_id": "123b05fe8dfb4a08fead666e7b486de9534057b2a1066d5f7ceebea32d6c752f",
+        "fingerprint": "d58132766a129d3717ac52ca83ccf111d60875306d4be5cf434077ddf07ba60e",
+        "request_id": "3e9199f6-d190-42b2-ae91-651d8b339849",
+        "result": {
+          "project_id": "f52da3617b309985b47f00812418d372514ae32f211fdac9cb07627c77a258c7",
+          "reasoning_effort": "low",
+          "request_id": "3e9199f6-d190-42b2-ae91-651d8b339849",
+          "selection_revision": 19,
+          "session_id": "session-1791146634395-62619-0"
+        },
+        "state": "succeeded",
+        "type": "remote_reasoning_admission_v1"
+      },
+      "kind": "event",
+      "schema_version": 1,
+      "seq": 20,
+      "session_id": "session-1791146634395-62619-0",
+      "timestamp": "2026-10-04T20:44:37Z",
+      "timestamp_ms": 1791146677454
+    },
+    {
+      "event": {
+        "device_id": "123b05fe8dfb4a08fead666e7b486de9534057b2a1066d5f7ceebea32d6c752f",
+        "execution_subtab": {
+          "id": "070bc6cf815199fca2ef4cca0718b20f07e5ad26848f4be2ada9245390443223",
+          "kind": "main",
+          "root": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-headless-android-1jq9wivt/workspace"
+        },
+        "fingerprint": "4232114d8afdd127586fb63b48ce29ef260c8a6fbe79582e22ae21d6ac3144e4",
+        "request_id": "ba6cde46-b512-4147-977b-6961a32f43d8",
+        "result": null,
+        "state": "reserved",
+        "type": "remote_prompt_admission_v1"
+      },
+      "kind": "event",
+      "schema_version": 1,
+      "seq": 21,
+      "session_id": "session-1791146634395-62619-0",
+      "timestamp": "2026-10-04T20:44:51Z",
+      "timestamp_ms": 1791146691607
+    },
+    {
+      "event": {
+        "device_id": "123b05fe8dfb4a08fead666e7b486de9534057b2a1066d5f7ceebea32d6c752f",
+        "execution_subtab": {
+          "id": "070bc6cf815199fca2ef4cca0718b20f07e5ad26848f4be2ada9245390443223",
+          "kind": "main",
+          "root": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-headless-android-1jq9wivt/workspace"
+        },
+        "fingerprint": "4232114d8afdd127586fb63b48ce29ef260c8a6fbe79582e22ae21d6ac3144e4",
+        "request_id": "ba6cde46-b512-4147-977b-6961a32f43d8",
+        "result": {
+          "job_id": "2",
+          "project_id": "f52da3617b309985b47f00812418d372514ae32f211fdac9cb07627c77a258c7",
+          "request_id": "ba6cde46-b512-4147-977b-6961a32f43d8",
+          "session_id": "session-1791146634395-62619-0"
+        },
+        "state": "accepted",
+        "type": "remote_prompt_admission_v1"
+      },
+      "kind": "event",
+      "schema_version": 1,
+      "seq": 22,
+      "session_id": "session-1791146634395-62619-0",
+      "timestamp": "2026-10-04T20:44:51Z",
+      "timestamp_ms": 1791146691611
+    },
+    {
+      "event": {
+        "device_id": "123b05fe8dfb4a08fead666e7b486de9534057b2a1066d5f7ceebea32d6c752f",
+        "project_id": "f52da3617b309985b47f00812418d372514ae32f211fdac9cb07627c77a258c7",
+        "request_id": "ba6cde46-b512-4147-977b-6961a32f43d8",
+        "session_id": "session-1791146634395-62619-0",
+        "state": "running",
+        "type": "remote_prompt_progress_v1"
+      },
+      "kind": "event",
+      "schema_version": 1,
+      "seq": 23,
+      "session_id": "session-1791146634395-62619-0",
+      "timestamp": "2026-10-04T20:44:51Z",
+      "timestamp_ms": 1791146691616
+    },
+    {
+      "kind": "turn",
+      "schema_version": 1,
+      "seq": 24,
+      "session_id": "session-1791146634395-62619-0",
+      "timestamp": "2026-10-04T20:44:51Z",
+      "timestamp_ms": 1791146691622,
+      "turn": {
+        "content": "/zz-stage2-review STAGE2_HEADLESS_ANDROID_SECOND literal $1 $(touch never-created)",
+        "created_at_ms": 1791146691622,
+        "id": "turn-1791146691622-5",
+        "metadata": {
+          "resource": {
+            "generation": 1,
+            "kind": "template",
+            "name": "zz-stage2-review",
+            "source": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-headless-android-1jq9wivt/workspace/.zenpi/prompts/zz-stage2-review.md",
+            "source_hash": "a93a138e8b7ae966ff230aa45be9d6dce02de6e7c2060c2564b8acd178b0fb19"
+          },
+          "zenpi_content_v1": {
+            "parts": [
+              {
+                "text": "/zz-stage2-review STAGE2_HEADLESS_ANDROID_SECOND literal $1 $(touch never-created)",
+                "type": "text"
+              }
+            ],
+            "version": 1
+          }
+        },
+        "parent_id": null,
+        "role": "user"
+      }
+    },
+    {
+      "event": {
+        "idempotency_key": "provider-042a416dcedc1c950f22cb596489bbe7287ef7abbe1bb9461cc3d87cf72c4220",
+        "operation_id": "provider-turn-1791146691622-5",
+        "operation_kind": "provider",
+        "retry_requires_confirmation": false,
+        "turn_id": "turn-1791146691622-5",
+        "type": "operation_started"
+      },
+      "kind": "event",
+      "schema_version": 1,
+      "seq": 25,
+      "session_id": "session-1791146634395-62619-0",
+      "timestamp": "2026-10-04T20:44:51Z",
+      "timestamp_ms": 1791146691626
+    },
+    {
+      "kind": "turn",
+      "schema_version": 1,
+      "seq": 26,
+      "session_id": "session-1791146634395-62619-0",
+      "timestamp": "2026-10-04T20:44:51Z",
+      "timestamp_ms": 1791146691640,
+      "turn": {
+        "content": "STAGE2_HEADLESS_ANDROID_SECOND_DONE",
+        "created_at_ms": 1791146691640,
+        "id": "assistant-1791146691640-7",
+        "metadata": {
+          "model": "gpt-5.2-2025-12-11",
+          "response_id": "headless"
+        },
+        "parent_id": "turn-1791146691622-5",
+        "role": "assistant"
+      }
+    },
+    {
+      "event": {
+        "operation_id": "provider-turn-1791146691622-5",
+        "outcome": "succeeded",
+        "type": "operation_finished"
+      },
+      "kind": "event",
+      "schema_version": 1,
+      "seq": 27,
+      "session_id": "session-1791146634395-62619-0",
+      "timestamp": "2026-10-04T20:44:51Z",
+      "timestamp_ms": 1791146691645
+    },
+    {
+      "event": {
+        "device_id": "123b05fe8dfb4a08fead666e7b486de9534057b2a1066d5f7ceebea32d6c752f",
+        "project_id": "f52da3617b309985b47f00812418d372514ae32f211fdac9cb07627c77a258c7",
+        "request_id": "ba6cde46-b512-4147-977b-6961a32f43d8",
+        "session_id": "session-1791146634395-62619-0",
+        "state": "succeeded",
+        "type": "remote_prompt_progress_v1"
+      },
+      "kind": "event",
+      "schema_version": 1,
+      "seq": 28,
+      "session_id": "session-1791146634395-62619-0",
+      "timestamp": "2026-10-04T20:44:51Z",
+      "timestamp_ms": 1791146691663
+    }
+  ],
+  "checkpoint": {
+    "remote_workspace": {
+      "approval_receipts": [],
+      "cancel_receipts": [],
+      "event_acks": [
+        {
+          "cursor": {
+            "next_sequence": 6,
+            "session_id": "session-1791146634395-62619-0"
+          },
+          "device_id": "123b05fe8dfb4a08fead666e7b486de9534057b2a1066d5f7ceebea32d6c752f",
+          "project_id": "f52da3617b309985b47f00812418d372514ae32f211fdac9cb07627c77a258c7"
+        }
+      ],
+      "prompt_bindings": [
+        {
+          "device_id": "123b05fe8dfb4a08fead666e7b486de9534057b2a1066d5f7ceebea32d6c752f",
+          "fingerprint": "9f60d249bfc74b3cc9608c0434b68d2262f5c5165f6f2d5ce167362575aa3e18",
+          "project_id": "f52da3617b309985b47f00812418d372514ae32f211fdac9cb07627c77a258c7",
+          "request_id": "34611ca9-ccfc-4468-865b-0f2936a8c156",
+          "session_id": "session-1791146634395-62619-0"
+        },
+        {
+          "device_id": "123b05fe8dfb4a08fead666e7b486de9534057b2a1066d5f7ceebea32d6c752f",
+          "fingerprint": "5c1a74cffbcc06431cdd3bea2d71ee41d3aa14277fdc744f5c95dd7ac47ad3db",
+          "operation": "model_select",
+          "project_id": "f52da3617b309985b47f00812418d372514ae32f211fdac9cb07627c77a258c7",
+          "request_id": "47ecad1f-f03d-40b2-a1c4-975e51947b2f",
+          "session_id": "session-1791146634395-62619-0"
+        },
+        {
+          "device_id": "123b05fe8dfb4a08fead666e7b486de9534057b2a1066d5f7ceebea32d6c752f",
+          "fingerprint": "d58132766a129d3717ac52ca83ccf111d60875306d4be5cf434077ddf07ba60e",
+          "operation": "reasoning_select",
+          "project_id": "f52da3617b309985b47f00812418d372514ae32f211fdac9cb07627c77a258c7",
+          "request_id": "3e9199f6-d190-42b2-ae91-651d8b339849",
+          "session_id": "session-1791146634395-62619-0"
+        },
+        {
+          "device_id": "123b05fe8dfb4a08fead666e7b486de9534057b2a1066d5f7ceebea32d6c752f",
+          "fingerprint": "4232114d8afdd127586fb63b48ce29ef260c8a6fbe79582e22ae21d6ac3144e4",
+          "project_id": "f52da3617b309985b47f00812418d372514ae32f211fdac9cb07627c77a258c7",
+          "request_id": "ba6cde46-b512-4147-977b-6961a32f43d8",
+          "session_id": "session-1791146634395-62619-0"
+        }
+      ],
+      "receipts": [],
+      "revision": 0,
+      "steer_receipts": []
+    },
+    "schema_version": 1,
+    "sessions": {
+      "f52da3617b309985b47f00812418d372514ae32f211fdac9cb07627c77a258c7": "/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-headless-android-1jq9wivt/session.jsonl"
+    },
+    "subtabs": {},
+    "workspace": {
+      "active": "f52da3617b309985b47f00812418d372514ae32f211fdac9cb07627c77a258c7",
+      "schema_version": 1,
+      "tabs": [
+        {
+          "cwd": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-headless-android-1jq9wivt/workspace",
+          "id": "f52da3617b309985b47f00812418d372514ae32f211fdac9cb07627c77a258c7"
+        }
+      ]
+    }
+  },
+  "device_id": "123b05fe8dfb4a08fead666e7b486de9534057b2a1066d5f7ceebea32d6c752f",
+  "project_id": "f52da3617b309985b47f00812418d372514ae32f211fdac9cb07627c77a258c7",
+  "committed_request_id": "ba6cde46-b512-4147-977b-6961a32f43d8"
+}

@@ -1,7 +1,7 @@
 //! Responses request encoding and bounded SSE/JSON response decoding.
 use crate::backend::{
     AttachmentKind, BackendError, Completion, CompletionRequest, MAX_RESPONSE_BYTES, ProviderEvent,
-    RequestAttachment, Usage,
+    RequestAttachment, StopReason, Usage,
 };
 use crate::core::{Turn, TurnRole};
 use crate::tools::ToolCall;
@@ -111,7 +111,8 @@ fn checked_input(turns: &[Turn], codex: bool) -> Result<Vec<Value>, BackendError
             if !pending.remove(id) {
                 return Err(invalid());
             }
-            input.push(json!({"type":"function_call_output", "call_id":ids.get(id).ok_or_else(invalid)?, "output":turn.content}));
+            let (output, _) = super::tool_result_text(turn);
+            input.push(json!({"type":"function_call_output", "call_id":ids.get(id).ok_or_else(invalid)?, "output":output}));
             continue;
         }
         if !pending.is_empty() {
@@ -197,9 +198,9 @@ pub(super) fn read_response(
     sink: &mut dyn FnMut(ProviderEvent) -> Result<(), BackendError>,
 ) -> Result<Completion, BackendError> {
     if !streaming {
-        let payload = read_bounded_json_body(body, cancelled)?;
-        validate_responses_terminal(&payload, true)?;
-        let completion = completion_from_responses_json(&payload)?;
+        let mut payload = read_bounded_json_body(body, cancelled)?;
+        let truncated = validate_responses_terminal(&mut payload, true)?;
+        let completion = completion_from_responses_json(&payload, truncated)?;
         emit_completion_events(&completion, sink)?;
         Ok(completion)
     } else {
@@ -223,9 +224,9 @@ pub(super) fn read_response_for_route(
         read_responses_stream(body, true, true, cancelled, sink)
     } else {
         let mut payload = read_bounded_json_body(body, cancelled)?;
-        validate_responses_terminal(&payload, true)?;
+        let truncated = validate_responses_terminal(&mut payload, true)?;
         validate_strict_output(&mut payload)?;
-        let completion = completion_from_responses_json(&payload)?;
+        let completion = completion_from_responses_json(&payload, truncated)?;
         emit_completion_events(&completion, &mut |event| {
             if cancelled() {
                 return Err(BackendError::Cancelled);
@@ -353,10 +354,11 @@ fn responses_input_items(turn: &Turn) -> Vec<Value> {
             .and_then(|metadata| metadata.get("tool_call_id"))
             .and_then(Value::as_str)
             .unwrap_or(&turn.id);
+        let (output, _) = super::tool_result_text(turn);
         return vec![json!({
             "type": "function_call_output",
             "call_id": call_id,
-            "output": turn.content,
+            "output": output,
         })];
     }
     if turn.role == TurnRole::Assistant
@@ -384,6 +386,11 @@ fn responses_input_items(turn: &Turn) -> Vec<Value> {
         TurnRole::Assistant => "assistant",
         TurnRole::Tool => unreachable!(),
     };
+    // ZE-210: an empty final answer carries nothing to replay; omit it rather
+    // than send an empty assistant message some providers reject.
+    if turn.role == TurnRole::Assistant && turn.content.is_empty() {
+        return Vec::new();
+    }
     vec![json!({
         "role": role,
         "content": turn.content,
@@ -444,11 +451,8 @@ fn extract_responses_content(payload: &Value) -> Result<String, BackendError> {
             }
         }
     }
-    if text.is_empty() {
-        return Err(BackendError::InvalidResponse(
-            "missing response output text".into(),
-        ));
-    }
+    // ZE-210: an output list with no text (e.g. reasoning only) is a valid,
+    // empty answer; only a missing or malformed output is rejected.
     Ok(text)
 }
 
@@ -470,6 +474,7 @@ fn read_responses_stream(
     let mut usage = None;
     let mut model = None;
     let mut saw_completed = false;
+    let mut truncated = false;
     let mut tool_calls = Vec::new();
     let mut response_id: Option<String> = None;
     let mut refusal: Option<String> = None;
@@ -514,7 +519,7 @@ fn read_responses_stream(
                 &mut content,
                 &mut usage,
                 &mut model,
-                &mut saw_completed,
+                (&mut saw_completed, &mut truncated),
                 &mut tool_calls,
                 &mut response_id,
                 &mut refusal,
@@ -536,7 +541,7 @@ fn read_responses_stream(
             &mut content,
             &mut usage,
             &mut model,
-            &mut saw_completed,
+            (&mut saw_completed, &mut truncated),
             &mut tool_calls,
             &mut response_id,
             &mut refusal,
@@ -557,21 +562,9 @@ fn read_responses_stream(
             "Responses stream ended without response.completed".into(),
         ));
     }
-    if content.trim().is_empty() {
-        if !tool_calls.is_empty() {
-            return Ok(Completion {
-                content,
-                usage,
-                model,
-                tool_calls,
-                response_id,
-                refusal,
-                annotations,
-            });
-        }
-        return Err(BackendError::EmptyResponse);
-    }
-    Ok(Completion {
+    // ZE-210: response.completed with no text is a valid empty answer; the
+    // core decides whether an empty answer may end the turn.
+    let mut completion = Completion {
         content,
         usage,
         model,
@@ -579,7 +572,10 @@ fn read_responses_stream(
         response_id,
         refusal,
         annotations,
-    })
+        stop_reason: StopReason::Stop,
+    };
+    completion.stop_reason = super::stop_reason(truncated, &completion);
+    Ok(completion)
 }
 
 fn response_frame_line(line: &[u8], frame: &mut Vec<u8>) -> Result<Option<Vec<u8>>, BackendError> {
@@ -626,7 +622,7 @@ fn process_responses_line(
     content: &mut String,
     usage: &mut Option<Usage>,
     model: &mut Option<String>,
-    saw_completed: &mut bool,
+    (saw_completed, truncated): (&mut bool, &mut bool),
     tool_calls: &mut Vec<ToolCall>,
     response_id: &mut Option<String>,
     refusal: &mut Option<String>,
@@ -639,11 +635,11 @@ fn process_responses_line(
     let clean_line =
         line.trim_matches(|character: char| character == '\0' || character.is_ascii_whitespace());
     if clean_line.starts_with('{') && !clean_line.contains("data:") {
-        let payload: Value = serde_json::from_str(clean_line).map_err(|error| {
+        let mut payload: Value = serde_json::from_str(clean_line).map_err(|error| {
             BackendError::InvalidResponse(format!("invalid Responses JSON: {error}"))
         })?;
-        validate_responses_terminal(&payload, strict_terminal)?;
-        let completion = completion_from_responses_json(&payload)?;
+        *truncated = validate_responses_terminal(&mut payload, strict_terminal)?;
+        let completion = completion_from_responses_json(&payload, *truncated)?;
         emit_completion_events(&completion, sink)?;
         *content = completion.content;
         *usage = completion.usage;
@@ -785,10 +781,16 @@ fn process_responses_line(
                 }
             }
         }
-        Some("response.completed") => {
+        Some(kind @ ("response.completed" | "response.incomplete")) => {
             let mut checked = event.get("response").unwrap_or(&event).clone();
+            let incomplete = kind == "response.incomplete";
+            *truncated = validate_responses_terminal(&mut checked, strict_terminal || incomplete)?;
+            if incomplete && !*truncated {
+                return Err(BackendError::InvalidResponse(
+                    "Responses incomplete terminal".into(),
+                ));
+            }
             if strict_stream {
-                validate_responses_terminal(&checked, true)?;
                 validate_strict_output(&mut checked)?;
                 let calls = extract_responses_tool_calls(&checked)?;
                 for call in tool_calls.iter() {
@@ -804,7 +806,9 @@ fn process_responses_line(
                     }
                 }
                 if let Ok(text) = extract_responses_content(&checked) {
-                    if !content.is_empty() && *content != text {
+                    // An empty terminal output means "text arrived only as deltas"
+                    // (Codex sends `output: []`), not a conflicting answer.
+                    if !content.is_empty() && !text.is_empty() && *content != text {
                         return Err(BackendError::InvalidResponse(
                             "Responses terminal text conflicts with stream".into(),
                         ));
@@ -818,7 +822,6 @@ fn process_responses_line(
                 }
             }
             let response = &checked;
-            validate_responses_terminal(response, strict_terminal)?;
             *saw_completed = true;
             *usage = response.get("usage").and_then(parse_usage);
             *model = response
@@ -854,17 +857,13 @@ fn process_responses_line(
                 })?;
             }
         }
-        Some("response.incomplete") if strict_stream => {
-            return Err(BackendError::InvalidResponse(
-                "Responses incomplete terminal".into(),
-            ));
-        }
         Some("response.failed") | Some("error") => {
-            let message = extract_responses_error(&event);
+            let error = BackendError::provider_error("Responses", &extract_responses_error(&event));
             let _ = sink(ProviderEvent::Failed {
-                message: message.clone(),
+                message: error.to_string(),
+                retryable: error.is_retryable(),
             });
-            return Err(BackendError::InvalidResponse(message));
+            return Err(error);
         }
         _ => {}
     }
@@ -910,19 +909,19 @@ fn validate_checked_call(call: &ToolCall) -> Result<(), BackendError> {
     Ok(())
 }
 
-fn completion_from_responses_json(payload: &Value) -> Result<Completion, BackendError> {
+fn completion_from_responses_json(
+    payload: &Value,
+    truncated: bool,
+) -> Result<Completion, BackendError> {
     let tool_calls = extract_responses_tool_calls(payload)?;
     let content = extract_responses_content(payload).or_else(|error| {
-        if tool_calls.is_empty() {
+        if tool_calls.is_empty() && !truncated {
             Err(error)
         } else {
             Ok(String::new())
         }
     })?;
-    if content.trim().is_empty() && tool_calls.is_empty() {
-        return Err(BackendError::EmptyResponse);
-    }
-    Ok(Completion {
+    let mut completion = Completion {
         content,
         usage: payload.get("usage").and_then(parse_usage),
         model: payload
@@ -933,7 +932,10 @@ fn completion_from_responses_json(payload: &Value) -> Result<Completion, Backend
         response_id: payload.get("id").and_then(Value::as_str).map(str::to_owned),
         refusal: extract_responses_refusal(payload),
         annotations: extract_annotations(payload),
-    })
+        stop_reason: StopReason::Stop,
+    };
+    completion.stop_reason = super::stop_reason(truncated, &completion);
+    Ok(completion)
 }
 
 fn push_unique_tool_call(calls: &mut Vec<ToolCall>, call: ToolCall) {
@@ -980,18 +982,28 @@ fn extract_responses_error(event: &Value) -> String {
             .and_then(|response| response.get("error"))
     });
     match error {
-        Some(Value::String(message)) => message.to_owned(),
-        Some(Value::Object(error)) => error
-            .get("message")
-            .and_then(Value::as_str)
-            .or_else(|| error.get("code").and_then(Value::as_str))
-            .unwrap_or("Responses stream failed")
-            .to_owned(),
+        Some(error @ (Value::String(_) | Value::Object(_))) => super::error_value_text(error),
         _ => "Responses stream failed".to_owned(),
     }
 }
 
-fn validate_responses_terminal(payload: &Value, strict: bool) -> Result<(), BackendError> {
+/// Accepts a completed terminal, or an incomplete one cut by
+/// `max_output_tokens` (returns `true`). A truncated terminal drops function
+/// calls that never completed: they have no arguments to report.
+fn validate_responses_terminal(payload: &mut Value, strict: bool) -> Result<bool, BackendError> {
+    if payload["status"] == "incomplete"
+        && payload["incomplete_details"]["reason"] == "max_output_tokens"
+    {
+        if let Some(output) = payload.get_mut("output").and_then(Value::as_array_mut) {
+            output.retain(|item| {
+                item["type"] != "function_call"
+                    || item
+                        .get("status")
+                        .is_none_or(|status| status == "completed")
+            });
+        }
+        return Ok(true);
+    }
     if payload
         .get("status")
         .is_some_and(|status| status != "completed")
@@ -1004,13 +1016,18 @@ fn validate_responses_terminal(payload: &Value, strict: bool) -> Result<(), Back
             "Responses missing or incomplete terminal status".into(),
         ));
     }
-    Ok(())
+    Ok(false)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::extract_responses_content;
+    use super::{encode_request, extract_responses_content};
+    use crate::{
+        backend::{AttachmentKind, CompletionRequest, InputAttachment, RequestAttachment},
+        core::{Turn, TurnRole},
+    };
     use serde_json::json;
+    use sha2::Digest;
 
     #[test]
     fn responses_output_text_variants_are_extracted() {
@@ -1030,6 +1047,106 @@ mod tests {
             }))
             .unwrap(),
             "first second"
+        );
+    }
+
+    #[test]
+    fn host_selected_template_fixture_expands_literal_arguments_into_exact_responses_text() {
+        let root = tempfile::tempdir().unwrap();
+        let template = "---\ndescription: Stage2 selected template\n---\nSTAGE2_HOST_TEMPLATE_BODY\n$ARGUMENTS\n";
+        let command =
+            "/zz-stage2-review STAGE2_HEADLESS_ANDROID_SECOND literal $1 $(touch never-created)";
+        let path = root.path().join("zz-stage2-review.md");
+        std::fs::write(&path, template).unwrap();
+        let templates = crate::prompt_templates::PromptTemplates::load(
+            &root.path().join("empty"),
+            root.path(),
+            &[],
+            || false,
+        )
+        .unwrap();
+        let expansion = templates.expand(command, || false).unwrap().unwrap();
+        assert_eq!(expansion.name, "zz-stage2-review");
+        assert_eq!(
+            expansion.source_hash,
+            format!("{:x}", sha2::Sha256::digest(template.as_bytes()))
+        );
+        let turns = vec![Turn::new("second", TurnRole::User, expansion.content)];
+        let wire = encode_request(
+            &CompletionRequest::new("second", &turns, None, &[]),
+            "gpt-5.2-2025-12-11",
+            Some("low"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            wire["input"][0]["content"],
+            "STAGE2_HOST_TEMPLATE_BODY\nSTAGE2_HEADLESS_ANDROID_SECOND literal $1 $(touch never-created)"
+        );
+        assert!(!wire.to_string().contains("/zz-stage2-review"));
+        assert!(!wire.to_string().contains("input_file"));
+        assert_eq!(wire["model"], "gpt-5.2-2025-12-11");
+        assert_eq!(wire["reasoning"], json!({"effort":"low"}));
+        assert!(!root.path().join("never-created").exists());
+    }
+
+    #[test]
+    fn host_file_picker_wire_is_exact_and_does_not_attach_to_the_next_text_turn() {
+        let text = "STAGE2_HEADLESS_ANDROID_FIRST @\"documents/fixture note.txt\"";
+        let bytes = b"STAGE2_HOST_ATTACHMENT_PAYLOAD\n";
+        let turns = vec![Turn::new("first", TurnRole::User, text)];
+        let attachments = vec![RequestAttachment {
+            turn_id: "first".into(),
+            input: InputAttachment {
+                kind: AttachmentKind::File,
+                mime_type: "text/plain".into(),
+                path: Some("documents/fixture note.txt".into()),
+                url: None,
+                file_id: None,
+            },
+            filename: Some("fixture note.txt".into()),
+            data: Some(bytes.to_vec()),
+            size_bytes: Some(bytes.len() as u64),
+            sha256: None,
+        }];
+        let first = encode_request(
+            &CompletionRequest::new("first", &turns, None, &[]).with_attachments(&attachments),
+            "gpt-5.2",
+            Some("high"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            first["input"][0]["content"],
+            json!([
+                {"type":"input_text","text":text},
+                {"type":"input_file","filename":"fixture note.txt","file_data":"data:text/plain;base64,U1RBR0UyX0hPU1RfQVRUQUNITUVOVF9QQVlMT0FECg=="}
+            ])
+        );
+        assert_eq!(first["model"], "gpt-5.2");
+        assert_eq!(first["reasoning"], json!({"effort":"high"}));
+        let mut history = turns;
+        history.push(Turn::new(
+            "answer",
+            TurnRole::Assistant,
+            "STAGE2_HEADLESS_ANDROID_FIRST_DONE",
+        ));
+        history.push(Turn::new(
+            "second",
+            TurnRole::User,
+            "STAGE2_HEADLESS_ANDROID_SECOND",
+        ));
+        let second = encode_request(
+            &CompletionRequest::new("second", &history, None, &[]),
+            "fixture",
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(!second.to_string().contains("input_file"));
+        assert_eq!(
+            second["input"][2]["content"],
+            "STAGE2_HEADLESS_ANDROID_SECOND"
         );
     }
 }

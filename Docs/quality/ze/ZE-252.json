@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-252",
+  "claim_id": "ZE-252@blueprint-4.0.0",
+  "from": "master",
+  "to": "master",
+  "summary": "Double Ctrl-C force-kill escalation is counted per hot zone: a Shell press (the PTY's SIGINT) followed by a Conversation press no longer force-kills; a double press inside one zone (including Shell, per ZS1-179) still escalates. Blueprint row wording corrected: the earlier 'Shell presses never count' contradicted the ZS1-179 requirement pinned by an existing test.",
+  "changed_files": [
+    "src/tui.rs",
+    "tests/tui_interaction.rs",
+    "Docs/Zenpi_Execution_Blueprint_v2.md",
+    "Docs/quality/ze/ZE-252.json"
+  ],
+  "diff_stat": "3 files changed, 32 insertions(+), 6 deletions(-)",
+  "commands_run": [
+    "cargo test --locked --test tui_interaction ctrl_c_in_shell_then_conversation_does_not_force_kill (+ git stash A/B)",
+    "cargo test --locked --test tui_interaction --test tui_resize",
+    "cargo test --locked --lib tui -- --test-threads=1",
+    "cargo fmt --all",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo clippy --locked --all-targets --all-features -- -D warnings"
+  ],
+  "validation_result": {
+    "cross_zone": "new test fails without the fix, passes with it",
+    "shell_double": "existing shell_zone_single_ctrl_c_reaches_the_pty_and_double_escalates still passes",
+    "suites": "tui_interaction 60, tui_resize 14, lib tui 61 green",
+    "clippy": "0/0"
+  },
+  "notes": "",
+  "created_at": "2026-10-14T16:35:38Z",
+  "digest": "5003bb14cdfa4127856fb2afada7eb8423d640d06ad978bd2292db787675cfed"
+}

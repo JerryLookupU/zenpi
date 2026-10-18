@@ -318,12 +318,26 @@ impl Default for ModelRegistry {
             let mut model = unknown("deepseek", id);
             model.context_window = 131_072;
             model.max_output_tokens = 65_536;
+            // Some OpenAI-compatible DeepSeek gateways run in thinking mode by
+            // default and require the previous `reasoning_text` to be replayed
+            // on tool continuations. The gateway may not return that field at
+            // all, which makes every tool call fail with HTTP 400. Advertising
+            // `none` lets the host disable thinking explicitly instead.
+            model.capabilities.reasoning = true;
+            model.reasoning_levels = [
+                ReasoningLevel::None,
+                ReasoningLevel::Low,
+                ReasoningLevel::Medium,
+                ReasoningLevel::High,
+            ]
+            .into();
             for field in [
                 "context_window",
                 "max_output_tokens",
                 "text",
                 "tools",
                 "streaming",
+                "reasoning_levels",
             ] {
                 model.sources.insert(field.into(), source.clone());
             }
@@ -331,8 +345,181 @@ impl Default for ModelRegistry {
                 .entries
                 .insert(("deepseek".into(), id.into()), model);
         }
+        for entry in BUILTINS {
+            registry
+                .entries
+                .entry((entry.provider.into(), entry.id.into()))
+                .or_insert_with(|| entry.descriptor());
+        }
         registry
     }
+}
+
+use ReasoningLevel::{High, Low, Max, Medium, Minimal, None as NoReasoning, Xhigh};
+
+/// Models in everyday use (ZE-222). Context windows and output limits are the
+/// documented ones; reasoning levels are the efforts the adapters can encode
+/// for that model (an empty set means the model's own default, no effort sent).
+struct Builtin {
+    provider: &'static str,
+    id: &'static str,
+    context_window: u64,
+    max_output_tokens: u64,
+    capabilities: ProviderCapabilities,
+    levels: &'static [ReasoningLevel],
+    reference: &'static str,
+}
+
+const CODEX_CAPS: ProviderCapabilities = ProviderCapabilities {
+    text: true,
+    images: true,
+    files: false,
+    tools: true,
+    structured_output: false,
+    streaming: true,
+    reasoning: true,
+};
+const OPENAI_CAPS: ProviderCapabilities = ProviderCapabilities {
+    text: true,
+    images: true,
+    files: true,
+    tools: true,
+    structured_output: true,
+    streaming: true,
+    reasoning: true,
+};
+const ANTHROPIC_CAPS: ProviderCapabilities = crate::protocols::anthropic::CAPABILITIES;
+const ANTHROPIC_PLAIN_CAPS: ProviderCapabilities = ProviderCapabilities {
+    reasoning: false,
+    ..ANTHROPIC_CAPS
+};
+const GOOGLE_CAPS: ProviderCapabilities = crate::protocols::google::CAPABILITIES;
+
+const CODEX_REF: &str = "https://developers.openai.com/codex/models";
+const OPENAI_REF: &str = "https://developers.openai.com/api/docs/models";
+const ANTHROPIC_REF: &str = "https://platform.claude.com/docs/en/about-claude/models/overview";
+const GOOGLE_REF: &str = "https://ai.google.dev/gemini-api/docs/models";
+
+const GPT5_LEVELS: &[ReasoningLevel] = &[Minimal, Low, Medium, High];
+const GPT51_LEVELS: &[ReasoningLevel] = &[NoReasoning, Low, Medium, High];
+const GPT52_LEVELS: &[ReasoningLevel] = &[NoReasoning, Low, Medium, High, Xhigh];
+const CODEX_LEVELS: &[ReasoningLevel] = &[Low, Medium, High];
+const CODEX_X_LEVELS: &[ReasoningLevel] = &[Low, Medium, High, Xhigh];
+const O_LEVELS: &[ReasoningLevel] = &[Low, Medium, High];
+/// Adaptive thinking with `output_config.effort`; `none` is `thinking.disabled`.
+const CLAUDE_46_LEVELS: &[ReasoningLevel] = &[NoReasoning, Low, Medium, High, Max];
+const CLAUDE_47_LEVELS: &[ReasoningLevel] = &[NoReasoning, Low, Medium, High, Xhigh, Max];
+/// Thinking cannot be disabled on these models.
+const CLAUDE_ALWAYS_LEVELS: &[ReasoningLevel] = &[Low, Medium, High, Xhigh, Max];
+/// `thinkingBudget` levels for Gemini 2.5; Pro cannot turn thinking off.
+const GEMINI_LITE_LEVELS: &[ReasoningLevel] = &[NoReasoning, Low, Medium, High];
+const GEMINI_PRO_LEVELS: &[ReasoningLevel] = &[Minimal, Low, Medium, High];
+/// `thinkingLevel` values for Gemini 3.
+const GEMINI3_PRO_LEVELS: &[ReasoningLevel] = &[Low, High];
+const GEMINI3_FLASH_LEVELS: &[ReasoningLevel] = &[Minimal, Low, Medium, High];
+
+macro_rules! builtin {
+    ($provider:expr, $id:expr, $window:expr, $output:expr, $caps:expr, $levels:expr, $reference:expr) => {
+        Builtin {
+            provider: $provider,
+            id: $id,
+            context_window: $window,
+            max_output_tokens: $output,
+            capabilities: $caps,
+            levels: $levels,
+            reference: $reference,
+        }
+    };
+}
+
+#[rustfmt::skip]
+const BUILTINS: &[Builtin] = &[
+    builtin!("openai-codex", "gpt-5-codex", 272_000, 128_000, CODEX_CAPS, CODEX_LEVELS, CODEX_REF),
+    builtin!("openai-codex", "gpt-5.1", 272_000, 128_000, CODEX_CAPS, GPT51_LEVELS, CODEX_REF),
+    builtin!("openai-codex", "gpt-5.1-codex", 272_000, 128_000, CODEX_CAPS, CODEX_LEVELS, CODEX_REF),
+    builtin!("openai-codex", "gpt-5.1-codex-mini", 272_000, 128_000, CODEX_CAPS, CODEX_LEVELS, CODEX_REF),
+    builtin!("openai-codex", "gpt-5.1-codex-max", 272_000, 128_000, CODEX_CAPS, CODEX_X_LEVELS, CODEX_REF),
+    builtin!("openai-codex", "gpt-5.2", 272_000, 128_000, CODEX_CAPS, GPT52_LEVELS, CODEX_REF),
+    builtin!("openai-codex", "gpt-5.2-codex", 272_000, 128_000, CODEX_CAPS, CODEX_X_LEVELS, CODEX_REF),
+    builtin!("openai-codex", "gpt-5.3-codex", 272_000, 128_000, CODEX_CAPS, CODEX_X_LEVELS, CODEX_REF),
+    builtin!("openai-codex", "gpt-5.4", 272_000, 128_000, CODEX_CAPS, GPT52_LEVELS, CODEX_REF),
+    builtin!("openai-codex", "gpt-5.4-mini", 272_000, 128_000, CODEX_CAPS, GPT52_LEVELS, CODEX_REF),
+    builtin!("openai", "gpt-5", 400_000, 128_000, OPENAI_CAPS, GPT5_LEVELS, OPENAI_REF),
+    builtin!("openai", "gpt-5-mini", 400_000, 128_000, OPENAI_CAPS, GPT5_LEVELS, OPENAI_REF),
+    builtin!("openai", "gpt-5-codex", 400_000, 128_000, OPENAI_CAPS, CODEX_LEVELS, OPENAI_REF),
+    builtin!("openai", "gpt-5.1", 400_000, 128_000, OPENAI_CAPS, GPT51_LEVELS, OPENAI_REF),
+    builtin!("openai", "gpt-5.1-codex", 400_000, 128_000, OPENAI_CAPS, CODEX_LEVELS, OPENAI_REF),
+    builtin!("openai", "gpt-5.1-codex-max", 400_000, 128_000, OPENAI_CAPS, CODEX_X_LEVELS, OPENAI_REF),
+    builtin!("openai", "gpt-5.2-codex", 400_000, 128_000, OPENAI_CAPS, CODEX_X_LEVELS, OPENAI_REF),
+    builtin!("openai", "gpt-5.3-codex", 400_000, 128_000, OPENAI_CAPS, CODEX_X_LEVELS, OPENAI_REF),
+    builtin!("openai", "gpt-5.4", 272_000, 128_000, OPENAI_CAPS, GPT52_LEVELS, OPENAI_REF),
+    builtin!("openai", "gpt-5.4-mini", 400_000, 128_000, OPENAI_CAPS, GPT52_LEVELS, OPENAI_REF),
+    builtin!("openai", "o3", 200_000, 100_000, OPENAI_CAPS, O_LEVELS, OPENAI_REF),
+    builtin!("openai", "o4-mini", 200_000, 100_000, OPENAI_CAPS, O_LEVELS, OPENAI_REF),
+    builtin!("anthropic", "claude-opus-5-5", 1_000_000, 128_000, ANTHROPIC_CAPS, CLAUDE_ALWAYS_LEVELS, ANTHROPIC_REF),
+    builtin!("anthropic", "claude-opus-5", 1_000_000, 128_000, ANTHROPIC_CAPS, CLAUDE_47_LEVELS, ANTHROPIC_REF),
+    builtin!("anthropic", "claude-opus-4-8", 1_000_000, 128_000, ANTHROPIC_CAPS, CLAUDE_47_LEVELS, ANTHROPIC_REF),
+    builtin!("anthropic", "claude-opus-4-7", 1_000_000, 128_000, ANTHROPIC_CAPS, CLAUDE_47_LEVELS, ANTHROPIC_REF),
+    builtin!("anthropic", "claude-opus-4-6", 1_000_000, 128_000, ANTHROPIC_CAPS, CLAUDE_46_LEVELS, ANTHROPIC_REF),
+    builtin!("anthropic", "claude-sonnet-5-5", 1_000_000, 128_000, ANTHROPIC_CAPS, CLAUDE_ALWAYS_LEVELS, ANTHROPIC_REF),
+    builtin!("anthropic", "claude-sonnet-5", 1_000_000, 128_000, ANTHROPIC_CAPS, CLAUDE_47_LEVELS, ANTHROPIC_REF),
+    builtin!("anthropic", "claude-haiku-5-5", 1_000_000, 128_000, ANTHROPIC_CAPS, CLAUDE_47_LEVELS, ANTHROPIC_REF),
+    // Haiku 4.5 thinks only with `budget_tokens`, which this adapter does not send.
+    builtin!("anthropic", "claude-haiku-4-5", 200_000, 64_000, ANTHROPIC_PLAIN_CAPS, &[], ANTHROPIC_REF),
+    builtin!("google", "gemini-2.5-pro", 1_048_576, 65_536, GOOGLE_CAPS, GEMINI_PRO_LEVELS, GOOGLE_REF),
+    builtin!("google", "gemini-2.5-flash-lite", 1_048_576, 65_536, GOOGLE_CAPS, GEMINI_LITE_LEVELS, GOOGLE_REF),
+    builtin!("google", "gemini-3-pro-preview", 1_048_576, 65_536, GOOGLE_CAPS, GEMINI3_PRO_LEVELS, GOOGLE_REF),
+    builtin!("google", "gemini-3.1-pro-preview", 1_048_576, 65_536, GOOGLE_CAPS, GEMINI3_PRO_LEVELS, GOOGLE_REF),
+    builtin!("google", "gemini-3-flash-preview", 1_048_576, 65_536, GOOGLE_CAPS, GEMINI3_FLASH_LEVELS, GOOGLE_REF),
+];
+
+impl Builtin {
+    fn descriptor(&self) -> ModelDescriptor {
+        let mut model = unknown(self.provider, self.id);
+        model.context_window = self.context_window;
+        model.max_output_tokens = self.max_output_tokens;
+        model.capabilities = self.capabilities;
+        model.reasoning_levels = self.levels.iter().copied().collect();
+        let source = FieldSource::Builtin {
+            reference: self.reference.into(),
+            version: CATALOG_VERSION.into(),
+        };
+        for field in [
+            "context_window",
+            "max_output_tokens",
+            "text",
+            "images",
+            "files",
+            "tools",
+            "structured_output",
+            "streaming",
+            "reasoning_levels",
+        ] {
+            model.sources.insert(field.into(), source.clone());
+        }
+        model
+    }
+}
+
+/// The model a profile uses when it names none (pi `defaultModelPerProvider`).
+pub fn default_model(provider: &str) -> Option<&'static str> {
+    match provider {
+        "openai-codex" | "openai" => Some("gpt-5.4"),
+        "anthropic" => Some("claude-opus-4-6"),
+        "google" => Some("gemini-2.5-pro"),
+        _ => None,
+    }
+}
+
+/// Reasoning levels the native adapters may encode for a catalogued model.
+pub(crate) fn builtin_reasoning_levels(provider: &str, id: &str) -> BTreeSet<ReasoningLevel> {
+    static DEFAULT: std::sync::OnceLock<ModelRegistry> = std::sync::OnceLock::new();
+    DEFAULT
+        .get_or_init(ModelRegistry::default)
+        .entries
+        .get(&(provider.into(), id.into()))
+        .map(|model| model.reasoning_levels.clone())
+        .unwrap_or_default()
 }
 
 impl ModelRegistry {
@@ -449,7 +636,9 @@ fn unknown(provider: &str, id: &str) -> ModelDescriptor {
             tools: true,
             structured_output: true,
             streaming: true,
-            reasoning: false,
+            // The wire's default: a reasoning wire may return thinking, but
+            // with no catalogued levels no effort is ever sent.
+            reasoning: true,
         },
         reasoning_levels: BTreeSet::new(),
         price: None,

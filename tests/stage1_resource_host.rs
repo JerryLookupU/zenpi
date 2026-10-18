@@ -265,9 +265,15 @@ fn cancelled_or_failed_admission_reload_and_restart_preserve_resource_boundaries
         ".zenpi/prompts/broken.md",
         "---\ndescription: [bad]\n---\nbroken",
     );
-    assert!(first.reload_resources(|| false).is_err());
-    assert!(Arc::ptr_eq(&old, &first.resource_snapshot()));
-    assert_eq!(fs::read(root.path().join("session.jsonl")).unwrap(), before);
+    // ZE-234: one invalid template is skipped with a diagnostic; reload still publishes.
+    first.reload_resources(|| false).unwrap();
+    let skipped = first.resource_snapshot();
+    assert!(!Arc::ptr_eq(&old, &skipped));
+    let diagnostics = skipped.diagnostics();
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    assert!(diagnostics[0].path.ends_with(".zenpi/prompts/broken.md"));
+    let after = fs::read(root.path().join("session.jsonl")).unwrap();
+    assert!(after.starts_with(&before) && after.len() > before.len());
     fs::remove_file(root.path().join(".zenpi/prompts/broken.md")).unwrap();
     first
         .process(TurnInputRequest::new("/skill:research old"))
@@ -405,9 +411,12 @@ fn production_jsonl_skill_template_reload_and_unknown_slash_reach_real_http_back
         ".zenpi/prompts/broken.md",
         "---\ndescription: [bad]\n---\nbroken",
     );
-    assert_eq!(cli.command("badreload", "/reload")["success"], false);
+    // ZE-234: the invalid template is skipped and reported; the rest reloads.
+    let skipped = cli.command("skippedreload", "/reload");
+    assert_eq!(skipped["success"], true);
+    assert!(skipped.to_string().contains("broken.md"), "{skipped}");
     assert_eq!(
-        cli.command("oldtemplate", "/fixture-review old")["success"],
+        cli.command("reloadedtemplate", "/fixture-review old")["success"],
         true
     );
     fs::remove_file(root.path().join(".zenpi/prompts/broken.md")).unwrap();
@@ -423,7 +432,15 @@ fn production_jsonl_skill_template_reload_and_unknown_slash_reach_real_http_back
     assert!(!captured[0].to_string().contains("MANUAL_BODY"));
     assert!(captured[0].to_string().contains("TEMPLATE_OLD: literal $1"));
     assert!(captured[1].to_string().contains("SECRET_SKILL_BODY_OLD"));
-    assert!(captured[2].to_string().contains("TEMPLATE_OLD: old"));
+    // ZE-233: the skill body travels in its user turn, never the system
+    // prompt, so the system prompt stays byte-identical across requests.
+    let system = |index: usize| captured[index]["messages"][0].clone();
+    assert_eq!(system(0)["role"], "system");
+    assert!(!system(1).to_string().contains("SECRET_SKILL_BODY"));
+    assert_eq!(system(1), system(0));
+    // ZE-233: the earlier template turn is resent expanded, not as raw `/tpl`.
+    assert!(captured[1].to_string().contains("TEMPLATE_OLD: literal $1"));
+    assert!(captured[2].to_string().contains("TEMPLATE_NEW: old"));
     assert!(captured[3].to_string().contains("TEMPLATE_NEW: new"));
     assert!(!root.path().join("never-created").exists());
     let journal = fs::read_to_string(root.path().join("cli.jsonl")).unwrap();

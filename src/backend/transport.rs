@@ -3,13 +3,9 @@
 use super::{BackendError, map_ureq_error};
 use serde_json::Value;
 use std::{
+    cell::Cell,
     io::{self, Read, Write},
     net::{IpAddr, SocketAddr, TcpStream},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    thread,
     time::{Duration, Instant},
 };
 use ureq::{
@@ -22,15 +18,45 @@ use ureq::{
         },
     },
 };
-const SLICE: Duration = Duration::from_millis(25);
-#[derive(Clone, Debug, Default)]
-pub(crate) struct Cancellation(Arc<AtomicBool>);
-impl Cancellation {
-    fn cancel(&self) {
-        self.0.store(true, Ordering::Release);
+/// Fallback cancellation poll while a socket is idle. Cancellation is a plain
+/// flag without a wake fd, so this bounds both its latency and idle wakeups.
+const SLICE: Duration = Duration::from_millis(250);
+
+thread_local! {
+    /// The calling thread's request cancellation callback, visible to every
+    /// connector, resolver and pooled transport poll on that thread.
+    static CANCELLED: Cell<Option<*const (dyn Fn() -> bool + 'static)>> =
+        const { Cell::new(None) };
+}
+
+/// Run `body` with `cancelled` checked by every transport poll on this thread.
+/// Requests run on the calling thread, so one shared agent (keep-alive pool)
+/// still observes each request's own cancellation (ZE-301).
+pub(crate) fn with_cancellation<T>(cancelled: &dyn Fn() -> bool, body: impl FnOnce() -> T) -> T {
+    struct Restore(Option<*const (dyn Fn() -> bool + 'static)>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            CANCELLED.with(|current| current.set(self.0));
+        }
     }
+    // SAFETY: only the lifetime is erased. The pointer is read on this thread
+    // alone, by `Cancellation::check`, while `body` runs; `Restore` removes it
+    // before `cancelled` can go out of scope, including on unwind.
+    let erased: *const (dyn Fn() -> bool + 'static) =
+        unsafe { std::mem::transmute::<*const (dyn Fn() -> bool + '_), _>(cancelled as *const _) };
+    let _restore = Restore(CANCELLED.with(|current| current.replace(Some(erased))));
+    body()
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Cancellation;
+impl Cancellation {
     fn check(&self) -> Result<(), ureq::Error> {
-        if self.0.load(Ordering::Acquire) {
+        // SAFETY: see `with_cancellation`; the pointer is live while set.
+        let cancelled = CANCELLED
+            .with(Cell::get)
+            .is_some_and(|cancelled| unsafe { (*cancelled)() });
+        if cancelled {
             Err(io::Error::new(
                 io::ErrorKind::ConnectionAborted,
                 "provider request cancelled",
@@ -41,86 +67,57 @@ impl Cancellation {
         }
     }
 }
-pub(crate) fn client(config: Config) -> (ureq::Agent, Cancellation) {
-    let cancel = Cancellation::default();
+/// One agent per backend: its connections are reused across requests.
+pub(crate) fn client(config: Config) -> ureq::Agent {
     let connector =
         ().chain(ConnectProxyConnector::default())
-            .chain(CancelConnector(cancel.clone()))
+            .chain(CancelConnector(Cancellation))
             .chain(RustlsConnector::default());
-    (
-        ureq::Agent::with_parts(config, connector, CancelResolver(cancel.clone())),
-        cancel,
-    )
+    ureq::Agent::with_parts(config, connector, CancelResolver(Cancellation))
 }
-/// Only the send/header stage moves to an owned scoped worker. The borrowed
-/// host callback stays on the calling thread; no lifetime erasure or detached
-/// job is needed. The scope always joins, including unwinding/error paths.
+/// Send on the calling thread; DNS, TCP, TLS and header waits all observe
+/// `cancelled` through `with_cancellation`.
 pub(crate) fn send_json(
     builder: ureq::RequestBuilder<ureq::typestate::WithBody>,
     body: &Value,
     cancelled: &dyn Fn() -> bool,
-    cancel: Cancellation,
 ) -> Result<ureq::http::Response<ureq::Body>, BackendError> {
-    send_with_control(move || builder.send_json(body), cancelled, cancel)
+    send_with_control(move || builder.send_json(body), cancelled)
 }
 
 pub(crate) fn send_bytes(
     builder: ureq::RequestBuilder<ureq::typestate::WithBody>,
     body: &[u8],
     cancelled: &dyn Fn() -> bool,
-    cancel: Cancellation,
 ) -> Result<ureq::http::Response<ureq::Body>, BackendError> {
-    send_with_control(move || builder.send(body), cancelled, cancel)
+    send_with_control(move || builder.send(body), cancelled)
 }
 
 fn send_with_control(
-    send: impl FnOnce() -> Result<ureq::http::Response<ureq::Body>, ureq::Error> + Send,
+    send: impl FnOnce() -> Result<ureq::http::Response<ureq::Body>, ureq::Error>,
     cancelled: &dyn Fn() -> bool,
-    cancel: Cancellation,
 ) -> Result<ureq::http::Response<ureq::Body>, BackendError> {
     if cancelled() {
         return Err(BackendError::Cancelled);
     }
-    thread::scope(|scope| {
-        struct Guard {
-            cancel: Cancellation,
-            armed: bool,
-        }
-        impl Drop for Guard {
-            fn drop(&mut self) {
-                if self.armed {
-                    self.cancel.cancel();
-                }
-            }
-        }
-        let mut guard = Guard {
-            cancel: cancel.clone(),
-            armed: true,
-        };
-        let worker = thread::Builder::new()
-            .name("zenpi-provider-send".into())
-            .spawn_scoped(scope, send)
-            .map_err(|error| BackendError::Transport(error.to_string()))?;
-        while !worker.is_finished() {
-            if cancelled() {
-                cancel.cancel();
-            }
-            thread::park_timeout(Duration::from_millis(5));
-        }
-        let response = worker
-            .join()
-            .map_err(|_| BackendError::Transport("provider send worker panicked".into()))?;
-        if cancelled() || cancel.0.load(Ordering::Acquire) {
-            return Err(BackendError::Cancelled);
-        }
-        // The response body moves to the caller, which retains its existing
-        // bounded body reads and checks the original cancellation callback.
-        guard.armed = false;
-        response.map_err(map_ureq_error)
-    })
+    let response = with_cancellation(cancelled, send);
+    if cancelled() {
+        return Err(BackendError::Cancelled);
+    }
+    // The response body moves to the caller, which reads it inside
+    // `with_cancellation` with the same callback.
+    response.map_err(map_ureq_error)
 }
 
 pub(crate) fn read_bytes(
+    body: &mut ureq::Body,
+    limit: usize,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Vec<u8>, BackendError> {
+    with_cancellation(cancelled, || read_bytes_inner(body, limit, cancelled))
+}
+
+fn read_bytes_inner(
     body: &mut ureq::Body,
     limit: usize,
     cancelled: &dyn Fn() -> bool,
@@ -253,7 +250,7 @@ impl<In: Transport> Connector<In> for CancelConnector {
                             details.config.input_buffer_size(),
                             details.config.output_buffer_size(),
                         ),
-                        cancel: self.0.clone(),
+                        cancel: Cancellation,
                     })));
                 }
                 Err(e) => {
@@ -414,7 +411,7 @@ impl CancelTransport {
         {
             let _ = write;
             self.cancel.check()?;
-            thread::sleep(remaining(end, reason)?);
+            std::thread::sleep(remaining(end, reason)?);
             Ok(())
         }
     }

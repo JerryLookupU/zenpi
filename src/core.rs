@@ -417,6 +417,46 @@ pub enum ConnectionSelectionOutcome {
     },
 }
 
+/// Upper bound on `Agent` events buffered between `take_events` drains
+/// (ZE-212). Hosts that never drain must not grow memory without bound.
+pub const MAX_BUFFERED_AGENT_EVENTS: usize = 4096;
+
+impl AgentEvent {
+    /// Streaming fragments whose information is superseded by a later
+    /// terminal event (`TextDone`, `ToolCallDone`, `ToolResult`, ...). Only
+    /// these may be shed when the event buffer overflows.
+    fn is_droppable_delta(&self) -> bool {
+        match self {
+            Self::ToolProgress { .. } => true,
+            Self::Provider { event, .. } => matches!(
+                event,
+                ProviderEvent::TextDelta { .. }
+                    | ProviderEvent::ReasoningDelta { .. }
+                    | ProviderEvent::ToolCallDelta { .. }
+            ),
+            _ => false,
+        }
+    }
+}
+
+/// Drop the oldest delta-type events until `events.len() <= cap`. Terminal
+/// and status events are never dropped, so the buffer may only exceed `cap`
+/// when it holds no deltas at all.
+fn bound_event_buffer(events: &mut Vec<AgentEvent>, cap: usize) {
+    let mut excess = events.len().saturating_sub(cap);
+    if excess == 0 {
+        return;
+    }
+    events.retain(|event| {
+        if excess > 0 && event.is_droppable_delta() {
+            excess -= 1;
+            false
+        } else {
+            true
+        }
+    });
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentEvent {
@@ -485,7 +525,8 @@ pub struct CompactionReport {
     pub estimated_tokens_before: u64,
     pub estimated_tokens_after: u64,
     pub marker_sequence: u64,
-    pub checkpoint: Option<crate::context::CompactionCheckpoint>,
+    /// Reports serialized before ZE-235 also carry a legacy digest
+    /// `checkpoint` (always null since semantic compaction); it is ignored.
     #[serde(default)]
     pub semantic_checkpoint: Option<crate::context::SemanticCheckpoint>,
 }
@@ -560,7 +601,8 @@ pub struct Agent {
     active_steerable: bool,
     model: Option<String>,
     /// Bounded tool-iteration budget for one provider turn (ZS1-184). The
-    /// default is 8; long-horizon runs raise it explicitly.
+    /// default is 1000 (clamped to 1..=10000); hosts change it via
+    /// `--max-tool-iterations` / `set_max_tool_iterations`.
     max_tool_iterations: usize,
     /// Per-zone model selections for the discussion and arch TUI regions
     /// (ZS1-152). These are validated against the backend before being stored;
@@ -577,6 +619,7 @@ pub struct Agent {
     live_tool_sink: Option<LiveToolEventSink>,
     tools: Option<ToolRuntime>,
     context_budget: crate::context::ContextBudget,
+    compaction: crate::config::CompactionSettings,
     skills: crate::skills::SkillSet,
     resource_loader: Option<crate::resource_loader::ResourceLoader>,
     active_resources: Option<std::sync::Arc<crate::resource_loader::ResourceSnapshot>>,
@@ -593,6 +636,9 @@ pub struct Agent {
     worker_budget: Option<crate::governance::WorkerBudgetLedger>,
     worker_admission_operation: Option<String>,
     live_owners: crate::session::LiveSessionRegistry,
+    /// Global zenpi directory probed for `AGENTS.md`/`SYSTEM.md` (ZE-230).
+    /// Project owners use `$ZENPI_HOME`; bare embedders opt in explicitly.
+    system_prompt_home: Option<PathBuf>,
 }
 
 /// ZS1-187: identical repeated calls allowed per turn before the excess is
@@ -657,6 +703,126 @@ fn publish_output_progress(
 }
 
 impl Agent {
+    /// Keep the session owner and policy; change only this request's host-selected tool root.
+    pub fn with_tool_workspace<R>(
+        &mut self,
+        root: &Path,
+        run: impl FnOnce(&mut Self) -> R,
+    ) -> Result<R, AgentError> {
+        self.with_tool_workspace_cancelable(root, &|| false, run)
+    }
+
+    pub fn with_tool_workspace_cancelable<R>(
+        &mut self,
+        root: &Path,
+        cancelled: &dyn Fn() -> bool,
+        run: impl FnOnce(&mut Self) -> R,
+    ) -> Result<R, AgentError> {
+        if self.phase != AgentPhase::Idle
+            || self.input_port.has_pending()
+            || self.input_port.is_preparing()
+        {
+            return Err(AgentError::NotIdle);
+        }
+        if cancelled() {
+            return Err(BackendError::Cancelled.into());
+        }
+        let old = self
+            .tools
+            .as_ref()
+            .ok_or_else(|| {
+                AgentError::InvalidTurn("execution workspace requires host tools".into())
+            })?
+            .context
+            .clone();
+        if old.workspace_root() == root {
+            return Ok(run(self));
+        }
+        let next = old
+            .for_workspace(root)
+            .map_err(|error| AgentError::InvalidTurn(error.to_string()))?;
+        // Prepare both generations before revoking the original. Restoration
+        // cannot depend on another fallible initialize after a tool has run.
+        let extension_scope = if let Some(runtime) = self
+            .extensions
+            .as_ref()
+            .filter(|runtime| runtime.has_loaded_extensions())
+        {
+            let tools = self.tools.as_ref().expect("validated tools");
+            if tools.worker_binding.is_some() {
+                return Err(AgentError::InvalidTurn(
+                    "worker cannot rebind extension authority".into(),
+                ));
+            }
+            let selected = runtime
+                .prepare_workspace(root, cancelled)
+                .map_err(extension_agent_error)?;
+            let restored = runtime
+                .prepare_workspace(old.workspace_root(), cancelled)
+                .map_err(extension_agent_error)?;
+            let mut base = (*tools.registry).clone();
+            base.remove_extension_tools(&runtime.tool_names());
+            let mut selected_registry = base.clone();
+            selected.register_tools(&mut selected_registry)?;
+            restored.register_tools(&mut base)?;
+            if cancelled() {
+                return Err(BackendError::Cancelled.into());
+            }
+            self.session.append_event(serde_json::json!({
+                "type":"extensions_workspace_selected",
+                "workspace_root":root,
+                "generation":selected.lease().identity().generation,
+                "restore_generation":restored.lease().identity().generation,
+            }))?;
+            Some((
+                (selected, std::sync::Arc::new(selected_registry)),
+                (restored, std::sync::Arc::new(base)),
+            ))
+        } else {
+            None
+        };
+        struct Restore<'a> {
+            agent: &'a mut Agent,
+            context: Option<ToolContext>,
+            extensions: Option<(
+                crate::extension_runtime::ExtensionRuntime,
+                std::sync::Arc<ToolRegistry>,
+            )>,
+        }
+        impl Drop for Restore<'_> {
+            fn drop(&mut self) {
+                if let (Some(runtime), Some(context)) =
+                    (self.agent.tools.as_mut(), self.context.take())
+                {
+                    runtime.context = context;
+                }
+                if let Some(candidate) = self.extensions.take() {
+                    // Closing the Agent inside the request must remain terminal.
+                    if self.agent.phase != AgentPhase::Closed {
+                        if let Err(error) = self.agent.session.append_event(serde_json::json!({
+                            "type":"extensions_workspace_restored",
+                            "generation":candidate.0.lease().identity().generation,
+                        })) {
+                            self.agent.extension_errors(vec![error.to_string()]);
+                        }
+                        self.agent
+                            .publish_extensions(candidate, "request_workspace_restored");
+                    }
+                }
+            }
+        }
+        self.tools.as_mut().expect("validated tools").context = next;
+        let restore_extensions = extension_scope.map(|(selected, restored)| {
+            self.publish_extensions(selected, "request_workspace");
+            restored
+        });
+        let guard = Restore {
+            agent: self,
+            context: Some(old),
+            extensions: restore_extensions,
+        };
+        Ok(run(guard.agent))
+    }
     /// Install a request-scoped live tool consumer. Restoration also occurs on
     /// errors and unwinding, so a subsequent job cannot inherit an old mailbox.
     pub fn with_live_tool_events<R>(
@@ -783,6 +949,7 @@ impl Agent {
             live_tool_sink: None,
             tools: None,
             context_budget: crate::context::ContextBudget::default(),
+            compaction: crate::config::CompactionSettings::default(),
             skills: crate::skills::SkillSet::default(),
             resource_loader: None,
             active_resources: None,
@@ -796,6 +963,7 @@ impl Agent {
             worker_budget: None,
             worker_admission_operation: None,
             live_owners: crate::session::LiveSessionRegistry::default(),
+            system_prompt_home: None,
         };
         for operation in recovered {
             agent.events.push(AgentEvent::Error {
@@ -917,6 +1085,17 @@ impl Agent {
         self.auto_approve
     }
 
+    /// Apply `--auto` to an already constructed root owner (ZS1-180): switch
+    /// the approval mode to `Never` (keeping per-tool rules, so configured
+    /// denials still hold) and record the explicit choice that
+    /// `ProjectOwnerPool` propagates to every arch and project owner.
+    pub fn enable_auto_approve(&mut self) {
+        let mut policy = self.configured_approval_policy().unwrap_or_default();
+        policy.mode = crate::approval::ApprovalMode::Never;
+        self.set_approval_policy(policy);
+        self.auto_approve = true;
+    }
+
     pub fn prepare_project_with_options(
         session_path: &Path,
         cwd: &Path,
@@ -947,14 +1126,15 @@ impl Agent {
         };
         let paths = crate::config::ConfigPaths::discover()?;
         let resource_paths = default_resource_paths(&paths, &cwd);
-        let registry =
-            ToolRegistry::with_all_builtins().map_err(|e| ZenpiError::Message(e.to_string()))?;
+        let registry = ToolRegistry::with_default_builtins()
+            .map_err(|e| ZenpiError::Message(e.to_string()))?;
         let session = SessionStore::open_in_workspace(session_path, &cwd)?;
         let mut agent = Self::new(session, backend);
         if overrides.model.is_none() {
             agent.restore_model_selection()?;
         }
         agent.project_overrides = overrides;
+        agent.system_prompt_home = Some(paths.root.clone());
         agent.set_tools_with_resources(registry, context, SideEffectPolicy::all_builtins())?;
         agent.restore_resources(resource_paths, || false)?;
         agent.configure_extensions(&paths.extensions, || false)?;
@@ -967,6 +1147,9 @@ impl Agent {
             ..ApprovalPolicy::default()
         });
         agent.auto_approve = auto_approve;
+        // Like the CLI start-up: close interrupted operations and answer
+        // dangling tool calls, so a strict provider accepts the history.
+        agent.acknowledge_recovery()?;
         Ok(agent)
     }
 
@@ -1362,6 +1545,13 @@ impl Agent {
         self.model.as_deref()
     }
 
+    pub fn validate_model_choice(&self, model: &str) -> Result<(), AgentError> {
+        self.backend.validate_model(Some(model))?;
+        self.backend
+            .validate_history_model(&self.selected_history()?, Some(model))?;
+        Ok(())
+    }
+
     /// The complete, versioned selection this owner is running.
     ///
     /// Built from the running backend rather than from the journal, so a host
@@ -1390,9 +1580,11 @@ impl Agent {
         if self.phase == AgentPhase::Closed {
             return Err(AgentError::Closed);
         }
-        if self.phase == AgentPhase::Running {
+        if self.phase != AgentPhase::Idle {
             return Err(AgentError::NotIdle);
         }
+        self.connection_change_fence()
+            .map_err(|_| AgentError::NotIdle)?;
         self.backend.validate_model(model.as_deref())?;
         self.backend
             .validate_history_model(&self.selected_history()?, model.as_deref())?;
@@ -1436,9 +1628,71 @@ impl Agent {
             .iter()
             .rev()
             .find(|record| {
-                record.kind == "event" && record.value["event"]["type"] == "model_selected"
+                record.kind == "event" && record.value()["event"]["type"] == "model_selected"
             })
             .map_or(0, |record| record.sequence)
+    }
+
+    /// Change only this owner's model, retaining its backend and effort.
+    pub fn select_model(
+        &mut self,
+        model: String,
+        expected_selection_revision: u64,
+    ) -> Result<ConnectionSelectionOutcome, AgentError> {
+        if self.phase == AgentPhase::Closed {
+            return Err(AgentError::Closed);
+        }
+        let reject =
+            |code, detail: String| Ok(ConnectionSelectionOutcome::Rejected { code, detail });
+        if self.phase != AgentPhase::Idle {
+            return reject(
+                ConnectionRejectCode::ConnectionBusy,
+                "the owner is running a turn".into(),
+            );
+        }
+        if let Err(detail) = self.connection_change_fence() {
+            return reject(ConnectionRejectCode::ConnectionBusy, detail);
+        }
+        if expected_selection_revision != self.selection_revision() {
+            return reject(
+                ConnectionRejectCode::ConnectionStale,
+                "the selection revision changed".into(),
+            );
+        }
+        if let Err(error) = self.backend.validate_model(Some(&model)) {
+            return reject(ConnectionRejectCode::ConnectionInvalid, error.to_string());
+        }
+        if let Err(error) = self
+            .backend
+            .validate_history_model(&self.selected_history()?, Some(&model))
+        {
+            return reject(ConnectionRejectCode::ConnectionInvalid, error.to_string());
+        }
+        let descriptor = match self.backend.model_descriptor(Some(&model)) {
+            Ok(Some(descriptor)) => descriptor,
+            Ok(None) => {
+                return reject(
+                    ConnectionRejectCode::ConnectionInvalid,
+                    "model selection requires a registry-bound provider".into(),
+                );
+            }
+            Err(error) => {
+                return reject(ConnectionRejectCode::ConnectionInvalid, error.to_string());
+            }
+        };
+        let snapshot = Self::selection_snapshot_for(
+            self.backend.as_ref(),
+            &self.profile_hint(),
+            Some(model),
+            self.backend.reasoning_effort().map(str::to_owned),
+            Some(&descriptor),
+        )?;
+        self.session.append_event(snapshot.event())?;
+        self.model = snapshot.model.clone();
+        Ok(ConnectionSelectionOutcome::Applied {
+            selection_revision: self.selection_revision(),
+            snapshot: Box::new(snapshot),
+        })
     }
 
     /// Everything that must be settled before the running connection may
@@ -1477,7 +1731,7 @@ impl Agent {
         }
         // A submitted ticket has not taken the owner lock yet, so `Idle` alone
         // does not mean nothing is scheduled against the running connection.
-        if self.input_port.has_pending() {
+        if self.input_port.has_pending() || self.input_port.is_preparing() {
             return Err("host input is queued but not yet serviced".into());
         }
         Ok(())
@@ -1653,6 +1907,8 @@ impl Agent {
         if self.phase != AgentPhase::Idle {
             return Err(AgentError::NotIdle);
         }
+        self.connection_change_fence()
+            .map_err(|_| AgentError::NotIdle)?;
         self.backend
             .validate_reasoning_effort(self.model.as_deref(), effort.as_deref())?;
         let descriptor = self
@@ -1677,6 +1933,85 @@ impl Agent {
         self.backend.reasoning_effort()
     }
 
+    pub fn reasoning_choices(&self) -> Result<Vec<Option<String>>, AgentError> {
+        let Some(descriptor) = self.backend.model_descriptor(self.model.as_deref())? else {
+            return Ok(Vec::new());
+        };
+        let mut choices = Vec::new();
+        if self
+            .backend
+            .validate_reasoning_effort(self.model.as_deref(), None)
+            .is_ok()
+        {
+            choices.push(None);
+        }
+        for level in descriptor.reasoning_levels {
+            let value = serde_json::to_value(level)
+                .map_err(|error| AgentError::InvalidTurn(error.to_string()))?;
+            if let Some(effort) = value.as_str()
+                && self
+                    .backend
+                    .validate_reasoning_effort(self.model.as_deref(), Some(effort))
+                    .is_ok()
+            {
+                choices.push(Some(effort.to_owned()));
+            }
+        }
+        Ok(choices)
+    }
+
+    pub fn select_reasoning(
+        &mut self,
+        effort: Option<String>,
+        expected_selection_revision: u64,
+    ) -> Result<ConnectionSelectionOutcome, AgentError> {
+        if self.phase == AgentPhase::Closed {
+            return Err(AgentError::Closed);
+        }
+        let reject =
+            |code, detail: String| Ok(ConnectionSelectionOutcome::Rejected { code, detail });
+        if self.phase != AgentPhase::Idle {
+            return reject(
+                ConnectionRejectCode::ConnectionBusy,
+                "the owner is running a turn".into(),
+            );
+        }
+        if let Err(detail) = self.connection_change_fence() {
+            return reject(ConnectionRejectCode::ConnectionBusy, detail);
+        }
+        if expected_selection_revision != self.selection_revision() {
+            return reject(
+                ConnectionRejectCode::ConnectionStale,
+                "the selection revision changed".into(),
+            );
+        }
+        if let Err(error) = self
+            .backend
+            .validate_reasoning_effort(self.model.as_deref(), effort.as_deref())
+        {
+            return reject(ConnectionRejectCode::ConnectionInvalid, error.to_string());
+        }
+        let descriptor = self
+            .backend
+            .model_descriptor(self.model.as_deref())?
+            .ok_or_else(|| {
+                AgentError::InvalidTurn("reasoning settings require a model registry".into())
+            })?;
+        let snapshot = Self::selection_snapshot_for(
+            self.backend.as_ref(),
+            &self.profile_hint(),
+            self.model.clone(),
+            effort.clone(),
+            Some(&descriptor),
+        )?;
+        self.session.append_event(snapshot.event())?;
+        self.backend.commit_reasoning_effort(effort);
+        Ok(ConnectionSelectionOutcome::Applied {
+            selection_revision: self.selection_revision(),
+            snapshot: Box::new(snapshot),
+        })
+    }
+
     fn selected_model_for_session(
         &self,
         session: &SessionStore,
@@ -1694,7 +2029,7 @@ impl Agent {
             });
         }
         let saved = session.records().iter().rev().find_map(|record| {
-            let event = record.value.get("event")?;
+            let event = record.value().get("event")?.clone();
             (record.kind == "event" && event["type"] == "model_selected").then_some(event)
         });
         let Some(saved) = saved else {
@@ -1826,6 +2161,7 @@ impl Agent {
     pub fn model_status(&self) -> Result<Value, AgentError> {
         let active = self.backend.model_descriptor(self.model.as_deref())?;
         Ok(serde_json::json!({
+            "model": self.model.as_deref().or_else(|| self.backend.model()),
             "active": active, "capabilities": self.backend.model_capabilities(self.model.as_deref())?,
             "budget": self.context_budget(), "catalog": self.backend.model_catalog(),
             "registry_bound": active.is_some(), "reasoning_effort": self.backend.reasoning_effort(),
@@ -1919,6 +2255,11 @@ impl Agent {
         self.process(TurnInputRequest::new(message))
     }
 
+    /// Number of events buffered since the last `take_events` drain.
+    pub fn buffered_event_count(&self) -> usize {
+        self.events.len()
+    }
+
     pub fn take_events(&mut self) -> Vec<AgentEvent> {
         std::mem::take(&mut self.events)
     }
@@ -1959,13 +2300,42 @@ impl Agent {
             sequential: false,
             context,
             policy,
-            approval: ApprovalCoordinator::new(),
+            approval: ApprovalCoordinator::for_session(self.session.session_id()),
             approval_policy: ApprovalPolicy::default()
                 .with_remembered_events(self.session.events()),
             configured_approval_policy: ApprovalPolicy::default(),
             worker_binding: None,
             doom_loop_counts: std::collections::BTreeMap::new(),
         });
+    }
+
+    /// Select the global directory whose `AGENTS.md`/`CLAUDE.md`,
+    /// `SYSTEM.md` and `APPEND_SYSTEM.md` join the base system prompt.
+    pub fn set_system_prompt_home(&mut self, home: Option<PathBuf>) {
+        self.system_prompt_home = home;
+    }
+
+    /// Base prompt, environment line and context files for the current tool
+    /// workspace (ZE-230), followed by a newline separator. Agents without a
+    /// workspace send no base prompt. Skipped files surface as warnings.
+    fn build_system_prompt(&mut self, definitions: &[crate::tools::ToolDefinition]) -> String {
+        let Some(runtime) = self.tools.as_ref() else {
+            return String::new();
+        };
+        let built = crate::system_prompt::build(&crate::system_prompt::PromptInputs {
+            cwd: runtime.context.workspace_root(),
+            global_dir: self.system_prompt_home.as_deref(),
+            tools: definitions,
+            date: crate::system_prompt::today_utc(),
+        });
+        for message in built.diagnostics {
+            emit_tool_event(
+                &mut self.events,
+                self.live_tool_sink.as_ref(),
+                AgentEvent::Warning { message },
+            );
+        }
+        format!("{}\n", built.text)
     }
 
     pub fn set_attachment_workspace(&mut self, context: ToolContext) {
@@ -1977,7 +2347,7 @@ impl Agent {
                 sequential: false,
                 context,
                 policy: SideEffectPolicy::read_only(),
-                approval: ApprovalCoordinator::new(),
+                approval: ApprovalCoordinator::for_session(self.session.session_id()),
                 approval_policy: ApprovalPolicy::default()
                     .with_remembered_events(self.session.events()),
                 configured_approval_policy: ApprovalPolicy::default(),
@@ -2037,8 +2407,6 @@ impl Agent {
         self.pending_attachments.clear();
     }
 
-    /// Configure the approval policy and return the coordinator used by a
-    /// host to surface/respond to pending side-effect requests.
     /// Per-turn tool-iteration budget (ZS1-184). Mature coding agents keep
     /// looping until the model stops, so the default is generous (1000) and
     /// the hard ceiling is 10000; the budget only exists to stop a runaway
@@ -2047,6 +2415,13 @@ impl Agent {
         self.max_tool_iterations = iterations.clamp(1, 10_000);
     }
 
+    /// Current per-turn tool-iteration budget (ZS1-184).
+    pub fn max_tool_iterations(&self) -> usize {
+        self.max_tool_iterations
+    }
+
+    /// Configure the approval policy and return the coordinator used by a
+    /// host to surface/respond to pending side-effect requests.
     pub fn set_approval_policy(&mut self, policy: ApprovalPolicy) -> Option<ApprovalCoordinator> {
         let runtime = self.tools.as_mut()?;
         runtime.approval_policy = policy.with_remembered_events(self.session.events());
@@ -2516,6 +2891,10 @@ impl Agent {
         self.context_budget = budget;
     }
 
+    pub fn set_compaction_settings(&mut self, settings: crate::config::CompactionSettings) {
+        self.compaction = settings;
+    }
+
     pub fn context_budget(&self) -> crate::context::ContextBudget {
         self.backend
             .model_descriptor(self.model.as_deref())
@@ -2603,9 +2982,13 @@ impl Agent {
         Ok(())
     }
 
+    /// Prepare provider context, compacting it first (pi) when the latest real
+    /// usage plus an estimate of later records exceeds `window - reserve`,
+    /// when the request cannot fit, or when `force` (a context overflow) asks.
     fn prepare_semantic_provider_context<F: Fn() -> bool>(
         &mut self,
         budget: crate::context::ContextBudget,
+        force: bool,
         cancelled: &F,
     ) -> Result<crate::context::PreparedContext, AgentError> {
         use crate::context::{ContextBudget, PreparedContext, estimate_tokens};
@@ -2619,17 +3002,46 @@ impl Agent {
         }
         let turns = self.context_source_for_provider()?;
         let estimate = estimate_tokens(&turns);
-        if estimate.input_tokens <= budget.max_tokens - budget.reserved_output_tokens {
-            return Ok(PreparedContext {
-                turns,
-                checkpoint: None,
-                estimate,
+        let unbounded = ContextBudget {
+            max_tokens: u64::MAX,
+            reserved_output_tokens: 0,
+        };
+        let previous = self.session.latest_semantic_checkpoint(unbounded)?;
+        let settings = self.compaction;
+        // `budget` may already exclude the instructions; the window does not.
+        let window = self.context_budget().max_tokens.max(budget.max_tokens);
+        // The configured reserve applies while it leaves more than half the
+        // window for context; a smaller window keeps only its output reservation.
+        let reserve = if settings.reserve_tokens.saturating_mul(2) < window {
+            settings.reserve_tokens.max(budget.reserved_output_tokens)
+        } else {
+            budget.reserved_output_tokens
+        };
+        // Usage reported before the latest compaction measured the old context.
+        let stale: BTreeSet<&str> = previous
+            .iter()
+            .flat_map(|checkpoint| checkpoint.retained_ids.iter().map(String::as_str))
+            .collect();
+        let used =
+            crate::context::estimate_context_tokens(&turns, window - budget.max_tokens, &|turn| {
+                !stale.contains(turn.id.as_str())
             });
+        let over = estimate.input_tokens > budget.max_tokens - budget.reserved_output_tokens;
+        let triggered = force || (settings.enabled && used > window.saturating_sub(reserve));
+        if !over && !triggered {
+            return Ok(PreparedContext { turns, estimate });
         }
+        // An early (threshold) compaction that cannot run leaves a context
+        // that still fits; an over-budget or overflowed one fails explicitly.
+        let required = over || force;
+        let unchanged = PreparedContext { turns, estimate };
         // Compaction rewrites history over a possibly broken tail. Leftover
         // unknown outcomes veto it; the turn must fail explicitly here rather
         // than send an over-budget request.
         if let Some(reason) = self.automation_vetoed() {
+            if !required {
+                return Ok(unchanged);
+            }
             self.session.append_event(serde_json::json!({
                 "type": "automation_vetoed", "automation": "semantic_compaction",
                 "reason": reason, "turn_id": self.active_turn_id,
@@ -2641,11 +3053,9 @@ impl Agent {
         let source = self.selected_history()?;
         let branch_id = self.session.selected_tree_branch();
         let session_id = self.session.session_id().to_owned();
-        let previous = self.session.latest_semantic_checkpoint(ContextBudget {
-            max_tokens: u64::MAX,
-            reserved_output_tokens: 0,
-        })?;
-        let keep_tokens = (budget.max_tokens - budget.reserved_output_tokens) / 2;
+        let keep_tokens = settings
+            .keep_recent_tokens
+            .min((budget.max_tokens - budget.reserved_output_tokens) / 2);
         let scope = self
             .active_turn_id
             .clone()
@@ -2660,9 +3070,17 @@ impl Agent {
             &|| pump.poll(cancelled()),
         );
         pump.finish()?;
-        let plan = plan.map_err(|e| {
-            AgentError::InvalidTurn(format!("semantic compaction has no safe bounded cut: {e}"))
-        })?;
+        let plan = match plan {
+            Ok(plan) => plan,
+            Err(crate::context::ContextError::InvalidCheckpoint) if !required => {
+                return Ok(unchanged);
+            }
+            Err(e) => {
+                return Err(AgentError::InvalidTurn(format!(
+                    "semantic compaction has no safe bounded cut: {e}"
+                )));
+            }
+        };
         let data = plan
             .summary_request_data(&source, previous.as_ref())
             .map_err(|e| {
@@ -2676,8 +3094,22 @@ impl Agent {
             |model| model.provider.clone(),
         );
         let request_budget = self.context_budget();
-        let output_limit = request_budget.reserved_output_tokens.min(4096);
-        if output_limit == 0 {
+        // pi: the history summary may use 80% of the reserve, a split-turn
+        // prefix 50%; neither exceeds the model's output reservation.
+        let parts = [
+            (
+                "history",
+                data.history,
+                settings.reserve_tokens / 5 * 4 + settings.reserve_tokens % 5 * 4 / 5,
+            ),
+            ("turn_prefix", data.turn_prefix, settings.reserve_tokens / 2),
+        ]
+        .into_iter()
+        .filter_map(|(part, text, limit)| {
+            text.map(|text| (part, text, limit.min(request_budget.reserved_output_tokens)))
+        })
+        .collect::<Vec<_>>();
+        if parts.iter().any(|(_, _, limit)| *limit == 0) {
             return Err(AgentError::InvalidTurn(
                 "semantic summary output budget is zero".into(),
             ));
@@ -2687,53 +3119,59 @@ impl Agent {
             &operation_id,
             crate::backend::RequestPurpose::SemanticCompaction,
         )?;
-        let mut request_turn = Turn::new(
-            format!("summary-{}", self.session.next_sequence()),
-            TurnRole::User,
-            &data,
-        );
-        request_turn.created_at_ms = source.last().map_or(0, |turn| turn.created_at_ms);
-        let request_turns = [request_turn];
-        let request_estimate = estimate_tokens(&request_turns)
-            .input_tokens
-            .saturating_add(crate::context::SUMMARY_INSTRUCTIONS.len().div_ceil(4) as u64)
-            .saturating_add(64);
-        if request_estimate.saturating_add(output_limit) > request_budget.max_tokens {
-            return Err(AgentError::InvalidTurn("semantic summary source exceeds model/request budget; existing checkpoint retained".into()));
-        }
         let price = descriptor.as_ref().and_then(|model| model.price.as_ref());
-        // Reserve the full allowed input window for a monetary ceiling. This is
-        // an upper-bound reservation, never a claim about the actual bill.
-        let quote = price
-            .map(|price| {
-                crate::governance::quoted_summary_cost(
-                    price,
-                    request_budget.max_tokens,
-                    output_limit,
-                )
-            })
-            .transpose()
-            .map_err(|e| AgentError::Governance(e.to_string()))?;
+        let mut requests = Vec::new();
+        for (part, text, output_limit) in parts {
+            let mut request_turn = Turn::new(
+                format!("summary-{}", self.session.next_sequence()),
+                TurnRole::User,
+                text,
+            );
+            request_turn.created_at_ms = source.last().map_or(0, |turn| turn.created_at_ms);
+            let request_estimate = estimate_tokens(std::slice::from_ref(&request_turn))
+                .input_tokens
+                .saturating_add(crate::context::SUMMARY_INSTRUCTIONS.len().div_ceil(4) as u64)
+                .saturating_add(64);
+            // Each summary request must itself fit the context window.
+            if request_estimate.saturating_add(output_limit) > request_budget.max_tokens {
+                return Err(AgentError::InvalidTurn("semantic summary source exceeds model/request budget; existing checkpoint retained".into()));
+            }
+            // Reserve the full allowed input window for a monetary ceiling. This
+            // is an upper-bound reservation, never a claim about the actual bill.
+            let quote = price
+                .map(|price| {
+                    crate::governance::quoted_summary_cost(
+                        price,
+                        request_budget.max_tokens,
+                        output_limit,
+                    )
+                })
+                .transpose()
+                .map_err(|e| AgentError::Governance(e.to_string()))?;
+            requests.push((part, request_turn, request_estimate, output_limit, quote));
+        }
         self.ensure_summary_ledger()?;
         let ledger = self.governance.as_mut().expect("summary ledger");
         ledger
             .persist(&mut self.session)
             .map_err(|e| AgentError::Governance(e.to_string()))?;
-        // Reserve the summary's token/cost ceiling together. HTTP admission is
-        // charged separately, only when the backend actually starts a send.
+        // Reserve every summary's token/cost ceiling before the first send. HTTP
+        // admission is charged separately, only when the backend starts a send.
         let mut candidate =
             crate::governance::BudgetLedger::restore(&self.session, ledger.limits())
                 .map_err(|e| AgentError::Governance(e.to_string()))?;
-        candidate
-            .charge(
-                crate::governance::ResourceKind::InputTokens,
-                request_estimate,
-            )
-            .and_then(|_| {
-                candidate.charge(crate::governance::ResourceKind::OutputTokens, output_limit)
-            })
-            .and_then(|_| candidate.reserve_summary_cost(quote))
-            .map_err(|e| AgentError::Governance(e.to_string()))?;
+        for (_, _, request_estimate, output_limit, quote) in &requests {
+            candidate
+                .charge(
+                    crate::governance::ResourceKind::InputTokens,
+                    *request_estimate,
+                )
+                .and_then(|_| {
+                    candidate.charge(crate::governance::ResourceKind::OutputTokens, *output_limit)
+                })
+                .and_then(|_| candidate.reserve_summary_cost(*quote))
+                .map_err(|e| AgentError::Governance(e.to_string()))?;
+        }
         candidate
             .persist(&mut self.session)
             .map_err(|e| AgentError::Governance(e.to_string()))?;
@@ -2749,162 +3187,190 @@ impl Agent {
                 retry_requires_confirmation: false,
             })?;
         use sha2::{Digest, Sha256};
-        self.session.append_event(serde_json::json!({
-            "type":"semantic_summary_requested", "operation_id":operation_id,
-            "source":plan.source(), "source_end":plan.source_end(),
-            "request_sha256":format!("{:x}",Sha256::digest(data.as_bytes())),
-            "requested_model":self.model, "provider":summary_provider, "backend":self.backend.name(), "model_metadata":descriptor,
-            "budget":request_budget, "approximate_input_tokens":request_estimate,
-            "max_output_tokens":output_limit, "reserved_cost_micro_usd":quote,
-            "price_known":price.is_some(),
-        }))?;
-        let metadata = serde_json::json!({"purpose":"semantic_compaction"});
-        let request =
-            CompletionRequest::new(&operation_id, &request_turns, self.model.as_deref(), &[])
+        let deadline = self.provider_request_deadline(&request_scope);
+        let outcome = (|| -> Result<PreparedContext, AgentError> {
+            let mut summaries = Vec::new();
+            let mut total_usage = crate::backend::Usage::default();
+            let mut reported_model = None;
+            for (part, request_turn, request_estimate, output_limit, quote) in requests {
+                self.session.append_event(serde_json::json!({
+                    "type":"semantic_summary_requested", "operation_id":operation_id, "part":part,
+                    "source":plan.source(), "source_end":plan.source_end(),
+                    "request_sha256":format!("{:x}",Sha256::digest(request_turn.content.as_bytes())),
+                    "requested_model":self.model, "provider":summary_provider, "backend":self.backend.name(), "model_metadata":descriptor,
+                    "budget":request_budget, "approximate_input_tokens":request_estimate,
+                    "max_output_tokens":output_limit, "reserved_cost_micro_usd":quote,
+                    "price_known":price.is_some(),
+                }))?;
+                let metadata = serde_json::json!({"purpose":"semantic_compaction"});
+                let request_turns = [request_turn];
+                let request = CompletionRequest::new(
+                    &operation_id,
+                    &request_turns,
+                    self.model.as_deref(),
+                    &[],
+                )
                 .with_instructions(Some(crate::context::SUMMARY_INSTRUCTIONS))
                 .with_metadata(Some(&metadata));
-        let request = match self.explicit_output_limit(output_limit) {
-            Some(limit) => request.with_max_output_tokens(limit),
-            None => request,
-        };
-        let deadline = self.provider_request_deadline(&request_scope);
-        let pump =
-            crate::input_queue::InputPump::new(&mut self.session, self.input_port.clone(), &scope);
-        let mut streamed_bytes = 0usize;
-        let mut admission_error = None;
-        let mut before_send = |_kind, actual_scope: &crate::backend::RequestScope| {
-            let result = pump.with_session(|session| {
-                admit_provider_send(
-                    session,
-                    &mut self.governance,
-                    &mut self.worker_budget,
-                    self.worker_admission_operation.as_deref(),
-                    self.tools.as_ref(),
-                    actual_scope,
-                    &request_scope,
-                )
-            });
-            result.map_err(|error| {
-                admission_error = Some(error);
-                BackendError::AdmissionDenied("provider request denied by owner".into())
-            })
-        };
-        let request_cancelled = || {
-            pump.poll(
-                cancelled()
-                    || self
-                        .tools
-                        .as_ref()
-                        .is_some_and(|runtime| runtime.context.checked_policy_evidence().is_err()),
-            )
-        };
-        let mut control = crate::backend::RequestControl {
-            cancelled: &request_cancelled,
-            deadline,
-            scope: request_scope.clone(),
-            before_send: &mut before_send,
-        };
-        let response =
-            self.backend
-                .complete_with_request_control(request, &mut control, &mut |event| {
-                    if let ProviderEvent::TextDelta { delta } = event {
-                        streamed_bytes = streamed_bytes.saturating_add(delta.len());
-                        if streamed_bytes > crate::context::MAX_SUMMARY_BYTES {
-                            return Err(BackendError::InvalidResponse(
-                                "semantic summary exceeded byte limit".into(),
-                            ));
+                let request = match self.explicit_output_limit(output_limit) {
+                    Some(limit) => request.with_max_output_tokens(limit),
+                    None => request,
+                };
+                let pump = crate::input_queue::InputPump::new(
+                    &mut self.session,
+                    self.input_port.clone(),
+                    &scope,
+                );
+                let mut streamed_bytes = 0usize;
+                let mut admission_error = None;
+                let mut before_send = |_kind, actual_scope: &crate::backend::RequestScope| {
+                    let result = pump.with_session(|session| {
+                        admit_provider_send(
+                            session,
+                            &mut self.governance,
+                            &mut self.worker_budget,
+                            self.worker_admission_operation.as_deref(),
+                            self.tools.as_ref(),
+                            actual_scope,
+                            &request_scope,
+                        )
+                    });
+                    result.map_err(|error| {
+                        admission_error = Some(error);
+                        BackendError::AdmissionDenied("provider request denied by owner".into())
+                    })
+                };
+                let request_cancelled = || {
+                    pump.poll(
+                        cancelled()
+                            || self.tools.as_ref().is_some_and(|runtime| {
+                                runtime.context.checked_policy_evidence().is_err()
+                            }),
+                    )
+                };
+                let mut control = crate::backend::RequestControl {
+                    cancelled: &request_cancelled,
+                    deadline,
+                    scope: request_scope.clone(),
+                    before_send: &mut before_send,
+                };
+                let response = self.backend.complete_with_request_control(
+                    request,
+                    &mut control,
+                    &mut |event| {
+                        if let ProviderEvent::TextDelta { delta } = event {
+                            streamed_bytes = streamed_bytes.saturating_add(delta.len());
+                            if streamed_bytes > crate::context::MAX_SUMMARY_BYTES {
+                                return Err(BackendError::InvalidResponse(
+                                    "semantic summary exceeded byte limit".into(),
+                                ));
+                            }
                         }
-                    }
-                    Ok(())
-                });
-        let pump_result = pump.finish();
-        let outcome = (|| -> Result<PreparedContext, AgentError> {
-            pump_result?;
-            if let Some(error) = admission_error {
-                return Err(error);
-            }
-            let response = response?;
-            let actual_cost = response
-                .usage
-                .map(|usage| {
-                    price
-                        .map(|price| {
-                            crate::governance::quoted_summary_cost(
-                                price,
-                                usage.input_tokens,
-                                usage.output_tokens,
+                        Ok(())
+                    },
+                );
+                pump.finish()?;
+                if let Some(error) = admission_error {
+                    return Err(error);
+                }
+                let response = response?;
+                let actual_cost = response
+                    .usage
+                    .map(|usage| {
+                        price
+                            .map(|price| {
+                                crate::governance::quoted_summary_cost(
+                                    price,
+                                    usage.input_tokens,
+                                    usage.output_tokens,
+                                )
+                            })
+                            .transpose()
+                    })
+                    .transpose()
+                    .map_err(|e| AgentError::Governance(e.to_string()))?
+                    .flatten();
+                let mut raw_end = response
+                    .content
+                    .len()
+                    .min(crate::context::MAX_SUMMARY_BYTES);
+                while !response.content.is_char_boundary(raw_end) {
+                    raw_end -= 1;
+                }
+                let annotation_bytes = serde_json::to_vec(&response.annotations)
+                    .map_err(|e| AgentError::InvalidTurn(e.to_string()))?;
+                let annotations = if annotation_bytes.len() <= crate::context::MAX_SUMMARY_BYTES {
+                    serde_json::to_value(&response.annotations).expect("JSON values serialize")
+                } else {
+                    serde_json::json!({"omitted":true,"bytes":annotation_bytes.len(),
+                    "sha256":format!("{:x}",Sha256::digest(&annotation_bytes))})
+                };
+                self.session.append_event(serde_json::json!({
+                    "type":"semantic_summary_response", "operation_id":operation_id, "part":part,
+                    "source":plan.source(), "response_id":response.response_id, "provider":summary_provider, "backend":self.backend.name(),
+                    "model":response.model, "usage":response.usage, "usage_cost_estimate_micro_usd":actual_cost, "cost_basis":"reported_tokens_at_recorded_model_rates",
+                    "raw_summary":&response.content[..raw_end], "raw_summary_bytes":response.content.len(),
+                    "raw_summary_truncated":raw_end < response.content.len(),
+                    "raw_summary_sha256":format!("{:x}",Sha256::digest(response.content.as_bytes())),
+                    "annotations":annotations,
+                }))?;
+                if let Some(usage) = response.usage {
+                    let ledger = self.governance.as_mut().expect("summary ledger");
+                    ledger
+                        .charge(
+                            crate::governance::ResourceKind::InputTokens,
+                            usage.input_tokens.saturating_sub(request_estimate),
+                        )
+                        .and_then(|_| {
+                            ledger.charge(
+                                crate::governance::ResourceKind::OutputTokens,
+                                usage.output_tokens.saturating_sub(output_limit),
                             )
                         })
-                        .transpose()
-                })
-                .transpose()
-                .map_err(|e| AgentError::Governance(e.to_string()))?
-                .flatten();
-            let mut raw_end = response
-                .content
-                .len()
-                .min(crate::context::MAX_SUMMARY_BYTES);
-            while !response.content.is_char_boundary(raw_end) {
-                raw_end -= 1;
+                        .and_then(|_| {
+                            ledger.reserve_summary_cost(
+                                actual_cost
+                                    .zip(quote)
+                                    .map(|(actual, quote)| actual.saturating_sub(quote)),
+                            )
+                        })
+                        .and_then(|_| ledger.persist(&mut self.session))
+                        .map_err(|e| AgentError::Governance(e.to_string()))?;
+                }
+                if cancelled() {
+                    return Err(BackendError::Cancelled.into());
+                }
+                if response.usage.is_some_and(|usage| {
+                    usage.input_tokens.saturating_add(output_limit) > request_budget.max_tokens
+                }) {
+                    return Err(AgentError::InvalidTurn("summary actual input usage exceeds request budget; previous checkpoint retained".into()));
+                }
+                let (summary, usage) = plan
+                    .validate_summary_completion(&response, output_limit)
+                    .map_err(|e| {
+                        AgentError::InvalidTurn(format!(
+                            "invalid semantic summary; previous checkpoint retained: {e}"
+                        ))
+                    })?;
+                total_usage.input_tokens += usage.input_tokens;
+                total_usage.output_tokens += usage.output_tokens;
+                total_usage.total_tokens += usage.total_tokens;
+                total_usage.cache_read_tokens += usage.cache_read_tokens;
+                total_usage.cache_write_tokens += usage.cache_write_tokens;
+                total_usage.reasoning_tokens += usage.reasoning_tokens;
+                reported_model = reported_model.or(response.model);
+                summaries.push((part, summary));
             }
-            let annotation_bytes = serde_json::to_vec(&response.annotations)
-                .map_err(|e| AgentError::InvalidTurn(e.to_string()))?;
-            let annotations = if annotation_bytes.len() <= crate::context::MAX_SUMMARY_BYTES {
-                serde_json::to_value(&response.annotations).expect("JSON values serialize")
-            } else {
-                serde_json::json!({"omitted":true,"bytes":annotation_bytes.len(),
-                "sha256":format!("{:x}",Sha256::digest(&annotation_bytes))})
+            let (history, prefix) = match summaries.as_slice() {
+                [("history", history), ("turn_prefix", prefix)] => {
+                    (history.as_str(), Some(prefix.as_str()))
+                }
+                [("turn_prefix", prefix)] => (data.carried_summary.as_str(), Some(prefix.as_str())),
+                [(_, history)] => (history.as_str(), None),
+                _ => unreachable!("a compaction summarizes history or a turn prefix"),
             };
-            self.session.append_event(serde_json::json!({
-                "type":"semantic_summary_response", "operation_id":operation_id,
-                "source":plan.source(), "response_id":response.response_id, "provider":summary_provider, "backend":self.backend.name(),
-                "model":response.model, "usage":response.usage, "usage_cost_estimate_micro_usd":actual_cost, "cost_basis":"reported_tokens_at_recorded_model_rates",
-                "raw_summary":&response.content[..raw_end], "raw_summary_bytes":response.content.len(),
-                "raw_summary_truncated":raw_end < response.content.len(),
-                "raw_summary_sha256":format!("{:x}",Sha256::digest(response.content.as_bytes())),
-                "annotations":annotations,
-            }))?;
-            if let Some(usage) = response.usage {
-                let ledger = self.governance.as_mut().expect("summary ledger");
-                ledger
-                    .charge(
-                        crate::governance::ResourceKind::InputTokens,
-                        usage.input_tokens.saturating_sub(request_estimate),
-                    )
-                    .and_then(|_| {
-                        ledger.charge(
-                            crate::governance::ResourceKind::OutputTokens,
-                            usage.output_tokens.saturating_sub(output_limit),
-                        )
-                    })
-                    .and_then(|_| {
-                        ledger.reserve_summary_cost(
-                            actual_cost
-                                .zip(quote)
-                                .map(|(actual, quote)| actual.saturating_sub(quote)),
-                        )
-                    })
-                    .and_then(|_| ledger.persist(&mut self.session))
-                    .map_err(|e| AgentError::Governance(e.to_string()))?;
-            }
-            if cancelled() {
-                return Err(BackendError::Cancelled.into());
-            }
-            if response.usage.is_some_and(|usage| {
-                usage.input_tokens.saturating_add(output_limit) > request_budget.max_tokens
-            }) {
-                return Err(AgentError::InvalidTurn("summary actual input usage exceeds request budget; previous checkpoint retained".into()));
-            }
-            let (summary, usage) = plan
-                .validate_summary_completion(&response, output_limit)
-                .map_err(|e| {
-                    AgentError::InvalidTurn(format!(
-                        "invalid semantic summary; previous checkpoint retained: {e}"
-                    ))
-                })?;
-            let reported_model = response
-                .model
-                .clone()
+            let summary = crate::context::merge_summaries(history, prefix);
+            let reported_model = reported_model
                 .or_else(|| self.model.clone())
                 .or_else(|| self.backend.model().map(str::to_owned))
                 .ok_or_else(|| {
@@ -2914,9 +3380,9 @@ impl Agent {
                 .finalize(
                     &self.selected_history()?,
                     summary,
-                    summary_provider,
+                    summary_provider.clone(),
                     reported_model,
-                    usage,
+                    total_usage,
                     budget,
                     cancelled,
                 )
@@ -2940,7 +3406,6 @@ impl Agent {
             Ok(PreparedContext {
                 estimate: estimate_tokens(&turns),
                 turns,
-                checkpoint: None,
             })
         })();
         let status = match &outcome {
@@ -2993,7 +3458,8 @@ impl Agent {
         // Match InputPump's manual scope and retire it on success or failure.
         self.input_port.set_scope(Some("manual-compaction"));
         let preparing = self.input_port.preparation();
-        let result = self.prepare_semantic_provider_context(self.context_budget(), &cancelled);
+        let result =
+            self.prepare_semantic_provider_context(self.context_budget(), false, &cancelled);
         drop(preparing);
         self.input_port.set_scope(None);
         let prepared = result?;
@@ -3020,7 +3486,6 @@ impl Agent {
             estimated_tokens_before: before.input_tokens,
             estimated_tokens_after: prepared.estimate.input_tokens,
             marker_sequence,
-            checkpoint: None,
             semantic_checkpoint: checkpoint,
         })
     }
@@ -3230,6 +3695,7 @@ impl Agent {
                 "source_hash": value.source_hash, "scope": value.scope,
             })).collect::<Vec<_>>(),
             "collisions": snapshot.collisions().into_iter().take(16).collect::<Vec<_>>(),
+            "diagnostics": snapshot.diagnostics().into_iter().take(16).collect::<Vec<_>>(),
             "skills_total": snapshot.skills.metadata().count(),
             "templates_total": snapshot.templates.templates().count(),
             "reload_required_skills": self.stale_resource_skills,
@@ -3609,12 +4075,15 @@ impl Agent {
                     &cancelled,
                 )?;
                 coordinator.persist_accepted(&response.request_id, |accepted| {
-                    self.session.append_event(serde_json::json!({
+                    let event = serde_json::json!({
                         "type": "approval_resolved", "request_id": accepted.request.request_id,
                         "turn_id": operation_id, "call_id": operation_id, "tool": "user_shell",
                         "origin": "user_shell", "policy_digest": policy_digest,
                         "decision": accepted.response.decision, "remember": accepted.response.remember,
-                    }))
+                    });
+                    #[cfg(feature = "remote")]
+                    let event = accepted.with_remote(event);
+                    self.session.append_event(event)
                 }).map_err(|error| match error {
                     crate::approval::PersistApprovalError::Approval(error) => AgentError::Approval(error),
                     crate::approval::PersistApprovalError::Persistence(error) => AgentError::Session(error),
@@ -4307,6 +4776,7 @@ impl Agent {
                 event,
             });
         }
+        bound_event_buffer(&mut self.events, MAX_BUFFERED_AGENT_EVENTS);
         result
     }
 
@@ -4456,25 +4926,6 @@ impl Agent {
             self.release_turn_concurrency();
             return Err(error.into());
         }
-        if completion.content.trim().is_empty() {
-            let error = BackendError::EmptyResponse;
-            self.last_error = Some(error.to_string());
-            self.phase = AgentPhase::Idle;
-            self.active_turn_id = None;
-            self.input_port.set_scope(None);
-            self.active_attachments.clear();
-            self.active_resources = None;
-            self.active_resource_inputs.clear();
-            self.events.push(AgentEvent::Error {
-                message: error.to_string(),
-            });
-            self.session.finish_operation(
-                &provider_operation.operation_id,
-                crate::session::OperationOutcome::Failed,
-            )?;
-            self.release_turn_concurrency();
-            return Err(error.into());
-        }
         let mut assistant = Turn::with_parent(
             next_id("assistant"),
             turn_id.clone(),
@@ -4607,11 +5058,9 @@ impl Agent {
                 .iter()
                 .find(|turn| turn.id == turn_id)
                 .ok_or(AgentError::NoActiveTurn)?;
-            let input = if turn
-                .metadata
-                .as_ref()
-                .is_some_and(|m| m["resource"]["kind"] == "template")
-            {
+            let input = if turn.metadata.as_ref().is_some_and(|m| {
+                matches!(m["resource"]["kind"].as_str(), Some("template" | "skill"))
+            }) {
                 self.active_resource_inputs
                     .get(turn_id)
                     .unwrap_or(&turn.content)
@@ -4640,6 +5089,10 @@ impl Agent {
         let max_input_continuations = crate::input_queue::InputQueueLimits::default().max_pending;
         let mut input_continuations = 0;
         let mut tool_iterations = 0;
+        let mut system_prompt: Option<String> = None;
+        // pi: a context overflow compacts once and retries once.
+        let mut force_compaction = false;
+        let mut overflow_retried = false;
         for _iteration in 0..=max_iterations.saturating_add(max_input_continuations) {
             self.input_boundary(&gate, false, is_cancelled())?;
             if is_cancelled() {
@@ -4668,19 +5121,6 @@ impl Agent {
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
-            let selected_skills = self
-                .session
-                .turns()
-                .iter()
-                .filter(|turn| {
-                    turn.metadata
-                        .as_ref()
-                        .is_some_and(|metadata| metadata["resource"]["kind"] == "skill")
-                })
-                .filter_map(|turn| self.active_resource_inputs.get(&turn.id))
-                .map(String::as_str)
-                .collect::<Vec<_>>()
-                .join("\n");
             let resource_text = self
                 .active_resources
                 .as_ref()
@@ -4693,12 +5133,17 @@ impl Agent {
                         .join("\n")
                 })
                 .unwrap_or_default();
+            if system_prompt.is_none() {
+                system_prompt = Some(self.build_system_prompt(&definitions));
+            }
+            // Selected skill bodies travel in their user turns (below), so the
+            // instructions stay byte-identical across turns for prompt caching.
             let mut instructions = format!(
-                "{}\n{}\n{}\n{}",
+                "{}{}\n{}\n{}\n",
+                system_prompt.as_deref().unwrap_or_default(),
                 self.turn_skills().effective_instructions(),
                 crate::persona::instructions(self.persona()),
                 resource_text,
-                selected_skills
             );
             if let Some(runtime) = &self.extensions {
                 let pump = crate::input_queue::InputPump::new(
@@ -4723,16 +5168,50 @@ impl Agent {
                 gate.begin_prepare()
                     .map_err(|e| AgentError::Recovery(e.to_string()))?;
                 let preparing = self.input_port.preparation();
-                let mut prepared =
-                    self.prepare_semantic_provider_context(turn_budget, is_cancelled)?;
+                let mut prepared = self.prepare_semantic_provider_context(
+                    turn_budget,
+                    std::mem::take(&mut force_compaction),
+                    is_cancelled,
+                )?;
+                // ZE-233: every template and skill turn on this branch is sent
+                // expanded, so later turns and restarts see the same text.
+                // Expansions are re-rendered from the current snapshot (never
+                // journaled); a changed source is flagged instead of guessed.
+                let current = self.resource_snapshot();
+                // Provenance lives on the journaled turn; context preparation may
+                // rebuild turn values, so look it up by id.
+                let provenance: BTreeMap<String, Value> = self
+                    .session
+                    .turns()
+                    .iter()
+                    .filter_map(|turn| {
+                        let resource = &turn.metadata.as_ref()?["resource"];
+                        (resource["kind"] == "template" || resource["kind"] == "skill")
+                            .then(|| (turn.id.clone(), resource.clone()))
+                    })
+                    .collect();
                 for turn in &mut prepared.turns {
-                    if turn
-                        .metadata
-                        .as_ref()
-                        .is_some_and(|m| m["resource"]["kind"] == "template")
-                        && let Some(rendered) = self.active_resource_inputs.get(&turn.id)
-                    {
-                        turn.content = rendered.clone();
+                    let Some(resource) = provenance.get(&turn.id) else {
+                        continue;
+                    };
+                    if let Some(rendered) = self.active_resource_inputs.get(&turn.id) {
+                        set_turn_text(turn, rendered.clone());
+                        continue;
+                    }
+                    match self.prepare_resource_input(&current, &turn.content, &is_cancelled) {
+                        Ok((Some(fresh), Some(rendered)))
+                            if fresh["source_hash"] == resource["source_hash"] =>
+                        {
+                            set_turn_text(turn, rendered);
+                        }
+                        Err(AgentError::Backend(BackendError::Cancelled)) => {
+                            return Err(BackendError::Cancelled.into());
+                        }
+                        _ => {
+                            turn.content.push_str(
+                                "\n[resource changed or unavailable since this turn; its earlier expansion is not shown]",
+                            );
+                        }
                     }
                 }
                 if let Some(input) = &extension_input
@@ -4881,7 +5360,18 @@ impl Agent {
             if let Some(error) = admission_error {
                 return Err(error);
             }
-            let mut completion = completion.map_err(AgentError::from)?;
+            let mut completion = match completion {
+                Err(BackendError::ContextOverflow { .. })
+                    if self.compaction.enabled && !overflow_retried =>
+                {
+                    overflow_retried = true;
+                    force_compaction = true;
+                    gate = new_gate()?;
+                    continue;
+                }
+                completion => completion.map_err(AgentError::from)?,
+            };
+            overflow_retried = false;
             if let Some(usage) = completion.usage
                 && let Some(governance) = self.governance.as_mut()
             {
@@ -4918,6 +5408,12 @@ impl Agent {
                     crate::input_queue::InputQueue::recover(&self.session, Default::default())
                         .map_err(|e| AgentError::Recovery(e.to_string()))?;
                 if !queue.has_pending() {
+                    // ZE-210: after tools ran, an empty or reasoning-only
+                    // final answer ends the turn normally (pi parity). A
+                    // turn that never called a tool still needs visible text.
+                    if tool_iterations == 0 && completion.content.trim().is_empty() {
+                        return Err(BackendError::EmptyResponse.into());
+                    }
                     self.pending_request_metadata =
                         Some(request_metadata[crate::trajectory::REQUEST_METADATA_KEY].take());
                     return Ok(completion);
@@ -4966,20 +5462,45 @@ impl Agent {
                     "provider requested tools but no tool registry is configured".into(),
                 ));
             }
-            let calls = completion.tool_calls;
+            let mut calls = completion.tool_calls;
             validate_provider_calls(&calls, self.session.turns(), turn_id)?;
+            // Oversized calls fail on their own with an error result; their
+            // arguments are not persisted so the journal record stays bounded.
+            let over_budget = over_budget_calls(&calls);
+            for call in &mut calls {
+                if over_budget.contains_key(&call.id) {
+                    call.arguments = Value::Object(serde_json::Map::new());
+                }
+            }
+            // A turn cut by the output token limit may carry partial calls.
+            // None is dispatched; each gets an error result so the model can
+            // retry with a shorter response (pi parity).
+            let mut refused = over_budget.clone();
+            if completion.stop_reason == crate::backend::StopReason::Length {
+                for call in &calls {
+                    refused.entry(call.id.clone()).or_insert_with(|| {
+                        "output token limit reached; this tool call was cut off and was not \
+                         executed. Retry with a shorter response"
+                            .to_owned()
+                    });
+                }
+            }
             let evidence = self.tool_execution_evidence()?;
             let call_metadata = calls
                 .iter()
                 .map(|call| {
-                    serde_json::json!({
+                    let mut metadata = serde_json::json!({
                         "id": call.id,
                         "name": call.name,
                         "arguments": call.arguments,
                         "execution": evidence,
                         "policy_digest": evidence.policy_digest,
                         "worker_binding": evidence.worker_binding,
-                    })
+                    });
+                    if over_budget.contains_key(&call.id) {
+                        metadata["arguments_omitted"] = Value::Bool(true);
+                    }
+                    metadata
                 })
                 .collect::<Vec<_>>();
             let mut assistant_call = Turn::with_parent(
@@ -4989,6 +5510,8 @@ impl Agent {
                 completion.content,
             );
             let mut metadata = serde_json::json!({ "tool_calls": call_metadata, "annotations": completion.annotations, "model": completion.model });
+            // Real usage anchors the next compaction check (pi); the request
+            // record feeds the trajectory view.
             merge_object(&mut metadata, request_metadata);
             assistant_call.metadata = Some(metadata);
             self.session.append_turn(assistant_call)?;
@@ -4996,7 +5519,11 @@ impl Agent {
             let batch_ids: Vec<_> = calls.iter().map(|call| call.id.clone()).collect();
             gate.begin_tool_batch(&batch_ids)
                 .map_err(|e| AgentError::Recovery(e.to_string()))?;
-            let concurrency = self.parallel_tool_concurrency(&calls);
+            let concurrency = if refused.is_empty() {
+                self.parallel_tool_concurrency(&calls)
+            } else {
+                1
+            };
             if concurrency > 1 {
                 self.invoke_parallel_tools(turn_id, &calls, &evidence, concurrency, is_cancelled)?;
                 for id in &batch_ids {
@@ -5031,6 +5558,13 @@ impl Agent {
                         crate::tools::ToolErrorCode::Cancelled,
                         "call was not executed because the turn stopped",
                         ToolInvocationOutcome::Cancelled,
+                    )
+                } else if let Some(message) = refused.get(&call.id) {
+                    tool_failure(
+                        &call,
+                        crate::tools::ToolErrorCode::LimitExceeded,
+                        message,
+                        ToolInvocationOutcome::Failed,
                     )
                 } else {
                     match self.invoke_tool(
@@ -5515,7 +6049,7 @@ impl Agent {
                 Err(error) => return Err(error.into()),
             };
             coordinator.persist_accepted(&response.request_id, |accepted| {
-                self.session.append_event(serde_json::json!({
+                let event = serde_json::json!({
                     "type": "approval_resolved",
                     "request_id": accepted.request.request_id,
                     "turn_id": accepted.request.turn_id,
@@ -5537,7 +6071,10 @@ impl Agent {
                     "remember": accepted.response.remember,
                     "source": crate::approval::HOST_ANSWER_SOURCE,
                     "execution": evidence,
-                }))
+                });
+                #[cfg(feature = "remote")]
+                let event = accepted.with_remote(event);
+                self.session.append_event(event)
             }).map_err(|error| match error {
                 crate::approval::PersistApprovalError::Approval(error) => AgentError::Approval(error),
                 crate::approval::PersistApprovalError::Persistence(error) => AgentError::Session(error),
@@ -5908,10 +6445,12 @@ impl Agent {
         let outcome = match &result {
             crate::tools::ToolResult::Success { .. } => ToolInvocationOutcome::Succeeded,
             crate::tools::ToolResult::Error { error, .. } => match error.code {
-                ToolErrorCode::Io
-                | ToolErrorCode::Internal
-                | ToolErrorCode::CommandTimeout
-                | ToolErrorCode::Cancelled
+                // A timed-out command's process group is killed and reaped, and
+                // a command I/O failure still cleans up its child: the outcome is
+                // known, so the model gets an ordinary error and the turn goes on.
+                ToolErrorCode::CommandTimeout => ToolInvocationOutcome::Failed,
+                ToolErrorCode::Io if call.name == "run_command" => ToolInvocationOutcome::Failed,
+                ToolErrorCode::Io | ToolErrorCode::Internal | ToolErrorCode::Cancelled
                     if side_effect != Some(ToolSideEffect::ReadOnly) =>
                 {
                     ToolInvocationOutcome::UnknownOutcome
@@ -5974,8 +6513,15 @@ impl Agent {
         }
         let serialized = serde_json::to_string(&result_value)
             .map_err(|error| AgentError::InvalidTurn(error.to_string()))?;
+        // The journal keeps the structured record as the turn content (UI and
+        // recovery read it) and the plain model-facing text beside it; the
+        // provider request encoders send only the text plus `is_error`.
+        let model_text =
+            crate::tools::model_facing_text(&invocation.result, invocation.output_capture.as_ref());
         let mut tool_turn = Turn::with_parent(next_id("tool"), turn_id, TurnRole::Tool, serialized);
         tool_turn.metadata = Some(serde_json::json!({
+            "model_text": model_text,
+            "is_error": !invocation.result.is_success(),
             "tool_call_id": call.id,
             "tool_name": call.name,
             "operation_id": operation_id,
@@ -6095,11 +6641,15 @@ impl Agent {
             Ok(ProcessResult {
                 submission,
                 assistant,
+                #[cfg(feature = "remote")]
+                worker_history_evidence: None,
             })
         } else {
             Ok(ProcessResult {
                 submission,
                 assistant: None,
+                #[cfg(feature = "remote")]
+                worker_history_evidence: None,
             })
         }
     }
@@ -6123,6 +6673,8 @@ impl Agent {
         Ok(ProcessResult {
             submission,
             assistant,
+            #[cfg(feature = "remote")]
+            worker_history_evidence: None,
         })
     }
 
@@ -6303,6 +6855,15 @@ impl Agent {
         path: impl Into<PathBuf>,
         commit: impl FnOnce(&SessionStore) -> Result<(), AgentError>,
     ) -> Result<(), AgentError> {
+        self.resume_session_with_commit_cancelled(path, &|| false, commit)
+    }
+
+    pub(crate) fn resume_session_with_commit_cancelled(
+        &mut self,
+        path: impl Into<PathBuf>,
+        cancelled: &dyn Fn() -> bool,
+        commit: impl FnOnce(&SessionStore) -> Result<(), AgentError>,
+    ) -> Result<(), AgentError> {
         if self.phase == AgentPhase::Closed {
             return Err(AgentError::Closed);
         }
@@ -6328,7 +6889,7 @@ impl Agent {
         }
         drop(inspected);
         let replacement = SessionStore::open_existing_writable(path)?;
-        self.replace_session_with_commit(replacement, &|| false, |replacement| commit(replacement))
+        self.replace_session_with_commit(replacement, cancelled, |replacement| commit(replacement))
     }
 
     fn replace_session_with_commit(
@@ -6382,6 +6943,9 @@ impl Agent {
         self.output_store = crate::tool_output::SessionOutputStore::default();
         self.session = replacement;
         if let Some(runtime) = self.tools.as_mut() {
+            runtime
+                .approval
+                .bind_notification_session(self.session.session_id());
             runtime.approval_policy = runtime
                 .configured_approval_policy
                 .with_remembered_events(self.session.events());
@@ -6469,6 +7033,8 @@ impl Agent {
 pub struct ProcessResult {
     pub submission: TurnSubmission,
     pub assistant: Option<Turn>,
+    #[cfg(feature = "remote")]
+    pub(crate) worker_history_evidence: Option<crate::worktree::worker::HistoryEvidence>,
 }
 
 fn admit_provider_send(
@@ -6631,11 +7197,20 @@ pub enum RunMode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CliOptions {
+    #[cfg(feature = "remote")]
+    pub host_pair: Option<crate::host_pair::HostPairOptions>,
     pub mode: RunMode,
     pub session: PathBuf,
     /// `-s NAME|ID`: resolve a cached session by operator name or session id
     /// instead of opening a literal path (ZS1-178).
     pub session_ref: Option<String>,
+    /// `--session PATH` or `ZENPI_SESSION` named the journal explicitly.
+    /// Otherwise each launch starts a fresh per-run session (ZE-236).
+    pub session_explicit: bool,
+    /// `-c/--continue`: reopen the newest session recorded for this cwd.
+    pub continue_last: bool,
+    /// `--no-session`: an ephemeral journal removed when the process exits.
+    pub no_session: bool,
     /// `--auto`: auto-allow every approval in every zone (ZS1-180). The
     /// policy is `Never`, so side effects still respect the tool policy and
     /// blueprint gates and remain auditable.
@@ -6643,6 +7218,11 @@ pub struct CliOptions {
     /// `--max-tool-iterations N`: per-turn tool budget (ZS1-184), 1..=10000;
     /// defaults to 1000 so long-horizon turns are not truncated.
     pub max_tool_iterations: usize,
+    /// `--tools a,b`: advertise exactly these builtin tools (ZE-214).
+    pub tools: Option<Vec<String>>,
+    /// `--eof-drain-secs N`: headless drain bound after stdin EOF (ZE-242);
+    /// overrides `ZENPI_HEADLESS_EOF_DRAIN_SECS`.
+    pub eof_drain_secs: Option<u64>,
     pub backend: String,
     pub backend_explicit: bool,
     pub profile: Option<String>,
@@ -6697,11 +7277,19 @@ pub enum CliCommand {
 impl Default for CliOptions {
     fn default() -> Self {
         Self {
+            #[cfg(feature = "remote")]
+            host_pair: None,
             mode: RunMode::Tui,
             session: SessionStore::default_path(),
             session_ref: None,
+            session_explicit: std::env::var("ZENPI_SESSION")
+                .is_ok_and(|value| !value.trim().is_empty()),
+            continue_last: false,
+            no_session: false,
             auto: false,
             max_tool_iterations: 1000,
+            tools: None,
+            eof_drain_secs: None,
             backend: "openai".into(),
             backend_explicit: false,
             profile: None,
@@ -6810,8 +7398,6 @@ enum CliLoginEvent {
         manual: crate::auth::callback::ManualSubmission,
     },
     Device {
-        flow_id: crate::auth::LoginFlowId,
-        prompt_id: u64,
         uri: &'static str,
         code: String,
     },
@@ -6906,13 +7492,11 @@ pub(crate) fn run_cli_codex_login(
                         verification_uri,
                         user_code,
                     } => CliLoginEvent::Device {
-                        flow_id,
-                        prompt_id,
                         uri: verification_uri,
                         code: user_code,
                     },
                 },
-                crate::auth::AuthInteraction::CancelPrompt { .. } => CliLoginEvent::Dismissed,
+                crate::auth::AuthInteraction::CancelPrompt => CliLoginEvent::Dismissed,
             };
             // A closed receiver means the host gave up: fail the interaction
             // rather than blocking the flow forever.
@@ -7101,6 +7685,25 @@ where
 {
     let mut options = CliOptions::default();
     let mut args = args.into_iter().map(Into::into).peekable();
+    #[cfg(not(feature = "remote"))]
+    if args.peek().is_some_and(|argument| argument == "host") {
+        return Err(ZenpiError::arguments(
+            "host requires a zenpi build with the remote feature",
+        ));
+    }
+    #[cfg(feature = "remote")]
+    if args.peek().is_some_and(|argument| argument == "host") {
+        args.next();
+        let serve = match args.next().as_deref() {
+            Some("pair") => false,
+            Some("serve") => true,
+            _ => return Err(ZenpiError::arguments("host requires pair or serve")),
+        };
+        let mut pair = crate::host_pair::HostPairOptions::parse(args)?;
+        pair.serve = serve;
+        options.host_pair = Some(pair);
+        return Ok(options);
+    }
     if args.peek().is_some_and(|argument| {
         matches!(
             argument.as_str(),
@@ -7403,6 +8006,19 @@ where
                     return Err(ZenpiError::arguments("--session path is empty"));
                 }
                 options.session = PathBuf::from(value);
+                options.session_explicit = true;
+            }
+            "-c" | "--continue" => {
+                if inline.is_some() {
+                    return Err(ZenpiError::arguments("--continue does not take a value"));
+                }
+                options.continue_last = true;
+            }
+            "--no-session" => {
+                if inline.is_some() {
+                    return Err(ZenpiError::arguments("--no-session does not take a value"));
+                }
+                options.no_session = true;
             }
             "--max-tool-iterations" => {
                 let value = inline
@@ -7420,6 +8036,25 @@ where
                     ));
                 }
                 options.max_tool_iterations = iterations;
+            }
+            "--tools" => {
+                let value = inline
+                    .map(str::to_owned)
+                    .or_else(|| args.next())
+                    .ok_or_else(|| ZenpiError::arguments("--tools requires a,b names"))?;
+                let names =
+                    crate::tools::parse_builtin_allowlist(&value).map_err(ZenpiError::arguments)?;
+                options.tools = Some(names);
+            }
+            "--eof-drain-secs" => {
+                let value = inline
+                    .map(str::to_owned)
+                    .or_else(|| args.next())
+                    .ok_or_else(|| ZenpiError::arguments("--eof-drain-secs requires a number"))?;
+                let seconds = value.trim().parse::<u64>().map_err(|_| {
+                    ZenpiError::arguments("--eof-drain-secs must be a whole number of seconds")
+                })?;
+                options.eof_drain_secs = Some(seconds);
             }
             "--auto" => {
                 if inline.is_some() {
@@ -7551,8 +8186,12 @@ fn backend_from_effective(
         let registry =
             crate::providers::registry::ModelRegistry::with_overrides(&effective.model_overrides)
                 .map_err(|error| ZenpiError::Message(error.to_string()))?;
+        // A profile that names no model uses the provider default (ZE-222).
         let model = effective
             .model
+            .or_else(|| {
+                crate::providers::registry::default_model(&connection.provider).map(str::to_owned)
+            })
             .ok_or_else(|| ZenpiError::arguments("explicit connection requires a model"))?;
         let backend = OpenAiCompatibleBackend::from_connection(
             connection,
@@ -7661,8 +8300,12 @@ fn backend_from_effective(
 }
 
 fn print_help() {
+    #[cfg(feature = "remote")]
     println!(
-        "zenpi [--mode tui|headless] [--session PATH | -s NAME|ID] [--auto] [--max-tool-iterations N] [--backend openai|anthropic|google] [--profile NAME] [--model NAME]"
+        "zenpi host pair [--bind IP:PORT] [--advertise IP] [--tailnet] [--identity PATH] [--duration-seconds 1..300] [--plain] [--workspace PATH --session PATH [--desktop | --list-projects]] [--list-devices [--json] | --revoke-device ID]"
+    );
+    println!(
+        "zenpi [--mode tui|headless] [--session PATH | -s NAME|ID | -c | --no-session] [--auto] [--eof-drain-secs N] [--max-tool-iterations N] [--tools a,b|none] [--backend openai|anthropic|google] [--profile NAME] [--model NAME]"
     );
     println!("zenpi config import-codex [--profile NAME]");
     println!("zenpi config doctor [--profile NAME] [--json]");
@@ -7688,6 +8331,10 @@ fn print_help() {
 /// Binary entry point shared with tests and embedders.
 pub fn run() -> Result<(), ZenpiError> {
     let options = parse_args(env::args().skip(1))?;
+    #[cfg(feature = "remote")]
+    if let Some(pair) = options.host_pair {
+        return crate::host_pair::run(pair);
+    }
     if options.help {
         print_help();
         return Ok(());
@@ -8037,7 +8684,8 @@ pub fn run() -> Result<(), ZenpiError> {
     // fail-closed behaviour (`stable error and exit status`), and anything that
     // is merely broken still propagates as itself rather than as "not logged
     // in".
-    if options.mode == RunMode::Tui {
+    // The dev-fixture echo backend needs no connection, so it skips the gate.
+    if options.mode == RunMode::Tui && !(options.backend_explicit && options.backend == "echo") {
         let paths = crate::config::ConfigPaths::discover()?;
         if let crate::tui::bootstrap::AuthGate::NeedsAuth(reason) =
             crate::tui::bootstrap::auth_gate(&paths, options.profile.as_deref())?
@@ -8052,7 +8700,80 @@ pub fn run() -> Result<(), ZenpiError> {
             }
         }
     }
+    let headless = options.mode == RunMode::Headless;
+    let result = run_host(options);
+    if headless
+        && let Err(error) = &result
+        && session_locked(error)
+    {
+        // A headless client reads stdout, not stderr: give it the stable
+        // code before the process exits non-zero.
+        crate::headless::write_startup_error("session_locked", &error.to_string());
+    }
+    result
+}
+
+/// Whether startup failed because another live process owns the session.
+fn session_locked(error: &ZenpiError) -> bool {
+    matches!(
+        error,
+        ZenpiError::Session(crate::session::SessionError::Locked)
+            | ZenpiError::Agent(AgentError::Session(crate::session::SessionError::Locked))
+    )
+}
+
+/// Replace a turn's text everywhere the encoders read it: the plain content and
+/// the text part of its ordered stored content (which is protocol authority).
+fn set_turn_text(turn: &mut Turn, text: String) {
+    if let Some(parts) = turn
+        .metadata
+        .as_mut()
+        .and_then(|metadata| metadata.get_mut(content::STORED_CONTENT_FIELD))
+        .and_then(|stored| stored.get_mut("parts"))
+        .and_then(Value::as_array_mut)
+        && let Some(part) = parts.iter_mut().find(|part| part["type"] == "text")
+    {
+        part["text"] = Value::String(text.clone());
+    }
+    turn.content = text;
+}
+
+/// Removes the `--no-session` journal directory when the host returns.
+struct EphemeralSessionDir(Option<PathBuf>);
+
+impl EphemeralSessionDir {
+    fn path(&self) -> &Path {
+        self.0.as_deref().unwrap_or(Path::new("."))
+    }
+}
+
+impl Drop for EphemeralSessionDir {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            let _ = std::fs::remove_dir_all(path);
+        }
+    }
+}
+
+fn tempfile_dir_for_no_session(enabled: bool) -> Result<EphemeralSessionDir, ZenpiError> {
+    if !enabled {
+        return Ok(EphemeralSessionDir(None));
+    }
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or_default();
+    let dir = env::temp_dir().join(format!("zenpi-ephemeral-{}-{nanos}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    Ok(EphemeralSessionDir(Some(dir)))
+}
+
+fn run_host(options: CliOptions) -> Result<(), ZenpiError> {
+    // ZE-214: `--tools a,b` scopes every owner this process prepares.
+    crate::tools::set_builtin_allowlist(options.tools.clone());
     let backend = make_backend(&options)?;
+    // `--no-session` journals live in a private temp dir removed on exit.
+    let ephemeral = tempfile_dir_for_no_session(options.no_session)?;
     // `-s NAME|ID` resolves against the cached zenpi sessions; `--session PATH`
     // keeps its literal path semantics.
     let session_path = match options.session_ref.as_deref() {
@@ -8066,10 +8787,37 @@ pub fn run() -> Result<(), ZenpiError> {
                 },
             )?
         }
-        None => options.session.clone(),
+        None if options.session_explicit => options.session.clone(),
+        None if options.no_session => ephemeral.path().join("session.jsonl"),
+        None => {
+            // ZE-236 (pi semantics): a fresh session per launch, kept per cwd;
+            // `-c` reopens the newest one recorded for this cwd.
+            let paths = crate::config::ConfigPaths::discover()?;
+            let cwd = env::current_dir()?;
+            let continued = options
+                .continue_last
+                .then(|| crate::session::latest_session_for_cwd(&paths.sessions, &cwd))
+                .flatten();
+            match continued {
+                Some(path) => path,
+                None => {
+                    std::fs::create_dir_all(&paths.sessions)?;
+                    crate::session::new_session_path(&paths.sessions)
+                }
+            }
+        }
     };
     let session = SessionStore::open(&session_path)?;
     let mut agent = Agent::new(session, backend);
+    // `[compaction]` from the user/project config; pi defaults otherwise.
+    let cwd = env::current_dir()?;
+    if let Some(settings) = crate::config::ConfigPaths::discover()
+        .and_then(|paths| crate::config::load_workspace_config(&paths, Some(&cwd)))
+        .ok()
+        .and_then(|config| config.compaction)
+    {
+        agent.set_compaction_settings(settings);
+    }
     agent.project_overrides = crate::config::ConfigOverrides {
         profile: options.profile.clone(),
         backend: options.backend_explicit.then(|| options.backend.clone()),
@@ -8077,10 +8825,11 @@ pub fn run() -> Result<(), ZenpiError> {
         ..crate::config::ConfigOverrides::default()
     };
     let _ = agent.acknowledge_recovery()?;
-    // Advertise the complete bounded tool set. Side effects still cannot run
-    // until the local approval policy grants the individual call.
+    // Advertise the scoped builtin set (ZE-214: `dag_*` only for DAG workers or
+    // explicit opt-in, `websearch` only with a key, `--tools` allow-list). Side
+    // effects still cannot run until the approval policy grants the call.
     let workspace = env::current_dir()?;
-    let tools = crate::tools::ToolRegistry::with_all_builtins()
+    let tools = crate::tools::ToolRegistry::with_default_builtins()
         .map_err(|error| ZenpiError::Message(format!("tool registry: {error}")))?;
     let paths = crate::config::ConfigPaths::discover()?;
     let tool_context = crate::tools::ToolContext::new(workspace)
@@ -8104,6 +8853,11 @@ pub fn run() -> Result<(), ZenpiError> {
         mode: approval_mode,
         ..crate::approval::ApprovalPolicy::default()
     });
+    if options.auto {
+        // Record the explicit choice so `ProjectOwnerPool` arms every arch
+        // and project owner it prepares; the mode alone never propagates.
+        agent.enable_auto_approve();
+    }
     agent.set_max_tool_iterations(options.max_tool_iterations);
     agent.restore_resources(default_resource_paths(&paths, &env::current_dir()?), || {
         false
@@ -8115,8 +8869,19 @@ pub fn run() -> Result<(), ZenpiError> {
         agent.restore_model_selection()?;
     }
     match options.mode {
-        RunMode::Headless => crate::headless::run_stdio_owned(agent)
-            .map_err(|error| ZenpiError::Message(error.to_string())),
+        RunMode::Headless => {
+            let mut headless =
+                crate::headless::HeadlessOptions::from_env().map_err(ZenpiError::arguments)?;
+            if let Some(seconds) = options.eof_drain_secs {
+                headless.eof_drain = Duration::from_secs(seconds);
+            }
+            // ZE-242: SIGTERM is observed by the host loop as `shutdown`.
+            crate::headless::install_termination_handler()?;
+            // The host reports its own `session_locked` frame on stdout, so
+            // its errors stay messages and are not reported twice.
+            crate::headless::run_stdio_owned_with(agent, headless)
+                .map_err(|error| ZenpiError::Message(error.to_string()))
+        }
         RunMode::Tui => crate::tui::run_async_with_profile(agent, options.profile),
     }
 }
@@ -8249,7 +9014,6 @@ fn validate_provider_calls(
             }
         }
     }
-    let mut bytes = 0_usize;
     for call in calls {
         for (value, maximum) in [
             (call.id.as_str(), crate::tools::MAX_TOOL_ID_BYTES),
@@ -8268,23 +9032,46 @@ fn validate_provider_calls(
         if !call.arguments.is_object() {
             return Err(invalid("provider tool call arguments must be an object"));
         }
-        let size = serde_json::to_vec(call)
-            .map_err(|error| invalid(&error.to_string()))?
-            .len();
-        if size > crate::tools::MAX_TOOL_CALL_BYTES {
-            return Err(invalid("provider tool call exceeds its byte limit"));
-        }
-        bytes = bytes.saturating_add(size);
-        if bytes > 256 * 1024 {
-            return Err(invalid("provider tool batch exceeds 256 KiB"));
-        }
-    }
-    // Include the array brackets and separators checked by the executor too,
-    // so an oversized batch is rejected before any operation is announced.
-    if bytes.saturating_add(calls.len().saturating_add(1)) > crate::tool_runtime::MAX_BATCH_BYTES {
-        return Err(invalid("provider tool batch exceeds 256 KiB"));
     }
     Ok(())
+}
+
+/// Serialized argument budget for one assistant tool-call turn. It keeps the
+/// journal record below `MAX_SESSION_RECORD_BYTES` and every executed batch
+/// (array brackets and separators included) below the executor budget.
+const MAX_PROVIDER_BATCH_BYTES: usize = 768 * 1024;
+const _: () = assert!(
+    MAX_PROVIDER_BATCH_BYTES + crate::tool_runtime::MAX_BATCH_CALLS
+        < crate::tool_runtime::MAX_BATCH_BYTES
+);
+const _: () = assert!(crate::tools::MAX_TOOL_CALL_BYTES <= MAX_PROVIDER_BATCH_BYTES);
+
+/// Calls that exceed the per-call limit or the remaining batch budget, with
+/// the error text the model receives. These calls are answered with an error
+/// result and the turn continues; they never fail the whole turn.
+fn over_budget_calls(calls: &[crate::tools::ToolCall]) -> BTreeMap<String, String> {
+    let limit = crate::tools::MAX_TOOL_CALL_BYTES;
+    let mut used = 0_usize;
+    let mut rejected = BTreeMap::new();
+    for call in calls {
+        let size = serde_json::to_vec(call).map_or(usize::MAX, |bytes| bytes.len());
+        let message = if size > limit {
+            format!(
+                "tool call arguments are {size} bytes; the limit is {limit} bytes. \
+                 Split the content into smaller writes or edits"
+            )
+        } else if used.saturating_add(size) > MAX_PROVIDER_BATCH_BYTES {
+            format!(
+                "tool calls in this response exceed {MAX_PROVIDER_BATCH_BYTES} bytes \
+                 together; this call was not executed. Retry it in a separate response"
+            )
+        } else {
+            used += size;
+            continue;
+        };
+        rejected.insert(call.id.clone(), message);
+    }
+    rejected
 }
 
 fn command_source_destination(options: &CliOptions) -> Result<(&str, &str), ZenpiError> {
@@ -8389,13 +9176,13 @@ fn restore_resource_state(
     let snapshot = loader.reload(cancelled).map_err(resource_agent_error)?;
     let mut expected = BTreeMap::<String, String>::new();
     for record in session.records() {
-        let event = &record.value["event"];
+        let event = &record.value()["event"];
         if event["type"] == "resources_selected" {
             expected = serde_json::from_value(event["skill_hashes"].clone()).map_err(|error| {
                 AgentError::InvalidTurn(format!("invalid resource hash checkpoint: {error}"))
             })?;
         }
-        let resource = &record.value["turn"]["metadata"]["resource"];
+        let resource = &record.value()["turn"]["metadata"]["resource"];
         if resource["kind"] == "skill"
             && let (Some(name), Some(hash)) =
                 (resource["name"].as_str(), resource["source_hash"].as_str())
@@ -8431,7 +9218,7 @@ fn trusted_output_reference(
     request.validate()?;
     let mut found: Option<ArtifactRef> = None;
     for record in session.records() {
-        let event = &record.value["event"];
+        let event = &record.value()["event"];
         if record.kind != "event" || event["type"] != "tool_output_captured" {
             continue;
         }
@@ -8459,7 +9246,7 @@ fn trusted_output_reference(
                 .iter()
                 .take_while(|prior| prior.sequence < record.sequence)
                 .any(|prior| {
-                    let prior_event = &prior.value["event"];
+                    let prior_event = &prior.value()["event"];
                     prior.kind == "event"
                         && prior_event["type"] == "tool_execution_started"
                         && prior_event["operation_id"] == operation
@@ -8518,6 +9305,41 @@ fn extension_agent_error(error: crate::tools::ToolError) -> AgentError {
     }
 }
 
+#[cfg(test)]
+mod compaction_report_tests {
+    use super::CompactionReport;
+
+    #[test]
+    fn compaction_report_serializes_without_the_legacy_digest_checkpoint() {
+        let fields = serde_json::json!({
+            "compacted": false, "already_recorded": false, "source_turns": 3,
+            "prepared_turns": 3, "estimated_tokens_before": 40,
+            "estimated_tokens_after": 40, "marker_sequence": 7,
+        });
+        let report: CompactionReport = serde_json::from_value(fields.clone()).unwrap();
+        let mut serialized = serde_json::to_value(&report).unwrap();
+        assert_eq!(serialized["semantic_checkpoint"], serde_json::Value::Null);
+        serialized
+            .as_object_mut()
+            .unwrap()
+            .remove("semantic_checkpoint");
+        assert_eq!(serialized, fields);
+        // A report serialized before ZE-235 still reads, its digest checkpoint ignored.
+        for legacy in [
+            serde_json::Value::Null,
+            serde_json::json!({"source_start":0,"source_end":2,"source_sha256":"ab",
+                "summary":"Compacted context checkpoint","estimated_tokens_before":9,
+                "estimated_tokens_after":4}),
+        ] {
+            let mut old = fields.clone();
+            old["checkpoint"] = legacy;
+            old["semantic_checkpoint"] = serde_json::Value::Null;
+            let read: CompactionReport = serde_json::from_value(old).unwrap();
+            assert_eq!(read, report);
+        }
+    }
+}
+
 #[cfg(all(test, unix))]
 mod extension_resume_commit_tests {
     use super::*;
@@ -8536,7 +9358,7 @@ mod extension_resume_commit_tests {
 name = "fixture"
 version = "1.0.0"
 api_version = 2
-executable = "plugin.py"
+executable = "plugin.sh"
 hooks = ["session_start", "session_close"]
 hook_timeout_ms = 1000
 [permissions]
@@ -8549,17 +9371,14 @@ input_schema = {type="object"}
 "#,
         )
         .unwrap();
-        fs::write(fixture.join("plugin.py"), r#"#!/usr/bin/python3
-import json,sys
-r=json.loads(sys.stdin.readline()); p=r['params']; method=r['method']
-with open('events','a') as f:
-    f.write(json.dumps({'kind':p.get('hook',method),'capability':r['capability']})+'\n')
-if method=='initialize': result={'api_version':2,'hooks':p['hooks'],'tools':[t['name'] for t in p['tools']]}
-elif method=='tools/call': result={'echo':p['arguments']}
-else: result={'action':'continue'}
-print(json.dumps({'jsonrpc':'2.0','id':r['id'],'capability':r['capability'],'result':result}))
-"#).unwrap();
-        fs::set_permissions(fixture.join("plugin.py"), fs::Permissions::from_mode(0o700)).unwrap();
+        let executable = std::env::current_exe().unwrap();
+        let quoted = executable.to_str().unwrap().replace('\'', "'\"'\"'");
+        // Keep a real process/pipe boundary; route libtest chatter away from
+        // the extension protocol just as the integration extension fixture does.
+        fs::write(fixture.join("plugin.sh"), format!(
+            "#!/bin/sh\nexec '{quoted}' --ignored --exact core::extension_resume_commit_tests::resume_extension_process --nocapture --test-threads=1 3>&1 1>/dev/null\n"
+        )).unwrap();
+        fs::set_permissions(fixture.join("plugin.sh"), fs::Permissions::from_mode(0o700)).unwrap();
         // This test exercises session and real extension processes; no model turn runs.
         let mut agent = Agent::with_echo(
             SessionStore::open_in_workspace(root.join("old.jsonl"), root).unwrap(),
@@ -8569,26 +9388,7 @@ print(json.dumps({'jsonrpc':'2.0','id':r['id'],'capability':r['capability'],'res
             ToolContext::new(root).unwrap(),
             SideEffectPolicy::all_builtins(),
         );
-        let mut configured = false;
-        for attempt in 0..3 {
-            match agent.configure_extensions(&extensions, || false) {
-                Ok(()) => {
-                    configured = true;
-                    break;
-                }
-                Err(AgentError::Tool(crate::tools::ToolError::CommandTimeout(_)))
-                    if attempt < 2 =>
-                {
-                    // The fixture launches a real interpreter; under a busy
-                    // parallel test runner startup can consume the one-second
-                    // hook budget. Retry only this transient class and keep
-                    // all manifest/policy failures fail-fast.
-                    std::thread::sleep(std::time::Duration::from_millis(25));
-                }
-                Err(error) => panic!("extension fixture setup failed: {error}"),
-            }
-        }
-        assert!(configured, "extension fixture never initialized");
+        agent.configure_extensions(&extensions, || false).unwrap();
         let old_lease = agent.extension_lease().unwrap();
         let old_id = agent.session.session_id().to_owned();
         let old_registry = agent.tools.as_ref().unwrap().registry.clone();
@@ -8675,6 +9475,50 @@ print(json.dumps({'jsonrpc':'2.0','id':r['id'],'capability':r['capability'],'res
                 .execute(&runtime.context, runtime.policy, call()),
             crate::tools::ToolResult::Success { .. }
         ));
+    }
+
+    #[test]
+    #[ignore = "real extension subprocess selected by the parent resume test"]
+    fn resume_extension_process() {
+        use std::io::{BufRead, Write};
+        use std::os::fd::FromRawFd;
+        assert_eq!(std::env::var("ZENPI_EXTENSION_NAME").unwrap(), "fixture");
+        // SAFETY: the fixture shell uniquely owns the duplicated protocol FD.
+        assert_ne!(unsafe { libc::fcntl(3, libc::F_GETFD) }, -1);
+        let mut output = unsafe { fs::File::from_raw_fd(3) };
+        let mut line = String::new();
+        std::io::stdin().lock().read_line(&mut line).unwrap();
+        let request: Value = serde_json::from_str(&line).unwrap();
+        let params = &request["params"];
+        let method = request["method"].as_str().unwrap();
+        let mut journal = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("events")
+            .unwrap();
+        writeln!(
+            journal,
+            "{}",
+            serde_json::json!({
+                "kind":params["hook"].as_str().unwrap_or(method), "capability":request["capability"]
+            })
+        )
+        .unwrap();
+        journal.flush().unwrap();
+        let result = match method {
+            "initialize" => serde_json::json!({"api_version":2,"hooks":params["hooks"],
+                "tools":params["tools"].as_array().unwrap().iter().map(|tool|tool["name"].clone()).collect::<Vec<_>>()}),
+            "tools/call" => serde_json::json!({"echo":params["arguments"]}),
+            _ => serde_json::json!({"action":"continue"}),
+        };
+        writeln!(
+            output,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":request["id"],
+            "capability":request["capability"],"result":result})
+        )
+        .unwrap();
+        output.flush().unwrap();
     }
 }
 

@@ -1,0 +1,402 @@
+[
+  {
+    "hook": "initialize",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace",
+    "generation": 1,
+    "session_id": "session-1790886574238-98249-0",
+    "pid": 98281,
+    "contents": null
+  },
+  {
+    "hook": "session_start",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace",
+    "generation": 1,
+    "session_id": "session-1790886574238-98249-0",
+    "pid": 98293,
+    "contents": null
+  },
+  {
+    "hook": "initialize",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace/child",
+    "generation": 2,
+    "session_id": "session-1790886579974-98279-0",
+    "pid": 98637,
+    "contents": null
+  },
+  {
+    "hook": "session_start",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace/child",
+    "generation": 2,
+    "session_id": "session-1790886579974-98279-0",
+    "pid": 98639,
+    "contents": null
+  },
+  {
+    "hook": "session_close",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace/child",
+    "generation": 2,
+    "session_id": "session-1790886579974-98279-0",
+    "pid": 98813,
+    "contents": null
+  },
+  {
+    "hook": "agent_start",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace",
+    "generation": 1,
+    "session_id": "session-1790886574238-98249-0",
+    "pid": 98963,
+    "contents": null
+  },
+  {
+    "hook": "agent_end",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace",
+    "generation": 1,
+    "session_id": "session-1790886574238-98249-0",
+    "pid": 98964,
+    "contents": null
+  },
+  {
+    "hook": "agent_start",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace",
+    "generation": 1,
+    "session_id": "session-1790886574238-98249-0",
+    "pid": 99026,
+    "contents": null
+  },
+  {
+    "hook": "agent_end",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace",
+    "generation": 1,
+    "session_id": "session-1790886574238-98249-0",
+    "pid": 99456,
+    "contents": null
+  },
+  {
+    "hook": "agent_start",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace",
+    "generation": 1,
+    "session_id": "session-1790886574238-98249-0",
+    "pid": 99619,
+    "contents": null
+  },
+  {
+    "hook": "agent_end",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace",
+    "generation": 1,
+    "session_id": "session-1790886574238-98249-0",
+    "pid": 99620,
+    "contents": null
+  },
+  {
+    "hook": "agent_start",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace",
+    "generation": 1,
+    "session_id": "session-1790886574238-98249-0",
+    "pid": 99649,
+    "contents": null
+  },
+  {
+    "hook": "agent_end",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace",
+    "generation": 1,
+    "session_id": "session-1790886574238-98249-0",
+    "pid": 99650,
+    "contents": null
+  },
+  {
+    "hook": "agent_start",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace",
+    "generation": 1,
+    "session_id": "session-1790886574238-98249-0",
+    "pid": 99675,
+    "contents": null
+  },
+  {
+    "hook": "before_tool",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace",
+    "generation": 1,
+    "session_id": "session-1790886574238-98249-0",
+    "pid": 99676,
+    "contents": null
+  },
+  {
+    "hook": "after_tool",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace",
+    "generation": 1,
+    "session_id": "session-1790886574238-98249-0",
+    "pid": 99843,
+    "contents": null
+  },
+  {
+    "hook": "agent_end",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace",
+    "generation": 1,
+    "session_id": "session-1790886574238-98249-0",
+    "pid": 99844,
+    "contents": null
+  },
+  {
+    "hook": "agent_start",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace",
+    "generation": 1,
+    "session_id": "session-1790886574238-98249-0",
+    "pid": 99877,
+    "contents": null
+  },
+  {
+    "hook": "before_tool",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace",
+    "generation": 1,
+    "session_id": "session-1790886574238-98249-0",
+    "pid": 99878,
+    "contents": null
+  },
+  {
+    "hook": "agent_end",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace",
+    "generation": 1,
+    "session_id": "session-1790886574238-98249-0",
+    "pid": 99922,
+    "contents": null
+  },
+  {
+    "hook": "initialize",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace/directory-one",
+    "generation": 3,
+    "session_id": "session-1790886574238-98249-0",
+    "pid": 3567,
+    "contents": null
+  },
+  {
+    "hook": "initialize",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace",
+    "generation": 4,
+    "session_id": "session-1790886574238-98249-0",
+    "pid": 3570,
+    "contents": null
+  },
+  {
+    "hook": "session_close",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace",
+    "generation": 1,
+    "session_id": "session-1790886574238-98249-0",
+    "pid": 3571,
+    "contents": null
+  },
+  {
+    "hook": "session_start",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace/directory-one",
+    "generation": 3,
+    "session_id": "session-1790886574238-98249-0",
+    "pid": 3595,
+    "contents": null
+  },
+  {
+    "hook": "agent_start",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace/directory-one",
+    "generation": 3,
+    "session_id": "session-1790886574238-98249-0",
+    "pid": 3598,
+    "contents": null
+  },
+  {
+    "hook": "before_tool",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace/directory-one",
+    "generation": 3,
+    "session_id": "session-1790886574238-98249-0",
+    "pid": 3599,
+    "contents": null
+  },
+  {
+    "hook": "tools/call",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace/directory-one",
+    "generation": 3,
+    "session_id": "session-1790886574238-98249-0",
+    "pid": 3600,
+    "contents": "must survive tab close: directory-one\n"
+  },
+  {
+    "hook": "after_tool",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace/directory-one",
+    "generation": 3,
+    "session_id": "session-1790886574238-98249-0",
+    "pid": 3602,
+    "contents": null
+  },
+  {
+    "hook": "agent_end",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace/directory-one",
+    "generation": 3,
+    "session_id": "session-1790886574238-98249-0",
+    "pid": 3603,
+    "contents": null
+  },
+  {
+    "hook": "session_close",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace/directory-one",
+    "generation": 3,
+    "session_id": "session-1790886574238-98249-0",
+    "pid": 3604,
+    "contents": null
+  },
+  {
+    "hook": "session_start",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace",
+    "generation": 4,
+    "session_id": "session-1790886574238-98249-0",
+    "pid": 3605,
+    "contents": null
+  },
+  {
+    "hook": "initialize",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace/directory-two",
+    "generation": 5,
+    "session_id": "session-1790886574238-98249-0",
+    "pid": 3936,
+    "contents": null
+  },
+  {
+    "hook": "initialize",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace",
+    "generation": 6,
+    "session_id": "session-1790886574238-98249-0",
+    "pid": 3937,
+    "contents": null
+  },
+  {
+    "hook": "session_close",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace",
+    "generation": 4,
+    "session_id": "session-1790886574238-98249-0",
+    "pid": 3938,
+    "contents": null
+  },
+  {
+    "hook": "session_start",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace/directory-two",
+    "generation": 5,
+    "session_id": "session-1790886574238-98249-0",
+    "pid": 3939,
+    "contents": null
+  },
+  {
+    "hook": "agent_start",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace/directory-two",
+    "generation": 5,
+    "session_id": "session-1790886574238-98249-0",
+    "pid": 3942,
+    "contents": null
+  },
+  {
+    "hook": "before_tool",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace/directory-two",
+    "generation": 5,
+    "session_id": "session-1790886574238-98249-0",
+    "pid": 3949,
+    "contents": null
+  },
+  {
+    "hook": "tools/call",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace/directory-two",
+    "generation": 5,
+    "session_id": "session-1790886574238-98249-0",
+    "pid": 3950,
+    "contents": "must survive tab close: directory-two\n"
+  },
+  {
+    "hook": "after_tool",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace/directory-two",
+    "generation": 5,
+    "session_id": "session-1790886574238-98249-0",
+    "pid": 3951,
+    "contents": null
+  },
+  {
+    "hook": "agent_end",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace/directory-two",
+    "generation": 5,
+    "session_id": "session-1790886574238-98249-0",
+    "pid": 3999,
+    "contents": null
+  },
+  {
+    "hook": "session_close",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace/directory-two",
+    "generation": 5,
+    "session_id": "session-1790886574238-98249-0",
+    "pid": 4001,
+    "contents": null
+  },
+  {
+    "hook": "session_start",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace",
+    "generation": 6,
+    "session_id": "session-1790886574238-98249-0",
+    "pid": 4002,
+    "contents": null
+  },
+  {
+    "hook": "initialize",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace/child",
+    "generation": 7,
+    "session_id": "session-1790886579974-98279-0",
+    "pid": 4684,
+    "contents": null
+  },
+  {
+    "hook": "session_start",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace/child",
+    "generation": 7,
+    "session_id": "session-1790886579974-98279-0",
+    "pid": 4685,
+    "contents": null
+  },
+  {
+    "hook": "session_close",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace/child",
+    "generation": 7,
+    "session_id": "session-1790886579974-98279-0",
+    "pid": 4864,
+    "contents": null
+  },
+  {
+    "hook": "agent_start",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace",
+    "generation": 6,
+    "session_id": "session-1790886574238-98249-0",
+    "pid": 5347,
+    "contents": null
+  },
+  {
+    "hook": "agent_end",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace",
+    "generation": 6,
+    "session_id": "session-1790886574238-98249-0",
+    "pid": 5348,
+    "contents": null
+  },
+  {
+    "hook": "agent_start",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace",
+    "generation": 6,
+    "session_id": "session-1790886574238-98249-0",
+    "pid": 5883,
+    "contents": null
+  },
+  {
+    "hook": "agent_end",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace",
+    "generation": 6,
+    "session_id": "session-1790886574238-98249-0",
+    "pid": 5884,
+    "contents": null
+  },
+  {
+    "hook": "session_close",
+    "workspace": "/private/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-shared-desktop-dhuc6qjt/workspace",
+    "generation": 6,
+    "session_id": "session-1790886574238-98249-0",
+    "pid": 6122,
+    "contents": null
+  }
+]

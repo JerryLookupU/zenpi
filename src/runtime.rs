@@ -14,19 +14,37 @@
 //! The runner is generic so it can be wired to `Agent` without coupling the
 //! channel protocol to the UI.  An adapter normally captures an `Arc` of the
 //! backend/session coordinator and maps each request to one turn.  Requests
-//! submitted while a job is running become pending follow-ups and are
-//! started in FIFO order after the active job reaches a terminal result.
+//! submitted when the execution quota is full become pending follow-ups and
+//! are started in FIFO order as slots become available. The default quota is
+//! one; parallel adapters must supply independently owned job state.
 
 use std::{
     collections::VecDeque,
     sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc, OnceLock,
+        atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError, TrySendError},
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
+
+/// Process-wide hook run after a runtime event is queued (and by other
+/// host-visible producers such as approvals and input replies), so an
+/// event-driven host can block until something changes instead of polling.
+static EVENT_HOOK: OnceLock<fn()> = OnceLock::new();
+
+/// Install the process-wide event hook once; later calls are ignored.
+pub fn set_event_hook(hook: fn()) {
+    let _ = EVENT_HOOK.set(hook);
+}
+
+/// Wake an event-driven host, if one installed a hook.
+pub fn notify_event_hook() {
+    if let Some(hook) = EVENT_HOOK.get() {
+        hook();
+    }
+}
 
 /// Grace period used by the ordinary shutdown helpers before a
 /// non-cooperative job is detached.
@@ -34,6 +52,25 @@ pub const DEFAULT_SHUTDOWN_GRACE: Duration = Duration::from_secs(1);
 
 /// Upper bound accepted by configurable shutdown helpers.
 pub const MAX_SHUTDOWN_GRACE: Duration = Duration::from_secs(30);
+
+pub const MAX_CONCURRENCY: u16 = 64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConcurrencyError {
+    InvalidLimit,
+    Submit(SubmitError),
+}
+
+impl std::fmt::Display for ConcurrencyError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidLimit => formatter.write_str("runtime concurrency must be 1..64"),
+            Self::Submit(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for ConcurrencyError {}
 
 /// Monotonically increasing identifier assigned to one submitted job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -140,6 +177,8 @@ pub enum SubmitError {
     QueueFull,
     /// The worker has exited or is shutting down.
     Closed,
+    /// The OS refused a job thread; the runtime itself stays usable.
+    SpawnFailed,
 }
 
 impl std::fmt::Display for SubmitError {
@@ -147,6 +186,7 @@ impl std::fmt::Display for SubmitError {
         formatter.write_str(match self {
             Self::QueueFull => "runtime command queue is full",
             Self::Closed => "runtime worker is closed",
+            Self::SpawnFailed => "runtime could not start a job thread",
         })
     }
 }
@@ -193,9 +233,22 @@ pub enum RuntimeEvent<O, E> {
 }
 
 enum Command<I> {
-    Submit { id: JobId, request: I },
-    Cancel { id: JobId },
-    Shutdown { grace: Duration },
+    Submit {
+        id: JobId,
+        request: I,
+    },
+    Cancel {
+        id: JobId,
+    },
+    Shutdown {
+        grace: Duration,
+    },
+    Concurrency {
+        limit: u16,
+        applied: SyncSender<()>,
+    },
+    /// A job thread finished; wakes the blocked worker to reap it.
+    JobDone,
 }
 
 struct Active<O, E> {
@@ -250,6 +303,10 @@ where
     /// channel lets an owner safely join after it already consumed `Closed`
     /// (or after the worker failed before it could emit that event).
     closed: Arc<AtomicBool>,
+    /// Set when the host drops the runner. The worker holds a command sender
+    /// for job wakeups, so channel disconnection alone can no longer stop it.
+    host_gone: Arc<AtomicBool>,
+    applied_concurrency: Arc<AtomicU16>,
     _job: Arc<F>,
 }
 
@@ -278,11 +335,26 @@ where
 {
     /// Spawn a worker and return its nonblocking host handle.
     pub fn spawn(job: F, config: RuntimeConfig) -> Self {
+        Self::spawn_with_concurrency(job, config, 1).expect("valid default runtime concurrency")
+    }
+
+    /// Parallel jobs must not share an exclusive Agent/session writer.
+    pub fn spawn_with_concurrency(
+        job: F,
+        config: RuntimeConfig,
+        concurrency: u16,
+    ) -> Result<Self, ConcurrencyError> {
+        validate_concurrency(concurrency)?;
         let config = config.normalized();
         let (command_tx, command_rx) = mpsc::sync_channel(config.command_capacity);
         let (event_tx, event_rx) = mpsc::sync_channel(config.event_capacity);
         let closed = Arc::new(AtomicBool::new(false));
+        let host_gone = Arc::new(AtomicBool::new(false));
+        let worker_host_gone = Arc::clone(&host_gone);
+        let wake_tx = command_tx.clone();
         let worker_closed = Arc::clone(&closed);
+        let applied_concurrency = Arc::new(AtomicU16::new(concurrency));
+        let worker_concurrency = Arc::clone(&applied_concurrency);
         let job = Arc::new(job);
         let worker_job = Arc::clone(&job);
         let join = thread::Builder::new()
@@ -292,17 +364,52 @@ where
                 // so shutdown helpers never wait forever for a consumed or
                 // unavailable `Closed` event.
                 let _closed_guard = WorkerClosedGuard(worker_closed);
-                worker_loop(command_rx, event_tx, worker_job, config)
+                worker_loop(
+                    command_rx,
+                    wake_tx,
+                    worker_host_gone,
+                    event_tx,
+                    worker_job,
+                    config,
+                    concurrency,
+                    worker_concurrency,
+                )
             })
             .expect("failed to spawn zenpi runtime worker");
-        Self {
+        Ok(Self {
             command_tx,
             event_rx,
             next_id: AtomicU64::new(1),
             join: Some(join),
             closed,
+            host_gone,
+            applied_concurrency,
             _job: job,
+        })
+    }
+
+    /// The receipt resolves only after the scheduler applies the quota.
+    /// Lowering the quota never cancels existing jobs; new starts wait until
+    /// the live count falls below it. Channel admission is not application.
+    pub fn try_set_concurrency(&self, limit: u16) -> Result<Receiver<()>, ConcurrencyError> {
+        validate_concurrency(limit)?;
+        let (applied, receipt) = mpsc::sync_channel(1);
+        match self
+            .command_tx
+            .try_send(Command::Concurrency { limit, applied })
+        {
+            Ok(()) => Ok(receipt),
+            Err(TrySendError::Full(_)) => Err(ConcurrencyError::Submit(SubmitError::QueueFull)),
+            Err(TrySendError::Disconnected(_)) => {
+                Err(ConcurrencyError::Submit(SubmitError::Closed))
+            }
         }
+    }
+
+    /// Last scheduler-applied limit (initially the spawn limit), not a live
+    /// thread count or proof that this runtime is still accepting work.
+    pub fn applied_concurrency(&self) -> u16 {
+        self.applied_concurrency.load(Ordering::Acquire)
     }
 
     /// Try to admit one request without blocking the caller.
@@ -387,7 +494,18 @@ where
     /// after the runtime worker has emitted terminal state and exited, while
     /// the detached job may briefly continue executing. The duration is
     /// clamped to [`MAX_SHUTDOWN_GRACE`].
-    pub fn shutdown_and_join_with_grace(mut self, grace: Duration) -> thread::Result<()> {
+    pub fn shutdown_and_join_with_grace(self, grace: Duration) -> thread::Result<()> {
+        self.shutdown_and_join_with_events(grace, |_| {})
+    }
+
+    /// Drain shutdown events through the owner's observer before joining.
+    /// Already buffered events are delivered even if the worker has exited.
+    /// `Cancelled` still does not distinguish cooperative return from detach.
+    pub fn shutdown_and_join_with_events(
+        mut self,
+        grace: Duration,
+        mut observe: impl FnMut(RuntimeEvent<O, E>),
+    ) -> thread::Result<()> {
         let grace = normalize_shutdown_grace(grace);
         // `send` can deadlock here: a full command queue can only be drained
         // by a worker that may itself be blocked sending into a full event
@@ -400,8 +518,8 @@ where
                 Err(TrySendError::Disconnected(_)) => break,
                 Err(TrySendError::Full(_)) => {
                     match self.event_rx.recv_timeout(Duration::from_millis(10)) {
-                        Ok(RuntimeEvent::Closed) => break,
-                        Ok(_) | Err(RecvTimeoutError::Timeout) => {}
+                        Ok(event) => observe(event),
+                        Err(RecvTimeoutError::Timeout) => {}
                         Err(RecvTimeoutError::Disconnected) => break,
                     }
                 }
@@ -409,15 +527,22 @@ where
         }
         while !self.closed.load(Ordering::Acquire) {
             match self.event_rx.recv_timeout(Duration::from_millis(10)) {
-                Ok(RuntimeEvent::Closed) => break,
-                Ok(_) | Err(RecvTimeoutError::Timeout) => {}
+                Ok(event) => observe(event),
+                Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => break,
             }
         }
-        self.join
+        let result = self
+            .join
             .take()
             .expect("runtime worker already joined")
-            .join()
+            .join();
+        // The closed bit may become visible before the owner reads the final
+        // buffered terminal event. Joining makes this last drain authoritative.
+        while let Ok(event) = self.event_rx.try_recv() {
+            observe(event);
+        }
+        result
     }
 }
 
@@ -432,7 +557,8 @@ where
         // Drop cannot block because the caller may hold resources required by
         // its job closure. Production owners use `shutdown_and_join`; this
         // fallback still requests cancellation rather than silently leaking
-        // more work.
+        // more work. The flag covers a full command channel.
+        self.host_gone.store(true, Ordering::Release);
         let _ = self.command_tx.try_send(Command::Shutdown {
             grace: Duration::ZERO,
         });
@@ -440,92 +566,93 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn worker_loop<I, O, E, F>(
     command_rx: Receiver<Command<I>>,
+    wake_tx: SyncSender<Command<I>>,
+    host_gone: Arc<AtomicBool>,
     event_tx: SyncSender<RuntimeEvent<O, E>>,
     job: Arc<F>,
     config: RuntimeConfig,
+    mut concurrency: u16,
+    applied_concurrency: Arc<AtomicU16>,
 ) where
     I: Send + 'static,
     O: Send + 'static,
     E: Send + 'static,
     F: Fn(I, CancellationToken) -> Result<O, E> + Send + Sync + 'static,
 {
-    let mut active: Option<Active<O, E>> = None;
+    let mut active: Vec<Active<O, E>> = Vec::new();
     let mut pending = VecDeque::new();
     let mut stopping: Option<ShutdownState> = None;
 
     loop {
-        match active.as_ref().map(|item| item.done.try_recv()) {
-            Some(Ok(done)) => {
-                let item = active.take().expect("active job disappeared");
-                let _ = item.join.join();
-                let outcome = classify_execution(&item.token, done);
-                if !finish_active(
-                    &event_tx,
-                    item.id,
+        let mut index = 0;
+        while index < active.len() {
+            let done = match active[index].done.try_recv() {
+                Ok(done) => done,
+                Err(TryRecvError::Disconnected) => JobExecution::Panicked,
+                Err(TryRecvError::Empty) => {
+                    index += 1;
+                    continue;
+                }
+            };
+            let item = active.remove(index);
+            let _ = item.join.join();
+            let outcome = classify_execution(&item.token, done);
+            if !emit(
+                &event_tx,
+                RuntimeEvent::Completed {
+                    id: item.id,
                     outcome,
-                    &mut pending,
-                    stopping.is_some(),
-                ) {
-                    return;
-                }
-                if stopping.is_some() {
-                    return;
-                }
-                if let Some((id, request)) = pending.pop_front()
-                    && !start_job(&event_tx, &job, &mut active, id, request)
-                {
-                    return;
-                }
-                continue;
+                },
+            ) {
+                return;
             }
-            // A job thread exiting without delivering its result is still a
-            // terminal condition. Treat it as a panic rather than polling a
-            // permanently disconnected `done` receiver forever.
-            Some(Err(TryRecvError::Disconnected)) => {
-                let item = active.take().expect("active job disappeared");
-                let _ = item.join.join();
-                if !finish_active(
-                    &event_tx,
-                    item.id,
-                    JobOutcome::Panicked,
-                    &mut pending,
-                    stopping.is_some(),
-                ) {
-                    return;
-                }
-                if stopping.is_some() {
-                    return;
-                }
-                if let Some((id, request)) = pending.pop_front()
-                    && !start_job(&event_tx, &job, &mut active, id, request)
-                {
-                    return;
-                }
-                continue;
-            }
-            Some(Err(TryRecvError::Empty)) | None => {}
         }
 
-        if stopping.is_some_and(ShutdownState::expired) && active.is_some() {
-            // Dropping JoinHandle detaches only the job thread. Its one-shot
-            // done channel is disconnected when the receiver below is
-            // dropped, so a late result can never re-enter this runtime.
-            let item = active.take().expect("active job disappeared");
-            let id = item.id;
-            drop(item);
-            if !finish_active(&event_tx, id, JobOutcome::Cancelled, &mut pending, true) {
-                return;
+        if stopping.is_some_and(ShutdownState::expired) {
+            for item in active.drain(..) {
+                let id = item.id;
+                // Detached results cannot re-enter this scheduler.
+                drop(item);
+                if !emit(
+                    &event_tx,
+                    RuntimeEvent::Completed {
+                        id,
+                        outcome: JobOutcome::Cancelled,
+                    },
+                ) {
+                    return;
+                }
+            }
+        }
+        if stopping.is_some() && active.is_empty() {
+            if cancel_pending(&event_tx, &mut pending) {
+                let _ = emit(&event_tx, RuntimeEvent::Closed);
             }
             return;
         }
 
-        let command = if active.is_some() {
-            let wait = stopping
-                .map(|state| state.remaining(config.poll_interval))
-                .unwrap_or(config.poll_interval);
-            match command_rx.recv_timeout(wait) {
+        if stopping.is_none() {
+            while active.len() < usize::from(concurrency) {
+                let Some((id, request)) = pending.pop_front() else {
+                    break;
+                };
+                if !start_job(&event_tx, &wake_tx, &job, &mut active, id, request) {
+                    return;
+                }
+            }
+        }
+
+        // ZE-300: block instead of polling. A finished job wakes the worker
+        // with `JobDone`; only a shutdown deadline needs a timed wait.
+        let command = if host_gone.load(Ordering::Acquire) && stopping.is_none() {
+            Command::Shutdown {
+                grace: Duration::ZERO,
+            }
+        } else if let Some(state) = stopping.filter(|_| !active.is_empty()) {
+            match command_rx.recv_timeout(state.remaining(config.poll_interval)) {
                 Ok(command) => command,
                 Err(RecvTimeoutError::Timeout) => continue,
                 Err(RecvTimeoutError::Disconnected) => Command::Shutdown {
@@ -542,11 +669,13 @@ fn worker_loop<I, O, E, F>(
         };
 
         match command {
-            Command::Submit { id, request } if active.is_none() && stopping.is_none() => {
+            Command::Submit { id, request }
+                if active.len() < usize::from(concurrency) && stopping.is_none() =>
+            {
                 if !emit(&event_tx, RuntimeEvent::Accepted { id, queued: false }) {
                     return;
                 }
-                if !start_job(&event_tx, &job, &mut active, id, request) {
+                if !start_job(&event_tx, &wake_tx, &job, &mut active, id, request) {
                     return;
                 }
             }
@@ -588,8 +717,7 @@ fn worker_loop<I, O, E, F>(
                 }
             }
             Command::Cancel { id } => {
-                if active.as_ref().is_some_and(|item| item.id == id) {
-                    let item = active.as_ref().expect("active job disappeared");
+                if let Some(item) = active.iter().find(|item| item.id == id) {
                     item.token.cancel();
                     if !emit(&event_tx, RuntimeEvent::CancelRequested { id }) {
                         return;
@@ -622,15 +750,22 @@ fn worker_loop<I, O, E, F>(
                     Some(existing) if existing.deadline <= candidate.deadline => existing,
                     _ => candidate,
                 });
-                if let Some(item) = active.as_ref() {
+                for item in &active {
                     item.token.cancel();
+                }
+                // Signal every job before bounded event delivery can block.
+                for item in &active {
                     if !emit(&event_tx, RuntimeEvent::CancelRequested { id: item.id }) {
                         return;
                     }
-                } else {
-                    cancel_pending(&event_tx, &mut pending);
-                    let _ = emit(&event_tx, RuntimeEvent::Closed);
-                    return;
+                }
+            }
+            Command::JobDone => {}
+            Command::Concurrency { limit, applied } => {
+                if stopping.is_none() {
+                    concurrency = limit;
+                    applied_concurrency.store(limit, Ordering::Release);
+                    let _ = applied.try_send(());
                 }
             }
         }
@@ -650,27 +785,6 @@ fn classify_execution<O, E>(
             JobExecution::Panicked => JobOutcome::Panicked,
         }
     }
-}
-
-fn finish_active<I, O, E>(
-    event_tx: &SyncSender<RuntimeEvent<O, E>>,
-    id: JobId,
-    outcome: JobOutcome<O, E>,
-    pending: &mut VecDeque<(JobId, I)>,
-    stopping: bool,
-) -> bool {
-    if !emit(event_tx, RuntimeEvent::Completed { id, outcome }) {
-        return false;
-    }
-    if stopping {
-        // Preserve submission order during shutdown. The active job owns the
-        // oldest request, so its terminal event precedes queued cancellation.
-        if !cancel_pending(event_tx, pending) {
-            return false;
-        }
-        return emit(event_tx, RuntimeEvent::Closed);
-    }
-    true
 }
 
 fn cancel_pending<I, O, E>(
@@ -697,6 +811,14 @@ fn normalize_shutdown_grace(grace: Duration) -> Duration {
     grace.min(MAX_SHUTDOWN_GRACE)
 }
 
+fn validate_concurrency(limit: u16) -> Result<(), ConcurrencyError> {
+    if (1..=MAX_CONCURRENCY).contains(&limit) {
+        Ok(())
+    } else {
+        Err(ConcurrencyError::InvalidLimit)
+    }
+}
+
 /// RAII marker for the worker lifecycle.  This is intentionally separate
 /// from the event stream: event delivery is bounded and may be interrupted
 /// by a host that exits early, while joining must still have an authoritative
@@ -711,8 +833,9 @@ impl Drop for WorkerClosedGuard {
 
 fn start_job<I, O, E, F>(
     event_tx: &SyncSender<RuntimeEvent<O, E>>,
+    wake_tx: &SyncSender<Command<I>>,
     job: &Arc<F>,
-    active: &mut Option<Active<O, E>>,
+    active: &mut Vec<Active<O, E>>,
     id: JobId,
     request: I,
 ) -> bool
@@ -726,6 +849,7 @@ where
     let child_token = token.clone();
     let (done_tx, done_rx) = mpsc::sync_channel(1);
     let job = Arc::clone(job);
+    let wake_tx = wake_tx.clone();
     let join = match thread::Builder::new()
         .name(format!("zenpi-job-{}", id.get()))
         .spawn(move || {
@@ -737,19 +861,22 @@ where
                 Err(_) => JobExecution::Panicked,
             };
             let _ = done_tx.send(execution);
+            // A full command queue means the worker is about to run anyway.
+            let _ = wake_tx.try_send(Command::JobDone);
         }) {
         Ok(join) => join,
         Err(_) => {
+            // The runtime stays usable; queued work keeps draining.
             return emit(
                 event_tx,
                 RuntimeEvent::Rejected {
                     id,
-                    reason: SubmitError::Closed,
+                    reason: SubmitError::SpawnFailed,
                 },
             );
         }
     };
-    *active = Some(Active {
+    active.push(Active {
         id,
         token,
         done: done_rx,
@@ -759,7 +886,9 @@ where
 }
 
 fn emit<O, E>(event_tx: &SyncSender<RuntimeEvent<O, E>>, event: RuntimeEvent<O, E>) -> bool {
-    event_tx.send(event).is_ok()
+    let sent = event_tx.send(event).is_ok();
+    notify_event_hook();
+    sent
 }
 
 /// Host-observed, revocable permission to consume input before one model turn.

@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-202",
+  "claim_id": "ZE-202@blueprint-4.0.0",
+  "from": "master",
+  "to": "master",
+  "summary": "A timed-out command (process group killed and reaped) and a run_command I/O failure are ordinary Failed tool results instead of UnknownOutcome, so the turn continues and automation (compaction) is not vetoed. write/edit I/O failures stay UnknownOutcome because a rename may already have landed.",
+  "changed_files": [
+    "src/core.rs",
+    "tests/run_command_pi.rs",
+    "Docs/quality/ze/ZE-202.json"
+  ],
+  "diff_stat": "1 file changed, 6 insertions(+), 4 deletions(-)",
+  "commands_run": [
+    "cargo test --locked --test run_command_pi command_timeout_returns_to_the_model_and_the_turn_continues",
+    "cargo test --locked --test core_session"
+  ],
+  "validation_result": {
+    "timeout_task_test": "turn ends Ok after a 100 ms timeout then a follow-up call; automation_vetoed()==None; tool turn text contains timed out",
+    "core_session": "40/41 parallel, flake passes serially"
+  },
+  "notes": "",
+  "created_at": "2026-10-14T15:38:33Z",
+  "digest": "72812807597ea78ef3a7af797e082c0caa3259cc97b467c28ad862a1222e1988"
+}

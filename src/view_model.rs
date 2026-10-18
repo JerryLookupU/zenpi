@@ -1242,10 +1242,10 @@ impl ViewEvent {
                 response_id: response_id.clone(),
                 model: model.clone(),
             },
-            ProviderEvent::Failed { message } => ViewEventKind::TurnFailed {
+            ProviderEvent::Failed { message, retryable } => ViewEventKind::TurnFailed {
                 code: Some("provider_failed".into()),
                 message: message.clone(),
-                retryable: true,
+                retryable: *retryable,
             },
         };
         Self::with_context(sequence, request_id, turn_id, block_id, event)

@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "item_id": "ZE-541",
+  "claim_id": "ZE-541@blueprint-4.0.0",
+  "from": "worker",
+  "to": "master",
+  "summary": "Remote listener blocks in accept() instead of polling every 10 ms (shutdown wakes it with a self-connect); each IP holds at most one unauthenticated slot (a newer half-open connection from the same IP replaces the older one); the whole unauthenticated phase (TLS handshake through device authentication) has one 5 s budget that per-frame deadlines cannot extend; unauthenticated peers never occupy the half of max_connections reserved for authenticated connections. The handler promotes a connection with DeadlineSocket::authenticated().",
+  "changed_files": [
+    "src/remote/listener.rs",
+    "src/host_pair.rs",
+    "tests/remote_listener.rs",
+    "Docs/quality/ze/ZE-541.json"
+  ],
+  "diff_stat": "4 files changed, 323 insertions(+), 61 deletions(-)",
+  "commands_run": [
+    "cargo fmt --all -- --check",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo clippy --locked --all-targets --all-features -- -D warnings",
+    "cargo clippy --locked --all-targets --features remote -- -D warnings",
+    "git diff -U0 origin/main -- 'src/*.rs' 'src/**/*.rs' | grep -E '^\\+.*#!?\\[allow\\((dead_code|unused)' (no match)",
+    "cargo test --locked --all-features --no-fail-fast --test remote_listener --test remote_subscription --test remote_subscription_tls --test remote_auth --test remote_device_grants --test remote_security --test remote_faults --test remote_concurrency --test remote_android_ack_interop --test remote_android_approval_interop --test remote_android_model_interop --test remote_android_session_interop --test remote_android_terminal_interop --test remote_android_workspace_interop --test remote_android_worktree_interop --test remote_android_interop",
+    "cargo test --locked --all-features --test remote_host_e2e -- --include-ignored",
+    "cargo test --locked --features remote --lib remote::listener",
+    "cargo test --locked --all-features --no-fail-fast",
+    "A/B: cargo build --locked --release --features remote; idle `zenpi host serve --workspace W --session S --bind 127.0.0.1:0 --plain`, `top -l 1 -pid PID -stats csw` delta over 10 s after 4 s warm-up"
+  ],
+  "validation_result": {
+    "fmt": "ok",
+    "clippy_default": "ok",
+    "clippy_all_features": "ok",
+    "clippy_remote": "ok",
+    "new_allow_dead_code_or_unused": "none",
+    "remote_suites": "all passed",
+    "remote_host_e2e_include_ignored": "7 passed",
+    "full_all_features": "161 test binaries, 0 failed",
+    "validator_half_open_flood": "tests/remote_listener.rs half_open_flood_keeps_one_unauthenticated_slot_and_authenticated_clients_connect: 12 half-open TCP peers leave one unauthenticated slot; an established authenticated client survives and two more authenticate",
+    "validator_reserved_slots": "listener::tests::unauthenticated_peers_never_take_reserved_slots (distinct IPs fill only 2 of 4 slots)",
+    "validator_total_budget": "unauthenticated_budget_is_total_and_lifted_by_authentication",
+    "idle_csw_per_s_before": 85.4,
+    "idle_csw_per_s_after": [
+      2.3,
+      2.4
+    ],
+    "listener_idle_wakeups_per_s": 0,
+    "remaining_idle_source": "owner thread 500 ms shutdown fallback (ZE-512), not the listener"
+  },
+  "notes": "Deviation (owned path): src/host_pair.rs gets one call, stream.sock.authenticated()?, after a successful Authenticate; without it every device would stay under the 5 s unauthenticated budget. Pairing and revoke_status stay unauthenticated and must finish within the 5 s budget (handshake_timeout, unchanged default). Same-IP policy: newest-wins replacement rather than refusal, so a client behind the same address as stale or hostile half-open sockets (loopback, NAT, ssh -R) can still connect; a same-IP attacker can in turn displace a pending handshake, which it could equally do under refusal. Shutdown wakes accept by connecting to the bound address (loopback for a wildcard bind); if that connect fails the accept thread is left blocked rather than hanging shutdown (all connections are already closed). Accepted connection threads are now detached when finished instead of joined in the poll loop. Existing tests adjusted: the same-IP half-open test now asserts replacement, and the four-connection test's handler promotes after hello. No new unwrap/expect/panic in non-test code; no new unsafe; Arc<State> already existed.",
+  "created_at": "2026-10-14T23:59:02Z",
+  "digest": "313749df6d14be3f13e1654cb9fede5f982641048ba133ad875fa6c70ad0da8b"
+}

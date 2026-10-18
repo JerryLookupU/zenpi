@@ -273,6 +273,8 @@ fn reasoning_preference_survives_project_switch_and_checkpoint() {
     let saved = state.project_checkpoint();
     let mut restored = TuiState::default();
     assert!(restored.restore_project_checkpoint(&saved));
+    // The transcript itself reloads from the session journal (ZE-309).
+    restored.push_message(MessageRole::Reasoning, "first reasoning");
     assert!(render(&mut restored, 140, 40).contains("first reasoning"));
 }
 #[test]
@@ -297,14 +299,24 @@ fn actual_usage_is_visible_and_stale_usage_does_not_replace_current_job() {
         &mut state,
         8,
         ProviderEvent::Usage {
-            usage: zenpi::backend::Usage::new(123, 45, 168),
+            usage: zenpi::backend::Usage {
+                input_tokens: 123,
+                output_tokens: 45,
+                total_tokens: 168,
+                ..Default::default()
+            },
         },
     );
     event(
         &mut state,
         7,
         ProviderEvent::Usage {
-            usage: zenpi::backend::Usage::new(999, 999, 1998),
+            usage: zenpi::backend::Usage {
+                input_tokens: 999,
+                output_tokens: 999,
+                total_tokens: 1998,
+                ..Default::default()
+            },
         },
     );
     let screen = render(&mut state, 140, 40);

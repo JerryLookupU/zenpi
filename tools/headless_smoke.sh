@@ -115,8 +115,10 @@ printf '%s\n' \
   '{"type":"prompt","id":"p-1","text":"hello\u2028zenpi\u2029","mode":"start_if_idle","future_hint":"ignored"}' \
   '{"schema_version":2,"type":"prompt","id":"p-1","text":"must not run twice"}' \
   '{"type":"status","id":"s-1"}' \
-  '{"type":"steer","id":"t-1","text":"no active turn"}' \
-  '{"type":"shutdown","id":"q-1"}' >"$INPUT"
+  '{"type":"steer","id":"t-1","text":"no active turn"}' >"$INPUT"
+# The batch ends with stdin EOF, which drains admitted work; an explicit
+# `shutdown` is a cancellation request with a 250 ms grace and is covered by
+# the bounded-shutdown checks below.
 
 # ZENPI_SESSION is the stable persistence boundary. The CLI also advertises
 # --session; use that flag when present so the check follows the public help.
@@ -204,7 +206,7 @@ for response in responses:
                 by_id[request_id] = response
             continue
         by_id[request_id] = response
-for request_id in ("bad-1", "p-1", "s-1", "t-1", "r-1", "h-1", "q-1"):
+for request_id in ("bad-1", "p-1", "s-1", "t-1", "r-1", "h-1"):
     if request_id not in by_id:
         raise AssertionError(f"missing correlated response for {request_id}")
 expected_commands = {
@@ -214,7 +216,6 @@ expected_commands = {
     "t-1": "steer",
     "r-1": "resume",
     "h-1": "handoff",
-    "q-1": "shutdown",
 }
 for request_id, command in expected_commands.items():
     if by_id[request_id].get("command") != command:
@@ -248,7 +249,7 @@ if len(p1_terminals) != 1:
     raise AssertionError(f"p-1 did not have exactly one original terminal response: {p1_responses!r}")
 if p1_terminals[0].get("success") is not True and by_id["t-1"].get("success") is not True:
     raise AssertionError(f"cancelled p-1 was not replaced by a successful steer: {responses_by_id!r}")
-for request_id in ("s-1", "t-1", "r-1", "h-1", "q-1"):
+for request_id in ("s-1", "t-1", "r-1", "h-1"):
     if by_id[request_id].get("success") is not True:
         raise AssertionError(f"command {request_id} did not succeed: {by_id[request_id]}")
 if by_id["t-1"].get("code") == "runtime_closed":

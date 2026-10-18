@@ -1,0 +1,37 @@
+{
+  "passed": false,
+  "scope": "production desktop/Android regression interrupted before final acceptance",
+  "failure": "instrumentation reader/grant failed: ['']",
+  "artifacts": {
+    "target/debug/zenpi": "f59f8cb78b9464bb6409ff1e5350cc90b3ef122fa1cf05795109a9012ca2d1b0",
+    "android/app/build/outputs/apk/debug/app-debug.apk": "d95d962091898f853d15e9887c45a72ca4f9e5f979dba4261a8636f98af4a4a4",
+    "android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk": "fd50469e021cd1bbeb697d6d3dc5306a4114de77843d143fde792e6d2614e034"
+  },
+  "harness_sha256": "4ebd9f0447ea4a8228bb1ee1a8a14d620c3b5bc54e68c9101c16558609514852",
+  "started_at_unix": 1790893529.980901,
+  "finished_at_unix": 1790893613.597717,
+  "integration_state": "provisional uncommitted worktree; no item acceptance",
+  "device_registry": {
+    "version": 1,
+    "host_fingerprint": "fc074316be00be5223ed2b48f0ce6e75fbb6be8290ce2fce82eb4c1a12303803",
+    "devices": [
+      {
+        "id": "d170bfabfe3d474b43b40ea1bfb0861360dea24cd0cce4cde63e6891bae00ba4",
+        "name": "Android-emulator-test",
+        "public_key": "BOL0N7OOXcX-q8CXl6zW_2TMjtYpnQVAJz2m0MhTmLoaD_Nz8p931Di-jpJ-MUjoP1n9Ip_saWk9jqeOdS1jvy4",
+        "created_at": 1790893534,
+        "revision": 4,
+        "revoked": false,
+        "capabilities": [
+          "read",
+          "control"
+        ],
+        "projects": [
+          "824e1722b34203b5dace764781f8ce733d2c6d45fcaa59254287a9deeed22ed0",
+          "e3d946977c955550cac5d8ba4af6684a48680e104cc6575acc2e9147a9d9d0d5"
+        ]
+      }
+    ]
+  },
+  "instrumentation_outputs": []
+}

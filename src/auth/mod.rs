@@ -158,6 +158,7 @@ impl From<store::StoreError> for AuthError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct LoginFlowId(String);
 impl LoginFlowId {
+    #[cfg(test)]
     pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
@@ -180,7 +181,6 @@ pub(crate) enum AuthHttpKind {
     DeviceBegin,
     DevicePoll,
     CodeExchange,
-    Refresh,
 }
 
 // These events are exclusively for a trusted host, never ProviderEvent/log JSON.
@@ -196,7 +196,6 @@ pub(crate) enum AuthPrompt {
 }
 pub(crate) enum AuthInteraction {
     Notify {
-        flow_id: LoginFlowId,
         state: LoginState,
     },
     Prompt {
@@ -204,10 +203,7 @@ pub(crate) enum AuthInteraction {
         prompt_id: u64,
         prompt: AuthPrompt,
     },
-    CancelPrompt {
-        flow_id: LoginFlowId,
-        prompt_id: u64,
-    },
+    CancelPrompt,
 }
 
 pub(crate) struct LoginControl<'a> {
@@ -272,11 +268,7 @@ pub(crate) struct LoginRequest<'a> {
     pub(crate) credential_id: &'a str,
     pub(crate) expected_revision: Option<u64>,
 }
-pub(crate) struct LoginSuccess {
-    pub(crate) flow_id: LoginFlowId,
-    pub(crate) credential: store::CommittedCredential,
-}
-pub(crate) type LoginOutcome = Result<LoginSuccess, AuthError>;
+pub(crate) type LoginOutcome = Result<store::CommittedCredential, AuthError>;
 
 /// Credential shape for a provider API key.
 ///

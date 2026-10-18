@@ -1,0 +1,8 @@
+[
+  {"kind":"pair","fields":["fingerprint","token","request","Phone <&>'=","public"],"message":"[\"zenpi-device-pair-v1\",\"fingerprint\",\"token\",\"request\",\"Phone <&>'=\",\"public\"]"},
+  {"kind":"pair","fields":["fingerprint","token","request","Phone\u2028desk\u2029end","public"],"message":"[\"zenpi-device-pair-v1\",\"fingerprint\",\"token\",\"request\",\"Phone\u2028desk\u2029end\",\"public\"]"},
+  {"kind":"pair","fields":["fingerprint","token","request","Phone \\u2028 \\u2029 \"desk\"","public"],"message":"[\"zenpi-device-pair-v1\",\"fingerprint\",\"token\",\"request\",\"Phone \\\\u2028 \\\\u2029 \\\"desk\\\"\",\"public\"]"},
+  {"kind":"pair","fields":["fingerprint","token","request","手机 café 🚀","public"],"message":"[\"zenpi-device-pair-v1\",\"fingerprint\",\"token\",\"request\",\"手机 café 🚀\",\"public\"]"},
+  {"kind":"authenticate","fields":["fingerprint","nonce","device"],"message":"[\"zenpi-device-auth-v1\",\"fingerprint\",\"nonce\",\"device\"]"},
+  {"kind":"revoke_status","fields":["fingerprint","nonce","device","request\u2028id","query\\u2029"],"message":"[\"zenpi-device-revoke-status-v1\",\"fingerprint\",\"nonce\",\"device\",\"request\u2028id\",\"query\\\\u2029\"]"}
+]

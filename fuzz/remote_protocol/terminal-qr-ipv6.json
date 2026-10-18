@@ -1,0 +1,9 @@
+{
+  "address": "[fd00::1234]:65535",
+  "fixture_only": true,
+  "height": 264,
+  "now": 1790916728,
+  "schema_version": 1,
+  "uri": "zenpi://pair?v=1&address=%5Bfd00%3A%3A1234%5D%3A65535&fingerprint=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&token=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8&expires=1790916788",
+  "width": 260
+}

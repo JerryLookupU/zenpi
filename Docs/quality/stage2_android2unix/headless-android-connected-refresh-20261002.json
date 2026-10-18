@@ -1,0 +1,42 @@
+{
+  "scope": "production non-TUI Rust host / Android composer and saved prompt recovery after actual process death",
+  "passed": false,
+  "direct_host_interface_verified": false,
+  "adb_reverse_used": false,
+  "camera_scanning_verified": false,
+  "physical_phone_lan_verified": false,
+  "terminal_qr_decode_verified": false,
+  "android_composer_provider_turn_verified": false,
+  "encrypted_pending_prompt_process_recovery_verified": false,
+  "exact_retry_without_provider_replay_verified": false,
+  "provider_requests": 0,
+  "listener_expiry_closed_verified": false,
+  "artifacts": {
+    "target/debug/zenpi": "bdd666957d8a7323617b955252894cdb925df868ed939baec86ccff37bd502e9",
+    "android/app/build/outputs/apk/debug/app-debug.apk": "dafdf2f1fc981f793c6e1c829f39a9e118403c1961e2f160fb943dc64d08dfaf",
+    "android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk": "139593d00766fdf574a00ae912ebf558b40845fa75126eb6e46aaffeb1b8a8dc",
+    "tools/stage2_headless_android_smoke.py": "92c946db98bac5194eb70bd4b2484b83118588b37dffc9f64fbace193e14e65a"
+  },
+  "android_api": "36",
+  "serial": "emulator-5580",
+  "started_at_unix": 1790890389.7648482,
+  "finished_at_unix": 1790890393.003644,
+  "failure": "first Android phase failed: []\nINSTRUMENTATION_STATUS: class=zenpi.HeadlessHostTest\nINSTRUMENTATION_STATUS: current=1\nINSTRUMENTATION_STATUS: id=AndroidJUnitRunner\nINSTRUMENTATION_STATUS: numtests=1\nINSTRUMENTATION_STATUS: stream=\nzenpi.HeadlessHostTest:\nINSTRUMENTATION_STATUS: test=androidComposerUsesHeadlessOwnerAndRetainsCommittedPromptUntilProcessDeath\nINSTRUMENTATION_STATUS_CODE: 1\nINSTRUMENTATION_STATUS: zenpi_phase=headless_local_grant_requested\nINSTRUMENTATION_STATUS_CODE: 0\nINSTRUMENTATION_STATUS: class=zenpi.HeadlessHostTest\nINSTRUMENTATION_STATUS: current=1\nINSTRUMENTATION_STATUS: id=AndroidJUnitRunner\nINSTRUMENTATION_STATUS: numtests=1\nINSTRUMENTATION_STATUS: stack=zenpi.transport.WireException: Host request refused: unauthorized\n\tat zenpi.transport.HostClient$inspect$5$1$1.invokeSuspend$lambda$19$exchange(HostClient.kt:388)\n\tat zenpi.transport.HostClient$inspect$5$1$1.invokeSuspend(HostClient.kt:410)\n\tat kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)\n\tat kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:104)\n\tat kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:111)\n\tat kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:99)\n\tat kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:584)\n\tat kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:811)\n\tat kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:715)\n\tat kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:702)\n\nINSTRUMENTATION_STATUS: stream=\nError in androidComposerUsesHeadlessOwnerAndRetainsCommittedPromptUntilProcessDeath(zenpi.HeadlessHostTest):\nzenpi.transport.WireException: Host request refused: unauthorized\n\tat zenpi.transport.HostClient$inspect$5$1$1.invokeSuspend$lambda$19$exchange(HostClient.kt:388)\n\tat zenpi.transport.HostClient$inspect$5$1$1.invokeSuspend(HostClient.kt:410)\n\tat kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)\n\tat kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:104)\n\tat kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:111)\n\tat kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:99)\n\tat kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:584)\n\tat kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:811)\n\tat kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:715)\n\tat kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:702)\n\nINSTRUMENTATION_STATUS: test=androidComposerUsesHeadlessOwnerAndRetainsCommittedPromptUntilProcessDeath\nINSTRUMENTATION_STATUS_CODE: -2\nINSTRUMENTATION_RESULT: stream=\n\nTime: 1.207\nThere was 1 failure:\n1) androidComposerUsesHeadlessOwnerAndRetainsCommittedPromptUntilProcessDeath(zenpi.HeadlessHostTest)\nzenpi.transport.WireException: Host request refused: unauthorized\n\tat zenpi.transport.HostClient$inspect$5$1$1.invokeSuspend$lambda$19$exchange(HostClient.kt:388)\n\tat zenpi.transport.HostClient$inspect$5$1$1.invokeSuspend(HostClient.kt:410)\n\tat kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)\n\tat kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:104)\n\tat kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:111)\n\tat kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:99)\n\tat kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:584)\n\tat kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:811)\n\tat kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:715)\n\tat kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:702)\n\nFAILURES!!!\nTests run: 1,  Failures: 1\n\n\nINSTRUMENTATION_CODE: -1\n",
+  "command_evidence": null,
+  "process_evidence": null,
+  "screenshot": null,
+  "requirement": {
+    "schema_version": "stage2-selector/v1",
+    "active": true,
+    "activated_by": "master",
+    "activated_at": "2026-10-01T19:16:06+0800",
+    "blueprint": "Docs/stage2_android2unix_blueprint.md",
+    "specification": "Docs/stage2_android2unix_spec.md",
+    "requirement_digest": "9887f784c944db898610e136dca2774496abb2f80b3e5a8fdd6a0b32659e009d",
+    "spec_digest": "403e6339b0318a420d93600fc52926acf6a9e46ec899bd9a9edb03c235190a28",
+    "target_repo": "/Users/mac/Github/zenpi",
+    "target_baseline": "current-worktree-with-user-changes",
+    "run_id": "zenpi-stage2-android2unix-20261001"
+  },
+  "integration_state": "uncommitted provisional evidence; no whole-item acceptance"
+}

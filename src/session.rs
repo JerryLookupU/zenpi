@@ -5,7 +5,7 @@
 //! malformed trailing line, and append again without rewriting the transcript.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fs::{self, File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
@@ -112,6 +112,20 @@ pub enum SessionError {
     InvalidRecord(String),
     #[error("new session candidate retained: {0}")]
     CandidateRetained(String),
+    /// The session file (or its transport WAL) is exclusively locked by
+    /// another live zenpi process.
+    #[error("session_locked: the session is open in another live zenpi process")]
+    Locked,
+}
+
+impl SessionError {
+    /// Stable machine-readable code for errors a host reports verbatim.
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::Locked => "session_locked",
+            _ => "session_error",
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -157,6 +171,9 @@ pub struct SessionStore {
     needs_separator: bool,
     next_seq: u64,
     observed_bytes: u64,
+    /// Byte offset of a torn (newline-less, unparsable) final line when that
+    /// line is the journal's only defect; writable opens may quarantine it.
+    torn_tail_offset: Option<u64>,
     tree: Option<crate::session_tree::SessionTree>,
 }
 
@@ -317,11 +334,47 @@ pub struct SessionInspection {
 /// metadata.  Resume/recovery owners need that metadata to page through the
 /// append-only journal without reparsing the file (and without accidentally
 /// following a symlink), so the validated envelope is retained separately.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SessionRecord {
     pub sequence: u64,
     pub kind: String,
-    pub value: Value,
+    /// The validated JSON line, parsed on demand: a long session keeps one
+    /// compact copy instead of a `Value` tree per record (ZE-305).
+    line: Box<str>,
+}
+
+/// Serialized exactly as the former `{sequence, kind, value}` struct, so
+/// record digests stored in journals stay valid.
+impl Serialize for SessionRecord {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut record = serializer.serialize_struct("SessionRecord", 3)?;
+        record.serialize_field("sequence", &self.sequence)?;
+        record.serialize_field("kind", &self.kind)?;
+        record.serialize_field("value", &self.value())?;
+        record.end()
+    }
+}
+
+impl SessionRecord {
+    fn new(sequence: u64, value: &Value) -> Result<Self, SessionError> {
+        let kind = value
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_owned();
+        Ok(Self {
+            sequence,
+            kind,
+            line: serde_json::to_string(value)?.into_boxed_str(),
+        })
+    }
+
+    /// The record as JSON. It was validated when read or written, so a parse
+    /// failure here would mean memory corruption; it yields `Null`.
+    pub fn value(&self) -> Value {
+        serde_json::from_str(&self.line).unwrap_or(Value::Null)
+    }
 }
 
 impl SessionStore {
@@ -387,12 +440,14 @@ impl SessionStore {
                 needs_separator: false,
                 next_seq: 0,
                 observed_bytes: 0,
+                torn_tail_offset: None,
                 tree: None,
             };
             let header = store.header.clone();
             let result = store.append_json_to_file(&json!({"kind":"session", "version":header.version,
                 "session_id":header.session_id, "created_at_ms":header.created_at_ms, "cwd":header.cwd}), &guard.file)
-                .and_then(|_| guard.verify());
+                .and_then(|_| guard.verify())
+                .and_then(|_| sync_parent_directory(&store.path));
             if let Err(error) = result {
                 return match guard.cleanup() {
                     Ok(()) => Err(error),
@@ -417,6 +472,13 @@ impl SessionStore {
     /// it. Read-only hosts such as `session list` and `session inspect` use
     /// this path so observation cannot mutate a journal as a side effect.
     pub fn open_existing(path: impl AsRef<Path>) -> Result<Self, SessionError> {
+        Self::open_existing_bounded(path, MAX_SESSION_BYTES)
+    }
+
+    pub(crate) fn open_existing_bounded(
+        path: impl AsRef<Path>,
+        max_bytes: usize,
+    ) -> Result<Self, SessionError> {
         let path = path.as_ref();
         let metadata = session_path_metadata(path)?;
         if !metadata.is_some_and(|metadata| metadata.is_file()) {
@@ -424,7 +486,7 @@ impl SessionStore {
                 "inspection source is not an existing session file".into(),
             ));
         }
-        Self::open_with_options(path, false, None)
+        Self::open_with_limit(path, false, None, max_bytes.min(MAX_SESSION_BYTES))
     }
 
     /// Open an existing, structurally valid journal for continued writes.
@@ -433,17 +495,34 @@ impl SessionStore {
     /// boundary so probing a user path cannot mutate it into a zenpi journal.
     pub fn open_existing_writable(path: impl AsRef<Path>) -> Result<Self, SessionError> {
         let path = path.as_ref();
-        let inspected = Self::open_existing(path)?;
-        let valid_header = inspected
-            .records
-            .first()
-            .is_some_and(|record| record.kind == "session" && record.sequence == 0);
-        if !valid_header || !inspected.warnings.is_empty() {
+        let mut inspected = Self::open_existing(path)?;
+        if inspected.has_valid_header()
+            && let Some(offset) = inspected.torn_tail_offset
+        {
+            // A crash or ENOSPC mid-append leaves only a newline-less final
+            // fragment. Quarantine it beside the journal, then truncate back
+            // to the last complete record so startup can continue.
+            quarantine_torn_tail(path, offset, inspected.observed_bytes)?;
+            inspected = Self::open_existing(path)?;
+        }
+        if !inspected.has_valid_header() || !inspected.warnings.is_empty() {
             return Err(SessionError::InvalidRecord(
                 "resume source is not a clean zenpi session journal".into(),
             ));
         }
         Self::open_with_options(path, true, None)
+    }
+
+    fn has_valid_header(&self) -> bool {
+        self.records
+            .first()
+            .is_some_and(|record| record.kind == "session" && record.sequence == 0)
+    }
+
+    /// True when the journal is clean, or when its only defect is a torn final
+    /// line that a writable open repairs (see [`Self::open_existing_writable`]).
+    fn is_resumable(&self) -> bool {
+        self.has_valid_header() && (self.warnings.is_empty() || self.torn_tail_offset.is_some())
     }
 
     /// Reconcile duplicate startup audits from a competing host after a
@@ -461,12 +540,13 @@ impl SessionStore {
             .iter()
             .rev()
             .find(|event| event["type"] == "extensions_selected");
-        let prefix_matches =
-            current.header == self.header
-                && current.records.len() >= self.records.len()
-                && current.records.iter().zip(&self.records).all(|(a, b)| {
-                    a.sequence == b.sequence && a.kind == b.kind && a.value == b.value
-                });
+        let prefix_matches = current.header == self.header
+            && current.records.len() >= self.records.len()
+            && current
+                .records
+                .iter()
+                .zip(&self.records)
+                .all(|(a, b)| a == b);
         let tail = current
             .records
             .get(self.records.len()..)
@@ -477,7 +557,7 @@ impl SessionStore {
             || tail.len() > 64
             || !tail.iter().all(|record| {
                 record.kind == "event"
-                    && selected.is_some_and(|event| &record.value["event"] == event)
+                    && selected.is_some_and(|event| &record.value()["event"] == event)
             })
         {
             return Err(SessionError::InvalidRecord(
@@ -518,6 +598,15 @@ impl SessionStore {
         writable: bool,
         workspace: Option<&Path>,
     ) -> Result<Self, SessionError> {
+        Self::open_with_limit(path, writable, workspace, MAX_SESSION_BYTES)
+    }
+
+    fn open_with_limit(
+        path: impl AsRef<Path>,
+        writable: bool,
+        workspace: Option<&Path>,
+        max_bytes: usize,
+    ) -> Result<Self, SessionError> {
         let path = path.as_ref().to_path_buf();
         if path.as_os_str().is_empty() {
             return Err(SessionError::EmptyPath);
@@ -539,7 +628,7 @@ impl SessionStore {
         // probe closes the common replacement race, while O_NOFOLLOW in
         // `read_session_bytes` handles the final open atomically on Unix.
         let _ = session_path_metadata(&path)?;
-        let bytes = match read_session_bytes(&path) {
+        let bytes = match read_session_bytes_with_limit(&path, max_bytes) {
             Ok(bytes) => bytes,
             Err(ReadSessionError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
                 Vec::new()
@@ -547,7 +636,7 @@ impl SessionStore {
             Err(ReadSessionError::Io(error)) => return Err(error.into()),
             Err(ReadSessionError::LimitExceeded { actual }) => {
                 return Err(SessionError::LimitExceeded {
-                    max: MAX_SESSION_BYTES,
+                    max: max_bytes,
                     actual,
                 });
             }
@@ -569,6 +658,13 @@ impl SessionStore {
         let mut warnings = Vec::new();
         let mut next_seq = 0_u64;
         let mut last_seq = None;
+        // The unterminated final line, if any, begins after the last newline.
+        let tail_start = bytes
+            .iter()
+            .rposition(|byte| *byte == b'\n')
+            .map_or(0, |index| index + 1);
+        let final_line_number = bytes.iter().filter(|byte| **byte == b'\n').count() + 1;
+        let mut torn_tail = false;
 
         for (index, raw_line) in bytes.split(|byte| *byte == b'\n').enumerate() {
             let line_number = index + 1;
@@ -579,6 +675,7 @@ impl SessionStore {
             let value = match serde_json::from_slice::<Value>(line) {
                 Ok(value) => value,
                 Err(error) => {
+                    torn_tail |= needs_separator && line_number == final_line_number;
                     warnings.push(RecoveryWarning {
                         line: line_number,
                         reason: format!("ignored malformed record: {error}"),
@@ -739,20 +836,18 @@ impl SessionStore {
             if accepted {
                 last_seq = Some(record_sequence);
                 next_seq = following_sequence;
-                let kind = raw_value
-                    .get("kind")
-                    .and_then(Value::as_str)
-                    .unwrap_or("unknown")
-                    .to_owned();
-                records.push(SessionRecord {
-                    sequence: record_sequence,
-                    kind,
-                    value: raw_value,
-                });
+                records.push(SessionRecord::new(record_sequence, &raw_value)?);
             }
         }
 
         let needs_header = header.is_none();
+        let torn_tail_offset = (torn_tail
+            && tail_start > 0
+            && warnings
+                .iter()
+                .all(|warning| warning.line == final_line_number))
+        .then_some(tail_start as u64);
+        let created = writable && existing.is_none();
         let mut store = Self {
             path,
             header: header.unwrap_or_else(|| SessionHeader {
@@ -778,6 +873,7 @@ impl SessionStore {
             needs_separator,
             next_seq,
             observed_bytes,
+            torn_tail_offset,
             tree: None,
         };
         if writable && (!had_content || needs_header) {
@@ -791,10 +887,13 @@ impl SessionStore {
                 "created_at_ms": header.created_at_ms,
                 "cwd": header.cwd,
             }))?;
+            if created {
+                sync_parent_directory(&store.path)?;
+            }
         }
         if store.records.iter().any(|record| {
-            record.value.get("tree_entry").is_some()
-                || record.value["event"]["type"] == "session_tree"
+            record.value().get("tree_entry").is_some()
+                || record.value()["event"]["type"] == "session_tree"
         }) {
             store.tree = Some(crate::session_tree::SessionTree::recover(
                 store.session_id(),
@@ -888,6 +987,8 @@ impl SessionStore {
                 .expect("tree was prepared")
                 .commit_turn(entry);
         }
+        #[cfg(feature = "remote")]
+        crate::remote::wakeup::notify(self.session_id());
         Ok(())
     }
 
@@ -1040,26 +1141,39 @@ impl SessionStore {
         leaf: Option<&str>,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<Vec<Turn>, SessionError> {
-        let tree = self.tree_snapshot(cancelled)?;
+        // Borrow the live tree and clone only the ancestry's turns (ZE-305);
+        // a snapshot is recovered only for a journal without a live tree.
+        let recovered;
+        let tree = match &self.tree {
+            Some(tree) => tree,
+            None => {
+                recovered = self.tree_snapshot(cancelled)?;
+                &recovered
+            }
+        };
         let path = tree.ancestry(leaf, cancelled)?;
-        let turns: BTreeMap<_, _> = self
-            .turns
+        let wanted: HashMap<&str, usize> = path
             .iter()
-            .map(|turn| (turn.id.as_str(), turn))
+            .enumerate()
+            .map(|(index, entry)| (entry.turn_id.as_str(), index))
             .collect();
-        path.iter()
-            .map(|entry| {
-                if cancelled() {
-                    return Err(SessionError::InvalidRecord(
-                        "tree projection cancelled".into(),
-                    ));
-                }
-                turns
-                    .get(entry.turn_id.as_str())
-                    .map(|turn| (*turn).clone())
-                    .ok_or_else(|| {
-                        SessionError::InvalidRecord("tree entry lost its durable turn".into())
-                    })
+        let mut selected: Vec<Option<Turn>> = vec![None; path.len()];
+        for turn in &self.turns {
+            if let Some(&index) = wanted.get(turn.id.as_str()) {
+                selected[index] = Some(turn.clone());
+            }
+        }
+        if cancelled() {
+            return Err(SessionError::InvalidRecord(
+                "tree projection cancelled".into(),
+            ));
+        }
+        selected
+            .into_iter()
+            .map(|turn| {
+                turn.ok_or_else(|| {
+                    SessionError::InvalidRecord("tree entry lost its durable turn".into())
+                })
             })
             .collect()
     }
@@ -1217,6 +1331,8 @@ impl SessionStore {
         self.append_json(&json!({ "kind": "event", "event": &event }))?;
         self.event_values.push(event);
         self.events += 1;
+        #[cfg(feature = "remote")]
+        crate::remote::wakeup::notify(self.session_id());
         Ok(())
     }
 
@@ -1611,10 +1727,9 @@ impl SessionStore {
                 "export destination already exists".into(),
             ));
         }
-        if reconnect_path(&self.path).try_exists()? {
+        if reconnect_blocks_removal(&self.path)? {
             return Err(SessionError::InvalidRecord(
-                "cannot export a session with an active reconnect WAL; close the owner first"
-                    .into(),
+                "cannot export a session with a live owner or unresolved reconnect WAL".into(),
             ));
         }
         if let Some(parent) = destination.parent()
@@ -1680,13 +1795,14 @@ impl SessionStore {
             for record in &self.records {
                 match record.kind.as_str() {
                     "turn" => {
-                        fork.append_turn(serde_json::from_value(record.value["turn"].clone())?)?
+                        fork.append_turn(serde_json::from_value(record.value()["turn"].clone())?)?
                     }
-                    "handoff" => fork
-                        .append_handoff(serde_json::from_value(record.value["handoff"].clone())?)?,
+                    "handoff" => fork.append_handoff(serde_json::from_value(
+                        record.value()["handoff"].clone(),
+                    )?)?,
                     "handoff_record" => {
                         let mut handoff: HandoffRecord =
-                            serde_json::from_value(record.value["handoff"].clone())?;
+                            serde_json::from_value(record.value()["handoff"].clone())?;
                         handoff.session_id = fork.session_id().to_owned();
                         handoff.digest = handoff
                             .compute_digest()
@@ -1694,7 +1810,7 @@ impl SessionStore {
                         fork.append_handoff_record(handoff)?;
                     }
                     "event" => {
-                        let mut event = record.value["event"].clone();
+                        let mut event = record.value()["event"].clone();
                         let kind = event["type"].as_str().unwrap_or_default();
                         // A fork copies history, never pending work or the original
                         // session's transport/lifecycle ownership and request ledger.
@@ -1787,27 +1903,68 @@ impl SessionStore {
                 "session writer is stale; reopen the journal before retrying".into(),
             ));
         }
-        if self.needs_separator {
-            file.write_all(b"\n")?;
-            self.needs_separator = false;
-        }
-        file.write_all(&encoded)?;
-        file.flush()?;
-        file.sync_data()?;
+        let separator: &[u8] = if self.needs_separator { b"\n" } else { b"" };
+        let observed = self.observed_bytes;
+        let durable = is_durability_boundary(&record);
+        write_or_rollback(
+            &mut file,
+            &[separator, &encoded],
+            |file| {
+                if durable {
+                    JOURNAL_FSYNCS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    durable_sync(file)
+                } else {
+                    Ok(())
+                }
+            },
+            |file| file.set_len(observed).and_then(|()| file.sync_data()),
+        )?;
+        self.needs_separator = false;
         self.observed_bytes = file.metadata()?.len();
         self.next_seq = following_sequence;
-        let kind = record
-            .get("kind")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown")
-            .to_owned();
-        self.records.push(SessionRecord {
-            sequence,
-            kind,
-            value: record,
-        });
+        self.records.push(SessionRecord::new(sequence, &record)?);
         Ok(())
     }
+}
+
+/// Durability point for journal, WAL, tool output and tool writes: POSIX
+/// `fsync`. On Apple platforms `File::sync_data`/`sync_all` are `F_FULLFSYNC`,
+/// a whole-device cache flush that serializes every agent on the machine;
+/// `fsync` survives a process or kernel crash, which is the contract these
+/// writes need (as the DAG store already does).
+#[cfg(unix)]
+pub fn durable_sync(file: &File) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: `file` is a live descriptor borrowed for the call.
+    if unsafe { libc::fsync(file.as_raw_fd()) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(unix))]
+pub fn durable_sync(file: &File) -> io::Result<()> {
+    file.sync_data()
+}
+
+static JOURNAL_FSYNCS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Session journal fsyncs issued by this process (ZE-304 / ZE-403 reports).
+pub fn journal_fsync_count() -> u64 {
+    JOURNAL_FSYNCS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Records whose loss in a crash is harmless are written without fsync and
+/// become durable with the next boundary record (ZE-304). Turns, operation
+/// starts and finishes and every other record stay synced, so an accepted
+/// turn is never lost.
+fn is_durability_boundary(record: &Value) -> bool {
+    !(record["kind"] == "event"
+        && matches!(
+            record["event"]["type"].as_str(),
+            Some("authorization_decided" | "tool_execution_started" | "tool_execution_finished")
+        ))
 }
 
 /// An append lock ends with this operation even if an unrelated concurrent
@@ -1816,7 +1973,25 @@ impl SessionStore {
 struct AppendLock<'a>(&'a File);
 
 impl<'a> AppendLock<'a> {
+    /// Appends wait for a concurrent appender instead of failing: the lock is
+    /// held only for one record (ZE-304).
     fn new(file: &'a File) -> Result<Self, SessionError> {
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            loop {
+                // SAFETY: `file` is a live descriptor borrowed for the call;
+                // `flock` neither retains nor closes it.
+                if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
+                    break;
+                }
+                let error = io::Error::last_os_error();
+                if error.kind() != io::ErrorKind::Interrupted {
+                    return Err(error.into());
+                }
+            }
+        }
+        #[cfg(not(unix))]
         lock_exclusive(file)?;
         Ok(Self(file))
     }
@@ -1838,8 +2013,16 @@ fn lock_exclusive(file: &File) -> Result<(), SessionError> {
     #[cfg(unix)]
     {
         use std::os::fd::AsRawFd;
+        // SAFETY: `file` is a live descriptor borrowed for the whole call;
+        // `flock` neither retains nor closes it.
         if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-            return Err(io::Error::last_os_error().into());
+            let error = io::Error::last_os_error();
+            // A non-blocking exclusive flock only fails with EWOULDBLOCK when
+            // another open file description holds the lock: a live owner.
+            if error.kind() == io::ErrorKind::WouldBlock {
+                return Err(SessionError::Locked);
+            }
+            return Err(error.into());
         }
         Ok(())
     }
@@ -1862,6 +2045,76 @@ pub(crate) struct ReconnectJournal {
     session_id: String,
     sequence: u64,
     bytes: u64,
+    /// ZE-303: after a failed append the commit point is uncertain; every
+    /// later append fails instead of writing past a possibly torn record.
+    poisoned: bool,
+}
+
+/// True when `session`'s transport WAL is owned by a live host (this
+/// process or another one holding its lock). A closed WAL is plain durable
+/// state that export may skip and delete/GC remove alongside the session.
+fn transport_owner_live(session: &Path) -> Result<bool, SessionError> {
+    let wal = reconnect_path(session);
+    if !wal.try_exists()? {
+        return Ok(false);
+    }
+    if let Ok(canonical) = fs::canonicalize(session)
+        && local_transport_owners()
+            .lock()
+            .map_err(|_| io::Error::other("transport ownership lock poisoned"))?
+            .contains(&canonical)
+    {
+        return Ok(true);
+    }
+    let file = File::open(&wal)?;
+    match lock_exclusive(&file) {
+        Ok(()) => Ok(false),
+        Err(SessionError::Locked) => Ok(true),
+        Err(error) => Err(error),
+    }
+}
+
+/// A session's WAL blocks export, delete and GC while its owner is live or
+/// while a closed WAL still holds evidence a restart needs: a reservation
+/// without a terminal, a torn tail, or a record it cannot read (ZE-303).
+fn reconnect_blocks_removal(session: &Path) -> Result<bool, SessionError> {
+    let wal = reconnect_path(session);
+    if !wal.try_exists()? {
+        return Ok(false);
+    }
+    if !fs::symlink_metadata(&wal)?.is_file() || transport_owner_live(session)? {
+        return Ok(true);
+    }
+    let mut bytes = Vec::new();
+    File::open(&wal)?
+        .take(ReconnectJournal::MAX_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > ReconnectJournal::MAX_BYTES
+        || bytes.last().is_some_and(|byte| *byte != b'\n')
+    {
+        return Ok(true);
+    }
+    let mut pending = BTreeSet::new();
+    for line in bytes
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+    {
+        let Ok(record) = serde_json::from_slice::<Value>(line) else {
+            return Ok(true);
+        };
+        let event = &record["event"];
+        match (event["type"].as_str(), event["id"].as_str()) {
+            (Some("reserved"), Some(id)) => {
+                pending.insert(id.to_owned());
+            }
+            (Some("terminal" | "released"), Some(id)) => {
+                pending.remove(id);
+            }
+            (Some("owner" | "event" | "acknowledged"), _) => {}
+            _ => return Ok(true),
+        }
+    }
+    Ok(!pending.is_empty())
 }
 
 fn local_transport_owners() -> &'static Mutex<BTreeSet<PathBuf>> {
@@ -1994,18 +2247,75 @@ impl ReconnectJournal {
                 session_id: session.session_id().into(),
                 sequence,
                 bytes: valid_len as u64,
+                poisoned: false,
             },
             records,
         ))
     }
 
-    pub fn append(&mut self, event: Value) -> Result<(), SessionError> {
+    /// Current WAL size; the host compacts past a threshold.
+    pub fn bytes(&self) -> u64 {
+        self.bytes
+    }
+
+    /// Append without fsync (redis AOF style): the next durable append or
+    /// rewrite flushes it. Used for replayable events, never for commits.
+    pub fn append_buffered(&mut self, event: Value) -> Result<(), SessionError> {
+        self.append_with(event, false)
+    }
+
+    /// Atomically replace the WAL with `entries` (write temp, fsync, rename,
+    /// fsync dir). The new file is locked before it becomes visible.
+    pub fn rewrite(&mut self, entries: Vec<Value>) -> Result<(), SessionError> {
+        if self.poisoned {
+            return Err(commit_uncertain());
+        }
+        let path = reconnect_path(&self.session_path);
+        let temp = path.with_extension("reconnect.compact");
+        let _ = fs::remove_file(&temp);
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+        let mut file = options.open(&temp)?;
+        lock_exclusive(&file)?;
+        let mut bytes = 0u64;
+        for (sequence, event) in entries.into_iter().enumerate() {
+            let line = self.encode(sequence as u64, event)?;
+            file.write_all(&line)?;
+            bytes += line.len() as u64;
+        }
+        file.sync_all()?;
+        fs::rename(&temp, &path)?;
+        if let Some(parent) = path.parent() {
+            File::open(parent)?.sync_all()?;
+        }
+        file.seek(SeekFrom::End(0))?;
+        self.sequence = bytes_to_sequence(&file)?;
+        self.file = file;
+        self.bytes = bytes;
+        Ok(())
+    }
+
+    fn encode(&self, sequence: u64, event: Value) -> Result<Vec<u8>, SessionError> {
         let digest = reconnect_digest(&serde_json::to_vec(&event)?);
         let mut bytes = serde_json::to_vec(&json!({
             "schema_version": 1, "session_id": self.session_id,
-            "sequence": self.sequence, "event": event, "sha256": digest,
+            "sequence": sequence, "event": event, "sha256": digest,
         }))?;
         bytes.push(b'\n');
+        Ok(bytes)
+    }
+
+    pub fn append(&mut self, event: Value) -> Result<(), SessionError> {
+        self.append_with(event, true)
+    }
+
+    fn append_with(&mut self, event: Value, durable: bool) -> Result<(), SessionError> {
+        if self.poisoned {
+            return Err(commit_uncertain());
+        }
+        let bytes = self.encode(self.sequence, event)?;
         if bytes.len() > MAX_SESSION_RECORD_BYTES
             || self.bytes + bytes.len() as u64 > Self::MAX_BYTES
         {
@@ -2013,12 +2323,43 @@ impl ReconnectJournal {
                 "reconnect WAL capacity exhausted; refusing untracked execution".into(),
             ));
         }
-        self.file.write_all(&bytes)?;
-        self.file.sync_data()?;
+        let written = self.file.write_all(&bytes).and_then(|()| {
+            if durable {
+                durable_sync(&self.file)
+            } else {
+                Ok(())
+            }
+        });
+        if let Err(error) = written {
+            // Roll back a possibly torn record; either way stop writing.
+            let _ = self.file.set_len(self.bytes);
+            let _ = self.file.seek(SeekFrom::Start(self.bytes));
+            self.poisoned = true;
+            return Err(error.into());
+        }
         self.bytes += bytes.len() as u64;
         self.sequence += 1;
         Ok(())
     }
+}
+
+fn commit_uncertain() -> SessionError {
+    SessionError::InvalidRecord(
+        "reconnect WAL commit uncertain after a failed append; reopen the session".into(),
+    )
+}
+
+/// Number of complete records in a freshly written WAL file.
+fn bytes_to_sequence(file: &File) -> Result<u64, SessionError> {
+    let mut reader = io::BufReader::new(file.try_clone()?);
+    reader.seek(SeekFrom::Start(0))?;
+    let mut count = 0u64;
+    let mut line = Vec::new();
+    while io::BufRead::read_until(&mut reader, b'\n', &mut line)? != 0 {
+        count += 1;
+        line.clear();
+    }
+    Ok(count)
 }
 
 fn reconnect_digest(bytes: &[u8]) -> String {
@@ -2198,13 +2539,20 @@ enum ReadSessionError {
 }
 
 fn read_session_bytes(path: &Path) -> Result<Vec<u8>, ReadSessionError> {
+    read_session_bytes_with_limit(path, MAX_SESSION_BYTES)
+}
+
+fn read_session_bytes_with_limit(
+    path: &Path,
+    max_bytes: usize,
+) -> Result<Vec<u8>, ReadSessionError> {
     let mut options = OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
     options.custom_flags(libc::O_NOFOLLOW);
     let file = options.open(path).map_err(ReadSessionError::Io)?;
     let metadata = file.metadata().map_err(ReadSessionError::Io)?;
-    if metadata.len() > MAX_SESSION_BYTES as u64 {
+    if metadata.len() > max_bytes as u64 {
         return Err(ReadSessionError::LimitExceeded {
             actual: metadata.len(),
         });
@@ -2212,12 +2560,12 @@ fn read_session_bytes(path: &Path) -> Result<Vec<u8>, ReadSessionError> {
     // Do not reserve the entire journal size up front. Near the 256 MiB
     // admission cap this otherwise creates a large instantaneous allocation
     // before the bounded reader has established that the input is usable.
-    let initial_capacity = metadata.len().min(8 * 1024 * 1024) as usize;
+    let initial_capacity = metadata.len().min(max_bytes.min(8 * 1024 * 1024) as u64) as usize;
     let mut bytes = Vec::with_capacity(initial_capacity);
-    file.take((MAX_SESSION_BYTES as u64).saturating_add(1))
+    file.take((max_bytes as u64).saturating_add(1))
         .read_to_end(&mut bytes)
         .map_err(ReadSessionError::Io)?;
-    if bytes.len() > MAX_SESSION_BYTES {
+    if bytes.len() > max_bytes {
         return Err(ReadSessionError::LimitExceeded {
             actual: bytes.len() as u64,
         });
@@ -2270,7 +2618,14 @@ pub struct GarbageCollectionReport {
 }
 
 pub fn list_sessions(directory: impl AsRef<Path>) -> Result<Vec<SessionSummary>, SessionError> {
-    let directory = directory.as_ref();
+    session_paths(directory.as_ref())?
+        .into_iter()
+        .map(|path| inspect_session(path).map(|inspection| inspection.summary))
+        .collect()
+}
+
+/// Sorted session journal paths in `directory`, without reading any of them.
+fn session_paths(directory: &Path) -> Result<Vec<PathBuf>, SessionError> {
     let metadata = match fs::symlink_metadata(directory) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
             return Err(SessionError::Symlink(directory.to_owned()));
@@ -2301,10 +2656,7 @@ pub fn list_sessions(directory: impl AsRef<Path>) -> Result<Vec<SessionSummary>,
         }
     }
     paths.sort();
-    paths
-        .into_iter()
-        .map(|path| inspect_session(path).map(|inspection| inspection.summary))
-        .collect()
+    Ok(paths)
 }
 
 /// Search bounded user/assistant turn text without exposing arbitrary event
@@ -2321,8 +2673,9 @@ pub fn search_sessions(
     }
     let needle = query.to_lowercase();
     let mut hits = Vec::new();
-    for summary in list_sessions(directory)? {
-        let store = SessionStore::open_existing(&summary.path)?;
+    for path in session_paths(directory.as_ref())? {
+        let store = SessionStore::open_existing(&path)?;
+        let summary = store.summary();
         let mut matches = 0;
         let mut snippets = Vec::new();
         for turn in store.turns() {
@@ -2582,17 +2935,18 @@ pub fn garbage_collect_sessions_with_active(
                 "garbage collection cannot orphan a durable session mailbox".into(),
             ));
         }
-        // Match explicit delete/export: the WAL is durable reconnect state,
-        // even when its owner is closed or its contents need recovery. Refuse
-        // the entire selection before any unlink instead of orphaning it.
-        if reconnect_path(path).try_exists()? {
+        // Match explicit delete/export: a live owner or unresolved reconnect
+        // evidence refuses the entire selection before any unlink.
+        if reconnect_blocks_removal(path)? {
             return Err(SessionError::InvalidRecord(
-                "garbage collection cannot remove a session with a reconnect WAL".into(),
+                "garbage collection cannot remove a session with a live owner or unresolved reconnect WAL"
+                    .into(),
             ));
         }
     }
     for path in selected.iter() {
         fs::remove_file(path)?;
+        let _ = fs::remove_file(reconnect_path(path));
     }
     Ok(GarbageCollectionReport {
         removed: selected,
@@ -2626,6 +2980,86 @@ fn clean_owned_session(path: &Path) -> Result<bool, SessionError> {
         Err(SessionError::Symlink(path)) => Err(SessionError::Symlink(path)),
         Err(_) => Ok(false),
     }
+}
+
+/// Write `parts`, flush and sync. On any failure, roll the file back to its
+/// last observed length so a partial write neither leaves a torn record nor
+/// makes every later append fail as a "stale" writer.
+fn write_or_rollback<W: Write>(
+    writer: &mut W,
+    parts: &[&[u8]],
+    sync: impl FnOnce(&mut W) -> io::Result<()>,
+    rollback: impl FnOnce(&mut W) -> io::Result<()>,
+) -> io::Result<()> {
+    let result = parts
+        .iter()
+        .try_for_each(|part| writer.write_all(part))
+        .and_then(|()| writer.flush())
+        .and_then(|()| sync(writer));
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) => match rollback(writer) {
+            Ok(()) => Err(error),
+            Err(rollback_error) => Err(io::Error::new(
+                error.kind(),
+                format!("{error}; rollback failed: {rollback_error}"),
+            )),
+        },
+    }
+}
+
+/// Copy a torn final fragment to `<journal>.torn` (0600) and truncate the
+/// journal to its last complete record, under the journal's append lock.
+fn quarantine_torn_tail(path: &Path, offset: u64, observed: u64) -> Result<(), SessionError> {
+    reject_session_symlink(path)?;
+    let mut options = OpenOptions::new();
+    options.read(true).write(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NOFOLLOW);
+    let file = options.open(path)?;
+    let _lock = AppendLock::new(&file)?;
+    if file.metadata()?.len() != observed || offset >= observed {
+        return Err(SessionError::InvalidRecord(
+            "session changed while recovering its torn tail; reopen the journal".into(),
+        ));
+    }
+    let mut fragment = Vec::new();
+    let mut reader = &file;
+    reader.seek(SeekFrom::Start(offset))?;
+    reader.take(observed - offset).read_to_end(&mut fragment)?;
+    let mut torn_name = path.as_os_str().to_owned();
+    torn_name.push(".torn");
+    let torn_path = PathBuf::from(torn_name);
+    reject_session_symlink(&torn_path)?;
+    let mut torn_options = OpenOptions::new();
+    torn_options.create(true).append(true);
+    #[cfg(unix)]
+    torn_options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    let mut torn = torn_options.open(&torn_path)?;
+    restrict_session_permissions(&torn_path)?;
+    fragment.push(b'\n');
+    torn.write_all(&fragment)?;
+    torn.sync_all()?;
+    sync_parent_directory(&torn_path)?;
+    file.set_len(offset)?;
+    file.sync_data()?;
+    Ok(())
+}
+
+/// Make a newly created directory entry durable. Directory fsync is a Unix
+/// concept; elsewhere the entry is persisted with the file metadata.
+fn sync_parent_directory(path: &Path) -> Result<(), SessionError> {
+    #[cfg(unix)]
+    {
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        File::open(parent)?.sync_all()?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
 }
 
 fn require_clean_session(store: &SessionStore) -> Result<(), SessionError> {
@@ -2695,7 +3129,7 @@ impl SessionStore {
             last_activity_ms: self
                 .records
                 .iter()
-                .filter_map(|record| record.value["timestamp_ms"].as_u64())
+                .filter_map(|record| record.value()["timestamp_ms"].as_u64())
                 .max()
                 .unwrap_or(self.header.created_at_ms),
         }
@@ -2817,20 +3251,56 @@ pub fn resolve_session_reference(
     None
 }
 
+/// A journal left out of the catalog because it could not be resumed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkippedSession {
+    pub path: PathBuf,
+    pub reason: String,
+}
+
 /// A local catalog, not a claim that these sessions have running agents.
+/// Dirty journals are skipped (see [`session_catalog_with_skipped`]) so one
+/// corrupt file cannot break listing or resume-last for every session.
 pub fn session_catalog(
     directory: impl AsRef<Path>,
     include_archived: bool,
 ) -> Result<Vec<SessionCatalogEntry>, SessionError> {
+    session_catalog_with_skipped(directory, include_archived).map(|(entries, _)| entries)
+}
+
+/// Like [`session_catalog`], also returning a warning for each skipped
+/// journal. Journals whose only defect is a recoverable torn tail are kept.
+pub fn session_catalog_with_skipped(
+    directory: impl AsRef<Path>,
+    include_archived: bool,
+) -> Result<(Vec<SessionCatalogEntry>, Vec<SkippedSession>), SessionError> {
     let mut entries = Vec::new();
-    for summary in list_sessions(directory)? {
+    let mut skipped = Vec::new();
+    // Each journal is parsed once (ZE-306); `-c` reads only headers.
+    for path in session_paths(directory.as_ref())? {
         if entries.len() >= MAX_GC_CANDIDATES {
             return Err(SessionError::InvalidRecord(
                 "session catalog limit exceeded".into(),
             ));
         }
-        let store = SessionStore::open_existing(summary.path)?;
-        require_clean_session(&store)?;
+        let store = match SessionStore::open_existing(&path) {
+            Ok(store) => store,
+            Err(error @ SessionError::Symlink(_)) => return Err(error),
+            Err(error) => {
+                skipped.push(SkippedSession {
+                    path,
+                    reason: error.to_string(),
+                });
+                continue;
+            }
+        };
+        if !store.is_resumable() {
+            skipped.push(SkippedSession {
+                path,
+                reason: "not a clean zenpi session journal".into(),
+            });
+            continue;
+        }
         if include_archived || !store.is_archived() {
             entries.push(store.catalog_entry());
         }
@@ -2841,7 +3311,65 @@ pub fn session_catalog(
             .cmp(&left.last_activity_ms)
             .then_with(|| left.summary.path.cmp(&right.summary.path))
     });
-    Ok(entries)
+    Ok((entries, skipped))
+}
+
+/// A fresh per-launch journal path (pi: one session file per run). Files stay
+/// flat in `sessions_dir` so the catalog, `-s` and `-c` all discover them.
+pub fn new_session_path(sessions_dir: &Path) -> PathBuf {
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis())
+        .unwrap_or_default();
+    sessions_dir.join(format!("{now_ms}-{}.jsonl", std::process::id()))
+}
+
+/// The newest journal in `sessions_dir` whose header `cwd` is `cwd`. Only the
+/// first line of each file is read, so this stays cheap with many sessions.
+pub fn latest_session_for_cwd(sessions_dir: &Path, cwd: &Path) -> Option<PathBuf> {
+    let wanted = cwd.canonicalize().unwrap_or_else(|_| cwd.to_owned());
+    let mut best: Option<(SystemTime, PathBuf)> = None;
+    for entry in fs::read_dir(sessions_dir)
+        .ok()?
+        .flatten()
+        .take(MAX_GC_CANDIDATES)
+    {
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("jsonl")
+            || path.file_name().and_then(|name| name.to_str())
+                == Some(crate::domain_store::DOMAIN_STORE_FILE_NAME)
+        {
+            continue;
+        }
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+        let Ok(file) = File::open(&path) else {
+            continue;
+        };
+        let mut first = String::new();
+        if io::BufRead::read_line(&mut io::BufReader::new(file.take(64 * 1024)), &mut first)
+            .is_err()
+        {
+            continue;
+        }
+        let Ok(header) = serde_json::from_str::<SessionHeader>(first.trim_end()) else {
+            continue;
+        };
+        let header_cwd = PathBuf::from(&header.cwd);
+        let header_cwd = header_cwd.canonicalize().unwrap_or(header_cwd);
+        if header_cwd != wanted {
+            continue;
+        }
+        let modified = metadata.modified().unwrap_or(UNIX_EPOCH);
+        if best.as_ref().is_none_or(|(time, _)| modified > *time) {
+            best = Some((modified, path));
+        }
+    }
+    best.map(|(_, path)| path)
 }
 
 pub fn resume_last_session(directory: impl AsRef<Path>) -> Result<SessionStore, SessionError> {
@@ -3018,12 +3546,14 @@ pub fn execute_session_lifecycle(
                     "delete requires retaining or removing the session mailbox first".into(),
                 ));
             }
-            if reconnect_path(&path).try_exists()? {
+            if reconnect_blocks_removal(&path)? {
                 return Err(SessionError::InvalidRecord(
-                    "delete requires closing the reconnect owner first".into(),
+                    "delete requires a closed reconnect owner with no unresolved requests".into(),
                 ));
             }
             fs::remove_file(&path)?;
+            // A closed WAL is removed with its session, never orphaned.
+            let _ = fs::remove_file(reconnect_path(&path));
             return Ok(Receipt::Deleted { path });
         }
         Request::RetireMailbox { path, confirmed } => {
@@ -4090,6 +4620,33 @@ mod new_session_audit_recovery_tests {
     use super::*;
 
     #[test]
+    fn bounded_readonly_open_admits_exact_bytes_and_refuses_one_fewer_without_mutation() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("bounded.jsonl");
+        let mut session = SessionStore::open_in_workspace(&path, root.path()).unwrap();
+        session
+            .append_event(json!({"type":"bounded-evidence","text":"payload"}))
+            .unwrap();
+        let identity = session.session_id().to_owned();
+        drop(session);
+        let before = fs::read(&path).unwrap();
+        assert_eq!(
+            SessionStore::open_existing_bounded(&path, before.len())
+                .unwrap()
+                .session_id(),
+            identity
+        );
+        assert!(
+            matches!(SessionStore::open_existing_bounded(&path, before.len() - 1), Err(SessionError::LimitExceeded { max, actual }) if max == before.len() - 1 && actual == before.len() as u64)
+        );
+        assert!(SessionStore::open_existing_bounded(&path, 0).is_err());
+        assert_eq!(fs::read(&path).unwrap(), before);
+        let absent = root.path().join("absent.jsonl");
+        assert!(SessionStore::open_existing_bounded(&absent, before.len()).is_err());
+        assert!(!absent.exists());
+    }
+
+    #[test]
     fn duplicate_startup_audit_allows_next_append_without_rewriting_history() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("session.jsonl");
@@ -4750,10 +5307,73 @@ mod session_reliability_tests {
     }
 
     #[test]
-    fn gc_reconnect_preserves_closed_empty_torn_malformed_and_nonfile_states() {
+    fn reconnect_wal_drops_a_torn_append_and_poisons_after_a_failed_one() {
+        // ZE-303: a crash mid-append leaves a torn tail that reopen discards;
+        // a failed append makes every later write report an uncertain commit.
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::open(dir.path().join("wal.jsonl")).unwrap();
+        let (mut wal, _) = ReconnectJournal::open(&store).unwrap();
+        wal.append(json!({"type":"reserved","id":"a"})).unwrap();
+        wal.append_buffered(json!({"type":"event"})).unwrap();
+        drop(wal);
+        let path = reconnect_path(store.path());
+        let whole = fs::read(&path).unwrap();
+        let mut torn = whole.clone();
+        torn.extend_from_slice(b"{\"schema_version\":1,\"sequ");
+        fs::write(&path, &torn).unwrap();
+        let (mut wal, events) = ReconnectJournal::open(&store).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(fs::read(&path).unwrap(), whole);
+        wal.poisoned = true;
+        for error in [
+            wal.append(json!({"type":"terminal"})).unwrap_err(),
+            wal.rewrite(vec![json!({"type":"owner"})]).unwrap_err(),
+        ] {
+            assert!(error.to_string().contains("commit uncertain"), "{error}");
+        }
+        assert_eq!(fs::read(&path).unwrap(), whole);
+    }
+
+    #[test]
+    fn closed_settled_or_empty_reconnect_wal_does_not_block_export_or_delete() {
+        // ZE-303: once every reservation reached a terminal, the WAL is only
+        // an idempotency cache; export works and delete removes it too.
+        for settled in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let export_dir = tempfile::tempdir().unwrap();
+            let store = SessionStore::open(dir.path().join("owned.jsonl")).unwrap();
+            let wal_path = reconnect_path(store.path());
+            if settled {
+                let (mut wal, _) = ReconnectJournal::open(&store).unwrap();
+                wal.append(json!({"type":"reserved","id":"a","fingerprint":"f"}))
+                    .unwrap();
+                wal.append(json!({"type":"terminal","id":"a","fingerprint":"f","line":"{}"}))
+                    .unwrap();
+            } else {
+                fs::write(&wal_path, b"").unwrap();
+            }
+            store
+                .export_to(export_dir.path().join("export.jsonl"))
+                .unwrap();
+            execute_session_lifecycle(
+                SessionLifecycleRequest::Delete {
+                    path: store.path().to_owned(),
+                    confirmed: true,
+                },
+                None,
+                u64::MAX,
+            )
+            .unwrap();
+            assert!(!store.path().exists());
+            assert!(!wal_path.exists());
+        }
+    }
+
+    #[test]
+    fn gc_reconnect_preserves_closed_torn_malformed_and_nonfile_states() {
         use std::os::unix::fs::PermissionsExt;
         let mut failures = Vec::new();
-        for state in ["closed", "empty", "torn", "malformed", "directory"] {
+        for state in ["closed", "torn", "malformed", "directory"] {
             let dir = tempfile::tempdir().unwrap();
             let export_dir = tempfile::tempdir().unwrap();
             let store = SessionStore::open(dir.path().join("owned.jsonl")).unwrap();
@@ -4765,7 +5385,6 @@ mod session_reliability_tests {
                     wal.append(json!({"type":"reserved"})).unwrap();
                     drop(wal);
                 }
-                "empty" => fs::write(&wal_path, b"").unwrap(),
                 "torn" => fs::write(&wal_path, b"{unfinished").unwrap(),
                 "malformed" => fs::write(&wal_path, b"{invalid}\n").unwrap(),
                 "directory" => fs::create_dir(&wal_path).unwrap(),
@@ -4886,5 +5505,66 @@ mod session_name_tests {
             Some(path.as_path())
         );
         assert_eq!(resolve_session_reference("missing", dir.path()), None);
+    }
+}
+
+#[cfg(test)]
+mod append_rollback_tests {
+    use super::*;
+    use crate::core::TurnRole;
+
+    /// Accepts `budget` bytes, then fails like ENOSPC mid-record.
+    struct FailingWriter<'a> {
+        file: &'a File,
+        budget: usize,
+    }
+
+    impl Write for FailingWriter<'_> {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            if self.budget == 0 {
+                return Err(io::Error::other("simulated ENOSPC"));
+            }
+            let take = buf.len().min(self.budget);
+            let written = (&mut &*self.file).write(&buf[..take])?;
+            self.budget -= written;
+            Ok(written)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            (&mut &*self.file).flush()
+        }
+    }
+
+    #[test]
+    fn failed_partial_write_truncates_back_to_observed_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let mut store = SessionStore::open(&path).unwrap();
+        store
+            .append_turn(Turn::new("u", TurnRole::User, "before"))
+            .unwrap();
+        let before = fs::read(&path).unwrap();
+        let file = OpenOptions::new().append(true).open(&path).unwrap();
+        let observed = file.metadata().unwrap().len();
+        let mut writer = FailingWriter {
+            file: &file,
+            budget: 7,
+        };
+        let error = write_or_rollback(
+            &mut writer,
+            &[b"\n", b"{\"kind\":\"event\",\"event\":{}}\n"],
+            |writer| writer.file.sync_data(),
+            |writer| writer.file.set_len(observed),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("simulated ENOSPC"));
+        assert_eq!(fs::read(&path).unwrap(), before);
+        // The writer is not left stale: a later append succeeds and reopens clean.
+        store
+            .append_turn(Turn::new("a", TurnRole::Assistant, "after"))
+            .unwrap();
+        let reopened = SessionStore::open_existing(&path).unwrap();
+        assert!(reopened.recovery_warnings().is_empty());
+        assert_eq!(reopened.turns().len(), 2);
     }
 }

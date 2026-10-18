@@ -1,4 +1,6 @@
-use std::io::Cursor;
+#[path = "support/sequential_host.rs"]
+mod sequential_host;
+use sequential_host::run_headless_sequential;
 
 use serde_json::Value;
 use tempfile::tempdir;
@@ -8,7 +10,6 @@ use zenpi::{
     domain_execution::{ExecutionReceipt, ExecutionStatus, ExecutionStore, deterministic_cost},
     domain_store::{DomainStore, path_for_session},
     domains::{Blueprint, BlueprintItem, Goal},
-    headless::run_headless,
     session::SessionStore,
     slash::SlashCommand,
     tui::{MessageRole, SlashDispatchAction, TuiState, dispatch_slash_command},
@@ -54,14 +55,14 @@ fn headless_blueprint_run_records_dependency_order_without_faking_goal_completio
     let dir = tempdir().unwrap();
     let session = dir.path().join("session.jsonl");
     seed(&session);
-    let mut agent = Agent::with_echo(SessionStore::open(&session).unwrap());
+    let agent = Agent::with_echo(SessionStore::open(&session).unwrap());
     let input = concat!(
         "{\"type\":\"command\",\"id\":\"first\",\"text\":\"/blueprint run host-plan@1\"}\n",
         "{\"type\":\"command\",\"id\":\"second\",\"text\":\"/blueprint run host-plan@1\"}\n",
         "{\"type\":\"shutdown\",\"id\":\"shutdown\"}\n",
     );
     let mut output = Vec::new();
-    run_headless(&mut agent, Cursor::new(input.as_bytes()), &mut output).unwrap();
+    run_headless_sequential(agent, input.as_bytes(), &mut output).unwrap();
     let values = records(&output);
 
     let first = values.iter().find(|value| value["id"] == "first").unwrap();
@@ -97,7 +98,10 @@ fn headless_blueprint_run_records_dependency_order_without_faking_goal_completio
         zenpi::domains::GoalStatus::Running
     );
     assert!(
-        agent.history().is_empty(),
+        SessionStore::open_existing(&session)
+            .unwrap()
+            .turns()
+            .is_empty(),
         "slash owner must not call the provider"
     );
 }
@@ -165,13 +169,13 @@ fn blueprint_run_does_not_finish_goal_from_an_older_success_when_latest_attempt_
             .unwrap();
     }
 
-    let mut agent = Agent::with_echo(SessionStore::open(&session).unwrap());
+    let agent = Agent::with_echo(SessionStore::open(&session).unwrap());
     let input = concat!(
         "{\"type\":\"command\",\"id\":\"run\",\"text\":\"/blueprint run latest-plan@1\"}\n",
         "{\"type\":\"shutdown\",\"id\":\"shutdown\"}\n",
     );
     let mut output = Vec::new();
-    run_headless(&mut agent, Cursor::new(input.as_bytes()), &mut output).unwrap();
+    run_headless_sequential(agent, input.as_bytes(), &mut output).unwrap();
     let values = records(&output);
     let run = values.iter().find(|value| value["id"] == "run").unwrap();
     assert_eq!(run["success"], true);
@@ -254,14 +258,14 @@ fn headless_handoff_queue_round_trips_immutable_claims_without_receipts() {
     let mut domains = DomainStore::open(path_for_session(&session)).unwrap();
     domains.put_blueprint(blueprint).unwrap();
     domains.put_goal(goal).unwrap();
-    let mut agent = Agent::with_echo(SessionStore::open(&session).unwrap());
+    let agent = Agent::with_echo(SessionStore::open(&session).unwrap());
     let input = concat!(
         "{\"type\":\"command\",\"id\":\"queue\",\"text\":\"/blueprint handoff handoff-plan@1\"}\n",
         "{\"type\":\"command\",\"id\":\"list\",\"text\":\"/blueprint handoffs\"}\n",
         "{\"type\":\"shutdown\",\"id\":\"shutdown\"}\n",
     );
     let mut output = Vec::new();
-    run_headless(&mut agent, Cursor::new(input.as_bytes()), &mut output).unwrap();
+    run_headless_sequential(agent, input.as_bytes(), &mut output).unwrap();
     let values = records(&output);
     let queued = values.iter().find(|value| value["id"] == "queue").unwrap();
     assert_eq!(queued["success"], true);
@@ -277,8 +281,188 @@ fn headless_handoff_queue_round_trips_immutable_claims_without_receipts() {
     assert_eq!(execution.receipts().len(), 1);
     assert_eq!(execution.receipts()[0].status, ExecutionStatus::Running);
     assert!(!execution.receipts()[0].external_work_executed);
-    assert!(agent.session().events().iter().any(|event| {
+    let journal = SessionStore::open_existing(&session).unwrap();
+    assert!(journal.events().iter().any(|event| {
         event["type"] == "blueprint_handoff_claimed"
             && event["claim_digest"] == claim["claim_digest"]
     }));
+}
+
+#[test]
+fn goal_run_executes_task_and_acceptance_until_done() {
+    let dir = tempdir().unwrap();
+    let session = dir.path().join("goal-session.jsonl");
+    let blueprint = Blueprint::new(
+        "goal-plan",
+        "1",
+        vec![
+            BlueprintItem::new("build", 10).with_task(zenpi::domains::BlueprintTask {
+                instruction: "make the acceptance command pass".into(),
+                acceptance_commands: vec!["true".into()],
+            }),
+        ],
+    )
+    .unwrap();
+    let goal = Goal::new(
+        "goal",
+        &blueprint,
+        ResourceBudget {
+            tokens: 100,
+            wall_clock_ms: 10,
+            attempts: 2,
+            disk_bytes: 2_000,
+        },
+        None,
+    )
+    .unwrap();
+    let mut domains = DomainStore::open(path_for_session(&session)).unwrap();
+    domains.put_blueprint(blueprint).unwrap();
+    domains.put_goal(goal).unwrap();
+
+    let mut agent = Agent::with_echo(SessionStore::open(&session).unwrap());
+    let result =
+        zenpi::headless::run_goal_steps_for_tui(&mut agent, "goal-plan@1", 1).unwrap();
+    assert_eq!(result["status"], "complete");
+    assert_eq!(result["goal_status"], "done");
+    assert_eq!(result["completion_basis"], "local_acceptance_commands");
+    assert_eq!(result["execution_scope"], "local_goal_runner");
+    assert_eq!(result["task_executed"], true);
+    assert!(
+        result["receipt"]["evidence"]
+            .as_str()
+            .unwrap()
+            .contains("local_task_executed=true")
+    );
+    assert_eq!(result["steps_recorded"], 1);
+    assert_eq!(agent.history().len(), 2);
+
+    let persisted = DomainStore::open(path_for_session(&session)).unwrap();
+    assert_eq!(
+        persisted.goal("goal").unwrap().status,
+        zenpi::domains::GoalStatus::Done
+    );
+    let execution =
+        ExecutionStore::open(zenpi::domain_execution::path_for_session(&session)).unwrap();
+    assert_eq!(execution.receipts().len(), 1);
+    assert_eq!(execution.receipts()[0].status, ExecutionStatus::Succeeded);
+}
+
+#[test]
+fn goal_run_records_a_failed_acceptance_without_claiming_completion() {
+    let dir = tempdir().unwrap();
+    let session = dir.path().join("goal-failed-session.jsonl");
+    let blueprint = Blueprint::new(
+        "goal-failed-plan",
+        "1",
+        vec![
+            BlueprintItem::new("build", 10).with_task(zenpi::domains::BlueprintTask {
+                instruction: "this acceptance must fail".into(),
+                acceptance_commands: vec!["false".into()],
+            }),
+        ],
+    )
+    .unwrap();
+    let goal = Goal::new(
+        "goal-failed",
+        &blueprint,
+        ResourceBudget {
+            tokens: 100,
+            wall_clock_ms: 10,
+            attempts: 1,
+            disk_bytes: 2_000,
+        },
+        None,
+    )
+    .unwrap();
+    let mut domains = DomainStore::open(path_for_session(&session)).unwrap();
+    domains.put_blueprint(blueprint).unwrap();
+    domains.put_goal(goal).unwrap();
+
+    let mut agent = Agent::with_echo(SessionStore::open(&session).unwrap());
+    let result =
+        zenpi::headless::run_goal_steps_for_tui(&mut agent, "goal-failed-plan@1", 1).unwrap();
+    assert_eq!(result["status"], "blocked");
+    assert_eq!(result["receipt"]["status"], "failed");
+    assert!(result["receipt"]["error"].as_str().unwrap().contains("false"));
+    assert_eq!(result["goal_status"], "blocked");
+    assert_eq!(result["completion_basis"], "attempts_exhausted");
+    assert_eq!(result["goal_outcome"], "could_not_be_achieved");
+
+    let persisted = DomainStore::open(path_for_session(&session)).unwrap();
+    assert_eq!(
+        persisted.goal("goal-failed").unwrap().status,
+        zenpi::domains::GoalStatus::Blocked
+    );
+}
+
+#[test]
+fn goal_run_blocks_without_a_model_turn_when_attempts_are_exhausted() {
+    let dir = tempdir().unwrap();
+    let session = dir.path().join("goal-exhausted-session.jsonl");
+    let blueprint = Blueprint::new(
+        "goal-exhausted-plan",
+        "1",
+        vec![
+            BlueprintItem::new("build", 10).with_task(zenpi::domains::BlueprintTask {
+                instruction: "the prior attempt already failed".into(),
+                acceptance_commands: vec!["true".into()],
+            }),
+        ],
+    )
+    .unwrap();
+    let goal = Goal::new(
+        "goal-exhausted",
+        &blueprint,
+        ResourceBudget {
+            tokens: 100,
+            wall_clock_ms: 10,
+            attempts: 1,
+            disk_bytes: 2_000,
+        },
+        None,
+    )
+    .unwrap();
+    let mut domains = DomainStore::open(path_for_session(&session)).unwrap();
+    domains.put_blueprint(blueprint.clone()).unwrap();
+    domains.put_goal(goal.clone()).unwrap();
+    let item = &blueprint.items[0];
+    let mut execution =
+        ExecutionStore::open(zenpi::domain_execution::path_for_session(&session)).unwrap();
+    execution
+        .upsert_receipt(ExecutionReceipt {
+            execution_id: "exhausted-attempt".into(),
+            goal_id: goal.id.clone(),
+            blueprint_id: blueprint.id.clone(),
+            blueprint_version: blueprint.version.clone(),
+            blueprint_digest: blueprint.digest.clone(),
+            item_id: item.id.clone(),
+            attempt: 1,
+            status: ExecutionStatus::Failed,
+            cost: deterministic_cost(item),
+            evidence: "local_goal_runner local_task_executed=true".into(),
+            external_work_executed: false,
+            manifest_checksum: None,
+            error: Some("acceptance failed".into()),
+        })
+        .unwrap();
+
+    let mut agent = Agent::with_echo(SessionStore::open(&session).unwrap());
+    let result = zenpi::headless::run_goal_steps_for_tui(
+        &mut agent,
+        "goal-exhausted-plan@1",
+        1,
+    )
+    .unwrap();
+    assert_eq!(result["status"], "blocked");
+    assert_eq!(result["goal_status"], "blocked");
+    assert_eq!(result["completion_basis"], "attempts_exhausted");
+    assert_eq!(result["goal_outcome"], "could_not_be_achieved");
+    assert_eq!(result["steps_recorded"], 0);
+    assert!(agent.history().is_empty());
+
+    let persisted = DomainStore::open(path_for_session(&session)).unwrap();
+    assert_eq!(
+        persisted.goal("goal-exhausted").unwrap().status,
+        zenpi::domains::GoalStatus::Blocked
+    );
 }

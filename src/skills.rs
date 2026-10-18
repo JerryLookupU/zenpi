@@ -46,6 +46,32 @@ pub struct SkillCollision {
     pub loser: PathBuf,
 }
 
+/// One resource file that was skipped instead of failing the whole load.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LoadDiagnostic {
+    pub path: PathBuf,
+    pub message: String,
+}
+
+/// Record a per-file failure and skip the file; cancellation still aborts.
+pub(crate) fn skip_file<T>(
+    result: Result<T, SkillError>,
+    path: &Path,
+    diagnostics: &mut Vec<LoadDiagnostic>,
+) -> Result<Option<T>, SkillError> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(SkillError::Cancelled) => Err(SkillError::Cancelled),
+        Err(error) => {
+            diagnostics.push(LoadDiagnostic {
+                path: path.into(),
+                message: error.to_string(),
+            });
+            Ok(None)
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkillInvocation {
     Explicit,
@@ -137,6 +163,7 @@ pub struct SkillSet {
     skills: BTreeMap<String, LoadedSkill>,
     markdown: BTreeMap<String, SkillMetadata>,
     collisions: Vec<SkillCollision>,
+    diagnostics: Vec<LoadDiagnostic>,
 }
 
 impl SkillSet {
@@ -195,14 +222,17 @@ impl SkillSet {
                     scope,
                     &mut markdown,
                     &mut result.collisions,
+                    &mut result.diagnostics,
                     &mut visited,
                     0,
                     &[],
                     &cancelled,
                 )?;
             } else if root.file_name().is_some_and(|name| name == SKILL_MARKDOWN) {
-                let metadata = read_metadata(&root, scope, &cancelled)?;
-                markdown.insert(metadata.name.clone(), metadata);
+                let metadata = read_metadata(&root, scope, &cancelled);
+                if let Some(metadata) = skip_file(metadata, &root, &mut result.diagnostics)? {
+                    markdown.insert(metadata.name.clone(), metadata);
+                }
             } else {
                 return Err(SkillError::Invalid(
                     "explicit skill file must be SKILL.md".into(),
@@ -260,6 +290,10 @@ impl SkillSet {
 
     pub fn collisions(&self) -> &[SkillCollision] {
         &self.collisions
+    }
+
+    pub fn diagnostics(&self) -> &[LoadDiagnostic] {
+        &self.diagnostics
     }
 
     pub fn metadata_index(&self) -> String {
@@ -709,6 +743,7 @@ fn discover_markdown(
     scope: SkillScope,
     skills: &mut BTreeMap<String, SkillMetadata>,
     collisions: &mut Vec<SkillCollision>,
+    diagnostics: &mut Vec<LoadDiagnostic>,
     visited: &mut usize,
     depth: usize,
     inherited: &[ignore::gitignore::Gitignore],
@@ -723,18 +758,25 @@ fn discover_markdown(
     for filename in [".gitignore", ".ignore", ".fdignore"] {
         let path = directory.join(filename);
         if path.exists() {
-            let text = read_skill_text(&path, cancelled)?;
+            let Some(text) = skip_file(read_skill_text(&path, cancelled), &path, diagnostics)?
+            else {
+                continue;
+            };
             for line in text.lines() {
-                builder
+                let added = builder
                     .add_line(Some(path.clone()), line)
-                    .map_err(|e| SkillError::Invalid(format!("invalid skill ignore rule: {e}")))?;
+                    .map(|_| ())
+                    .map_err(|e| SkillError::Invalid(format!("invalid skill ignore rule: {e}")));
+                skip_file(added, &path, diagnostics)?;
             }
         }
     }
+    let built = builder
+        .build()
+        .map_err(|e| SkillError::Invalid(format!("invalid skill ignore rules: {e}")));
     matchers.push(
-        builder
-            .build()
-            .map_err(|e| SkillError::Invalid(format!("invalid skill ignore rules: {e}")))?,
+        skip_file(built, directory, diagnostics)?
+            .unwrap_or_else(ignore::gitignore::Gitignore::empty),
     );
     let ignored = |path: &Path, is_dir: bool| {
         let mut result = false;
@@ -748,7 +790,14 @@ fn discover_markdown(
     };
     let declared = directory.join(SKILL_MARKDOWN);
     if declared.try_exists()? && !ignored(&declared, false) {
-        let metadata = read_metadata(&declared, scope, cancelled)?;
+        let Some(metadata) = skip_file(
+            read_metadata(&declared, scope, cancelled),
+            &declared,
+            diagnostics,
+        )?
+        else {
+            return Ok(());
+        };
         if let Some(winner) = skills.get(&metadata.name) {
             if winner.source != metadata.source {
                 collisions.push(SkillCollision {
@@ -795,6 +844,7 @@ fn discover_markdown(
             scope,
             skills,
             collisions,
+            diagnostics,
             visited,
             depth + 1,
             &matchers,

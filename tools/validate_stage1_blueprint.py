@@ -32,7 +32,7 @@ from typing import Any
 from validate_blueprint import BlueprintError, _yaml_header
 
 ROOT = Path(__file__).resolve().parents[1]
-BLUEPRINT = 'Docs/stage_1_v3_pi_mono_blueprint.md'
+BLUEPRINT = 'Docs/archive/stage1/stage_1_v3_pi_mono_blueprint.md'
 EVIDENCE = 'Docs/learn/stage1_pi_mono'
 SELECTOR = 'Docs/execution/active_requirement.json'
 STATES = ('[ ]', '[_]', '[x]')

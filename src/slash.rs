@@ -43,13 +43,23 @@ pub enum SlashRoute {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
 pub enum SlashCommand {
-    /// Toggle the interactive execution posture without leaving the TUI.
+    /// Set the interactive execution posture. `None` toggles the current
+    /// posture; `Some` sets it explicitly.
     Yolo {
-        enabled: bool,
+        #[serde(default)]
+        enabled: Option<bool>,
     },
-    /// Select the approval policy used for side-effecting tools.
+    /// Show (`None`) or select the approval policy used for side-effecting
+    /// tools. Omitting the mode never changes the policy.
     Approval {
-        mode: String,
+        #[serde(default)]
+        mode: Option<String>,
+    },
+    /// Show (`None`) or select the reasoning effort used by the next provider
+    /// request. `default` restores the provider default (omits the field).
+    Reasoning {
+        #[serde(default)]
+        level: Option<String>,
     },
     Persona {
         name: Option<String>,
@@ -470,6 +480,7 @@ impl SlashCommand {
         match self {
             Self::Yolo { .. } => "yolo",
             Self::Approval { .. } => "approval",
+            Self::Reasoning { .. } => "reasoning",
             Self::Persona { .. } => "persona",
             Self::Help { .. } => "help",
             Self::Goal { .. } => "goal",
@@ -521,6 +532,7 @@ impl SlashCommand {
             self,
             Self::Yolo { .. }
                 | Self::Approval { .. }
+                | Self::Reasoning { .. }
                 | Self::Persona { .. }
                 | Self::Goal { .. }
                 | Self::GoalPut { .. }
@@ -586,14 +598,21 @@ pub const COMMAND_SPECS: &[SlashCommandSpec] = &[
         aliases: NO_ALIASES,
         route: SlashRoute::Local,
         usage: "/yolo [on|off]",
-        summary: "toggle explicit allow-all execution posture",
+        summary: "toggle (no argument) or set explicit allow-all execution posture",
     },
     SlashCommandSpec {
         name: "approval",
         aliases: &["approvals"],
         route: SlashRoute::Local,
-        usage: "/approval <ask|always|never>",
-        summary: "set side-effect approval mode",
+        usage: "/approval [ask|always|never]",
+        summary: "show (no argument) or set side-effect approval mode",
+    },
+    SlashCommandSpec {
+        name: "reasoning",
+        aliases: NO_ALIASES,
+        route: SlashRoute::Local,
+        usage: "/reasoning [default|advertised level]",
+        summary: "show or select the model reasoning effort for the next request",
     },
     SlashCommandSpec {
         name: "persona",
@@ -620,8 +639,8 @@ pub const COMMAND_SPECS: &[SlashCommandSpec] = &[
         name: "goal",
         aliases: NO_ALIASES,
         route: SlashRoute::Local,
-        usage: "/goal [show|list|status|run|resume|cancel|transition|create GOAL_ID BLUEPRINT[@VERSION]] [STATE] | /goal put <json-path>",
-        summary: "inspect, run, resume, cancel, or persist a bounded b3ehive goal",
+        usage: "/goal [show|list|status|run GOAL_ID [STEPS|until]|resume|cancel|transition|create GOAL_ID BLUEPRINT[@VERSION]] [STATE] | /goal put <json-path>",
+        summary: "inspect, execute, retry, cancel, or persist a bounded b3ehive goal",
     },
     SlashCommandSpec {
         name: "plan",
@@ -674,7 +693,7 @@ pub const COMMAND_SPECS: &[SlashCommandSpec] = &[
     },
     SlashCommandSpec {
         name: "resources",
-        aliases: NO_ALIASES,
+        aliases: &["resource"],
         route: SlashRoute::Local,
         usage: "/resources [path]",
         summary: "collect bounded workspace and host resource signals",
@@ -734,13 +753,6 @@ pub const COMMAND_SPECS: &[SlashCommandSpec] = &[
         route: SlashRoute::Local,
         usage: "/diff [path]",
         summary: "inspect bounded pending file changes",
-    },
-    SlashCommandSpec {
-        name: "review",
-        aliases: NO_ALIASES,
-        route: SlashRoute::Local,
-        usage: "/review [path]",
-        summary: "inspect a bounded change review projection",
     },
     SlashCommandSpec {
         name: "attach",
@@ -833,6 +845,55 @@ pub const COMMAND_SPECS: &[SlashCommandSpec] = &[
         usage: "/worktree [list] | add [--in-place] [name] | select N | close N | move N M",
         summary: "manage the active project layer-2 worktree sub-tabs",
     },
+    SlashCommandSpec {
+        name: "tree",
+        aliases: NO_ALIASES,
+        route: SlashRoute::Local,
+        usage: "/tree [list [cursor [limit]]|enable|select ID|root|fork ID|root PATH|name ID NAME]",
+        summary: "browse, select, fork, or name session branches",
+    },
+    SlashCommandSpec {
+        name: "output",
+        aliases: NO_ALIASES,
+        route: SlashRoute::Local,
+        usage: "/output read ARTIFACT CALL OFFSET LENGTH | /output cleanup [CALL] --yes",
+        summary: "read or clean up spilled tool output artifacts",
+    },
+    SlashCommandSpec {
+        name: "input",
+        aliases: NO_ALIASES,
+        route: SlashRoute::Local,
+        usage: "/input [list|steer ID TEXT|follow-up ID TEXT|edit ID REV TEXT|cancel ID|mode LANE MODE]",
+        summary: "inspect or edit queued runtime inputs",
+    },
+    SlashCommandSpec {
+        name: "scheduled",
+        aliases: NO_ALIASES,
+        route: SlashRoute::Local,
+        usage: "/scheduled [list|edit ID REV TEXT|cancel ID|retry ID]",
+        summary: "inspect or edit inputs scheduled behind the active job (interactive host)",
+    },
+    SlashCommandSpec {
+        name: "reload",
+        aliases: NO_ALIASES,
+        route: SlashRoute::Local,
+        usage: "/reload [selection.json]",
+        summary: "reload skills, templates, and text resources",
+    },
+    SlashCommandSpec {
+        name: "skills",
+        aliases: NO_ALIASES,
+        route: SlashRoute::Local,
+        usage: "/skills",
+        summary: "list loaded skills",
+    },
+    SlashCommandSpec {
+        name: "templates",
+        aliases: NO_ALIASES,
+        route: SlashRoute::Local,
+        usage: "/templates",
+        summary: "list loaded prompt templates",
+    },
 ];
 
 /// Look up a command specification by canonical name or alias.  The lookup
@@ -846,6 +907,14 @@ pub fn spec(name: &str) -> Option<&'static SlashCommandSpec> {
                 .iter()
                 .any(|alias| alias.eq_ignore_ascii_case(name))
     })
+}
+
+/// Exact (already lower-cased, slash-free) name or alias lookup used by the
+/// parser, so the catalog is the only source of parsable command names.
+fn spec_exact(name: &str) -> Option<&'static SlashCommandSpec> {
+    COMMAND_SPECS
+        .iter()
+        .find(|candidate| candidate.name == name || candidate.aliases.contains(&name))
 }
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -874,6 +943,8 @@ pub enum SlashError {
     MissingArgument { command: &'static str },
     #[error("/{command} received an unexpected argument")]
     UnexpectedArgument { command: &'static str },
+    #[error("/{command} is a session control that this host does not support")]
+    HostControl { command: &'static str },
     #[error("/learn {action} requires a learn id and repository-relative reference")]
     MissingLearnArgument { action: &'static str },
     #[error("/learn {action} received an unexpected argument")]
@@ -1074,8 +1145,10 @@ pub fn parse(input: &str) -> Result<Option<SlashCommand>, SlashError> {
     let command = tokens.first().ok_or(SlashError::Empty)?;
     let command_lower = command.to_ascii_lowercase();
     let args = &tokens[1..];
-    let parsed = match command_lower.as_str() {
-        "help" | "?" => {
+    let spec = spec_exact(&command_lower)
+        .ok_or_else(|| SlashError::UnknownCommand(command_lower.clone()))?;
+    let parsed = match spec.name {
+        "help" => {
             if args.len() > 1 {
                 return Err(SlashError::UnexpectedArgument { command: "help" });
             }
@@ -1097,7 +1170,7 @@ pub fn parse(input: &str) -> Result<Option<SlashCommand>, SlashError> {
         }
         "models" => unit_command(args, "models", SlashCommand::Models)?,
         "doctor" => unit_command(args, "doctor", SlashCommand::Doctor)?,
-        "blueprint" | "bp" => SlashCommand::Blueprint {
+        "blueprint" => SlashCommand::Blueprint {
             action: parse_blueprint(args)?,
         },
         "learn" => parse_learn(args)?,
@@ -1119,7 +1192,7 @@ pub fn parse(input: &str) -> Result<Option<SlashCommand>, SlashError> {
             };
             SlashCommand::History { limit }
         }
-        "resources" | "resource" => {
+        "resources" => {
             if args.len() > 1 {
                 return Err(SlashError::UnexpectedArgument {
                     command: "resources",
@@ -1135,10 +1208,10 @@ pub fn parse(input: &str) -> Result<Option<SlashCommand>, SlashError> {
         "pane" => SlashCommand::Pane {
             action: parse_pane(args)?,
         },
-        "session" | "sessions" => SlashCommand::Session {
+        "session" if command_lower != "agents" => SlashCommand::Session {
             action: parse_session(args)?,
         },
-        "agents" => SlashCommand::Session {
+        "session" => SlashCommand::Session {
             action: if args.is_empty() {
                 SessionAction::Agents
             } else {
@@ -1188,7 +1261,7 @@ pub fn parse(input: &str) -> Result<Option<SlashCommand>, SlashError> {
                 _ => return Err(SlashError::InvalidRecoveryAction),
             },
         },
-        "persona" | "personas" => SlashCommand::Persona {
+        "persona" => SlashCommand::Persona {
             name: match args {
                 [] => None,
                 [value] => Some(
@@ -1256,9 +1329,9 @@ pub fn parse(input: &str) -> Result<Option<SlashCommand>, SlashError> {
         },
         "yolo" => {
             let enabled = match args {
-                [] => true,
-                [value] if value.eq_ignore_ascii_case("on") => true,
-                [value] if value.eq_ignore_ascii_case("off") => false,
+                [] => None,
+                [value] if value.eq_ignore_ascii_case("on") => Some(true),
+                [value] if value.eq_ignore_ascii_case("off") => Some(false),
                 _ => return Err(SlashError::UnexpectedArgument { command: "yolo" }),
             };
             SlashCommand::Yolo { enabled }
@@ -1270,33 +1343,46 @@ pub fn parse(input: &str) -> Result<Option<SlashCommand>, SlashError> {
                 action: SessionAction::New,
             },
         )?,
-        "approval" | "approvals" => {
-            let mode = args.first().cloned().unwrap_or_else(|| "ask".into());
+        "approval" => {
             if args.len() > 1 {
                 return Err(SlashError::UnexpectedArgument {
                     command: "approval",
                 });
             }
-            if !matches!(
-                mode.to_ascii_lowercase().as_str(),
-                "ask" | "always" | "never"
-            ) {
+            let mode = args.first().cloned();
+            if let Some(mode) = &mode
+                && !matches!(
+                    mode.to_ascii_lowercase().as_str(),
+                    "ask" | "always" | "never"
+                )
+            {
                 return Err(SlashError::UnknownCommand(format!("approval mode {mode}")));
             }
             SlashCommand::Approval { mode }
+        }
+        "reasoning" => {
+            if args.len() > 1 {
+                return Err(SlashError::UnexpectedArgument {
+                    command: "reasoning",
+                });
+            }
+            SlashCommand::Reasoning {
+                level: args.first().cloned(),
+            }
+        }
+        "skills" | "templates" if !args.is_empty() => {
+            return Err(SlashError::UnexpectedArgument { command: spec.name });
+        }
+        // These session controls own dedicated grammars (`tree_control`,
+        // `output_control`, `input_queue_control`, `resource_control`, and the
+        // interactive scheduler) that hosts route before typed dispatch.
+        "tree" | "output" | "input" | "scheduled" | "reload" | "skills" | "templates" => {
+            return Err(SlashError::HostControl { command: spec.name });
         }
         "compact" => unit_command(args, "compact", SlashCommand::Compact)?,
         "diff" => {
             if args.len() > 1 {
                 return Err(SlashError::UnexpectedArgument { command: "diff" });
-            }
-            SlashCommand::Diff {
-                path: args.first().cloned(),
-            }
-        }
-        "review" => {
-            if args.len() > 1 {
-                return Err(SlashError::UnexpectedArgument { command: "review" });
             }
             SlashCommand::Diff {
                 path: args.first().cloned(),
@@ -1334,11 +1420,11 @@ pub fn parse(input: &str) -> Result<Option<SlashCommand>, SlashError> {
         "clear" => unit_command(args, "clear", SlashCommand::Clear)?,
         "trajectory" => unit_command(args, "trajectory", SlashCommand::Trajectory)?,
         "cancel" => unit_command(args, "cancel", SlashCommand::Cancel)?,
-        "exit" | "quit" | "q" => unit_command(args, "exit", SlashCommand::Exit)?,
+        "exit" => unit_command(args, "exit", SlashCommand::Exit)?,
         "compete" => SlashCommand::Compete {
             args: args.to_vec(),
         },
-        "loop" | "addloop" => SlashCommand::Loop {
+        "loop" => SlashCommand::Loop {
             args: args.to_vec(),
         },
         "execute" => SlashCommand::Execute {
@@ -1347,7 +1433,7 @@ pub fn parse(input: &str) -> Result<Option<SlashCommand>, SlashError> {
         "explore" => SlashCommand::Explore {
             args: args.to_vec(),
         },
-        "worktree" | "wt" | "subtab" => SlashCommand::Worktree {
+        "worktree" => SlashCommand::Worktree {
             action: parse_worktree(args)?,
         },
         "sync" => {

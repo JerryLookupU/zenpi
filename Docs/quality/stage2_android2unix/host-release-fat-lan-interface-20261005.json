@@ -1,0 +1,45 @@
+{
+  "passed": true,
+  "scope": "production Rust host pair invite envelope; no Android or physical-LAN claim",
+  "argv": [
+    "/Users/mac/Github/zenpi/target/release/zenpi",
+    "host",
+    "pair",
+    "--bind",
+    "192.168.50.14:0",
+    "--plain",
+    "--duration-seconds",
+    "1",
+    "--identity",
+    "/var/folders/gf/yj6lvtfj65922j9bnkfc7ddm0000gn/T/zenpi-host-smoke-q8gw5qmo/identity.json"
+  ],
+  "cwd": "/Users/mac/Github/zenpi",
+  "started_at_unix": 1791142850.025432,
+  "finished_at_unix": 1791142851.06965,
+  "exit_code": 0,
+  "timed_out": false,
+  "stdout_sha256": "9ce709d993ae59f0f569d7305d9afb4ad8cb81f41ab460ade6d9d0d255293b96",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "invite": {
+    "v": "1",
+    "address": "192.168.50.14:51937",
+    "fingerprint": "273f585502d30374e0c7c2b9216d5d4bffc017de06bc646ef6bdc20c89e387f8",
+    "expires": "1791142851",
+    "token_sha256": "fa5c1dcc1c7f17363ff6d5e442574c56bbbd3f25621a339bdc9c66ca40a5d765"
+  },
+  "invite_token_sha256": "fa5c1dcc1c7f17363ff6d5e442574c56bbbd3f25621a339bdc9c66ca40a5d765",
+  "error": null,
+  "blocked_by_sandbox": false,
+  "binary": "/Users/mac/Github/zenpi/target/release/zenpi",
+  "binary_sha256": "03beda670d2f4568bd60257e0975dca8e1af126cf3fb085d95da9253eb3a8813",
+  "host_build_provenance": {
+    "path": "target/stage2-host-build-release.json",
+    "sha256": "7b473963d887a303c9fffa512f42fdb1cb8134883aeb8947353efbaf6c4a0362",
+    "inputs_sha256": "99f46752cac902591b520dc0a64d07ecb7ab8b117edbc4048ff8adf8456128f9",
+    "artifact": {
+      "path": "target/release/zenpi",
+      "sha256": "03beda670d2f4568bd60257e0975dca8e1af126cf3fb085d95da9253eb3a8813"
+    }
+  },
+  "host_build_provenance_current": true
+}

@@ -1,0 +1,9 @@
+{
+  "address": "127.0.0.1:65535",
+  "fixture_only": true,
+  "height": 264,
+  "now": 1791073423,
+  "schema_version": 1,
+  "uri": "zenpi://pair?v=1&address=127.0.0.1%3A65535&fingerprint=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&token=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8&expires=1791073723",
+  "width": 260
+}

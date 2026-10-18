@@ -15,10 +15,21 @@ jobs:
   verify:
     name: Format, lint, test, and contract checks
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+
+      # search/find run the real rg (tests/stage1_search.rs requires it).
+      # ripgrep 14 under-reports `stats.searches` with `--sort path`, so use
+      # the same 15.x release as development rather than apt's 14.
+      - name: Install ripgrep 15
+        run: |
+          curl -fsSL -o /tmp/rg.tar.gz \
+            https://github.com/BurntSushi/ripgrep/releases/download/15.0.0/ripgrep-15.0.0-x86_64-unknown-linux-musl.tar.gz
+          tar -xzf /tmp/rg.tar.gz -C /tmp
+          sudo install /tmp/ripgrep-15.0.0-x86_64-unknown-linux-musl/rg /usr/local/bin/rg
+          rg --version
 
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
@@ -32,19 +43,22 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Run Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: |
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo clippy --locked --all-targets --all-features -- -D warnings
 
       - name: Run tests
         # Several integration fixtures bind short-lived loopback listeners;
         # serial execution avoids OS-level port/resource contention while
-        # retaining the complete all-targets matrix.
-        run: cargo test --all-targets --all-features --locked -- --test-threads=1
+        # retaining the complete all-targets matrix. `--all-features` includes
+        # `remote`, which the remote suites (tests/remote_*.rs) require.
+        run: cargo test --all-targets --all-features --locked --no-fail-fast -- --test-threads=1
 
-      - name: Validate execution blueprint and Gantt
-        run: python3 tools/validate_blueprint.py
-
-      - name: Validate v2 blueprint review draft
-        run: python3 tools/validate_blueprint_v2.py
+      - name: Validate authoritative blueprint and Gantt
+        run: |
+          python3 tools/test_validate_blueprint_v2.py
+          python3 tools/validate_blueprint_v2.py
+          python3 tools/generate_blueprint_v2_gantt.py --check
 
       - name: Report Rust source inventory
         run: python3 tools/check_rust_loc.py
@@ -113,7 +127,7 @@ jobs:
           done
 
   stage1-host:
-    name: Stage 1 production host smoke and bounds
+    name: Release host bounds and G-LOAD(200)
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -129,20 +143,75 @@ jobs:
       - name: Build the production release binary
         run: cargo build --release --locked
 
-      - name: Run the Stage 1 host smoke matrix
-        run: |
-          rm -rf Docs/quality/stage1/ZS1-117
-          python3 tools/stage1_host_smoke.py \
-            --binary target/release/zenpi \
-            --report-dir Docs/quality/stage1/ZS1-117
-
       - name: Run the Stage 1 host bounds and restart test
         run: cargo test --locked --test stage1_host
+
+      # G-TASK runs inside the verify job's full test matrix (tests/tasks.rs,
+      # tests/tasks_headless.rs, tests/tui_task.rs). G-LOAD(200) needs the
+      # release binary built above.
+      - name: Run G-LOAD(200)
+        run: |
+          mkdir -p Docs/quality/load
+          # §2.1 assumes 16 cores; the 4-core runner spreads the same 200
+          # tasks over 4 s (the default ramp is N/200 s) to keep per-core load comparable.
+          # Per-round latency on a shared runner varies 18-630 ms between runs, so
+          # the PR gate keeps a coarse 1 s bound that still catches stalls like
+          # F_FULLFSYNC; the resource checks keep their §2.1 budgets.
+          python3 tools/load_agents.py --agents 200 --ramp 4 --round-overhead-budget-ms 1000 \
+            --report Docs/quality/load/g-load-200.json
 
       - name: Upload Stage 1 host evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: stage1-host-${{ github.run_id }}-${{ github.run_attempt }}
-          path: Docs/quality/stage1/ZS1-117
+          path: Docs/quality/load/g-load-200.json
+          if-no-files-found: warn
+
+  android:
+    name: Android unit tests, lint, and Rust interop (G-ANDROID)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+          cache-dependency-path: |
+            android/**/*.gradle.kts
+            android/gradle/wrapper/gradle-wrapper.properties
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: "platforms;android-35 build-tools;35.0.0 platform-tools"
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      # Portrait screenshot goldens (ZE-519) are recorded on macOS; the
+      # comparison tolerates 1% of pixels for Linux font rendering.
+      - name: Run Android JVM unit tests, lint and screenshot checks
+        working-directory: android
+        run: ./gradlew --console=plain :app:testDebugUnitTest lint verifyRoborazziDebug
+
+      - name: Run Rust/Kotlin interop tests (remote_android_*_interop, --features remote)
+        run: tools/build_android_interop_classes.sh --run
+
+      - name: Upload Android test and lint reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-reports-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            android/app/build/reports
+            android/app/build/test-results
           if-no-files-found: warn

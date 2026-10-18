@@ -19,7 +19,10 @@ use crate::tools::{
 };
 
 pub const MAX_BATCH_CALLS: usize = 32;
-pub const MAX_BATCH_BYTES: usize = 256 * 1024;
+/// Serialized batch budget. One call may be as large as
+/// `tools::MAX_TOOL_CALL_BYTES`, so a single-call batch must always fit.
+pub const MAX_BATCH_BYTES: usize = 1024 * 1024;
+const _: () = assert!(crate::tools::MAX_TOOL_CALL_BYTES + 2 <= MAX_BATCH_BYTES);
 
 /// Maximum bytes accepted for one lower-left Arch console submission (ZS1-148).
 /// The arch pane is a conversation that belongs to the master session, so its

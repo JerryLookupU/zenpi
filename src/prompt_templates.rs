@@ -14,7 +14,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::skills::{SkillError, SkillScope, read_skill_text};
+use crate::skills::{LoadDiagnostic, SkillError, SkillScope, read_skill_text};
 
 pub const MAX_TEMPLATE_INPUT_BYTES: usize = 64 * 1024;
 pub const MAX_TEMPLATE_OUTPUT_BYTES: usize = 1024 * 1024;
@@ -25,11 +25,24 @@ const MAX_CATALOGUE_BYTES: usize = 4 * 1024 * 1024;
 pub struct PromptTemplate {
     pub name: String,
     pub description: String,
+    #[serde(skip)]
+    description_explicit: bool,
     pub argument_hint: Option<String>,
     pub content: String,
     pub source: PathBuf,
     pub source_hash: String,
     pub scope: SkillScope,
+}
+
+impl PromptTemplate {
+    /// Remote metadata must not expose the local body's first-line fallback.
+    pub fn remote_description(&self) -> &str {
+        if self.description_explicit {
+            &self.description
+        } else {
+            ""
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,6 +64,7 @@ pub struct TemplateExpansion {
 pub struct PromptTemplates {
     templates: BTreeMap<String, PromptTemplate>,
     collisions: Vec<TemplateCollision>,
+    diagnostics: Vec<LoadDiagnostic>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -124,10 +138,11 @@ impl PromptTemplates {
                     let entry = entry?;
                     if entry.path().extension().is_some_and(|ext| ext == "md") {
                         if entry.file_type()?.is_symlink() {
-                            return Err(TemplateError::Invalid(format!(
-                                "symlink template path: {}",
-                                entry.path().display()
-                            )));
+                            result.diagnostics.push(LoadDiagnostic {
+                                path: entry.path(),
+                                message: "symlink template path is not followed".into(),
+                            });
+                            continue;
                         }
                         if entry.file_type()?.is_file() {
                             entries.push(entry.path());
@@ -145,7 +160,17 @@ impl PromptTemplates {
             };
             for path in paths {
                 check_cancel(&cancelled)?;
-                let template = read_template(&path, scope, &cancelled)?;
+                let template = match read_template(&path, scope, &cancelled) {
+                    Ok(template) => template,
+                    Err(TemplateError::Cancelled) => return Err(TemplateError::Cancelled),
+                    Err(error) => {
+                        result.diagnostics.push(LoadDiagnostic {
+                            path: path.clone(),
+                            message: error.to_string(),
+                        });
+                        continue;
+                    }
+                };
                 if let Some(previous) = result.templates.get(&template.name) {
                     if previous.source == template.source {
                         continue;
@@ -196,6 +221,10 @@ impl PromptTemplates {
 
     pub fn collisions(&self) -> &[TemplateCollision] {
         &self.collisions
+    }
+
+    pub fn diagnostics(&self) -> &[LoadDiagnostic] {
+        &self.diagnostics
     }
 
     /// Expand an exact template command. Hosts must give built-in controls and
@@ -429,19 +458,22 @@ fn read_template(
             path.display()
         )));
     }
-    let description = string_field(&metadata, "description")?
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| {
-            let first = body
-                .lines()
-                .find(|line| !line.trim().is_empty())
-                .unwrap_or_default();
-            let mut short = first.chars().take(60).collect::<String>();
-            if first.chars().count() > 60 {
-                short.push_str("...");
-            }
-            short
-        });
+    let declared_description =
+        string_field(&metadata, "description")?.filter(|value| !value.is_empty());
+    let description_explicit = declared_description
+        .as_ref()
+        .is_some_and(|value| !value.trim().is_empty());
+    let description = declared_description.unwrap_or_else(|| {
+        let first = body
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or_default();
+        let mut short = first.chars().take(60).collect::<String>();
+        if first.chars().count() > 60 {
+            short.push_str("...");
+        }
+        short
+    });
     let argument_hint = string_field(&metadata, "argument-hint")?.filter(|value| !value.is_empty());
     if description.len() > 4096 || argument_hint.as_ref().is_some_and(|hint| hint.len() > 1024) {
         return Err(TemplateError::Invalid(
@@ -452,6 +484,7 @@ fn read_template(
     Ok(PromptTemplate {
         name: name.into(),
         description,
+        description_explicit,
         argument_hint,
         content: body.into(),
         source: path.into(),

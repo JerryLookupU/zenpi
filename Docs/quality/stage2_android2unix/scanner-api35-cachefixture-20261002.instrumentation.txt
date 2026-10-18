@@ -1,0 +1,281 @@
+INSTRUMENTATION_STATUS: class=zenpi.ScannerActivityTest
+INSTRUMENTATION_STATUS: current=1
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=1
+INSTRUMENTATION_STATUS: stream=
+zenpi.ScannerActivityTest:
+INSTRUMENTATION_STATUS: test=actualCameraPermissionDenialReturnsToProductionPairingScreen
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.ScannerActivityTest
+INSTRUMENTATION_STATUS: current=1
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=1
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=actualCameraPermissionDenialReturnsToProductionPairingScreen
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_RESULT: stream=
+
+Time: 2.159
+
+OK (1 test)
+
+
+INSTRUMENTATION_CODE: -1
+
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=1
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stream=
+zenpi.ScannerResultTest:
+INSTRUMENTATION_STATUS: test=permissionTimeoutAndUnavailablePreserveHostCacheAndAuthority
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=1
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=permissionTimeoutAndUnavailablePreserveHostCacheAndAuthority
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=2
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=malformedScanNeverBecomesHostOrEchoesSecret
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=2
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=malformedScanNeverBecomesHostOrEchoesSecret
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=3
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=unresolvedWriteFencesScannerResultsIncludingErrors
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=3
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stack=java.lang.AssertionError: expected:<SavedHostState(host=PairedHost(host=127.0.0.1, port=7777, fingerprint=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, deviceId=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb), projection=HostProjection(projects=[RemoteProject(id=project, title=Project, sessionId=session, workspaceControl=false, promptControl=false, promptStatuses=[], pendingApprovals=[], approvalControl=false, diffAvailable=false)], selectedId=project, sessionId=session, phase=idle, turns=[], journalSequence=1, truncated=false, eventSequence=0, hasMoreEvents=false, replayedEventCount=0, workspaceOwner=null, workspaceRevision=null, subtabs=null), pendingWorkspace=zenpi.transport.WorkspaceCommand@a5ecf62, pendingRevoke=null)> but was:<SavedHostState(host=PairedHost(host=127.0.0.1, port=7777, fingerprint=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, deviceId=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb), projection=HostProjection(projects=[RemoteProject(id=project, title=Project, sessionId=session, workspaceControl=false, promptControl=false, promptStatuses=[], pendingApprovals=[], approvalControl=false, diffAvailable=false)], selectedId=project, sessionId=session, phase=idle, turns=[], journalSequence=1, truncated=false, eventSequence=0, hasMoreEvents=false, replayedEventCount=0, workspaceOwner=null, workspaceRevision=null, subtabs=null), pendingWorkspace=zenpi.transport.WorkspaceCommand@55a58f3, pendingRevoke=null)>
+	at org.junit.Assert.fail(Assert.java:89)
+	at org.junit.Assert.failNotEquals(Assert.java:835)
+	at org.junit.Assert.assertEquals(Assert.java:120)
+	at org.junit.Assert.assertEquals(Assert.java:146)
+	at zenpi.ScannerResultTest$unresolvedWriteFencesScannerResultsIncludingErrors$1.invoke(ScannerResultTest.kt:81)
+	at zenpi.ScannerResultTest$unresolvedWriteFencesScannerResultsIncludingErrors$1.invoke(ScannerResultTest.kt:76)
+	at zenpi.ScannerResultTest$exercise$1$2.invoke(ScannerResultTest.kt:30)
+	at zenpi.ScannerResultTest$exercise$1$2.invoke(ScannerResultTest.kt:30)
+	at androidx.compose.ui.test.AndroidSynchronization_androidKt.runOnUiThread$lambda$0(AndroidSynchronization.android.kt:37)
+	at androidx.compose.ui.test.AndroidSynchronization_androidKt.$r8$lambda$opyMdTZ52jorqLaIG4SKpPr_Zno(Unknown Source:0)
+	at androidx.compose.ui.test.AndroidSynchronization_androidKt$$ExternalSyntheticLambda0.call(D8$$SyntheticClass:0)
+	at java.util.concurrent.FutureTask.run(FutureTask.java:264)
+	at java.util.concurrent.Executors$RunnableAdapter.call(Executors.java:487)
+	at java.util.concurrent.FutureTask.run(FutureTask.java:264)
+	at android.app.Instrumentation$SyncRunnable.run(Instrumentation.java:2612)
+	at android.os.Handler.handleCallback(Handler.java:959)
+	at android.os.Handler.dispatchMessage(Handler.java:100)
+	at android.os.Looper.loopOnce(Looper.java:232)
+	at android.os.Looper.loop(Looper.java:317)
+	at android.app.ActivityThread.main(ActivityThread.java:8705)
+	at java.lang.reflect.Method.invoke(Native Method)
+	at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:580)
+	at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:886)
+
+INSTRUMENTATION_STATUS: stream=
+Error in unresolvedWriteFencesScannerResultsIncludingErrors(zenpi.ScannerResultTest):
+java.lang.AssertionError: expected:<SavedHostState(host=PairedHost(host=127.0.0.1, port=7777, fingerprint=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, deviceId=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb), projection=HostProjection(projects=[RemoteProject(id=project, title=Project, sessionId=session, workspaceControl=false, promptControl=false, promptStatuses=[], pendingApprovals=[], approvalControl=false, diffAvailable=false)], selectedId=project, sessionId=session, phase=idle, turns=[], journalSequence=1, truncated=false, eventSequence=0, hasMoreEvents=false, replayedEventCount=0, workspaceOwner=null, workspaceRevision=null, subtabs=null), pendingWorkspace=zenpi.transport.WorkspaceCommand@a5ecf62, pendingRevoke=null)> but was:<SavedHostState(host=PairedHost(host=127.0.0.1, port=7777, fingerprint=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, deviceId=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb), projection=HostProjection(projects=[RemoteProject(id=project, title=Project, sessionId=session, workspaceControl=false, promptControl=false, promptStatuses=[], pendingApprovals=[], approvalControl=false, diffAvailable=false)], selectedId=project, sessionId=session, phase=idle, turns=[], journalSequence=1, truncated=false, eventSequence=0, hasMoreEvents=false, replayedEventCount=0, workspaceOwner=null, workspaceRevision=null, subtabs=null), pendingWorkspace=zenpi.transport.WorkspaceCommand@55a58f3, pendingRevoke=null)>
+	at org.junit.Assert.fail(Assert.java:89)
+	at org.junit.Assert.failNotEquals(Assert.java:835)
+	at org.junit.Assert.assertEquals(Assert.java:120)
+	at org.junit.Assert.assertEquals(Assert.java:146)
+	at zenpi.ScannerResultTest$unresolvedWriteFencesScannerResultsIncludingErrors$1.invoke(ScannerResultTest.kt:81)
+	at zenpi.ScannerResultTest$unresolvedWriteFencesScannerResultsIncludingErrors$1.invoke(ScannerResultTest.kt:76)
+	at zenpi.ScannerResultTest$exercise$1$2.invoke(ScannerResultTest.kt:30)
+	at zenpi.ScannerResultTest$exercise$1$2.invoke(ScannerResultTest.kt:30)
+	at androidx.compose.ui.test.AndroidSynchronization_androidKt.runOnUiThread$lambda$0(AndroidSynchronization.android.kt:37)
+	at androidx.compose.ui.test.AndroidSynchronization_androidKt.$r8$lambda$opyMdTZ52jorqLaIG4SKpPr_Zno(Unknown Source:0)
+	at androidx.compose.ui.test.AndroidSynchronization_androidKt$$ExternalSyntheticLambda0.call(D8$$SyntheticClass:0)
+	at java.util.concurrent.FutureTask.run(FutureTask.java:264)
+	at java.util.concurrent.Executors$RunnableAdapter.call(Executors.java:487)
+	at java.util.concurrent.FutureTask.run(FutureTask.java:264)
+	at android.app.Instrumentation$SyncRunnable.run(Instrumentation.java:2612)
+	at android.os.Handler.handleCallback(Handler.java:959)
+	at android.os.Handler.dispatchMessage(Handler.java:100)
+	at android.os.Looper.loopOnce(Looper.java:232)
+	at android.os.Looper.loop(Looper.java:317)
+	at android.app.ActivityThread.main(ActivityThread.java:8705)
+	at java.lang.reflect.Method.invoke(Native Method)
+	at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:580)
+	at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:886)
+
+INSTRUMENTATION_STATUS: test=unresolvedWriteFencesScannerResultsIncludingErrors
+INSTRUMENTATION_STATUS_CODE: -2
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=4
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=validScanRequiresConfirmationAndNeverPersistsInvitation
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=4
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=validScanRequiresConfirmationAndNeverPersistsInvitation
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=5
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=cancellationDoesNotForgetOrInventPairing
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.ScannerResultTest
+INSTRUMENTATION_STATUS: current=5
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=cancellationDoesNotForgetOrInventPairing
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.PairingScreenTest
+INSTRUMENTATION_STATUS: current=6
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stream=
+zenpi.PairingScreenTest:
+INSTRUMENTATION_STATUS: test=selfRevocationRequiresConfirmationSeparateFromLocalForget
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.PairingScreenTest
+INSTRUMENTATION_STATUS: current=6
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=selfRevocationRequiresConfirmationSeparateFromLocalForget
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.PairingScreenTest
+INSTRUMENTATION_STATUS: current=7
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=safetyCodeRequiresHumanEntryAndCancelIsAccessible
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.PairingScreenTest
+INSTRUMENTATION_STATUS: current=7
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=safetyCodeRequiresHumanEntryAndCancelIsAccessible
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.PairingScreenTest
+INSTRUMENTATION_STATUS: current=8
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=scannerErrorIsVisibleWithoutRemovingCachedHostAndPendingWriteHidesScan
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.PairingScreenTest
+INSTRUMENTATION_STATUS: current=8
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=scannerErrorIsVisibleWithoutRemovingCachedHostAndPendingWriteHidesScan
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.PairingScreenTest
+INSTRUMENTATION_STATUS: current=9
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=registeredDeviceDoesNotClaimHostControl
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.PairingScreenTest
+INSTRUMENTATION_STATUS: current=9
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=registeredDeviceDoesNotClaimHostControl
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.PairingScreenTest
+INSTRUMENTATION_STATUS: current=10
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=unresolvedRevocationDisablesScanRefreshAndAnotherRevoke
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.PairingScreenTest
+INSTRUMENTATION_STATUS: current=10
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=unresolvedRevocationDisablesScanRefreshAndAnotherRevoke
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.DiffScreenTest
+INSTRUMENTATION_STATUS: current=11
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stream=
+zenpi.DiffScreenTest:
+INSTRUMENTATION_STATUS: test=boundedPatchFlagsPathAndCloseAreVisibleOnNarrowDisplay
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.DiffScreenTest
+INSTRUMENTATION_STATUS: current=11
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=boundedPatchFlagsPathAndCloseAreVisibleOnNarrowDisplay
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_STATUS: class=zenpi.DiffScreenTest
+INSTRUMENTATION_STATUS: current=12
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stream=
+INSTRUMENTATION_STATUS: test=readOnlyDiffControlIsFencedOfflineAndDuringPendingWrites
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_STATUS: class=zenpi.DiffScreenTest
+INSTRUMENTATION_STATUS: current=12
+INSTRUMENTATION_STATUS: id=AndroidJUnitRunner
+INSTRUMENTATION_STATUS: numtests=12
+INSTRUMENTATION_STATUS: stream=.
+INSTRUMENTATION_STATUS: test=readOnlyDiffControlIsFencedOfflineAndDuringPendingWrites
+INSTRUMENTATION_STATUS_CODE: 0
+INSTRUMENTATION_RESULT: stream=
+
+Time: 13.234
+There was 1 failure:
+1) unresolvedWriteFencesScannerResultsIncludingErrors(zenpi.ScannerResultTest)
+java.lang.AssertionError: expected:<SavedHostState(host=PairedHost(host=127.0.0.1, port=7777, fingerprint=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, deviceId=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb), projection=HostProjection(projects=[RemoteProject(id=project, title=Project, sessionId=session, workspaceControl=false, promptControl=false, promptStatuses=[], pendingApprovals=[], approvalControl=false, diffAvailable=false)], selectedId=project, sessionId=session, phase=idle, turns=[], journalSequence=1, truncated=false, eventSequence=0, hasMoreEvents=false, replayedEventCount=0, workspaceOwner=null, workspaceRevision=null, subtabs=null), pendingWorkspace=zenpi.transport.WorkspaceCommand@a5ecf62, pendingRevoke=null)> but was:<SavedHostState(host=PairedHost(host=127.0.0.1, port=7777, fingerprint=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, deviceId=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb), projection=HostProjection(projects=[RemoteProject(id=project, title=Project, sessionId=session, workspaceControl=false, promptControl=false, promptStatuses=[], pendingApprovals=[], approvalControl=false, diffAvailable=false)], selectedId=project, sessionId=session, phase=idle, turns=[], journalSequence=1, truncated=false, eventSequence=0, hasMoreEvents=false, replayedEventCount=0, workspaceOwner=null, workspaceRevision=null, subtabs=null), pendingWorkspace=zenpi.transport.WorkspaceCommand@55a58f3, pendingRevoke=null)>
+	at org.junit.Assert.fail(Assert.java:89)
+	at org.junit.Assert.failNotEquals(Assert.java:835)
+	at org.junit.Assert.assertEquals(Assert.java:120)
+	at org.junit.Assert.assertEquals(Assert.java:146)
+	at zenpi.ScannerResultTest$unresolvedWriteFencesScannerResultsIncludingErrors$1.invoke(ScannerResultTest.kt:81)
+	at zenpi.ScannerResultTest$unresolvedWriteFencesScannerResultsIncludingErrors$1.invoke(ScannerResultTest.kt:76)
+	at zenpi.ScannerResultTest$exercise$1$2.invoke(ScannerResultTest.kt:30)
+	at zenpi.ScannerResultTest$exercise$1$2.invoke(ScannerResultTest.kt:30)
+	at androidx.compose.ui.test.AndroidSynchronization_androidKt.runOnUiThread$lambda$0(AndroidSynchronization.android.kt:37)
+	at androidx.compose.ui.test.AndroidSynchronization_androidKt.$r8$lambda$opyMdTZ52jorqLaIG4SKpPr_Zno(Unknown Source:0)
+	at androidx.compose.ui.test.AndroidSynchronization_androidKt$$ExternalSyntheticLambda0.call(D8$$SyntheticClass:0)
+	at java.util.concurrent.FutureTask.run(FutureTask.java:264)
+	at java.util.concurrent.Executors$RunnableAdapter.call(Executors.java:487)
+	at java.util.concurrent.FutureTask.run(FutureTask.java:264)
+	at android.app.Instrumentation$SyncRunnable.run(Instrumentation.java:2612)
+	at android.os.Handler.handleCallback(Handler.java:959)
+	at android.os.Handler.dispatchMessage(Handler.java:100)
+	at android.os.Looper.loopOnce(Looper.java:232)
+	at android.os.Looper.loop(Looper.java:317)
+	at android.app.ActivityThread.main(ActivityThread.java:8705)
+	at java.lang.reflect.Method.invoke(Native Method)
+	at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:580)
+	at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:886)
+
+FAILURES!!!
+Tests run: 12,  Failures: 1
+
+
+INSTRUMENTATION_CODE: -1

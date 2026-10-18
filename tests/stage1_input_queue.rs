@@ -480,18 +480,195 @@ fn saturation_preserves_previous_queue_and_journal() {
     queue
         .apply_boundary(&mut session, &boundary("round", false))
         .unwrap();
+    // Terminal (cancelled/applied) history no longer consumes record capacity.
+    enqueue(&mut queue, &mut session, "c", InputKind::Steer, "third");
     assert!(matches!(
         queue.execute(
             &mut session,
             Action::Enqueue {
-                input_id: "c".into(),
+                input_id: "d".into(),
                 kind: InputKind::Steer,
-                text: "third".into()
+                text: "fourth".into()
             }
         ),
         Err(InputQueueError::Capacity)
     ));
     assert_eq!(queue.get("a").unwrap().status, InputStatus::Cancelled);
+    assert_eq!(queue.get("b").unwrap().status, InputStatus::Applied);
+    // Terminal IDs stay reserved for idempotency even after leaving capacity.
+    assert!(matches!(
+        queue.execute(
+            &mut session,
+            Action::Enqueue {
+                input_id: "a".into(),
+                kind: InputKind::Steer,
+                text: "first".into()
+            }
+        ),
+        Ok(InputQueueReply::Input {
+            duplicate: true,
+            ..
+        })
+    ));
+}
+
+fn page_all(queue: &mut InputQueue, session: &mut SessionStore) -> Vec<serde_json::Value> {
+    let mut all = Vec::new();
+    let mut after = None;
+    loop {
+        let reply = queue
+            .execute(
+                session,
+                Action::List {
+                    after_sequence: after,
+                    limit: 32,
+                },
+            )
+            .unwrap();
+        let InputQueueReply::Page {
+            inputs,
+            next_sequence,
+        } = reply
+        else {
+            panic!("expected page");
+        };
+        all.extend(inputs.iter().map(|i| serde_json::to_value(i).unwrap()));
+        match next_sequence {
+            Some(n) => after = Some(n),
+            None => break,
+        }
+    }
+    all
+}
+
+#[test]
+fn queue_accepts_more_than_4096_lifetime_inputs() {
+    let (dir, mut session, mut queue) = fixture();
+    for kind in [InputKind::Steer, InputKind::FollowUp] {
+        queue
+            .execute(
+                &mut session,
+                Action::Configure {
+                    kind,
+                    mode: QueueMode::All,
+                },
+            )
+            .unwrap();
+    }
+    let text = "x".repeat(1700);
+    let mut lifetime_bytes = 0usize;
+    let mut n = 0u32;
+    let mut batch = 0u32;
+    // Batches of 30 live inputs (24 steer + 6 follow-up, 4 steers cancelled)
+    // keep each batch within max_pending while the lifetime grows past both
+    // the 4096-record and 4 MiB retained-byte envelopes.
+    while n < 5000 {
+        let mut steers = Vec::new();
+        let mut follow_ups = Vec::new();
+        for slot in 0..30 {
+            if n == 5000 {
+                break;
+            }
+            let id = format!("in-{n}");
+            let kind = if slot < 24 {
+                InputKind::Steer
+            } else {
+                InputKind::FollowUp
+            };
+            enqueue(&mut queue, &mut session, &id, kind, &text);
+            lifetime_bytes += text.len() + id.len();
+            if kind == InputKind::FollowUp {
+                follow_ups.push(id);
+            } else if slot % 6 == 0 {
+                queue
+                    .execute(&mut session, Action::Cancel { input_id: id })
+                    .unwrap();
+            } else {
+                steers.push(id);
+            }
+            n += 1;
+        }
+        let applied = queue
+            .apply_boundary(&mut session, &boundary(&format!("steer-{batch}"), false))
+            .unwrap();
+        assert_eq!(
+            applied.iter().map(|i| i.id.clone()).collect::<Vec<_>>(),
+            steers
+        );
+        let applied = queue
+            .apply_boundary(&mut session, &boundary(&format!("follow-{batch}"), true))
+            .unwrap();
+        assert_eq!(
+            applied.iter().map(|i| i.id.clone()).collect::<Vec<_>>(),
+            follow_ups
+        );
+        assert!(!queue.has_pending());
+        if batch.is_multiple_of(40) {
+            // Recovery from the same journal must yield the live projection.
+            queue = InputQueue::recover(&session, InputQueueLimits::default()).unwrap();
+        }
+        batch += 1;
+    }
+    assert!(lifetime_bytes > 8 * 1024 * 1024);
+    // Still accepts new steering and follow-up input after 5000 lifetime inputs.
+    enqueue(
+        &mut queue,
+        &mut session,
+        "late-steer",
+        InputKind::Steer,
+        "s",
+    );
+    enqueue(
+        &mut queue,
+        &mut session,
+        "late-follow",
+        InputKind::FollowUp,
+        "f",
+    );
+    assert_eq!(queue.pending_received().count(), 2);
+    assert_eq!(
+        queue
+            .inputs_for_turn(&format!("steer-{}", batch - 1))
+            .last()
+            .unwrap()
+            .id,
+        "in-4999",
+        "terminal history stays available for context reconstruction"
+    );
+
+    // The incrementally folded projection equals a fresh full replay of the
+    // durable journal reopened from disk (distinct limits bypass any fold cache).
+    let incremental = page_all(&mut queue, &mut session);
+    let reopened = SessionStore::open_existing(dir.path().join("session.jsonl")).unwrap();
+    let mut full = InputQueue::recover(
+        &reopened,
+        InputQueueLimits {
+            max_pending: 32,
+            max_records: 4096,
+            max_retained_bytes: 4 * 1024 * 1024 - 1,
+        },
+    )
+    .unwrap();
+    let mut reopened = reopened;
+    assert_eq!(incremental.len(), 5002);
+    assert_eq!(incremental, page_all(&mut full, &mut reopened));
+    let mut again = InputQueue::recover(&session, InputQueueLimits::default()).unwrap();
+    assert_eq!(incremental, page_all(&mut again, &mut session));
+}
+
+#[test]
+fn recovery_fold_cache_does_not_leak_across_divergent_journals() {
+    let (dir, mut session, mut queue) = fixture();
+    enqueue(&mut queue, &mut session, "a", InputKind::Steer, "one");
+    let stale = SessionStore::open_existing(dir.path().join("session.jsonl")).unwrap();
+    // Prime the cache from the fresh store, then diverge it.
+    InputQueue::recover(&session, InputQueueLimits::default()).unwrap();
+    enqueue(&mut queue, &mut session, "b", InputKind::Steer, "two");
+    InputQueue::recover(&session, InputQueueLimits::default()).unwrap();
+    // A stale in-memory store must not adopt the newer cached fold.
+    let stale_queue = InputQueue::recover(&stale, InputQueueLimits::default()).unwrap();
+    assert!(stale_queue.get("b").is_none());
+    assert!(stale_queue.get("a").is_some());
 }
 
 #[test]

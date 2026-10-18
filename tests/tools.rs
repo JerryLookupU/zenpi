@@ -5,6 +5,7 @@ mod search;
 #[allow(dead_code)]
 mod tool_output;
 use zenpi::backend;
+use zenpi::session;
 use zenpi::view_model;
 
 #[path = "../src/dag.rs"]
@@ -195,6 +196,7 @@ fn search_is_literal_case_configurable_and_bounded() {
             "search_text",
             json!({
                 "query": "needle.*",
+                "literal": true,
                 "case_sensitive": false,
                 "max_matches": 2
             }),
@@ -1131,28 +1133,56 @@ fn reliability_write_and_edit_preserve_permissions_and_replace_the_inode() {
 
 #[test]
 fn reliability_line_ending_diff_is_exact_and_can_be_applied() {
-    let cases = [
+    // write_file stores content verbatim, so it can change line endings.
+    let writes = [
         ("one\r\ntwo\r\n", "one\ntwo\n"),
         ("one\ntwo\n", "one\r\ntwo\r\n"),
         ("head\r\nlast", "head\nlast"),
         ("first\r\nsecond\nlast\r", "first\nsecond\nlast"),
         ("first\r\nlast", "first\nlast\n"),
-    ];
-    for (before, after) in cases {
+    ]
+    .map(|(before, after)| {
+        (
+            before,
+            "write_file",
+            json!({"path":"file.txt","content":after}),
+            after,
+        )
+    });
+    // edit_file matches LF-normalized text and writes `new` with the file's
+    // own line ending (ZE-205), touching only the matched span.
+    let edits = [
+        ("one\r\ntwo\r\n", "two\n", "2\n", "one\r\n2\r\n"),
+        ("head\r\nlast", "last", "tail", "head\r\ntail"),
+        (
+            "first\r\nsecond\nlast\r",
+            "second\nlast",
+            "2nd\nend",
+            "first\r\n2nd\r\nend\r",
+        ),
+        (
+            "first\r\nlast",
+            "last",
+            "last\nmore\n",
+            "first\r\nlast\r\nmore\r\n",
+        ),
+    ]
+    .map(|(before, old, new, after)| {
+        (
+            before,
+            "edit_file",
+            json!({"path":"file.txt","old":old,"new":new}),
+            after,
+        )
+    });
+    for (before, tool, args, after) in writes.into_iter().chain(edits) {
         let root = tempdir().unwrap();
         let apply_root = tempdir().unwrap();
-        fs::write(root.path().join("file.txt"), before).unwrap();
-        fs::write(apply_root.path().join("file.txt"), before).unwrap();
         let context = ToolContext::new(root.path()).unwrap();
         let registry = ToolRegistry::with_all_builtins().unwrap();
-        for tool in ["write_file", "edit_file"] {
+        {
             fs::write(root.path().join("file.txt"), before).unwrap();
             fs::write(apply_root.path().join("file.txt"), before).unwrap();
-            let args = if tool == "write_file" {
-                json!({"path":"file.txt","content":after})
-            } else {
-                json!({"path":"file.txt","old":before,"new":after})
-            };
             let request = call(tool, args);
             let preview = registry
                 .approval_preview(&context, &request)
