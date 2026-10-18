@@ -401,7 +401,7 @@ fn slash_trajectory_opens_the_viewer_and_live_history_refreshes_it() {
     let command = zenpi::slash::parse("/trajectory").unwrap().unwrap();
     zenpi::tui::dispatch_slash_command(command, &mut state, None);
     assert!(state.trajectory_open());
-    assert!(render(&mut state, 100, 20).contains("No agent sessions yet"));
+    assert!(render(&mut state, 100, 20).contains("No records yet"));
     key(&mut state, KeyCode::Char('q'));
 
     state.set_trajectory_history(sample_history()[..1].to_vec());

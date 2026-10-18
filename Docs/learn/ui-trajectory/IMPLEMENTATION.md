@@ -7,8 +7,8 @@ Zenpi 现有的 Rust + ratatui 栈；数据模型、三层导航和快捷键保�
 
 | 入口 | 行为 |
 |------|------|
-| `Alt-T` | 打开轨迹视图；只有主会话时直接进入记录列表，有 worker 时进入 Agent 总览 |
-| `/trajectory`（TUI） | 同上 |
+| Gantt 面板（`Tab` 切到 Gantt 热区） | `↑↓` 选择 agent，`Enter` 打开它的轨迹，`z` 放大成 Agent 总览，双击同 `Enter` |
+| `Alt-T` / `/trajectory`（TUI） | 直接打开主会话（master）的记录列表 |
 | `/trajectory`（headless） | 返回 JSON：记录数、轮次、用量、缓存命中率、平均 TTFT、`kv_cache` 问题列表 |
 
 `Ctrl-T`（目录选择器）和 `Ctrl-G`（外部编辑器）已被占用，因此没有使用设计稿中的组合键。
@@ -63,10 +63,28 @@ Trajectory     ──> tui::trajectory::TrajectoryViewer                      (t
 - **L3 检查器**：Content / Metrics / Raw 三个标签页（`Tab`），`←→` 切换记录，`y` 复制当前页。
 - 通用：`Esc` 返回上一层，`1`/`2`/`3` 切换层级，`q` 关闭，`?` 帮助。
 
+## Gantt：多 agent DAG 协作
+
+Gantt 面板顶部新增 Agents 区（`src/tui/agents.rs`），下方保留原有的 Blueprint/Goal 投影。
+
+- **行**：master 固定在第一行，下面是 DAG 节点树（`.zenpi/dag.json` 或 `ZENPI_DAG_STORE`，用 `├`/`└` 表示父子关系），最后是本项目中不属于 DAG 的 headless worker。
+- **状态**：`● running`、`⏸ approval`（master 在等审批）、`◌ idle`、`○ open`（还没有 worker）、`⚠ stale`（worker 进程已退出但节点仍 open）、`✓ done`（green）、`✗ failed`（red）。
+- **数据合并**：
+  - DAG 节点提供结构、状态、摘要、心跳和信箱，`✉n` 表示未读消息数；
+  - 进程表提供存活状态（按 `pid:N` 或 journal 文件名匹配）；
+  - worker journal（`.zenpi/workers/<node>.jsonl`）提供时间轴和轨迹。
+- **刷新**：每秒刷新一次；`dag.json` 的大小和修改时间不变时不重新解析；超过 4 MiB 的 store 不在终端线程上解析。
+- **放大**：轨迹视图改为和 Resources 放大一致的内嵌浮层。Agent 总览即放大后的 Gantt，显示每个 agent 的 token、缓存命中率、KV 状态、时长和并行时间轴。
+
+## 审批流程
+
+- 有审批在等待时，输入框和对话区的标题显示 `⏸ 等待审批`，不再显示“思考中”。
+- 在输入框里单独输入 `y`/`yes` 或 `n`/`no`，会打开审批窗口并预选对应选项，再按 `Enter` 确认；这条输入不会再被当成插话发给 agent。其它输入照常发送。
+- 对话区的审批提示不再显示 Request/Policy 哈希（审批窗口内仍然有），只说明要做什么、怎么回答。
+
 ## 未实现 / 后续
 
 - **暂停 / 继续 Agent**：运行时只有 cancel / steer，没有 pause 原语，需要先在 core 设计挂起点。
 - **指纹的跨进程比较**：重启后的第一次请求没有 `shared_turns`；instructions / tools 摘要仍可跨进程比较。
-- **worker 列表**：来自当前项目的 headless 进程快照（前 16 个立即加载，其余按 Enter 时加载，`R` 重新加载），
-  尚未与 DAG 节点状态（green / red）关联。
+- **DAG 起止时间**：DAG 节点本身不记录开始时间，时间轴用 worker journal 的创建和修改时间近似。
 - **其他**：导出、标记、独立的 cache 统计面板。

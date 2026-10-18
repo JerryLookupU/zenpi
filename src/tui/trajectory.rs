@@ -6,6 +6,7 @@
 //! with Content / Metrics / Raw sections. The data comes from
 //! [`crate::trajectory::Trajectory`]; this module only navigates and draws.
 
+use super::agents::AgentState;
 use super::{TuiAction, truncate_to_width, wrap_plain};
 use crate::trajectory::{
     CacheSeverity, RecordKind, RecordStatus, Trajectory, TrajectoryRecord, format_duration_ms,
@@ -31,26 +32,14 @@ pub enum TrajectoryLevel {
     Inspector,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum AgentStatus {
-    Running,
-    Idle,
-}
-
-impl AgentStatus {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Running => "running",
-            Self::Idle => "idle",
-        }
-    }
-}
-
 /// One agent the viewer can show: the in-process master or a worker journal.
+/// The first source is always the master.
 #[derive(Debug, Clone)]
 pub(super) struct AgentSource {
     pub name: String,
-    pub status: AgentStatus,
+    /// DAG tree glyphs shown before the name, as in the Gantt pane.
+    pub tree: String,
+    pub state: AgentState,
     pub session: Option<PathBuf>,
     pub trajectory: Option<Trajectory>,
 }
@@ -97,13 +86,13 @@ impl AgentEntry {
         if self.source.trajectory.is_some() || self.load_error.is_some() {
             return;
         }
+        // DAG coordination nodes have no worker journal; that is not an error.
         let Some(path) = self.source.session.as_ref() else {
-            self.load_error = Some("no session journal".into());
             return;
         };
         match crate::session::inspect_session(path) {
             Ok(inspection) => {
-                let running = self.source.status == AgentStatus::Running;
+                let running = self.source.state.is_active();
                 let root = running
                     .then(|| crate::trajectory::open_root(&inspection.turns))
                     .flatten();
@@ -179,7 +168,16 @@ impl TrajectoryViewer {
         }
     }
 
-    /// Open straight into the first agent's records, following the tail.
+    /// Select the agent at `index` (clamped), loading its journal if needed.
+    pub(super) fn select_agent(mut self, index: usize) -> Self {
+        self.agent = index.min(self.agents.len().saturating_sub(1));
+        if let Some(agent) = self.agents.get_mut(self.agent) {
+            agent.ensure_loaded();
+        }
+        self
+    }
+
+    /// Open straight into the selected agent's records, following the tail.
     pub(super) fn open_records(mut self) -> Self {
         if !self.agents.is_empty() {
             self.enter_records();
@@ -202,10 +200,10 @@ impl TrajectoryViewer {
         let Some(master) = self.agents.first_mut() else {
             return;
         };
-        master.source.status = if trajectory.in_progress() {
-            AgentStatus::Running
-        } else {
-            AgentStatus::Idle
+        master.source.state = match (trajectory.in_progress(), master.source.state) {
+            (true, AgentState::Waiting) => AgentState::Waiting,
+            (true, _) => AgentState::Running,
+            (false, _) => AgentState::Idle,
         };
         let following = self.agent == 0 && self.cursor + 1 >= self.rows().len();
         self.agents[0].source.trajectory = Some(trajectory);
@@ -629,7 +627,13 @@ impl TrajectoryViewer {
     }
 
     pub(super) fn render(&mut self, frame: &mut Frame<'_>) {
-        let area = frame.area();
+        // Drawn as a zoom over the workspace, inset like the Resources zoom.
+        let all = frame.area();
+        let area = if all.width > 40 && all.height > 12 {
+            Rect::new(all.x + 2, all.y + 1, all.width - 4, all.height - 2)
+        } else {
+            all
+        };
         frame.render_widget(Clear, area);
         let (badge, badge_color) = self.kv_badge();
         let block = Block::default()
@@ -689,7 +693,7 @@ impl TrajectoryViewer {
     fn render_agents(&self, frame: &mut Frame<'_>, area: Rect) {
         let width = usize::from(area.width);
         let columns = format!(
-            "  {:<16} {:<8} {:>5} {:>5} {:>8} {:>6} {:>5} {:>9}  ",
+            "  {:<16} {:<10} {:>5} {:>5} {:>8} {:>6} {:>5} {:>9}  ",
             "Agent", "Status", "Turns", "Reqs", "Tokens", "Cache", "KV", "Duration"
         );
         let bar_width = width.saturating_sub(columns.width()).max(4);
@@ -710,15 +714,17 @@ impl TrajectoryViewer {
         for (index, agent) in self.agents.iter().enumerate() {
             let selected = index == self.agent;
             let marker = if selected { "> " } else { "  " };
-            let name = truncate_to_width(&agent.source.name, 16);
-            let status = agent.source.status;
-            let status_style = match status {
-                AgentStatus::Running => Style::default().fg(Color::Green),
-                AgentStatus::Idle => Style::default().fg(Color::DarkGray),
-            };
+            let name =
+                truncate_to_width(&format!("{}{}", agent.source.tree, agent.source.name), 16);
+            let name_pad = 16usize.saturating_sub(name.width());
+            let state = agent.source.state;
+            let status_style = Style::default().fg(state.color());
             let mut spans = vec![
-                Span::raw(format!("{marker}{name:<16} ")),
-                Span::styled(format!("{:<8} ", status.label()), status_style),
+                Span::raw(format!("{marker}{name}{} ", " ".repeat(name_pad))),
+                Span::styled(
+                    format!("{} {:<8} ", state.icon(), state.label()),
+                    status_style,
+                ),
             ];
             match (&agent.source.trajectory, &agent.load_error) {
                 (Some(trajectory), _) => {
@@ -756,6 +762,10 @@ impl TrajectoryViewer {
                 (None, Some(error)) => spans.push(Span::styled(
                     truncate_to_width(&format!("unavailable: {error}"), width.saturating_sub(28)),
                     Style::default().fg(Color::Red),
+                )),
+                (None, None) if agent.source.session.is_none() => spans.push(Span::styled(
+                    "no worker journal · coordination node",
+                    Style::default().fg(Color::DarkGray),
                 )),
                 (None, None) => spans.push(Span::styled(
                     "not loaded · Enter to load",
@@ -1052,7 +1062,9 @@ fn record_line(
         RecordStatus::InProgress => Some(("… ", Color::Yellow)),
         RecordStatus::Success => None,
     };
-    let fixed = prefix.width() + metrics.width() + 4;
+    // Prefix, status glyph, two-column gap, metrics and the KV mark.
+    let status_width = if status.is_some() { 2 } else { 0 };
+    let fixed = prefix.width() + status_width + 2 + metrics.width() + 2;
     let summary_width = width.saturating_sub(fixed);
     let summary = truncate_to_width(&record.summary, summary_width);
     let padding = summary_width.saturating_sub(summary.width());
@@ -1072,9 +1084,7 @@ fn record_line(
         spans.push(Span::styled(symbol, Style::default().fg(color)));
     }
     spans.push(Span::styled(summary, summary_style));
-    spans.push(Span::raw(
-        " ".repeat(padding + if status.is_some() { 0 } else { 2 }),
-    ));
+    spans.push(Span::raw(" ".repeat(padding + 2)));
     spans.push(Span::styled(metrics, Style::default().fg(Color::DarkGray)));
     match mark {
         Some((symbol, color)) => spans.push(Span::styled(

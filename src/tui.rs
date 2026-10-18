@@ -7,9 +7,11 @@
 //! cells; resize notifications are coalesced by [`RenderScheduler`] so a
 //! resize drag or a burst of stream chunks does not cause a draw per event.
 
+mod agents;
 pub(crate) mod bootstrap;
 mod trajectory;
 
+pub use agents::AgentState;
 pub use trajectory::TrajectoryLevel;
 
 use serde::{Deserialize, Serialize};
@@ -1388,10 +1390,40 @@ impl TuiState {
         self.sync_activity_timer();
     }
 
-    fn sync_activity_timer(&mut self) {
-        let waiting = self.approval_count() > 0
+    /// The active turn is blocked on an approval decision, not on the model.
+    fn approval_waiting(&self) -> bool {
+        self.approval_count() > 0
             || !self.transcript_ux.canonical_approvals.is_empty()
-            || self.transcript_ux.approval_tracking_saturated;
+            || self.transcript_ux.approval_tracking_saturated
+    }
+
+    /// A bare `y`/`n` typed in the prompt while an approval is pending means
+    /// the decision, not a steering message: open the review with that choice
+    /// preselected so Enter confirms it. Returns false when nothing is pending.
+    fn select_pending_approval(&mut self, allow: bool) -> bool {
+        let project = self.active_project().to_owned();
+        let Some(view) = self.approval_views.get_mut(&project) else {
+            return false;
+        };
+        if view.requests.is_empty() || view.focused {
+            return false;
+        }
+        view.focused = true;
+        view.allow = allow;
+        view.remember = false;
+        view.stage = ApprovalStage::Select;
+        view.message.clear();
+        self.set_status(if allow {
+            "Approval: ALLOW selected · Enter confirms · Esc back"
+        } else {
+            "Approval: DENY selected · Enter confirms · n adds a note · Esc back"
+        });
+        self.dirty = true;
+        true
+    }
+
+    fn sync_activity_timer(&mut self) {
+        let waiting = self.approval_waiting();
         if !self.busy || self.transcript_ux.activity_ended || waiting {
             self.transcript_ux.pause();
         } else if self.transcript_ux.started.is_none() {
@@ -2092,6 +2124,9 @@ const INTERRUPT_WINDOW: Duration = Duration::from_millis(1200);
 const WORKER_STDIO_TAIL_BYTES: usize = 512 * 1024;
 /// Bound on one displayed worker input/output excerpt.
 const WORKER_STDIO_EXCERPT_BYTES: usize = 4 * 1024;
+/// How often the Gantt agent rows re-read the DAG store (only when it changed)
+/// and re-join process liveness.
+const AGENTS_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 
 /// One local headless worker matched to the active project, with the last
 /// input/output excerpt read from its session journal.
@@ -2804,6 +2839,12 @@ pub struct TuiState {
     /// Latest selected history of the live session, for the trajectory viewer.
     trajectory_history: Option<Arc<TrajectoryHistory>>,
     trajectory_revision: u64,
+    /// Multi-agent rows of the Gantt pane: the master plus DAG workers.
+    agents: agents::AgentsView,
+    agents_refreshed: Option<Instant>,
+    gantt_agent_cursor: usize,
+    /// Inner height of the Gantt pane at the last draw, for cursor follow.
+    gantt_view_height: std::cell::Cell<u16>,
     follow_hit: Option<Rect>,
     project_workspace: Option<crate::project_workspace::ProjectWorkspace>,
     directory_picker: Option<crate::directory_picker::DirectoryPicker>,
@@ -3053,6 +3094,10 @@ impl TuiState {
             trajectory_viewer: None,
             trajectory_history: None,
             trajectory_revision: 0,
+            agents: agents::AgentsView::default(),
+            agents_refreshed: None,
+            gantt_agent_cursor: 0,
+            gantt_view_height: std::cell::Cell::new(0),
             follow_hit: None,
             project_workspace: None,
             directory_picker: None,
@@ -5909,6 +5954,30 @@ impl TuiState {
         if !key.modifiers.is_empty() {
             return false;
         }
+        let agents = self.agents.rows.len();
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') if agents > 0 => {
+                self.gantt_agent_cursor = self.gantt_agent_cursor.saturating_sub(1);
+                self.follow_gantt_agent();
+                self.dirty = true;
+                return true;
+            }
+            KeyCode::Down | KeyCode::Char('j') if agents > 0 => {
+                self.gantt_agent_cursor = (self.gantt_agent_cursor + 1).min(agents - 1);
+                self.follow_gantt_agent();
+                self.dirty = true;
+                return true;
+            }
+            KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') if agents > 0 => {
+                self.open_trajectory_viewer_at(self.gantt_agent_cursor, true);
+                return true;
+            }
+            KeyCode::Char('z') => {
+                self.open_trajectory_viewer_at(self.gantt_agent_cursor, false);
+                return true;
+            }
+            _ => {}
+        }
         let scroll = self.pane_scroll.entry(PaneId::Gantt).or_insert(0);
         match key.code {
             KeyCode::Up => *scroll = scroll.saturating_sub(1),
@@ -6878,61 +6947,177 @@ impl TuiState {
         }
     }
 
-    /// Open the full-screen trajectory viewer (Alt-T, `/trajectory`). With
-    /// worker sessions it starts at the agent overview, otherwise directly at
-    /// the live session's records.
+    /// Open the trajectory zoom on the master's records (Alt-T, `/trajectory`).
     pub fn open_trajectory_viewer(&mut self) {
+        self.open_trajectory_viewer_at(0, true);
+    }
+
+    /// Open the trajectory zoom for the Gantt agent at `index`: its records,
+    /// or the agent overview when `records` is false.
+    fn open_trajectory_viewer_at(&mut self, index: usize, records: bool) {
+        self.refresh_agents();
         let session_path = self
             .project_metadata(self.active_project())
             .and_then(|metadata| metadata.session_path.clone());
-        let status = |busy| {
-            if busy {
-                trajectory::AgentStatus::Running
-            } else {
-                trajectory::AgentStatus::Idle
-            }
-        };
-        let master = match (&self.trajectory_history, &session_path) {
+        let mut master = match (&self.trajectory_history, &session_path) {
             (Some(history), _) => Some(history.project(self.busy)),
             (None, Some(path)) => crate::session::inspect_session(path)
                 .ok()
                 .map(|inspection| {
                     crate::trajectory::Trajectory::from_turns(&inspection.turns, None)
                 }),
-            (None, None) => None,
+            // A fresh session has an empty trajectory, not a missing one.
+            (None, None) => Some(crate::trajectory::Trajectory::default()),
         };
-        let mut sources = Vec::new();
-        if master.is_some() || session_path.is_some() {
-            sources.push(trajectory::AgentSource {
-                name: "master".into(),
-                status: status(self.busy),
-                session: session_path.clone().map(Into::into),
-                trajectory: master,
-            });
-        }
-        for row in self.project_worker_rows() {
-            if session_path.as_deref() == Some(row.session.as_str()) {
-                continue;
-            }
-            let name = std::path::Path::new(&row.session)
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .map_or_else(|| format!("pid {}", row.pid), str::to_owned);
-            sources.push(trajectory::AgentSource {
-                name,
-                status: status(row.phase == crate::resources::FootprintPhase::Busy),
-                session: Some(row.session.into()),
-                trajectory: None,
-            });
-        }
-        let workers = sources.len() > 1;
-        let viewer = trajectory::TrajectoryViewer::new(sources, self.trajectory_revision);
-        self.trajectory_viewer = Some(if workers {
-            viewer
-        } else {
+        let sources = self
+            .agents
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(position, row)| trajectory::AgentSource {
+                name: row.id.clone(),
+                tree: row.tree.clone(),
+                state: row.state,
+                session: row.session.clone(),
+                trajectory: if position == 0 { master.take() } else { None },
+            })
+            .collect();
+        let viewer = trajectory::TrajectoryViewer::new(sources, self.trajectory_revision)
+            .select_agent(index);
+        self.trajectory_viewer = Some(if records {
             viewer.open_records()
+        } else {
+            viewer
         });
         self.dirty = true;
+    }
+
+    /// Re-project the Gantt agent rows from the live session, the project's
+    /// DAG store and the headless process table.
+    pub fn refresh_agents(&mut self) {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| {
+                elapsed.as_millis().min(u128::from(u64::MAX)) as u64
+            });
+        let master = self.master_agent_info();
+        let dag_path = self.dag_store_path();
+        let workers = self.project_worker_processes();
+        self.agents
+            .refresh(master, dag_path.as_deref(), &workers, now_ms);
+        self.gantt_agent_cursor = self
+            .gantt_agent_cursor
+            .min(self.agents.rows.len().saturating_sub(1));
+        self.agents_refreshed = Some(Instant::now());
+    }
+
+    fn refresh_agents_if_due(&mut self) {
+        if self
+            .agents_refreshed
+            .is_none_or(|at| at.elapsed() >= AGENTS_REFRESH_INTERVAL)
+        {
+            self.refresh_agents();
+        }
+    }
+
+    /// Agent ids in Gantt order, master first.
+    pub fn gantt_agents(&self) -> Vec<(String, AgentState)> {
+        self.agents
+            .rows
+            .iter()
+            .map(|row| (row.id.clone(), row.state))
+            .collect()
+    }
+
+    pub fn gantt_agent_cursor(&self) -> usize {
+        self.gantt_agent_cursor
+    }
+
+    fn master_agent_info(&self) -> agents::MasterInfo {
+        let turns = self
+            .trajectory_history
+            .as_ref()
+            .map_or(&[][..], |history| history.turns.as_slice());
+        let summary = crate::trajectory::open_root(turns)
+            .and_then(|root| turns.iter().rev().find(|turn| turn.id == root))
+            .map(|turn| inline_token(&turn.content, 80));
+        agents::MasterInfo {
+            state: if self.busy && self.approval_waiting() {
+                AgentState::Waiting
+            } else if self.busy {
+                AgentState::Running
+            } else {
+                AgentState::Idle
+            },
+            summary,
+            session: self
+                .project_metadata(self.active_project())
+                .and_then(|metadata| metadata.session_path.clone())
+                .map(Into::into),
+            started_ms: turns.first().map(|turn| turn.created_at_ms),
+            updated_ms: turns.last().map(|turn| turn.created_at_ms),
+            tokens: self
+                .transcript_ux
+                .history_tokens
+                .filter(|tokens| *tokens > 0),
+        }
+    }
+
+    /// `ZENPI_DAG_STORE`, else `<project>/.zenpi/dag.json`; none without a
+    /// known project directory.
+    fn dag_store_path(&self) -> Option<std::path::PathBuf> {
+        if let Ok(path) = std::env::var(crate::dag::DAG_STORE_ENV)
+            && !path.trim().is_empty()
+        {
+            return Some(path.trim().into());
+        }
+        self.project_metadata(self.active_project())
+            .map(|metadata| metadata.cwd.as_str())
+            .filter(|cwd| !cwd.is_empty() && *cwd != ".")
+            .map(|cwd| std::path::Path::new(cwd).join(".zenpi").join("dag.json"))
+    }
+
+    /// Headless processes of the active project, without reading their stdio.
+    fn project_worker_processes(&self) -> Vec<agents::WorkerProcess> {
+        let Some(snapshot) = self.resource_snapshot.as_ref() else {
+            return Vec::new();
+        };
+        let metadata = self.project_metadata(self.active_project());
+        let session_path = metadata.and_then(|metadata| metadata.session_path.as_deref());
+        let cwd = metadata
+            .map(|metadata| metadata.cwd.as_str())
+            .filter(|cwd| !cwd.is_empty() && *cwd != ".");
+        snapshot
+            .headless
+            .rows
+            .iter()
+            .filter(|row| {
+                row.session.as_deref().is_some_and(|session| {
+                    session_path == Some(session) || cwd.is_some_and(|cwd| session.starts_with(cwd))
+                })
+            })
+            .map(|row| agents::WorkerProcess {
+                pid: row.pid,
+                busy: row.phase == crate::resources::FootprintPhase::Busy,
+                session: row.session.clone(),
+            })
+            .collect()
+    }
+
+    /// Keep the selected agent row inside the Gantt pane's visible window.
+    fn follow_gantt_agent(&mut self) {
+        // Content line 0 is the Agents header.
+        let line = self.gantt_agent_cursor + 1;
+        let height = usize::from(self.gantt_view_height.get()).max(1);
+        let scroll = self.pane_scroll.entry(PaneId::Gantt).or_insert(0);
+        let top = usize::from(*scroll);
+        if self.gantt_agent_cursor == 0 {
+            *scroll = 0;
+        } else if line < top {
+            *scroll = line as u16;
+        } else if line >= top + height {
+            *scroll = (line + 1 - height).min(usize::from(u16::MAX)) as u16;
+        }
     }
 
     /// Whether the trajectory viewer owns the screen and keyboard.
@@ -8287,6 +8472,19 @@ impl TuiState {
                         return TuiAction::Redraw;
                     }
                 }
+                if pane.id == PaneId::Gantt {
+                    // Content line 0 is the Agents header; agent rows follow.
+                    let scroll = usize::from(*self.pane_scroll.get(&PaneId::Gantt).unwrap_or(&0));
+                    let line = usize::from(mouse.row.saturating_sub(pane.rect.y + 1)) + scroll;
+                    if (1..=self.agents.rows.len()).contains(&line) {
+                        self.gantt_agent_cursor = line - 1;
+                        if double_click {
+                            self.open_trajectory_viewer_at(self.gantt_agent_cursor, true);
+                        }
+                        self.dirty = true;
+                        return TuiAction::Redraw;
+                    }
+                }
                 if pane.id == PaneId::Resources {
                     // A double click enlarges the pane into the worker/stdio
                     // overlay; a single click keeps block selection.
@@ -9291,6 +9489,21 @@ impl TuiState {
                 // a code-oriented prompt and must not be rewritten by the
                 // terminal host.
                 if !self.input.trim().is_empty() {
+                    let shorthand = match self.input.trim().to_ascii_lowercase().as_str() {
+                        "y" | "yes" => Some(true),
+                        "n" | "no" => Some(false),
+                        _ => None,
+                    };
+                    if let Some(allow) = shorthand
+                        && self.paste.folds.is_empty()
+                        && self.select_pending_approval(allow)
+                    {
+                        self.input.clear();
+                        self.cursor = 0;
+                        self.input_scroll = 0;
+                        self.preferred_column = None;
+                        return TuiAction::Redraw;
+                    }
                     let text = self.input.clone();
                     if !self.paste.folds.is_empty() {
                         self.submitted_pastes.push_back(SubmittedPaste {
@@ -10006,6 +10219,8 @@ impl TuiState {
         }
         let title = if goal {
             " Goal ".to_owned()
+        } else if self.busy && self.approval_waiting() {
+            " Conversation \u{b7} ⏸ 等待审批 ".to_owned()
         } else if self.busy {
             // ZS1-181: the production path shows the thinking animation.
             format!(" Conversation \u{b7} {} 思考中 ", self.spinner_frame())
@@ -10178,7 +10393,9 @@ impl TuiState {
             } else {
                 Color::Cyan
             }))
-            .title(if self.busy {
+            .title(if self.busy && self.approval_waiting() {
+                " Prompt · ⏸ 等待审批 · Alt-A 审批 · 或输入 y / n ".to_owned()
+            } else if self.busy {
                 format!(
                     " Prompt · {} 思考中 {}s · Ctrl-C 中断 ",
                     self.spinner_frame(),
@@ -10530,7 +10747,9 @@ impl TuiState {
             HotZone::Arch => {
                 " Arch 热区 · Enter send · Shift-Enter 换行 · Esc 返回 Conversation · 双击 Ctrl-C 强杀 "
             }
-            HotZone::Gantt => " Gantt 热区 · ↑↓/PgUp/PgDn 滚动 · Esc 退出热区 · Tab 切区 ",
+            HotZone::Gantt => {
+                " Gantt 热区 · ↑↓ 选择 agent · Enter 轨迹 · z 放大 · PgUp/PgDn 滚动 · Esc 退出热区 · Tab 切区 "
+            }
             HotZone::Shell => {
                 " Shell 热区 · 直接输入进 PTY · Ctrl-C 发送 SIGINT · 双击 Ctrl-C 强杀 · Tab 切区 "
             }
@@ -10559,6 +10778,7 @@ impl TuiState {
         if area.width == 0 || area.height == 0 {
             return;
         }
+        self.refresh_agents_if_due();
         if area != self.last_area {
             self.last_area = area;
             self.invalidate_transcript();
@@ -11108,7 +11328,21 @@ impl TuiState {
             usize::from(*self.pane_scroll.get(&id).unwrap_or(&0))
         };
         let text = match id {
-            PaneId::Gantt => style_status_marks(&content),
+            PaneId::Gantt => {
+                let width = usize::from(area.width.saturating_sub(2));
+                self.gantt_view_height.set(area.height.saturating_sub(2));
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |elapsed| {
+                        elapsed.as_millis().min(u128::from(u64::MAX)) as u64
+                    });
+                let selected = (self.workspace_layout.focused == Some(PaneId::Gantt))
+                    .then_some(self.gantt_agent_cursor);
+                let mut lines = agents::section_lines(&self.agents, selected, width, now_ms);
+                lines.push(Line::raw(""));
+                lines.extend(style_status_marks(&content).lines);
+                ratatui::text::Text::from(lines)
+            }
             PaneId::Resources => style_resource_pane(&content),
             _ => ratatui::text::Text::from(content),
         };
@@ -11121,7 +11355,11 @@ impl TuiState {
         let paragraph = if id == PaneId::SessionList {
             paragraph
         } else {
-            paragraph.wrap(Wrap { trim: true })
+            // The Gantt agent rows align on a selection gutter and tree
+            // indentation, which trimming would eat.
+            paragraph.wrap(Wrap {
+                trim: id != PaneId::Gantt,
+            })
         };
         frame.render_widget(paragraph, area);
     }
@@ -19396,13 +19634,11 @@ fn run_tui_loop(
                         .as_ref()
                         .map(|(text, _)| text.as_str())
                         .unwrap_or("");
+                    // Request and policy digests stay in the review overlay; the
+                    // transcript only says what is asked and how to answer.
                     let prompt = format!(
-                        "Approval required: {} {}\nRequest: {}\nPolicy: {}{}\nAlt-A reviews this request; y/n selects, Enter confirms.",
-                        request.tool,
-                        safe_arguments,
-                        request.request_id,
-                        request.policy_digest.as_deref().unwrap_or("unbound"),
-                        suffix,
+                        "Approval required: {} {}{}\nAlt-A to review, or type y / n in the prompt; Enter confirms.",
+                        request.tool, safe_arguments, suffix,
                     );
                     if let Some((_, block)) = preview {
                         state.push_message_block(MessageRole::System, prompt, block);

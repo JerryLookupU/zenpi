@@ -1,0 +1,189 @@
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::{Terminal, backend::TestBackend};
+use tempfile::tempdir;
+use zenpi::approval::ApprovalRequest;
+use zenpi::core::{Agent, TurnInputRequest};
+use zenpi::dag::DagStore;
+use zenpi::layout::PaneId;
+use zenpi::session::SessionStore;
+use zenpi::tools::{ToolOrigin, ToolSideEffect};
+use zenpi::tui::{AgentState, ProjectTabMetadata, TrajectoryLevel, TuiAction, TuiState};
+
+fn request(id: &str) -> ApprovalRequest {
+    ApprovalRequest {
+        request_id: id.into(),
+        turn_id: "turn".into(),
+        call_id: format!("call-{id}"),
+        tool: "run_command".into(),
+        side_effect: ToolSideEffect::CommandExecution,
+        arguments: serde_json::json!({"command": "ls -la"}),
+        preview: None,
+        origin: ToolOrigin::AgentTool,
+        policy_digest: None,
+        lease_id: None,
+    }
+}
+
+fn plain(state: &mut TuiState, code: KeyCode) -> TuiAction {
+    state.handle_key(KeyEvent::new(code, KeyModifiers::NONE))
+}
+
+/// Screen text with the padding cells of wide (CJK) glyphs removed.
+fn render(state: &mut TuiState, width: u16, height: u16) -> String {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+    terminal
+        .draw(|frame| state.render_bentobox(frame, "zenpi"))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    (0..height)
+        .map(|y| {
+            (0..width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn compact(screen: &str) -> String {
+    screen.replace(' ', "")
+}
+
+#[test]
+fn bare_y_in_the_prompt_selects_allow_instead_of_steering() {
+    let mut state = TuiState::default();
+    state.set_busy(true);
+    state.present_approval(request("a"));
+    // Esc leaves the review; the turn is still blocked on it.
+    plain(&mut state, KeyCode::Esc);
+    let screen = compact(&render(&mut state, 160, 40));
+    assert!(screen.contains("等待审批"), "{screen}");
+    assert!(!screen.contains("思考中"), "{screen}");
+
+    state.set_input("y");
+    assert_eq!(plain(&mut state, KeyCode::Enter), TuiAction::Redraw);
+    assert_eq!(state.input(), "");
+    assert!(render(&mut state, 160, 40).contains("ALLOW"));
+    assert!(matches!(
+        plain(&mut state, KeyCode::Enter),
+        TuiAction::RespondApproval { allow: true, .. }
+    ));
+}
+
+#[test]
+fn bare_n_selects_deny_and_plain_text_still_steers() {
+    let mut state = TuiState::default();
+    state.set_busy(true);
+    state.present_approval(request("a"));
+    plain(&mut state, KeyCode::Esc);
+    state.set_input(" No ");
+    assert_eq!(plain(&mut state, KeyCode::Enter), TuiAction::Redraw);
+    assert!(matches!(
+        plain(&mut state, KeyCode::Enter),
+        TuiAction::RespondApproval { allow: false, .. }
+    ));
+
+    // Anything else is an ordinary message, and so is "y" with nothing pending.
+    state.retire_approval("a");
+    state.set_input("y");
+    assert_eq!(
+        plain(&mut state, KeyCode::Enter),
+        TuiAction::Submit("y".into())
+    );
+}
+
+fn project_state(cwd: &std::path::Path) -> TuiState {
+    let mut state = TuiState::default();
+    state.set_active_project_metadata(ProjectTabMetadata {
+        cwd: cwd.display().to_string(),
+        ..ProjectTabMetadata::default()
+    });
+    state
+}
+
+#[test]
+fn gantt_lists_the_dag_tree_and_opens_a_worker_trajectory() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    let store = DagStore::at(root.join(".zenpi").join("dag.json"));
+    store.upsert("plan", None).unwrap();
+    store.upsert("api", Some("plan")).unwrap();
+    store.upsert("ui", Some("plan")).unwrap();
+    store
+        .set_status("api", "green", Some("routes done"))
+        .unwrap();
+    // A worker that was assigned but whose process is gone.
+    store.assign_worker("ui", "pid:4000000").unwrap();
+    store.send("plan", "ui", "please add the form").unwrap();
+    // The api worker left a real journal in the default worker directory.
+    let workers = root.join(".zenpi").join("workers");
+    std::fs::create_dir_all(&workers).unwrap();
+    let mut worker = Agent::with_echo(SessionStore::open(workers.join("api.jsonl")).unwrap());
+    worker
+        .process(TurnInputRequest::new("implement the api"))
+        .unwrap();
+
+    let mut state = project_state(root);
+    state.refresh_agents();
+    assert_eq!(
+        state.gantt_agents(),
+        [
+            ("master".to_owned(), AgentState::Idle),
+            ("plan".to_owned(), AgentState::Open),
+            ("api".to_owned(), AgentState::Done),
+            ("ui".to_owned(), AgentState::Stale),
+        ]
+    );
+
+    assert!(state.focus_workspace_pane(PaneId::Gantt));
+    let screen = render(&mut state, 180, 48);
+    assert!(screen.contains("Agents"), "{screen}");
+    assert!(screen.contains("├ ✓ api"), "{screen}");
+    assert!(screen.contains("└ ⚠ ui"), "{screen}");
+    assert!(screen.contains("worker exited"), "{screen}");
+    assert!(screen.contains("routes done"), "{screen}");
+    assert!(screen.contains("✉1"), "{screen}");
+    assert!(screen.contains("stale"), "{screen}");
+
+    // Select api and open its trajectory from its journal.
+    plain(&mut state, KeyCode::Down);
+    plain(&mut state, KeyCode::Down);
+    assert_eq!(state.gantt_agent_cursor(), 2);
+    plain(&mut state, KeyCode::Enter);
+    assert_eq!(state.trajectory_level(), Some(TrajectoryLevel::Records));
+    let zoom = render(&mut state, 180, 48);
+    assert!(zoom.contains("Agents › api"), "{zoom}");
+    assert!(zoom.contains("implement the api"), "{zoom}");
+
+    // Esc returns to the zoomed agent overview, Esc again to the workspace.
+    plain(&mut state, KeyCode::Esc);
+    assert_eq!(state.trajectory_level(), Some(TrajectoryLevel::Agents));
+    assert!(render(&mut state, 180, 48).contains("✓ done"));
+    plain(&mut state, KeyCode::Esc);
+    assert!(!state.trajectory_open());
+
+    // `z` zooms straight into the overview.
+    plain(&mut state, KeyCode::Char('z'));
+    assert_eq!(state.trajectory_level(), Some(TrajectoryLevel::Agents));
+}
+
+#[test]
+fn gantt_shows_the_master_alone_without_a_dag() {
+    let dir = tempdir().unwrap();
+    let mut state = project_state(dir.path());
+    state.refresh_agents();
+    assert_eq!(
+        state.gantt_agents(),
+        [("master".to_owned(), AgentState::Idle)]
+    );
+    state.set_busy(true);
+    state.refresh_agents();
+    assert_eq!(state.gantt_agents()[0].1, AgentState::Running);
+    state.present_approval(request("a"));
+    state.refresh_agents();
+    assert_eq!(state.gantt_agents()[0].1, AgentState::Waiting);
+    plain(&mut state, KeyCode::Esc);
+    let screen = render(&mut state, 160, 40);
+    assert!(screen.contains("approval"), "{screen}");
+    assert!(screen.contains("no DAG workers"), "{screen}");
+}
