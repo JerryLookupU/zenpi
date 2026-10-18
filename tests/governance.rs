@@ -36,11 +36,7 @@ impl Backend for UsageBackend {
     fn complete(&self, _request: CompletionRequest<'_>) -> Result<Completion, BackendError> {
         Ok(Completion {
             content: "budgeted".into(),
-            usage: Some(Usage {
-                input_tokens: 2,
-                output_tokens: 3,
-                total_tokens: 5,
-            }),
+            usage: Some(Usage::new(2, 3, 5)),
             ..Completion::default()
         })
     }

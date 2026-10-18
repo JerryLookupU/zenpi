@@ -45,11 +45,7 @@ impl Backend for CaptureBackend {
                 .to_string(),
             );
             completion.model = Some("fixture-summary".into());
-            completion.usage = Some(zenpi::backend::Usage {
-                input_tokens: 100,
-                output_tokens: 80,
-                total_tokens: 180,
-            });
+            completion.usage = Some(zenpi::backend::Usage::new(100, 80, 180));
             return Ok(completion);
         }
         self.0

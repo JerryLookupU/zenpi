@@ -46,6 +46,7 @@ pub mod sync;
 pub mod tool_output;
 pub mod tool_runtime;
 pub mod tools;
+pub mod trajectory;
 pub mod tui;
 pub mod view_model;
 

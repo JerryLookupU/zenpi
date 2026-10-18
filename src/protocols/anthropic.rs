@@ -797,9 +797,9 @@ impl Fold {
             .checked_add(self.usage[1])
             .ok_or_else(|| invalid("usage overflow"))?;
         let usage = self.saw_usage.then_some(Usage {
-            input_tokens: input,
-            output_tokens: self.usage[1],
-            total_tokens: total,
+            cache_read_tokens: self.usage[2],
+            cache_write_tokens: self.usage[3],
+            ..Usage::new(input, self.usage[1], total)
         });
         let mut native_history = json!({"type":"native_history","wire":WIRE,"provider":provider,"model":self.model,"blocks":blocks});
         if self.deepseek {

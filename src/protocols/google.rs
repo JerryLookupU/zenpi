@@ -574,9 +574,9 @@ impl Fold {
             self.cached = cached;
             self.thoughts = thoughts;
             self.usage = Some(Usage {
-                input_tokens: input,
-                output_tokens: output,
-                total_tokens: total,
+                cache_read_tokens: cached,
+                reasoning_tokens: thoughts,
+                ..Usage::new(input, output, total)
             });
         }
         Ok(())

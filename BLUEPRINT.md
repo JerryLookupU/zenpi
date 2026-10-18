@@ -55,11 +55,14 @@
 
 ### 阶段 4：实现与集成
 
-[ ] 实现轨迹数据采集
-[ ] 实现 TUI 轨迹面板
-[ ] 实现 KV cache 校验
-[ ] 集成到 Zenpi TUI 主界面
-[ ] 测试和优化
+[x] 实现轨迹数据采集（`Usage` 缓存/推理细分 + 每次请求的计时与前缀指纹）
+[x] 实现 TUI 轨迹面板（`src/tui/trajectory.rs`，三层视图）
+[x] 实现 KV cache 校验（`src/trajectory.rs`，前缀指纹 + 用量对比）
+[x] 集成到 Zenpi TUI 主界面（`Alt-T` / `/trajectory`；headless `/trajectory` 返回 JSON）
+[x] 测试（`tests/tui_trajectory.rs` + 单元测试）
+[ ] Agent 暂停/继续（运行时目前只有 cancel/steer，没有 pause 原语，需先设计）
+
+**实现说明**：见 `Docs/learn/ui-trajectory/IMPLEMENTATION.md`
 
 ## Oracle 定义
 
@@ -144,9 +147,9 @@
 
 ### 技术决策
 
-- **TUI 库**：建议使用 blessed（功能丰富，成熟稳定）
+- **TUI 库**：~~blessed~~ → 实际为 Rust + ratatui（Zenpi 本身是 Rust 项目，沿用现有 TUI 栈，不引入新依赖）
 - **数据适配**：创建独立的 `ZenpiTrajectoryAdapter` 类
-- **入口集成**：快捷键 `Ctrl+T` 打开轨迹视图
+- **入口集成**：~~`Ctrl+T`~~ → `Alt-T`（`Ctrl-T` 已被目录选择器占用，`Ctrl-G` 已被外部编辑器占用）+ `/trajectory`
 - **KV Cache 重点**：专门的缓存信息面板和统计
 
 ## 下一步行动

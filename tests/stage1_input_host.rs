@@ -789,11 +789,7 @@ impl Backend for CaptureOnly {
                 .to_string(),
             );
             completion.model = Some("fixture-summary".into());
-            completion.usage = Some(zenpi::backend::Usage {
-                input_tokens: 100,
-                output_tokens: 100,
-                total_tokens: 200,
-            });
+            completion.usage = Some(zenpi::backend::Usage::new(100, 100, 200));
             return Ok(completion);
         }
         self.0

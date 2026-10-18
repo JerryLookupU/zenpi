@@ -8,6 +8,9 @@
 //! resize drag or a burst of stream chunks does not cause a draw per event.
 
 pub(crate) mod bootstrap;
+mod trajectory;
+
+pub use trajectory::TrajectoryLevel;
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
@@ -1077,6 +1080,21 @@ struct CopyEntry {
     label: String,
     text: String,
 }
+/// The live session's selected history as last seen by the host.
+#[derive(Debug)]
+struct TrajectoryHistory {
+    turns: Vec<crate::core::Turn>,
+}
+
+impl TrajectoryHistory {
+    fn project(&self, busy: bool) -> crate::trajectory::Trajectory {
+        let root = busy
+            .then(|| crate::trajectory::open_root(&self.turns))
+            .flatten();
+        crate::trajectory::Trajectory::from_turns(&self.turns, root)
+    }
+}
+
 #[derive(Debug, Clone)]
 struct TranscriptBrowser {
     entries: Vec<CopyEntry>,
@@ -2818,6 +2836,10 @@ pub struct TuiState {
     command_resources: Vec<CommandResource>,
     transcript_ux: TranscriptUx,
     transcript_browser: Option<TranscriptBrowser>,
+    trajectory_viewer: Option<trajectory::TrajectoryViewer>,
+    /// Latest selected history of the live session, for the trajectory viewer.
+    trajectory_history: Option<Arc<TrajectoryHistory>>,
+    trajectory_revision: u64,
     follow_hit: Option<Rect>,
     project_workspace: Option<crate::project_workspace::ProjectWorkspace>,
     directory_picker: Option<crate::directory_picker::DirectoryPicker>,
@@ -3057,6 +3079,9 @@ impl TuiState {
             command_resources: Vec::new(),
             transcript_ux: TranscriptUx::default(),
             transcript_browser: None,
+            trajectory_viewer: None,
+            trajectory_history: None,
+            trajectory_revision: 0,
             follow_hit: None,
             project_workspace: None,
             directory_picker: None,
@@ -6583,12 +6608,16 @@ impl TuiState {
                 input_tokens,
                 output_tokens,
                 total_tokens,
+                cache_read_tokens,
+                cache_write_tokens,
+                reasoning_tokens,
             } => {
                 if self.streaming_job_id == Some(job_id) {
                     self.transcript_ux.usage = Some(crate::backend::Usage {
-                        input_tokens: *input_tokens,
-                        output_tokens: *output_tokens,
-                        total_tokens: *total_tokens,
+                        cache_read_tokens: *cache_read_tokens,
+                        cache_write_tokens: *cache_write_tokens,
+                        reasoning_tokens: *reasoning_tokens,
+                        ..crate::backend::Usage::new(*input_tokens, *output_tokens, *total_tokens)
                     });
                     self.dirty = true;
                 }
@@ -6800,6 +6829,115 @@ impl TuiState {
         self.transcript_browser = Some(TranscriptBrowser::new(&self.messages));
         self.dirty = true;
     }
+
+    /// Record the live session's selected history for the trajectory viewer.
+    pub fn set_trajectory_history(&mut self, turns: Vec<crate::core::Turn>) {
+        self.trajectory_history = Some(Arc::new(TrajectoryHistory { turns }));
+        self.trajectory_revision = self.trajectory_revision.wrapping_add(1);
+        if self.trajectory_viewer.is_some() {
+            self.dirty = true;
+        }
+    }
+
+    /// Open the full-screen trajectory viewer (Alt-T, `/trajectory`). With
+    /// worker sessions it starts at the agent overview, otherwise directly at
+    /// the live session's records.
+    pub fn open_trajectory_viewer(&mut self) {
+        let session_path = self
+            .project_metadata(self.active_project())
+            .and_then(|metadata| metadata.session_path.clone());
+        let status = |busy| {
+            if busy {
+                trajectory::AgentStatus::Running
+            } else {
+                trajectory::AgentStatus::Idle
+            }
+        };
+        let master = match (&self.trajectory_history, &session_path) {
+            (Some(history), _) => Some(history.project(self.busy)),
+            (None, Some(path)) => crate::session::inspect_session(path)
+                .ok()
+                .map(|inspection| {
+                    crate::trajectory::Trajectory::from_turns(&inspection.turns, None)
+                }),
+            (None, None) => None,
+        };
+        let mut sources = Vec::new();
+        if master.is_some() || session_path.is_some() {
+            sources.push(trajectory::AgentSource {
+                name: "master".into(),
+                status: status(self.busy),
+                session: session_path.clone().map(Into::into),
+                trajectory: master,
+            });
+        }
+        for row in self.project_worker_rows() {
+            if session_path.as_deref() == Some(row.session.as_str()) {
+                continue;
+            }
+            let name = std::path::Path::new(&row.session)
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .map_or_else(|| format!("pid {}", row.pid), str::to_owned);
+            sources.push(trajectory::AgentSource {
+                name,
+                status: status(row.phase == crate::resources::FootprintPhase::Busy),
+                session: Some(row.session.into()),
+                trajectory: None,
+            });
+        }
+        let workers = sources.len() > 1;
+        let viewer = trajectory::TrajectoryViewer::new(sources, self.trajectory_revision);
+        self.trajectory_viewer = Some(if workers {
+            viewer
+        } else {
+            viewer.open_records()
+        });
+        self.dirty = true;
+    }
+
+    /// Whether the trajectory viewer owns the screen and keyboard.
+    pub fn trajectory_open(&self) -> bool {
+        self.trajectory_viewer.is_some()
+    }
+
+    pub fn trajectory_level(&self) -> Option<TrajectoryLevel> {
+        self.trajectory_viewer.as_ref().map(|viewer| viewer.level())
+    }
+
+    fn render_trajectory_viewer(&mut self, frame: &mut Frame<'_>) {
+        let Some(viewer) = self.trajectory_viewer.as_mut() else {
+            return;
+        };
+        if viewer.master_revision() != self.trajectory_revision
+            && let Some(history) = self.trajectory_history.as_ref()
+        {
+            viewer.sync_master(self.trajectory_revision, history.project(self.busy));
+        }
+        viewer.render(frame);
+    }
+
+    fn trajectory_key(&mut self, key: KeyEvent) -> TuiAction {
+        let Some(viewer) = self.trajectory_viewer.as_mut() else {
+            return TuiAction::None;
+        };
+        self.dirty = true;
+        let interrupt = key.code == KeyCode::Char('c')
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+            && self.busy;
+        match viewer.key(key) {
+            trajectory::ViewerKey::Stay => TuiAction::Redraw,
+            trajectory::ViewerKey::Action(action) => action,
+            trajectory::ViewerKey::Close => {
+                self.trajectory_viewer = None;
+                if interrupt {
+                    TuiAction::Interrupt
+                } else {
+                    TuiAction::Redraw
+                }
+            }
+        }
+    }
     pub fn copy_latest_answer(&self) -> Option<String> {
         self.messages
             .iter()
@@ -6840,6 +6978,7 @@ impl TuiState {
                 .find_map(|m| m.get("usage"))
                 .and_then(|v| serde_json::from_value(v.clone()).ok());
         }
+        self.set_trajectory_history(history);
     }
 
     pub fn update_input_queue(&mut self, reply: &crate::input_queue::InputQueueReply) {
@@ -7057,6 +7196,7 @@ impl TuiState {
             || self.directory_picker.is_some()
             || self.history_search.is_some()
             || self.transcript_browser.is_some()
+            || self.trajectory_viewer.is_some()
             || !self.slash_choices().is_empty()
             || self
                 .approval_views
@@ -7184,6 +7324,7 @@ impl TuiState {
             || self.cursor != self.input.len()
             || self.directory_picker.is_some()
             || self.transcript_browser.is_some()
+            || self.trajectory_viewer.is_some()
         {
             return None;
         }
@@ -7761,6 +7902,11 @@ impl TuiState {
         }
         if self.resources_zoom.is_some() {
             return self.resources_zoom_mouse(mouse, double_click);
+        }
+        if let Some(viewer) = self.trajectory_viewer.as_mut() {
+            viewer.mouse(mouse);
+            self.dirty = true;
+            return TuiAction::Redraw;
         }
         if let Some(picker) = self.directory_picker.as_mut() {
             let result = picker.mouse(mouse);
@@ -8404,6 +8550,7 @@ impl TuiState {
                     view.focused = false;
                 }
                 if self.transcript_browser.is_some()
+                    || self.trajectory_viewer.is_some()
                     || self.goal_edit.is_some()
                     || self.resources_zoom.is_some()
                     || self.subtab_concurrency_edit.is_some()
@@ -8455,6 +8602,7 @@ impl TuiState {
     fn modal_active(&self) -> bool {
         self.directory_picker.is_some()
             || self.transcript_browser.is_some()
+            || self.trajectory_viewer.is_some()
             || self.history_search.is_some()
             || self.goal_edit.is_some()
             || self.resources_zoom.is_some()
@@ -8482,6 +8630,10 @@ impl TuiState {
         // The enlarged Resources overlay is modal over every hot zone.
         if self.resources_zoom.is_some() {
             return self.resources_zoom_key(key);
+        }
+        // So is the full-screen trajectory viewer.
+        if self.trajectory_viewer.is_some() {
+            return self.trajectory_key(key);
         }
         // The inline layer-2 concurrency number editor is modal (ZS1-174).
         if self.subtab_concurrency_edit.is_some() {
@@ -8611,6 +8763,10 @@ impl TuiState {
                 }
                 KeyCode::Char('b') => {
                     self.open_transcript_browser();
+                    return TuiAction::Redraw;
+                }
+                KeyCode::Char('t') => {
+                    self.open_trajectory_viewer();
                     return TuiAction::Redraw;
                 }
                 KeyCode::Char('c') => {
@@ -9712,6 +9868,7 @@ impl TuiState {
             browser.render(frame);
         }
         self.render_approval(frame);
+        self.render_trajectory_viewer(frame);
     }
 
     fn render_header(&self, frame: &mut Frame<'_>, area: Rect, title: &str) {
@@ -10427,6 +10584,7 @@ impl TuiState {
         self.render_tab_rename(frame);
         self.render_approval(frame);
         self.render_resources_zoom(frame);
+        self.render_trajectory_viewer(frame);
     }
 
     /// Draw the inline tab-rename overlay when a header card is being renamed.
@@ -13217,6 +13375,12 @@ pub fn dispatch_slash_command(
         SlashCommand::Clear => {
             state.clear_messages();
             state.set_status("Ready");
+        }
+        SlashCommand::Trajectory => {
+            if let Some(agent) = agent.as_deref() {
+                state.refresh_transcript_status(agent);
+            }
+            state.open_trajectory_viewer();
         }
         SlashCommand::Cancel => {
             state.set_status("Interrupt requested");
