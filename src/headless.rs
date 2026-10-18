@@ -3265,10 +3265,38 @@ pub fn import_learn_manifest_for_tui(
 }
 
 /// Execute one deterministic, dependency-aware Blueprint item through the
-/// local receipt owner.  This operation is deliberately provider/shell-free:
-/// it proves durable admission, budget accounting, dependency ordering, and
-/// restart-safe evidence without pretending that zenpi is a b3ehive scheduler.
+/// local receipt owner without running the task.  This operation is
+/// deliberately provider/shell-free: it proves durable admission, budget
+/// accounting, dependency ordering, and restart-safe evidence without
+/// pretending that zenpi is a b3ehive scheduler.
 pub fn run_blueprint_next(agent: &mut Agent, target: &str) -> Result<serde_json::Value, String> {
+    run_blueprint_next_inner(agent, target, |_, _| Ok(()), false)
+}
+
+/// Execute one dependency-ready Blueprint item through the local receipt
+/// owner and delegate the task to `execute`.  The closure receives the owner
+/// agent and the selected item; it must run the instruction and its acceptance
+/// commands.  A closure error becomes a durable `failed` receipt.
+pub fn run_blueprint_next_with<F>(
+    agent: &mut Agent,
+    target: &str,
+    execute: F,
+) -> Result<serde_json::Value, String>
+where
+    F: FnMut(&mut Agent, &crate::domains::BlueprintItem) -> Result<(), String>,
+{
+    run_blueprint_next_inner(agent, target, execute, true)
+}
+
+fn run_blueprint_next_inner<F>(
+    agent: &mut Agent,
+    target: &str,
+    mut execute: F,
+    executed: bool,
+) -> Result<serde_json::Value, String>
+where
+    F: FnMut(&mut Agent, &crate::domains::BlueprintItem) -> Result<(), String>,
+{
     if agent.phase() != crate::core::AgentPhase::Idle {
         return Err("blueprint execution is available only while the agent is idle".into());
     }
@@ -3338,9 +3366,15 @@ pub fn run_blueprint_next(agent: &mut Agent, target: &str) -> Result<serde_json:
     let execution_store = crate::domain_execution::ExecutionStore::open(&execution_path)
         .map_err(|error| error.to_string())?;
     let mut executor = crate::domain_execution::BlueprintExecutor::new(execution_store);
-    let outcome = executor
-        .run_next(&goal, &blueprint, || false)
-        .map_err(|error| error.to_string())?;
+    let outcome = if executed {
+        executor
+            .run_next_with(&goal, &blueprint, || false, |item| execute(agent, item))
+            .map_err(|error| error.to_string())?
+    } else {
+        executor
+            .run_next(&goal, &blueprint, || false)
+            .map_err(|error| error.to_string())?
+    };
     let mut value = match &outcome {
         crate::domain_execution::RunOutcome::Executed {
             receipt,
@@ -3353,7 +3387,12 @@ pub fn run_blueprint_next(agent: &mut Agent, target: &str) -> Result<serde_json:
             "target": target,
             "goal_id": goal.id,
             "status": "recorded",
-            "execution_scope": "control_plane_only",
+            "execution_scope": if executed {
+                "local_goal_runner"
+            } else {
+                "control_plane_only"
+            },
+            "task_executed": executed,
             "external_work_executed": false,
             "resumed_running": resumed_running,
             "receipt": receipt,
@@ -3393,10 +3432,12 @@ pub fn run_blueprint_next(agent: &mut Agent, target: &str) -> Result<serde_json:
             "attempt": attempt,
         }),
     };
+    let all_items_succeeded = executor.is_complete(&goal, &blueprint);
     let goal_status =
         sync_goal_status_after_execution(agent, &goal, &blueprint, executor.store(), &outcome)?;
     if let Some(object) = value.as_object_mut() {
         object.insert("goal_status".into(), json!(goal_status));
+        object.insert("all_items_succeeded".into(), json!(all_items_succeeded));
         object.insert(
             "receipt_store_generation".into(),
             json!(executor.store().generation()),
@@ -3414,10 +3455,33 @@ pub fn run_goal_steps_for_tui(
     target: &str,
     steps: usize,
 ) -> Result<serde_json::Value, String> {
+    if let Some(goal_id) = exhausted_goal_for_target(agent, target)? {
+        block_goal_locally(agent, &goal_id)?;
+        return Ok(serde_json::json!({
+            "command": "blueprint",
+            "route": "local",
+            "accepted": true,
+            "action": "run",
+            "target": target,
+            "goal_id": goal_id,
+            "status": "blocked",
+            "goal_status": "blocked",
+            "completion_basis": "attempts_exhausted",
+            "goal_outcome": "could_not_be_achieved",
+            "steps_requested": steps,
+            "steps_recorded": 0,
+            "receipts": [],
+            "execution_scope": "local_goal_runner",
+            "task_executed": false,
+            "external_work_executed": false,
+        }));
+    }
     let mut receipts = Vec::new();
     let mut last = serde_json::json!({"status":"queued"});
+    let mut completed = false;
+    let mut attempts_exhausted = false;
     for _ in 0..steps {
-        let value = run_blueprint_next(agent, target)?;
+        let mut value = run_blueprint_next_with(agent, target, execute_blueprint_task)?;
         let status = value
             .get("status")
             .and_then(serde_json::Value::as_str)
@@ -3426,8 +3490,46 @@ pub fn run_goal_steps_for_tui(
         if let Some(receipt) = value.get("receipt") {
             receipts.push(receipt.clone());
         }
+        let all_items_succeeded = value
+            .get("all_items_succeeded")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        if (status == "complete" || all_items_succeeded)
+            && let Some(goal_id) = value.get("goal_id").and_then(serde_json::Value::as_str)
+        {
+            complete_goal_locally(agent, goal_id)?;
+            completed = true;
+            if let Some(object) = value.as_object_mut() {
+                object.insert("status".into(), serde_json::json!("complete"));
+            }
+        }
+        let failed = value
+            .get("receipt")
+            .and_then(|receipt| receipt.get("status"))
+            .and_then(serde_json::Value::as_str)
+            == Some("failed");
+        if failed
+            && let Some(goal_id) = value.get("goal_id").and_then(serde_json::Value::as_str)
+        {
+            let attempt = value
+                .get("receipt")
+                .and_then(|receipt| receipt.get("attempt"))
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0) as u32;
+            if attempt >= goal_attempt_budget(agent, goal_id)? {
+                block_goal_locally(agent, goal_id)?;
+                attempts_exhausted = true;
+                if let Some(object) = value.as_object_mut() {
+                    object.insert("status".into(), serde_json::json!("blocked"));
+                    object.insert("goal_status".into(), serde_json::json!("blocked"));
+                }
+            }
+        }
         last = value;
-        if matches!(status.as_str(), "blocked" | "cancelled" | "complete") {
+        if completed
+            || attempts_exhausted
+            || matches!(status.as_str(), "blocked" | "cancelled" | "complete")
+        {
             break;
         }
     }
@@ -3435,8 +3537,162 @@ pub fn run_goal_steps_for_tui(
         object.insert("steps_requested".into(), serde_json::json!(steps));
         object.insert("steps_recorded".into(), serde_json::json!(receipts.len()));
         object.insert("receipts".into(), serde_json::Value::Array(receipts));
+        object.insert(
+            "completion_basis".into(),
+            serde_json::json!(if completed {
+                "local_acceptance_commands"
+            } else if attempts_exhausted {
+                "attempts_exhausted"
+            } else {
+                "not_complete"
+            }),
+        );
+        if completed {
+            object.insert("goal_status".into(), serde_json::json!("done"));
+        }
+        if attempts_exhausted {
+            object.insert("goal_status".into(), serde_json::json!("blocked"));
+            object.insert(
+                "goal_outcome".into(),
+                serde_json::json!("could_not_be_achieved"),
+            );
+        }
     }
     Ok(last)
+}
+
+fn exhausted_goal_for_target(agent: &Agent, target: &str) -> Result<Option<String>, String> {
+    let target = target.trim();
+    let (blueprint_id, version) = target
+        .split_once('@')
+        .map_or((target, None), |(id, version)| (id, Some(version)));
+    let store = DomainStore::open_read_only(domain_store::path_for_session(agent.session().path()))
+        .map_err(|error| error.to_string())?;
+    let goals = store
+        .goals()
+        .into_iter()
+        .filter(|goal| {
+            goal.blueprint_id == blueprint_id
+                && version.is_none_or(|version| goal.blueprint_version == version)
+        })
+        .collect::<Vec<_>>();
+    let [goal] = goals.as_slice() else {
+        return Ok(None);
+    };
+    if goal.budget.attempts == 0 {
+        return Ok(None);
+    }
+    let execution_path = crate::domain_execution::path_for_session(agent.session().path());
+    let execution = crate::domain_execution::ExecutionStore::open(&execution_path)
+        .map_err(|error| error.to_string())?;
+    let exhausted = execution.receipts().iter().any(|receipt| {
+        receipt.goal_id == goal.id
+            && receipt.status == crate::domain_execution::ExecutionStatus::Failed
+            && receipt.attempt >= goal.budget.attempts
+    });
+    Ok(exhausted.then(|| goal.id.clone()))
+}
+
+fn goal_attempt_budget(agent: &Agent, goal_id: &str) -> Result<u32, String> {
+    let store = DomainStore::open_read_only(domain_store::path_for_session(agent.session().path()))
+        .map_err(|error| error.to_string())?;
+    store
+        .goal(goal_id)
+        .map(|goal| goal.budget.attempts)
+        .ok_or_else(|| format!("goal `{goal_id}` disappeared during execution"))
+}
+
+fn block_goal_locally(agent: &Agent, goal_id: &str) -> Result<(), String> {
+    let mut store = DomainStore::open(domain_store::path_for_session(agent.session().path()))
+        .map_err(|error| error.to_string())?;
+    store
+        .transition_goal(goal_id, crate::domains::GoalStatus::Blocked)
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn complete_goal_locally(agent: &Agent, goal_id: &str) -> Result<(), String> {
+    let mut store = DomainStore::open(domain_store::path_for_session(agent.session().path()))
+        .map_err(|error| error.to_string())?;
+    store
+        .transition_goal(goal_id, crate::domains::GoalStatus::Done)
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+/// Run one Blueprint task with the owner agent and verify its acceptance
+/// commands in the session workspace.  This is the local executor used by
+/// `/goal run`; it is deliberately absent from the control-plane handoff
+/// path, which must never execute a task.
+fn execute_blueprint_task(
+    agent: &mut Agent,
+    item: &crate::domains::BlueprintItem,
+) -> Result<(), String> {
+    let task = item.task.as_ref().ok_or_else(|| {
+        format!(
+            "blueprint item `{}` has no executable task; add instruction and acceptance commands",
+            item.id
+        )
+    })?;
+    if agent.phase() != crate::core::AgentPhase::Idle {
+        return Err("goal execution requires an idle agent".into());
+    }
+    let workspace = PathBuf::from(&agent.session().header().cwd);
+    let acceptance = task
+        .acceptance_commands
+        .iter()
+        .map(|command| format!("- `{command}`"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let prompt = format!(
+        "You are executing one b3ehive Blueprint item.\n\
+         Item: {item_id}\n\
+         Workspace: {workspace}\n\n\
+         Instruction:\n{instruction}\n\n\
+         The host will run these acceptance commands after your turn:\n{acceptance}\n\n\
+         Use your tools to make the change and run the acceptance commands yourself when possible. \
+         Do not reply with a plan only; leave the workspace in the stated condition. \
+         Finish with a concise evidence summary.",
+        item_id = item.id,
+        workspace = workspace.display(),
+        instruction = task.instruction,
+        acceptance = acceptance,
+    );
+    let submission = agent
+        .submit(TurnInputRequest::new(prompt))
+        .map_err(|error| error.to_string())?;
+    if !submission.accepted() {
+        return Err(format!("agent refused the goal turn: {submission:?}"));
+    }
+    let _turn = agent
+        .run_active_turn()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "agent completed the goal turn without an assistant response".to_owned())?;
+    for command in &task.acceptance_commands {
+        let output = std::process::Command::new("sh")
+            .arg("-lc")
+            .arg(command)
+            .current_dir(&workspace)
+            .output()
+            .map_err(|error| format!("could not run acceptance command `{command}`: {error}"))?;
+        if !output.status.success() {
+            let stdout = bounded_command_output(&output.stdout);
+            let stderr = bounded_command_output(&output.stderr);
+            return Err(format!(
+                "acceptance command `{command}` failed with {}; stdout: {stdout}; stderr: {stderr}",
+                output.status
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn bounded_command_output(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes)
+        .chars()
+        .take(2_000)
+        .collect::<String>()
+        .replace('\n', " ")
 }
 
 fn run_goal_steps(
@@ -7153,7 +7409,7 @@ fn parse_goal_owner_action(
     let invalid_usage = || {
         SlashDispatchError {
         code: "goal_status_usage",
-        message: "use `/goal status [<goal-id>]`, `/goal run|resume|cancel <goal-id>`, or `/goal transition <goal-id> <queued|running|paused|blocked|cancelled|done>`".into(),
+        message: "use `/goal status [<goal-id>]`, `/goal run|resume|cancel <goal-id> [until|N]`, or `/goal transition <goal-id> <queued|running|paused|blocked|cancelled|done>`".into(),
     }
     };
     let validate_id = |raw: &str| {
@@ -7234,14 +7490,20 @@ fn parse_goal_owner_action(
         }
         let id = validate_id(tokens[1])?;
         let steps = if action.eq_ignore_ascii_case("run") && tokens.len() == 3 {
-            tokens[2]
-                .parse::<usize>()
-                .ok()
-                .filter(|value| (1..=32).contains(value))
-                .ok_or_else(|| SlashDispatchError {
-                    code: "goal_invalid_steps",
-                    message: "goal run steps must be between 1 and 32".into(),
-                })?
+            if tokens[2].eq_ignore_ascii_case("until")
+                || tokens[2].eq_ignore_ascii_case("--until-done")
+            {
+                32
+            } else {
+                tokens[2]
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|value| (1..=32).contains(value))
+                    .ok_or_else(|| SlashDispatchError {
+                        code: "goal_invalid_steps",
+                        message: "goal run steps must be between 1 and 32, or `until`".into(),
+                    })?
+            }
         } else {
             1
         };

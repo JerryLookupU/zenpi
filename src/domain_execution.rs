@@ -1235,12 +1235,9 @@ impl BlueprintExecutor {
         })
     }
 
-    /// Select and record at most one dependency-ready item.
-    ///
-    /// The local operation is intentionally deterministic: it creates an
-    /// evidence string and no external side effect.  The cancellation closure
-    /// is checked before the `running` write and after it; a cancellation
-    /// observed after admission becomes a durable `cancelled` terminal receipt.
+    /// Select and record at most one dependency-ready item without executing
+    /// the task.  This is the control-plane path used by handoff and by
+    /// callers that only want a durable receipt.
     pub fn run_next<F>(
         &mut self,
         goal: &Goal,
@@ -1249,6 +1246,43 @@ impl BlueprintExecutor {
     ) -> Result<RunOutcome, ExecutionError>
     where
         F: Fn() -> bool,
+    {
+        self.run_next_impl(goal, blueprint, cancelled, |_| Ok(()), false)
+    }
+
+    /// Select and record at most one dependency-ready item, delegating the
+    /// instruction and acceptance work to `execute`.
+    ///
+    /// The closure runs after the `running` receipt is durable and before the
+    /// terminal receipt is written.  A closure error is preserved as a
+    /// `failed` terminal receipt; the caller decides whether another attempt
+    /// is allowed.  The cancellation closure is checked before the `running`
+    /// write and again before the terminal write.
+    pub fn run_next_with<F, E>(
+        &mut self,
+        goal: &Goal,
+        blueprint: &Blueprint,
+        cancelled: F,
+        execute: E,
+    ) -> Result<RunOutcome, ExecutionError>
+    where
+        F: Fn() -> bool,
+        E: FnMut(&BlueprintItem) -> Result<(), String>,
+    {
+        self.run_next_impl(goal, blueprint, cancelled, execute, true)
+    }
+
+    fn run_next_impl<F, E>(
+        &mut self,
+        goal: &Goal,
+        blueprint: &Blueprint,
+        cancelled: F,
+        mut execute: E,
+        executed: bool,
+    ) -> Result<RunOutcome, ExecutionError>
+    where
+        F: Fn() -> bool,
+        E: FnMut(&BlueprintItem) -> Result<(), String>,
     {
         goal.validate_against(blueprint)
             .map_err(|error| match error {
@@ -1315,14 +1349,32 @@ impl BlueprintExecutor {
             (receipt, false)
         };
 
-        let terminal = if cancelled() {
+        let mut terminal = if cancelled() {
             receipt.terminalized(
                 ExecutionStatus::Cancelled,
-                Some("cancelled before deterministic local evidence commit".into()),
+                Some("cancelled before terminal evidence commit".into()),
             )
         } else {
-            receipt.terminalized(ExecutionStatus::Succeeded, None)
+            match execute(selection.item) {
+                Ok(()) => {
+                    receipt.terminalized(ExecutionStatus::Succeeded, None)
+                }
+                Err(error) => {
+                    let error = if error.chars().count() > 4_096 {
+                        error.chars().take(4_096).collect()
+                    } else {
+                        error
+                    };
+                    receipt.terminalized(ExecutionStatus::Failed, Some(error))
+                }
+            }
         };
+        if executed {
+            terminal.evidence = terminal
+                .evidence
+                .replacen("control_plane_only", "local_goal_runner", 1);
+            terminal.evidence.push_str(" local_task_executed=true");
+        }
         self.store.upsert_receipt(terminal.clone())?;
         Ok(if terminal.status == ExecutionStatus::Cancelled {
             RunOutcome::Cancelled {
@@ -1334,6 +1386,14 @@ impl BlueprintExecutor {
                 receipt: terminal,
                 resumed_running,
             }
+        })
+    }
+
+    /// Whether every Blueprint item has a successful latest receipt.
+    pub fn is_complete(&self, goal: &Goal, blueprint: &Blueprint) -> bool {
+        blueprint.items.iter().all(|item| {
+            self.latest_receipt(goal, blueprint, &item.id)
+                .is_some_and(|receipt| receipt.status == ExecutionStatus::Succeeded)
         })
     }
 

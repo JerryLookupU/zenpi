@@ -12555,7 +12555,7 @@ enum TuiGoalOwnerAction {
     Show(String),
     Transition(String, GoalStatus),
     Create(String, String),
-    Run(String),
+    Run(String, usize),
     Resume(String),
 }
 
@@ -12590,7 +12590,7 @@ fn parse_tui_goal_owner_action(
         }
         Ok(raw.to_owned())
     };
-    let usage = || "use `/goal status [<goal-id>]`, `/goal run|resume|cancel <goal-id>`, or `/goal transition <goal-id> <state>`";
+    let usage = || "use `/goal status [<goal-id>]`, `/goal run|resume|cancel <goal-id> [until|N]`, or `/goal transition <goal-id> <state>`";
 
     if is_create {
         if tokens.len() != 3 {
@@ -12629,17 +12629,36 @@ fn parse_tui_goal_owner_action(
         };
     }
     if is_cancel || is_resume || is_run {
-        if tokens.len() != 2 {
+        if is_run {
+            if !(tokens.len() == 2 || tokens.len() == 3) {
+                return Err(usage());
+            }
+        } else if tokens.len() != 2 {
             return Err(usage());
         }
         let id = valid_id(tokens[1])?;
+        let steps = if is_run && tokens.len() == 3 {
+            if tokens[2].eq_ignore_ascii_case("until")
+                || tokens[2].eq_ignore_ascii_case("--until-done")
+            {
+                32
+            } else {
+                tokens[2]
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|value| (1..=32).contains(value))
+                    .ok_or("goal run steps must be between 1 and 32, or `until`")?
+            }
+        } else {
+            1
+        };
         let status = if is_cancel {
             GoalStatus::Cancelled
         } else {
             GoalStatus::Running
         };
         return Ok(Some(if is_run {
-            TuiGoalOwnerAction::Run(id)
+            TuiGoalOwnerAction::Run(id, steps)
         } else if is_resume {
             TuiGoalOwnerAction::Resume(id)
         } else {
@@ -13462,7 +13481,7 @@ pub fn dispatch_slash_command(
                     "goal creation is unavailable while the agent is busy",
                 ),
             },
-            Ok(Some(TuiGoalOwnerAction::Run(id))) => match agent.as_deref_mut() {
+            Ok(Some(TuiGoalOwnerAction::Run(id, steps))) => match agent.as_deref_mut() {
                 Some(agent) => {
                     let target = crate::headless::domain_store_view(Some(agent))
                         .ok()
@@ -13485,7 +13504,7 @@ pub fn dispatch_slash_command(
                         });
                     match target {
                         Some(target) => {
-                            match crate::headless::run_goal_steps_for_tui(agent, &target, 1) {
+                            match crate::headless::run_goal_steps_for_tui(agent, &target, steps) {
                                 Ok(data) => state.push_message(
                                     MessageRole::System,
                                     format!(
