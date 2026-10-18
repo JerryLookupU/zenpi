@@ -396,6 +396,18 @@ pub(super) fn section_lines(
         .filter_map(|row| row.started_ms.or(row.updated_ms))
         .min()
         .unwrap_or(now_ms);
+    // The window runs to "now" only while someone is working; an idle view
+    // ends at the last activity so old runs keep their resolution.
+    let horizon = if view.rows.iter().any(|row| row.state.is_active()) {
+        now_ms
+    } else {
+        view.rows
+            .iter()
+            .filter_map(|row| row.updated_ms)
+            .max()
+            .unwrap_or(now_ms)
+            .min(now_ms)
+    };
     let name_width = view
         .rows
         .iter()
@@ -444,7 +456,7 @@ pub(super) fn section_lines(
                 Style::default().fg(Color::White),
             ),
             Span::styled(format!("{:<9}", row.state.label()), style),
-            Span::styled(format!("▕{}▏", bar(row, origin, now_ms, bar_width)), style),
+            Span::styled(format!("▕{}▏", bar(row, origin, horizon, bar_width)), style),
             Span::styled(format!("{age:>9} "), Style::default().fg(Color::DarkGray)),
             Span::styled(
                 super::truncate_to_width(&detail, width.saturating_sub(fixed)),
@@ -479,14 +491,16 @@ pub(super) fn section_lines(
     lines
 }
 
-fn bar(row: &AgentRow, origin: u64, now_ms: u64, width: usize) -> String {
-    let span = now_ms.saturating_sub(origin).max(1) as f64;
+/// One row's activity between `origin` and `horizon`; active rows reach
+/// the horizon, which is "now" whenever any row is active.
+fn bar(row: &AgentRow, origin: u64, horizon: u64, width: usize) -> String {
+    let span = horizon.saturating_sub(origin).max(1) as f64;
     let cell = |at: u64| (at.saturating_sub(origin) as f64 / span * width as f64) as usize;
     let Some(start) = row.started_ms.or(row.updated_ms) else {
         return " ".repeat(width);
     };
     let end = if row.state.is_active() {
-        now_ms
+        horizon
     } else {
         row.updated_ms.unwrap_or(start)
     };
@@ -587,5 +601,46 @@ mod tests {
         );
         assert_eq!(rows[3].unread, 2);
         assert_eq!(rows[3].updated_ms, Some(2_000));
+    }
+
+    #[test]
+    fn idle_bars_keep_resolution_long_after_the_run() {
+        let row = |id: &str, start: u64, end: u64| AgentRow {
+            id: id.into(),
+            tree: String::new(),
+            state: AgentState::Done,
+            summary: None,
+            session: None,
+            started_ms: Some(start),
+            updated_ms: Some(end),
+            heartbeat_ms: 0,
+            unread: 0,
+            tokens: None,
+        };
+        let view = AgentsView {
+            rows: vec![row("a", 0, 50_000), row("b", 50_000, 100_000)],
+            ..AgentsView::default()
+        };
+        // An hour later the two halves still split the bar.
+        let lines = section_lines(&view, None, 120, 3_700_000);
+        let text: Vec<String> = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
+            .collect();
+        assert!(
+            text[1].contains(&format!("▕{}{}▏", "▓".repeat(12), "·".repeat(12))),
+            "{}",
+            text[1]
+        );
+        assert!(
+            text[2].contains(&format!("▕{}{}▏", "·".repeat(12), "▓".repeat(12))),
+            "{}",
+            text[2]
+        );
     }
 }
