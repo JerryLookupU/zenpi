@@ -1240,13 +1240,76 @@ pub enum ApprovalLane {
     Arch,
 }
 
-/// The three approval confirmation stages (ZS1-182).
+/// Approval stages (ZS1-182): choosing an option, or writing the optional
+/// note that goes back to the model with a denial.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum ApprovalStage {
     #[default]
     Select,
-    ConfirmRemember,
     RejectMessage,
+}
+
+/// One answer in the approval choice list, Claude Code style.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ApprovalChoice {
+    Allow,
+    AllowAlways,
+    Deny,
+}
+
+impl ApprovalChoice {
+    /// The options offered for a request; blueprint workers are once-only.
+    fn options(worker: bool) -> &'static [Self] {
+        if worker {
+            &[Self::Allow, Self::Deny]
+        } else {
+            &[Self::Allow, Self::AllowAlways, Self::Deny]
+        }
+    }
+
+    fn label(self, tool: &str) -> String {
+        match self {
+            Self::Allow => "Yes".into(),
+            Self::AllowAlways => format!("Yes, and don't ask again for {tool}"),
+            Self::Deny => "No, and tell zenpi what to do differently".into(),
+        }
+    }
+}
+
+impl ApprovalView {
+    fn worker(&self) -> bool {
+        self.requests
+            .get(self.index)
+            .is_some_and(|r| r.origin == crate::tools::ToolOrigin::BlueprintWorker)
+    }
+
+    /// The highlighted option; `allow`/`remember` are its stored form.
+    fn choice(&self) -> ApprovalChoice {
+        match (self.allow, self.remember) {
+            (true, true) if !self.worker() => ApprovalChoice::AllowAlways,
+            (true, _) => ApprovalChoice::Allow,
+            (false, _) => ApprovalChoice::Deny,
+        }
+    }
+
+    fn set_choice(&mut self, choice: ApprovalChoice) {
+        self.allow = choice != ApprovalChoice::Deny;
+        self.remember = choice == ApprovalChoice::AllowAlways;
+    }
+
+    fn move_choice(&mut self, down: bool) {
+        let options = ApprovalChoice::options(self.worker());
+        let at = options
+            .iter()
+            .position(|option| *option == self.choice())
+            .unwrap_or(0);
+        let next = if down {
+            (at + 1).min(options.len() - 1)
+        } else {
+            at.saturating_sub(1)
+        };
+        self.set_choice(options[next]);
+    }
 }
 
 impl TuiState {
@@ -1520,29 +1583,6 @@ impl TuiState {
         // ZS1-182 staged confirm: once submits directly, remember asks for a
         // second confirm, reject collects optional feedback for the model.
         match view.stage {
-            ApprovalStage::ConfirmRemember => {
-                return match key.code {
-                    KeyCode::Enter => {
-                        let r = &view.requests[view.index];
-                        view.remember = true;
-                        view.allow = true;
-                        view.stage = ApprovalStage::Select;
-                        Some(TuiAction::RespondApproval {
-                            project,
-                            request_id: r.request_id.clone(),
-                            turn_id: r.turn_id.clone(),
-                            call_id: r.call_id.clone(),
-                            allow: true,
-                            remember: true,
-                        })
-                    }
-                    KeyCode::Esc => {
-                        view.stage = ApprovalStage::Select;
-                        Some(TuiAction::Redraw)
-                    }
-                    _ => Some(TuiAction::Redraw),
-                };
-            }
             ApprovalStage::RejectMessage => {
                 return match key.code {
                     KeyCode::Enter => {
@@ -1579,6 +1619,21 @@ impl TuiState {
             }
             ApprovalStage::Select => {}
         }
+        // Claude Code style choice list: arrows move, a digit picks and
+        // confirms, Enter confirms the highlighted option. Denial is the
+        // default highlight, so a bare Enter never allows (ZS1-182).
+        let respond = |view: &mut ApprovalView, project: String| {
+            let r = &view.requests[view.index];
+            view.stage = ApprovalStage::Select;
+            Some(TuiAction::RespondApproval {
+                project,
+                request_id: r.request_id.clone(),
+                turn_id: r.turn_id.clone(),
+                call_id: r.call_id.clone(),
+                allow: view.allow,
+                remember: view.remember,
+            })
+        };
         match key.code {
             KeyCode::Esc if view.expanded => view.expanded = false,
             KeyCode::Esc => {
@@ -1590,45 +1645,34 @@ impl TuiState {
                 view.focused = false;
                 return None;
             }
-            KeyCode::Char('y') => {
-                view.allow = true;
-                view.remember = false;
+            KeyCode::Up | KeyCode::Char('k') => view.move_choice(false),
+            KeyCode::Down | KeyCode::Char('j') => view.move_choice(true),
+            KeyCode::Char(digit @ '1'..='9') => {
+                let options = ApprovalChoice::options(view.worker());
+                let Some(choice) = options.get(usize::from(digit as u8 - b'1')) else {
+                    return Some(TuiAction::Redraw);
+                };
+                view.set_choice(*choice);
+                return respond(view, project);
             }
+            KeyCode::Char('y') => view.set_choice(ApprovalChoice::Allow),
+            KeyCode::Char('r') if !view.worker() => view.set_choice(ApprovalChoice::AllowAlways),
             KeyCode::Char('n') => {
-                view.allow = false;
-                view.remember = false;
+                view.set_choice(ApprovalChoice::Deny);
                 view.stage = ApprovalStage::RejectMessage;
                 view.message.clear();
-            }
-            KeyCode::Char('r')
-                if view.requests[view.index].origin
-                    != crate::tools::ToolOrigin::BlueprintWorker =>
-            {
-                view.allow = true;
-                view.remember = true;
-                view.stage = ApprovalStage::ConfirmRemember;
             }
             KeyCode::Tab | KeyCode::Right => {
                 view.index = (view.index + 1) % view.requests.len();
                 view.scroll = 0;
-                view.allow = false;
-                view.remember = false;
+                view.set_choice(ApprovalChoice::Deny);
             }
             KeyCode::BackTab | KeyCode::Left => {
                 view.index = (view.index + view.requests.len() - 1) % view.requests.len();
                 view.scroll = 0;
-                view.allow = false;
-                view.remember = false;
+                view.set_choice(ApprovalChoice::Deny);
             }
             // Scrolling only makes sense in the full review, so it opens it.
-            KeyCode::Up => {
-                view.expanded = true;
-                view.scroll = view.scroll.saturating_sub(1);
-            }
-            KeyCode::Down => {
-                view.expanded = true;
-                view.scroll = view.scroll.saturating_add(1);
-            }
             KeyCode::PageUp => {
                 view.expanded = true;
                 view.scroll = view.scroll.saturating_sub(10);
@@ -1645,22 +1689,7 @@ impl TuiState {
                 view.expanded = true;
                 view.scroll = usize::MAX;
             }
-            KeyCode::Enter => {
-                // Enter confirms the current selection in one press.  Denial
-                // is the default selection, so a bare Enter denies; leaving a
-                // note for the model is an explicit choice (`n`), not a step
-                // every denial has to walk through first.
-                let r = &view.requests[view.index];
-                view.stage = ApprovalStage::Select;
-                return Some(TuiAction::RespondApproval {
-                    project,
-                    request_id: r.request_id.clone(),
-                    turn_id: r.turn_id.clone(),
-                    call_id: r.call_id.clone(),
-                    allow: view.allow,
-                    remember: view.remember,
-                });
-            }
+            KeyCode::Enter => return respond(view, project),
             _ => {}
         }
         Some(TuiAction::Redraw)
@@ -1680,17 +1709,17 @@ impl TuiState {
         })
     }
 
-    /// Title and body of the inline approval form, wrapped to `width`.
+    /// Title and body of the inline approval form, wrapped to `width`:
+    /// what the tool will do, then the Claude Code style choice list.
     fn inline_approval_form(&self, width: usize) -> Option<(String, Vec<Line<'static>>)> {
         let view = self.approval_views.get(self.active_project())?;
         let r = view.requests.get(view.index)?;
         let width = width.max(8);
         let title = format!(
-            " Approval required {}/{} · {} · {} ",
+            " Approval required {}/{} · {} ",
             view.index + 1,
             view.requests.len(),
-            r.tool,
-            if view.allow { "ALLOW" } else { "DENY" }
+            r.tool
         );
         let (what, incomplete) = match &r.preview {
             Some(crate::tools::ToolPreview::Diff {
@@ -1716,58 +1745,33 @@ impl TuiState {
                     *truncated,
                 )
             }
-            _ => (
-                crate::security::redact_json(&r.arguments, &[]).to_string(),
-                false,
-            ),
+            _ => {
+                let arguments = crate::security::redact_json(&r.arguments, &[]);
+                // A shell command reads best as the command itself.
+                let text = arguments
+                    .get("command")
+                    .and_then(serde_json::Value::as_str)
+                    .map_or_else(|| arguments.to_string(), str::to_owned);
+                (text, false)
+            }
         };
-        let mut lines = Vec::new();
-        let mut what_lines = wrap_plain(&format!("{} {what}", r.tool), width);
-        if what_lines.len() > 2 {
-            what_lines.truncate(2);
-            what_lines[1] = format!(
+        let mut lines = vec![Line::styled(
+            r.tool.clone(),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )];
+        let mut body = wrap_plain(&what, width.saturating_sub(2));
+        if body.len() > 3 {
+            body.truncate(3);
+            body[2] = format!(
                 "{}… v shows all",
-                truncate_to_width(&what_lines[1], width.saturating_sub(14))
+                truncate_to_width(&body[2], width.saturating_sub(16))
             );
         }
-        for (index, line) in what_lines.into_iter().enumerate() {
-            if index == 0 && line.starts_with(&r.tool) {
-                let rest = line[r.tool.len()..].to_owned();
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        r.tool.clone(),
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw(rest),
-                ]));
-            } else {
-                lines.push(Line::raw(line));
-            }
-        }
-        if incomplete {
-            lines.push(Line::styled(
-                "Preview truncated by owner; inspect source (v) before allowing.",
-                Style::default().fg(Color::Red),
-            ));
-        }
-        let remember = if r.origin == crate::tools::ToolOrigin::BlueprintWorker {
-            "Worker: once only".to_owned()
-        } else {
-            format!("r remember: {}", view.remember)
-        };
-        let mut hint = approval_decision_hint(view, incomplete, &remember);
-        if view.stage == ApprovalStage::Select {
-            hint.push_str(" · v details");
-            if view.requests.len() > 1 {
-                hint.push_str(" · Tab next");
-            }
-            hint.push_str(" · Esc draft");
-        }
-        for line in wrap_plain(&hint, width) {
-            lines.push(Line::styled(line, Style::default().fg(Color::Yellow)));
-        }
+        lines.extend(body.into_iter().map(|line| Line::raw(format!("  {line}"))));
+        lines.push(Line::raw(""));
+        lines.extend(approval_choice_lines(view, incomplete, width));
         Some((title, lines))
     }
 
@@ -1876,7 +1880,15 @@ impl TuiState {
                 "Display truncated; inspect full arguments before allowing.\n\n",
             );
         }
-        let height = inner.height.saturating_sub(2);
+        let mut choices = approval_choice_lines(view, owner_truncated, usize::from(inner.width));
+        // A short review keeps the evidence and folds the list into a line.
+        if choices.len() > usize::from(inner.height / 3) {
+            choices = compact_choice_lines(view, usize::from(inner.width));
+        }
+        let footer = u16::try_from(choices.len())
+            .unwrap_or(u16::MAX)
+            .min(inner.height.saturating_sub(1));
+        let height = inner.height.saturating_sub(footer);
         let window = crate::render::render_plain_window(
             &text,
             usize::from(inner.width),
@@ -1889,17 +1901,13 @@ impl TuiState {
             Paragraph::new(window.lines),
             Rect::new(inner.x, inner.y, inner.width, height),
         );
-        let remember = if r.origin == crate::tools::ToolOrigin::BlueprintWorker {
-            "Worker: once only".to_owned()
+        let choices = if incomplete && !owner_truncated && footer > 2 {
+            approval_choice_lines(view, true, usize::from(inner.width))
         } else {
-            format!("r remember: {}", view.remember)
+            choices
         };
-        let decision_hint = approval_decision_hint(view, incomplete, &remember);
         frame.render_widget(
-            Paragraph::new(format!(
-                "{decision_hint}\nTab next · PgUp/PgDn scroll · Esc back to prompt · Ctrl-C cancel"
-            ))
-            .style(Style::default().fg(Color::Yellow)),
+            Paragraph::new(choices),
             Rect::new(
                 inner.x,
                 inner.y + height,
@@ -1910,29 +1918,108 @@ impl TuiState {
     }
 }
 
-/// What Enter and Esc do at the current stage (ZS1-182), shared by the inline
+/// The choice list folded into at most two rows for a cramped review.
+fn compact_choice_lines(view: &ApprovalView, width: usize) -> Vec<Line<'static>> {
+    let text = if view.stage == ApprovalStage::RejectMessage {
+        format!("Note: {}▏ · Enter deny · Esc back", view.message)
+    } else {
+        let current = view.choice();
+        let options = ApprovalChoice::options(view.worker())
+            .iter()
+            .enumerate()
+            .map(|(index, option)| {
+                let name = match option {
+                    ApprovalChoice::Allow => "Yes",
+                    ApprovalChoice::AllowAlways => "Always",
+                    ApprovalChoice::Deny => "No",
+                };
+                let mark = if *option == current { "❯" } else { "" };
+                format!("{mark}{} {name}", index + 1)
+            })
+            .collect::<Vec<_>>()
+            .join(" · ");
+        format!("{options} · Enter confirm · Esc back")
+    };
+    wrap_plain(&text, width.max(1))
+        .into_iter()
+        .take(2)
+        .map(|line| Line::styled(line, Style::default().fg(Color::Yellow)))
+        .collect()
+}
+
+/// The question, the numbered options and the keys, shared by the inline
 /// prompt form and the full review.
-fn approval_decision_hint(view: &ApprovalView, incomplete: bool, remember: &str) -> String {
-    if incomplete && view.stage == ApprovalStage::Select {
-        return "INCOMPLETE preview · v inspect source · n deny".to_owned();
-    }
-    match view.stage {
-        ApprovalStage::ConfirmRemember => {
-            "Confirm remember? Enter allow+remember · Esc cancel".to_owned()
+fn approval_choice_lines(
+    view: &ApprovalView,
+    incomplete: bool,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let hint = Style::default().fg(Color::DarkGray);
+    let mut lines = Vec::new();
+    if view.stage == ApprovalStage::RejectMessage {
+        lines.push(Line::styled(
+            "Tell zenpi what to do differently (optional):",
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
+        for line in wrap_plain(&format!("> {}▏", view.message), width) {
+            lines.push(Line::styled(line, Style::default().fg(Color::Cyan)));
         }
-        ApprovalStage::RejectMessage => format!(
-            "Reject message (optional): {}▏ · Enter deny · Esc back",
-            view.message
-        ),
-        ApprovalStage::Select => {
-            // Name the selection Enter would commit: "confirm" alone
-            // leaves the user guessing which way the key goes.
-            format!(
-                "Enter {} now · y allow · n deny with a note · r remember · {remember}",
-                if view.allow { "ALLOW" } else { "DENY" }
-            )
-        }
+        lines.push(Line::styled("Enter deny · Esc back", hint));
+        return lines;
     }
+    if incomplete {
+        lines.push(Line::styled(
+            "Preview truncated by owner: press v to inspect the source before allowing.",
+            Style::default().fg(Color::Red),
+        ));
+    }
+    lines.push(Line::styled(
+        "Do you want to proceed?",
+        Style::default().add_modifier(Modifier::BOLD),
+    ));
+    let tool = view
+        .requests
+        .get(view.index)
+        .map_or("this tool", |r| r.tool.as_str());
+    let current = view.choice();
+    let options = ApprovalChoice::options(view.worker());
+    for (index, option) in options.iter().enumerate() {
+        let text = format!("{}. {}", index + 1, option.label(tool));
+        lines.push(if *option == current {
+            Line::from(vec![
+                Span::styled(
+                    "❯ ",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    text,
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ])
+        } else {
+            Line::raw(format!("  {text}"))
+        });
+    }
+    let mut keys = format!(
+        "↑↓ select · Enter confirm · 1-{} choose · n deny with a note · v details",
+        options.len()
+    );
+    if view.requests.len() > 1 {
+        keys.push_str(" · Tab next request");
+    }
+    keys.push_str(if view.expanded {
+        " · Esc back"
+    } else {
+        " · Esc later"
+    });
+    for line in wrap_plain(&keys, width) {
+        lines.push(Line::styled(line, hint));
+    }
+    lines
 }
 
 /// Exact host correlation; coordinator remains the atomic decision authority.
@@ -19891,7 +19978,7 @@ fn run_tui_loop(
                     // Request and policy digests stay in the review overlay; the
                     // transcript only says what is asked and how to answer.
                     let prompt = format!(
-                        "Approval required: {} {}{}\nAnswer it in the {} prompt below: y allow · n deny · Enter confirms · v details.",
+                        "Approval required: {} {}{}\nChoose in the {} prompt below: ↑↓ and Enter, or 1-3.",
                         request.tool,
                         safe_arguments,
                         suffix,

@@ -65,7 +65,7 @@ fn bare_y_in_the_prompt_selects_allow_instead_of_steering() {
     state.set_input("y");
     assert_eq!(plain(&mut state, KeyCode::Enter), TuiAction::Redraw);
     assert_eq!(state.input(), "");
-    assert!(render(&mut state, 160, 40).contains("ALLOW"));
+    assert!(render(&mut state, 160, 40).contains("❯ 1. Yes"));
     assert!(matches!(
         plain(&mut state, KeyCode::Enter),
         TuiAction::RespondApproval { allow: true, .. }
@@ -201,10 +201,10 @@ fn approval_is_answered_inline_in_the_discussion_prompt() {
     // The form sits at the bottom, in the prompt; the workspace stays visible.
     let title = lines
         .iter()
-        .rposition(|line| line.contains("Approval required 1/1 · run_command · DENY"))
+        .rposition(|line| line.contains("Approval required 1/1 · run_command"))
         .expect(&screen);
     assert!(title > lines.len() / 2, "{screen}");
-    assert!(screen.contains("Enter DENY now"), "{screen}");
+    assert!(screen.contains("❯ 3. No"), "{screen}");
     assert!(screen.contains("Conversation"), "{screen}");
     assert!(screen.contains("Gantt"), "{screen}");
     assert!(!screen.contains("Policy:"), "{screen}");
@@ -224,7 +224,7 @@ fn approval_is_answered_inline_in_the_discussion_prompt() {
     assert_eq!(state.input(), "y");
     state.set_input("y");
     plain(&mut state, KeyCode::Enter);
-    assert!(render(&mut state, 160, 40).contains("Enter ALLOW now"));
+    assert!(render(&mut state, 160, 40).contains("❯ 1. Yes"));
     assert!(matches!(
         plain(&mut state, KeyCode::Enter),
         TuiAction::RespondApproval { allow: true, .. }
