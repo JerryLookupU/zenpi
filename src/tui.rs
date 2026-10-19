@@ -1226,6 +1226,18 @@ struct ApprovalView {
     /// second confirm, reject collects optional feedback for the model.
     stage: ApprovalStage,
     message: String,
+    /// Requests raised by the project's arch owner; they are answered in the
+    /// Arch prompt instead of the discussion prompt.
+    arch_requests: BTreeSet<String>,
+    /// The full-screen review (`v`) instead of the inline prompt form.
+    expanded: bool,
+}
+
+/// Which prompt answers an approval: the one whose owner raised it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalLane {
+    Discussion,
+    Arch,
 }
 
 /// The three approval confirmation stages (ZS1-182).
@@ -1260,6 +1272,16 @@ impl TuiState {
         project: String,
         request: crate::approval::ApprovalRequest,
     ) {
+        self.present_approval_in(project, request, ApprovalLane::Discussion);
+    }
+
+    /// File a request and remember which prompt answers it.
+    pub fn present_approval_in(
+        &mut self,
+        project: String,
+        request: crate::approval::ApprovalRequest,
+        lane: ApprovalLane,
+    ) {
         if let Err(error) = request.validate() {
             self.push_message(MessageRole::Error, format!("Invalid approval: {error}"));
             return;
@@ -1275,9 +1297,16 @@ impl TuiState {
         }
         if view.requests.len() < 128 {
             let first = view.requests.is_empty();
+            let requests = &view.requests;
+            view.arch_requests
+                .retain(|id| requests.iter().any(|r| &r.request_id == id));
+            if lane == ApprovalLane::Arch {
+                view.arch_requests.insert(request.request_id.clone());
+            }
             view.requests.push(request);
             if first {
                 view.focused = can_focus;
+                view.expanded = false;
                 view.index = 0;
                 view.scroll = 0;
                 view.allow = false;
@@ -1395,6 +1424,23 @@ impl TuiState {
         self.approval_count() > 0
             || !self.transcript_ux.canonical_approvals.is_empty()
             || self.transcript_ux.approval_tracking_saturated
+    }
+
+    /// Whether a request answered in `lane`'s prompt is pending in the active
+    /// project. Canonical (host-tracked) approvals belong to the discussion.
+    fn approval_waiting_in(&self, lane: ApprovalLane) -> bool {
+        let pending = self
+            .approval_views
+            .get(self.active_project())
+            .is_some_and(|view| {
+                view.requests.iter().any(|request| {
+                    view.arch_requests.contains(&request.request_id) == (lane == ApprovalLane::Arch)
+                })
+            });
+        pending
+            || (lane == ApprovalLane::Discussion
+                && (!self.transcript_ux.canonical_approvals.is_empty()
+                    || self.transcript_ux.approval_tracking_saturated))
     }
 
     /// A bare `y`/`n` typed in the prompt while an approval is pending means
@@ -1534,10 +1580,12 @@ impl TuiState {
             ApprovalStage::Select => {}
         }
         match key.code {
+            KeyCode::Esc if view.expanded => view.expanded = false,
             KeyCode::Esc => {
                 view.focused = false;
                 self.set_status("Approval pending · Alt-A opens review · draft kept");
             }
+            KeyCode::Char('v') => view.expanded = !view.expanded,
             KeyCode::Char('/') => {
                 view.focused = false;
                 return None;
@@ -1572,12 +1620,31 @@ impl TuiState {
                 view.allow = false;
                 view.remember = false;
             }
-            KeyCode::Up => view.scroll = view.scroll.saturating_sub(1),
-            KeyCode::Down => view.scroll = view.scroll.saturating_add(1),
-            KeyCode::PageUp => view.scroll = view.scroll.saturating_sub(10),
-            KeyCode::PageDown => view.scroll = view.scroll.saturating_add(10),
-            KeyCode::Home => view.scroll = 0,
-            KeyCode::End => view.scroll = usize::MAX,
+            // Scrolling only makes sense in the full review, so it opens it.
+            KeyCode::Up => {
+                view.expanded = true;
+                view.scroll = view.scroll.saturating_sub(1);
+            }
+            KeyCode::Down => {
+                view.expanded = true;
+                view.scroll = view.scroll.saturating_add(1);
+            }
+            KeyCode::PageUp => {
+                view.expanded = true;
+                view.scroll = view.scroll.saturating_sub(10);
+            }
+            KeyCode::PageDown => {
+                view.expanded = true;
+                view.scroll = view.scroll.saturating_add(10);
+            }
+            KeyCode::Home => {
+                view.expanded = true;
+                view.scroll = 0;
+            }
+            KeyCode::End => {
+                view.expanded = true;
+                view.scroll = usize::MAX;
+            }
             KeyCode::Enter => {
                 // Enter confirms the current selection in one press.  Denial
                 // is the default selection, so a bare Enter denies; leaving a
@@ -1598,6 +1665,140 @@ impl TuiState {
         }
         Some(TuiAction::Redraw)
     }
+    /// The prompt that answers the focused approval inline, if any: the arch
+    /// prompt for arch-owner requests, the discussion prompt otherwise.
+    pub fn inline_approval_lane(&self) -> Option<ApprovalLane> {
+        let view = self.approval_views.get(self.active_project())?;
+        if !view.focused || view.expanded {
+            return None;
+        }
+        let request = view.requests.get(view.index)?;
+        Some(if view.arch_requests.contains(&request.request_id) {
+            ApprovalLane::Arch
+        } else {
+            ApprovalLane::Discussion
+        })
+    }
+
+    /// Title and body of the inline approval form, wrapped to `width`.
+    fn inline_approval_form(&self, width: usize) -> Option<(String, Vec<Line<'static>>)> {
+        let view = self.approval_views.get(self.active_project())?;
+        let r = view.requests.get(view.index)?;
+        let width = width.max(8);
+        let title = format!(
+            " Approval required {}/{} · {} · {} ",
+            view.index + 1,
+            view.requests.len(),
+            r.tool,
+            if view.allow { "ALLOW" } else { "DENY" }
+        );
+        let (what, incomplete) = match &r.preview {
+            Some(crate::tools::ToolPreview::Diff {
+                path,
+                patch,
+                truncated,
+                before_bytes,
+                after_bytes,
+                ..
+            }) => {
+                let count = |sign: char, header: &str| {
+                    patch
+                        .lines()
+                        .filter(|line| line.starts_with(sign) && !line.starts_with(header))
+                        .count()
+                };
+                (
+                    format!(
+                        "{path} · +{} −{} lines · {before_bytes} → {after_bytes} bytes · v shows the diff",
+                        count('+', "+++"),
+                        count('-', "---")
+                    ),
+                    *truncated,
+                )
+            }
+            _ => (
+                crate::security::redact_json(&r.arguments, &[]).to_string(),
+                false,
+            ),
+        };
+        let mut lines = Vec::new();
+        let mut what_lines = wrap_plain(&format!("{} {what}", r.tool), width);
+        if what_lines.len() > 2 {
+            what_lines.truncate(2);
+            what_lines[1] = format!(
+                "{}… v shows all",
+                truncate_to_width(&what_lines[1], width.saturating_sub(14))
+            );
+        }
+        for (index, line) in what_lines.into_iter().enumerate() {
+            if index == 0 && line.starts_with(&r.tool) {
+                let rest = line[r.tool.len()..].to_owned();
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        r.tool.clone(),
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(rest),
+                ]));
+            } else {
+                lines.push(Line::raw(line));
+            }
+        }
+        if incomplete {
+            lines.push(Line::styled(
+                "Preview truncated by owner; inspect source (v) before allowing.",
+                Style::default().fg(Color::Red),
+            ));
+        }
+        let remember = if r.origin == crate::tools::ToolOrigin::BlueprintWorker {
+            "Worker: once only".to_owned()
+        } else {
+            format!("r remember: {}", view.remember)
+        };
+        let mut hint = approval_decision_hint(view, incomplete, &remember);
+        if view.stage == ApprovalStage::Select {
+            hint.push_str(" · v details");
+            if view.requests.len() > 1 {
+                hint.push_str(" · Tab next");
+            }
+            hint.push_str(" · Esc draft");
+        }
+        for line in wrap_plain(&hint, width) {
+            lines.push(Line::styled(line, Style::default().fg(Color::Yellow)));
+        }
+        Some((title, lines))
+    }
+
+    /// Rows a prompt needs to show the inline approval form at `width`.
+    fn inline_approval_rows(&self, lane: ApprovalLane, width: u16) -> Option<u16> {
+        if self.inline_approval_lane() != Some(lane) {
+            return None;
+        }
+        let (_, lines) = self.inline_approval_form(usize::from(width.saturating_sub(2)))?;
+        Some(
+            u16::try_from(lines.len())
+                .unwrap_or(u16::MAX)
+                .saturating_add(2),
+        )
+    }
+
+    /// Draw the focused approval as the prompt itself.
+    fn render_inline_approval(&self, frame: &mut Frame<'_>, area: Rect) {
+        let Some((title, lines)) =
+            self.inline_approval_form(usize::from(area.width.saturating_sub(2)))
+        else {
+            return;
+        };
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Yellow))
+            .title(title);
+        frame.render_widget(Clear, area);
+        frame.render_widget(Paragraph::new(lines).block(block), area);
+    }
+
     fn render_approval(&mut self, frame: &mut Frame<'_>) {
         let project = self.active_project().to_owned();
         let Some(view) = self.approval_views.get_mut(&project) else {
@@ -1607,9 +1808,10 @@ impl TuiState {
             return;
         }
         let area = frame.area();
-        if !view.focused {
-            // The footer owns the pending hint and its priority relative to
-            // save failures; drawing it here would overwrite existing text.
+        if !view.focused || !view.expanded {
+            // Pending-but-unfocused requests are hinted by the footer, and a
+            // focused one is answered inline in its prompt; only the detail
+            // review (`v`) takes over the screen.
             return;
         }
         if area.width < 4 || area.height < 5 {
@@ -1692,30 +1894,10 @@ impl TuiState {
         } else {
             format!("r remember: {}", view.remember)
         };
-        let decision_hint = if incomplete {
-            "INCOMPLETE preview · inspect source · n deny".to_owned()
-        } else {
-            match view.stage {
-                ApprovalStage::ConfirmRemember => {
-                    "Confirm remember? Enter allow+remember · Esc cancel".to_owned()
-                }
-                ApprovalStage::RejectMessage => format!(
-                    "Reject message (optional): {}▏ · Enter deny · Esc back",
-                    view.message
-                ),
-                ApprovalStage::Select => {
-                    // Name the selection Enter would commit: "confirm" alone
-                    // leaves the user guessing which way the key goes.
-                    format!(
-                        "Enter {} now · y allow · n deny with a note · r remember · {remember}",
-                        if view.allow { "ALLOW" } else { "DENY" }
-                    )
-                }
-            }
-        };
+        let decision_hint = approval_decision_hint(view, incomplete, &remember);
         frame.render_widget(
             Paragraph::new(format!(
-                "{decision_hint}\nTab next · PgUp/PgDn scroll · Esc draft · Ctrl-C cancel"
+                "{decision_hint}\nTab next · PgUp/PgDn scroll · Esc back to prompt · Ctrl-C cancel"
             ))
             .style(Style::default().fg(Color::Yellow)),
             Rect::new(
@@ -1725,6 +1907,31 @@ impl TuiState {
                 inner.height - height,
             ),
         );
+    }
+}
+
+/// What Enter and Esc do at the current stage (ZS1-182), shared by the inline
+/// prompt form and the full review.
+fn approval_decision_hint(view: &ApprovalView, incomplete: bool, remember: &str) -> String {
+    if incomplete && view.stage == ApprovalStage::Select {
+        return "INCOMPLETE preview · v inspect source · n deny".to_owned();
+    }
+    match view.stage {
+        ApprovalStage::ConfirmRemember => {
+            "Confirm remember? Enter allow+remember · Esc cancel".to_owned()
+        }
+        ApprovalStage::RejectMessage => format!(
+            "Reject message (optional): {}▏ · Enter deny · Esc back",
+            view.message
+        ),
+        ApprovalStage::Select => {
+            // Name the selection Enter would commit: "confirm" alone
+            // leaves the user guessing which way the key goes.
+            format!(
+                "Enter {} now · y allow · n deny with a note · r remember · {remember}",
+                if view.allow { "ALLOW" } else { "DENY" }
+            )
+        }
     }
 }
 
@@ -6327,6 +6534,18 @@ impl TuiState {
         // draft from the arch console is routed to the host with the arch
         // transcript as its feedback target; everything else keeps the
         // master-session bash/steer classification.
+        let shorthand = match self.arch_input.trim().to_ascii_lowercase().as_str() {
+            "y" | "yes" => Some(true),
+            "n" | "no" => Some(false),
+            _ => None,
+        };
+        if let Some(allow) = shorthand
+            && self.select_pending_approval(allow)
+        {
+            self.arch_input.clear();
+            self.arch_cursor = 0;
+            return Ok(TuiAction::Redraw);
+        }
         let trimmed = self.arch_input.trim();
         if trimmed.starts_with('/')
             && let Ok(InputRoute::Slash(command)) = slash::route_input(trimmed)
@@ -10079,7 +10298,11 @@ impl TuiState {
         }
         let prompt_width = usize::from(area.width.saturating_sub(2)).max(1);
         let prompt_lines = wrap_plain(&self.projection().text, prompt_width).len();
-        let desired_input_height = prompt_lines.min(MAX_INPUT_LINES).saturating_add(2);
+        let desired_input_height =
+            match self.inline_approval_rows(ApprovalLane::Discussion, area.width) {
+                Some(rows) => usize::from(rows).min(MAX_INPUT_LINES + 2),
+                None => prompt_lines.min(MAX_INPUT_LINES).saturating_add(2),
+            };
         // Keep header/footer visible whenever there is room, and let the
         // transcript yield rows to the prompt first.  Tiny resize states can
         // legitimately collapse the prompt to zero rows.
@@ -10219,7 +10442,7 @@ impl TuiState {
         }
         let title = if goal {
             " Goal ".to_owned()
-        } else if self.busy && self.approval_waiting() {
+        } else if self.busy && self.approval_waiting_in(ApprovalLane::Discussion) {
             " Conversation \u{b7} ⏸ 等待审批 ".to_owned()
         } else if self.busy {
             // ZS1-181: the production path shows the thinking animation.
@@ -10386,6 +10609,10 @@ impl TuiState {
         if area.width == 0 || area.height == 0 {
             return;
         }
+        if self.inline_approval_lane() == Some(ApprovalLane::Discussion) {
+            self.render_inline_approval(frame, area);
+            return;
+        }
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(if self.busy {
@@ -10393,34 +10620,36 @@ impl TuiState {
             } else {
                 Color::Cyan
             }))
-            .title(if self.busy && self.approval_waiting() {
-                " Prompt · ⏸ 等待审批 · Alt-A 审批 · 或输入 y / n ".to_owned()
-            } else if self.busy {
-                format!(
-                    " Prompt · {} 思考中 {}s · Ctrl-C 中断 ",
-                    self.spinner_frame(),
-                    self.transcript_ux.seconds()
-                )
-            } else if let Some(search) = &self.history_search {
-                format!(
-                    " History search: {} · {} · Ctrl-R older · Enter select · Esc restore ",
-                    inline_token(&search.query, 40),
-                    if search.matched.is_some() {
-                        "match"
-                    } else {
-                        "no match"
-                    }
-                )
-            } else if self.paste.folds.is_empty() && self.input.starts_with('/') {
-                " Prompt  • command palette active ".to_owned()
-            } else if self.goal_text.is_empty() {
-                " Prompt · Goal: — · Alt-G edit · Ctrl-R history · Ctrl-J newline ".to_owned()
-            } else {
-                format!(
-                    " Prompt · Goal: {} · Alt-G edit · Ctrl-R history ",
-                    inline_token(&self.goal_text, 48)
-                )
-            });
+            .title(
+                if self.busy && self.approval_waiting_in(ApprovalLane::Discussion) {
+                    " Prompt · ⏸ 等待审批 · Alt-A 审批 · 或输入 y / n ".to_owned()
+                } else if self.busy {
+                    format!(
+                        " Prompt · {} 思考中 {}s · Ctrl-C 中断 ",
+                        self.spinner_frame(),
+                        self.transcript_ux.seconds()
+                    )
+                } else if let Some(search) = &self.history_search {
+                    format!(
+                        " History search: {} · {} · Ctrl-R older · Enter select · Esc restore ",
+                        inline_token(&search.query, 40),
+                        if search.matched.is_some() {
+                            "match"
+                        } else {
+                            "no match"
+                        }
+                    )
+                } else if self.paste.folds.is_empty() && self.input.starts_with('/') {
+                    " Prompt  • command palette active ".to_owned()
+                } else if self.goal_text.is_empty() {
+                    " Prompt · Goal: — · Alt-G edit · Ctrl-R history · Ctrl-J newline ".to_owned()
+                } else {
+                    format!(
+                        " Prompt · Goal: {} · Alt-G edit · Ctrl-R history ",
+                        inline_token(&self.goal_text, 48)
+                    )
+                },
+            );
         let inner = block.inner(area);
         let width = usize::from(inner.width).max(1);
         let projection = self.projection();
@@ -10577,7 +10806,9 @@ impl TuiState {
             } else {
                 Color::DarkGray
             }))
-            .title(if self.master_busy {
+            .title(if self.approval_waiting_in(ApprovalLane::Arch) {
+                " Arch · ⏸ 等待审批 · 在 Arch prompt 输入 y / n ".to_owned()
+            } else if self.master_busy {
                 format!(" Arch · {} 思考中 ", self.spinner_frame())
             } else {
                 " Arch · master session ".to_owned()
@@ -10624,6 +10855,10 @@ impl TuiState {
     /// one group.
     fn render_arch_input(&mut self, frame: &mut Frame<'_>, area: Rect) {
         if area.width == 0 || area.height == 0 {
+            return;
+        }
+        if self.inline_approval_lane() == Some(ApprovalLane::Arch) {
+            self.render_inline_approval(frame, area);
             return;
         }
         let focused = self.arch_prompt_focused();
@@ -10786,7 +11021,11 @@ impl TuiState {
         }
         let prompt_width = usize::from(area.width.saturating_sub(2)).max(1);
         let prompt_lines = wrap_plain(&self.projection().text, prompt_width).len();
-        let desired_input_height = prompt_lines.min(MAX_INPUT_LINES).saturating_add(2);
+        let desired_input_height =
+            match self.inline_approval_rows(ApprovalLane::Discussion, area.width) {
+                Some(rows) => usize::from(rows).min(MAX_INPUT_LINES + 2),
+                None => prompt_lines.min(MAX_INPUT_LINES).saturating_add(2),
+            };
         // The prompt always keeps the full-width bottom strip: a fixed home
         // never jumps when overlays (palette, completion, history search,
         // pickers) open or close, and menus retain their room above it.
@@ -11225,7 +11464,15 @@ impl TuiState {
                 // same x/width, never spilling into the center column.
                 let source =
                     PaneRect::new(pane.rect.x, pane.rect.y, pane.rect.width, pane.rect.height);
-                let (conversation, prompt) = arch_prompt_group(source, ARCH_PROMPT_PANE_ROWS);
+                // An arch-owner approval is answered in this prompt, which grows
+                // to fit the form while leaving the transcript some rows.
+                let rows = self
+                    .inline_approval_rows(ApprovalLane::Arch, pane.rect.width)
+                    .map_or(ARCH_PROMPT_PANE_ROWS, |rows| {
+                        rows.min(pane.rect.height.saturating_sub(2))
+                            .max(ARCH_PROMPT_PANE_ROWS)
+                    });
+                let (conversation, prompt) = arch_prompt_group(source, rows);
                 let conversation = Rect::new(
                     conversation.x,
                     conversation.y,
@@ -19604,19 +19851,26 @@ fn run_tui_loop(
                     pending_approvals.retain(|r| !TuiState::same_approval_request(r, &request));
                 }
                 let mut drained = Vec::new();
-                for control in approvals.values() {
+                for (key, control) in &approvals {
                     let Some(coordinator) = control.approval.as_ref() else {
                         continue;
+                    };
+                    // Arch owners are keyed `arch:<project>`; their requests
+                    // are answered in the Arch prompt.
+                    let lane = if key.starts_with("arch:") {
+                        ApprovalLane::Arch
+                    } else {
+                        ApprovalLane::Discussion
                     };
                     drained.extend(
                         coordinator
                             .drain_pending()
                             .into_iter()
-                            .map(|request| (control.project.clone(), request)),
+                            .map(|request| (control.project.clone(), request, lane)),
                     );
                 }
-                for (project, request) in drained {
-                    state.present_approval_for(project, request.clone());
+                for (project, request, lane) in drained {
+                    state.present_approval_in(project, request.clone(), lane);
                     let preview = request.preview.as_ref().map(|preview| {
                         let text = format!("\n\nProposed change:\n{}", preview.display_text());
                         let block = match preview {
@@ -19637,10 +19891,19 @@ fn run_tui_loop(
                     // Request and policy digests stay in the review overlay; the
                     // transcript only says what is asked and how to answer.
                     let prompt = format!(
-                        "Approval required: {} {}{}\nAlt-A to review, or type y / n in the prompt; Enter confirms.",
-                        request.tool, safe_arguments, suffix,
+                        "Approval required: {} {}{}\nAnswer it in the {} prompt below: y allow · n deny · Enter confirms · v details.",
+                        request.tool,
+                        safe_arguments,
+                        suffix,
+                        if lane == ApprovalLane::Arch {
+                            "Arch"
+                        } else {
+                            "discussion"
+                        },
                     );
-                    if let Some((_, block)) = preview {
+                    if lane == ApprovalLane::Arch {
+                        state.push_arch_message(MessageRole::System, prompt);
+                    } else if let Some((_, block)) = preview {
                         state.push_message_block(MessageRole::System, prompt, block);
                     } else {
                         state.push_message(

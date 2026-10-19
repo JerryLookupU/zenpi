@@ -7,7 +7,9 @@ use zenpi::dag::DagStore;
 use zenpi::layout::PaneId;
 use zenpi::session::SessionStore;
 use zenpi::tools::{ToolOrigin, ToolSideEffect};
-use zenpi::tui::{AgentState, ProjectTabMetadata, TrajectoryLevel, TuiAction, TuiState};
+use zenpi::tui::{
+    AgentState, ApprovalLane, ProjectTabMetadata, TrajectoryLevel, TuiAction, TuiState,
+};
 
 fn request(id: &str) -> ApprovalRequest {
     ApprovalRequest {
@@ -186,4 +188,95 @@ fn gantt_shows_the_master_alone_without_a_dag() {
     let screen = render(&mut state, 160, 40);
     assert!(screen.contains("approval"), "{screen}");
     assert!(screen.contains("no DAG workers"), "{screen}");
+}
+
+#[test]
+fn approval_is_answered_inline_in_the_discussion_prompt() {
+    let mut state = TuiState::default();
+    state.set_busy(true);
+    state.present_approval(request("inline"));
+    assert_eq!(state.inline_approval_lane(), Some(ApprovalLane::Discussion));
+    let screen = render(&mut state, 160, 40);
+    let lines: Vec<&str> = screen.lines().collect();
+    // The form sits at the bottom, in the prompt; the workspace stays visible.
+    let title = lines
+        .iter()
+        .rposition(|line| line.contains("Approval required 1/1 · run_command · DENY"))
+        .expect(&screen);
+    assert!(title > lines.len() / 2, "{screen}");
+    assert!(screen.contains("Enter DENY now"), "{screen}");
+    assert!(screen.contains("Conversation"), "{screen}");
+    assert!(screen.contains("Gantt"), "{screen}");
+    assert!(!screen.contains("Policy:"), "{screen}");
+
+    // `v` opens the full review, Esc returns to the prompt form, Esc again
+    // leaves the request pending while the draft is edited.
+    plain(&mut state, KeyCode::Char('v'));
+    assert_eq!(state.inline_approval_lane(), None);
+    assert!(render(&mut state, 160, 40).contains("Policy:"));
+    plain(&mut state, KeyCode::Esc);
+    assert_eq!(state.inline_approval_lane(), Some(ApprovalLane::Discussion));
+    plain(&mut state, KeyCode::Esc);
+    assert_eq!(state.inline_approval_lane(), None);
+    assert_eq!(state.approval_count(), 1);
+
+    plain(&mut state, KeyCode::Char('y'));
+    assert_eq!(state.input(), "y");
+    state.set_input("y");
+    plain(&mut state, KeyCode::Enter);
+    assert!(render(&mut state, 160, 40).contains("Enter ALLOW now"));
+    assert!(matches!(
+        plain(&mut state, KeyCode::Enter),
+        TuiAction::RespondApproval { allow: true, .. }
+    ));
+}
+
+#[test]
+fn arch_owner_approval_is_answered_in_the_arch_prompt() {
+    let mut state = TuiState::default();
+    let project = state.active_project().to_owned();
+    state.present_approval_in(project, request("arch"), ApprovalLane::Arch);
+    assert_eq!(state.inline_approval_lane(), Some(ApprovalLane::Arch));
+    let screen = render(&mut state, 160, 44);
+    let lines: Vec<&str> = screen.lines().collect();
+    let form = lines
+        .iter()
+        .position(|line| line.contains("Approval required 1/1 · run_command"))
+        .expect(&screen);
+    let arch = lines
+        .iter()
+        .position(|line| line.starts_with("┌ Arch ·"))
+        .expect(&screen);
+    let conversation = lines
+        .iter()
+        .position(|line| line.contains("Conversation"))
+        .expect(&screen);
+    // In the left column the form is under the Arch transcript and above the
+    // conversation, and the discussion prompt keeps its normal title.
+    assert!(arch < form && form < conversation, "{screen}");
+
+    // While the arch request waits unfocused, only the Arch title says so.
+    plain(&mut state, KeyCode::Esc);
+    let waiting = render(&mut state, 160, 44);
+    assert!(
+        waiting.replace(' ', "").contains("Arch·⏸等待审批"),
+        "{waiting}"
+    );
+    assert!(
+        !waiting.replace(' ', "").contains("Prompt·⏸等待审批"),
+        "{waiting}"
+    );
+    assert!(
+        !lines[lines.len() - 3].contains("Approval required"),
+        "{screen}"
+    );
+
+    // Typing y in the arch prompt selects ALLOW for that request.
+    plain(&mut state, KeyCode::Esc);
+    state.set_arch_input("y");
+    assert_eq!(state.submit_arch_prompt().unwrap(), TuiAction::Redraw);
+    assert!(matches!(
+        plain(&mut state, KeyCode::Enter),
+        TuiAction::RespondApproval { allow: true, .. }
+    ));
 }

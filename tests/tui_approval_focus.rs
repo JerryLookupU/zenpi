@@ -219,6 +219,8 @@ fn full_diff_scroll_is_independent_from_folded_transcript_and_resize() {
     use ratatui::{Terminal, backend::TestBackend};
     let mut s = TuiState::default();
     s.present_approval(request("review-exact"));
+    // The full review (with the request id) opens with `v`.
+    plain(&mut s, KeyCode::Char('v'));
     let mut t = Terminal::new(TestBackend::new(100, 30)).unwrap();
     let render = |s: &mut TuiState, t: &mut Terminal<TestBackend>| {
         t.draw(|f| s.render_bentobox(f, "test")).unwrap();
