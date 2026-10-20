@@ -280,3 +280,48 @@ fn arch_owner_approval_is_answered_in_the_arch_prompt() {
         TuiAction::RespondApproval { allow: true, .. }
     ));
 }
+
+#[test]
+fn new_session_choice_discards_pending_inputs_or_keeps_them() {
+    let mut state = TuiState::default();
+    let project = state.active_project().to_owned();
+    let pending = vec![("tui-17923-1".to_owned(), "y".to_owned())];
+    state.offer_new_session_choice(project.clone(), pending.clone());
+    assert!(state.new_session_choice_open());
+    let screen = render(&mut state, 140, 40);
+    assert!(screen.contains("New session · 1 pending input"), "{screen}");
+    assert!(screen.contains("(tui-17923-1)"), "{screen}");
+    assert!(
+        screen.contains("❯ 1. Discard them and start a new session"),
+        "{screen}"
+    );
+    assert!(
+        screen.contains("  2. Keep them and cancel /new"),
+        "{screen}"
+    );
+
+    // Enter on the default discards and retries /new.
+    assert_eq!(
+        plain(&mut state, KeyCode::Enter),
+        TuiAction::Submit("/new".into())
+    );
+    assert!(!state.new_session_choice_open());
+    assert_eq!(state.take_discard_before_new(&project), ["tui-17923-1"]);
+    assert!(state.take_discard_before_new(&project).is_empty());
+
+    // Down + Enter (or 2, or Esc) keeps them and starts nothing.
+    for keys in [
+        &[KeyCode::Down, KeyCode::Enter][..],
+        &[KeyCode::Char('2')],
+        &[KeyCode::Esc],
+    ] {
+        state.offer_new_session_choice(project.clone(), pending.clone());
+        let mut last = TuiAction::None;
+        for key in keys {
+            last = plain(&mut state, *key);
+        }
+        assert_eq!(last, TuiAction::Redraw);
+        assert!(!state.new_session_choice_open());
+        assert!(state.take_discard_before_new(&project).is_empty());
+    }
+}

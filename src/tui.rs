@@ -1233,6 +1233,17 @@ struct ApprovalView {
     expanded: bool,
 }
 
+/// `/new` refused because received inputs were never used by a turn: the
+/// prompt offers to discard them and retry, Claude Code style.
+#[derive(Debug, Clone)]
+struct NewSessionChoice {
+    project: String,
+    /// `(input id, text)` of every pending input.
+    inputs: Vec<(String, String)>,
+    /// Highlighted option: discard (1) or keep (2).
+    discard: bool,
+}
+
 /// Which prompt answers an approval: the one whose owner raised it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApprovalLane {
@@ -3130,6 +3141,9 @@ pub struct TuiState {
     transcript_ux: TranscriptUx,
     transcript_browser: Option<TranscriptBrowser>,
     trajectory_viewer: Option<trajectory::TrajectoryViewer>,
+    new_session_choice: Option<NewSessionChoice>,
+    /// Inputs the operator chose to discard before the retried `/new`.
+    discard_before_new: Option<(String, Vec<String>)>,
     /// Latest selected history of the live session, for the trajectory viewer.
     trajectory_history: Option<Arc<TrajectoryHistory>>,
     trajectory_revision: u64,
@@ -3386,6 +3400,8 @@ impl TuiState {
             transcript_ux: TranscriptUx::default(),
             transcript_browser: None,
             trajectory_viewer: None,
+            new_session_choice: None,
+            discard_before_new: None,
             trajectory_history: None,
             trajectory_revision: 0,
             agents: agents::AgentsView::default(),
@@ -7426,6 +7442,141 @@ impl TuiState {
         }
     }
 
+    /// Ask in the prompt whether to discard `inputs` and retry `/new`.
+    pub fn offer_new_session_choice(&mut self, project: String, inputs: Vec<(String, String)>) {
+        self.new_session_choice = Some(NewSessionChoice {
+            project,
+            inputs,
+            discard: true,
+        });
+        self.dirty = true;
+    }
+
+    pub fn new_session_choice_open(&self) -> bool {
+        self.new_session_choice_active().is_some()
+    }
+
+    fn new_session_choice_active(&self) -> Option<&NewSessionChoice> {
+        self.new_session_choice
+            .as_ref()
+            .filter(|choice| choice.project == self.active_project())
+    }
+
+    /// Input ids to cancel before running `/new` for `project`.
+    pub fn take_discard_before_new(&mut self, project: &str) -> Vec<String> {
+        match self.discard_before_new.take() {
+            Some((owner, ids)) if owner == project => ids,
+            other => {
+                self.discard_before_new = other;
+                Vec::new()
+            }
+        }
+    }
+
+    fn new_session_choice_key(&mut self, key: KeyEvent) -> TuiAction {
+        let Some(choice) = self.new_session_choice.as_mut() else {
+            return TuiAction::None;
+        };
+        self.dirty = true;
+        let commit = match (key.modifiers, key.code) {
+            (KeyModifiers::CONTROL, KeyCode::Char('c')) | (_, KeyCode::Esc) => Some(false),
+            (_, KeyCode::Up | KeyCode::Char('k')) => {
+                choice.discard = true;
+                None
+            }
+            (_, KeyCode::Down | KeyCode::Char('j')) => {
+                choice.discard = false;
+                None
+            }
+            (_, KeyCode::Char('1')) => Some(true),
+            (_, KeyCode::Char('2')) => Some(false),
+            (_, KeyCode::Enter) => Some(choice.discard),
+            _ => None,
+        };
+        let Some(discard) = commit else {
+            return TuiAction::Redraw;
+        };
+        let choice = self.new_session_choice.take().expect("open choice");
+        if discard {
+            let ids = choice.inputs.into_iter().map(|(id, _)| id).collect();
+            self.discard_before_new = Some((choice.project, ids));
+            TuiAction::Submit("/new".into())
+        } else {
+            self.push_message(
+                MessageRole::System,
+                format!(
+                    "Kept {} pending input(s); no new session was started.",
+                    choice.inputs.len()
+                ),
+            );
+            TuiAction::Redraw
+        }
+    }
+
+    fn new_session_choice_lines(&self, width: usize) -> Option<(String, Vec<Line<'static>>)> {
+        let choice = self.new_session_choice_active()?;
+        let width = width.max(8);
+        let count = choice.inputs.len();
+        let title = format!(
+            " New session · {count} pending input{} ",
+            if count == 1 { "" } else { "s" }
+        );
+        let mut lines = vec![Line::raw(
+            "Received but never used by a turn; a new session would drop them:",
+        )];
+        for (id, text) in choice.inputs.iter().take(4) {
+            let text = inline_token(text, 60);
+            lines.push(Line::from(vec![
+                Span::raw("  • "),
+                Span::styled(text, Style::default().fg(Color::White)),
+                Span::styled(format!("  ({id})"), Style::default().fg(Color::DarkGray)),
+            ]));
+        }
+        if count > 4 {
+            lines.push(Line::raw(format!("  … {} more", count - 4)));
+        }
+        lines.push(Line::raw(""));
+        lines.push(Line::styled(
+            "Start a new session?",
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
+        let selected = Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD);
+        for (number, label, chosen) in [
+            (1, "Discard them and start a new session", choice.discard),
+            (2, "Keep them and cancel /new", !choice.discard),
+        ] {
+            let text = format!("{number}. {label}");
+            lines.push(if chosen {
+                Line::from(vec![
+                    Span::styled("❯ ", selected),
+                    Span::styled(text, selected),
+                ])
+            } else {
+                Line::raw(format!("  {text}"))
+            });
+        }
+        for line in wrap_plain("↑↓ select · Enter confirm · 1-2 choose · Esc keep", width) {
+            lines.push(Line::styled(line, Style::default().fg(Color::DarkGray)));
+        }
+        Some((title, lines))
+    }
+
+    fn render_new_session_choice(&self, frame: &mut Frame<'_>, area: Rect) {
+        let Some((title, lines)) =
+            self.new_session_choice_lines(usize::from(area.width.saturating_sub(2)))
+        else {
+            return;
+        };
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Yellow))
+            .title(title);
+        frame.render_widget(Clear, area);
+        frame.render_widget(Paragraph::new(lines).block(block), area);
+    }
+
     /// Whether the trajectory viewer owns the screen and keyboard.
     pub fn trajectory_open(&self) -> bool {
         self.trajectory_viewer.is_some()
@@ -9124,7 +9275,8 @@ impl TuiState {
     /// Whether a modal owns the keyboard right now. A modal must be consulted
     /// before any hot zone, or the zone swallows keys the modal is showing.
     fn modal_active(&self) -> bool {
-        self.directory_picker.is_some()
+        self.new_session_choice_open()
+            || self.directory_picker.is_some()
             || self.transcript_browser.is_some()
             || self.trajectory_viewer.is_some()
             || self.history_search.is_some()
@@ -9158,6 +9310,10 @@ impl TuiState {
         // So is the full-screen trajectory viewer.
         if self.trajectory_viewer.is_some() {
             return self.trajectory_key(key);
+        }
+        // A pending `/new` decision is answered before anything else.
+        if self.new_session_choice_open() {
+            return self.new_session_choice_key(key);
         }
         // The inline layer-2 concurrency number editor is modal (ZS1-174).
         if self.subtab_concurrency_edit.is_some() {
@@ -10385,11 +10541,21 @@ impl TuiState {
         }
         let prompt_width = usize::from(area.width.saturating_sub(2)).max(1);
         let prompt_lines = wrap_plain(&self.projection().text, prompt_width).len();
-        let desired_input_height =
-            match self.inline_approval_rows(ApprovalLane::Discussion, area.width) {
-                Some(rows) => usize::from(rows).min(MAX_INPUT_LINES + 2),
-                None => prompt_lines.min(MAX_INPUT_LINES).saturating_add(2),
-            };
+        let choice_rows = self
+            .new_session_choice_lines(usize::from(area.width.saturating_sub(2)))
+            .map(|(_, lines)| {
+                u16::try_from(lines.len())
+                    .unwrap_or(u16::MAX)
+                    .saturating_add(2)
+            });
+        // Inline forms (approval, /new choice) may use up to half the screen.
+        let desired_input_height = match self
+            .inline_approval_rows(ApprovalLane::Discussion, area.width)
+            .or(choice_rows)
+        {
+            Some(rows) => usize::from(rows).min(usize::from(area.height / 2).max(3)),
+            None => prompt_lines.min(MAX_INPUT_LINES).saturating_add(2),
+        };
         // Keep header/footer visible whenever there is room, and let the
         // transcript yield rows to the prompt first.  Tiny resize states can
         // legitimately collapse the prompt to zero rows.
@@ -10698,6 +10864,10 @@ impl TuiState {
         }
         if self.inline_approval_lane() == Some(ApprovalLane::Discussion) {
             self.render_inline_approval(frame, area);
+            return;
+        }
+        if self.new_session_choice_open() {
+            self.render_new_session_choice(frame, area);
             return;
         }
         let block = Block::default()
@@ -11108,11 +11278,21 @@ impl TuiState {
         }
         let prompt_width = usize::from(area.width.saturating_sub(2)).max(1);
         let prompt_lines = wrap_plain(&self.projection().text, prompt_width).len();
-        let desired_input_height =
-            match self.inline_approval_rows(ApprovalLane::Discussion, area.width) {
-                Some(rows) => usize::from(rows).min(MAX_INPUT_LINES + 2),
-                None => prompt_lines.min(MAX_INPUT_LINES).saturating_add(2),
-            };
+        let choice_rows = self
+            .new_session_choice_lines(usize::from(area.width.saturating_sub(2)))
+            .map(|(_, lines)| {
+                u16::try_from(lines.len())
+                    .unwrap_or(u16::MAX)
+                    .saturating_add(2)
+            });
+        // Inline forms (approval, /new choice) may use up to half the screen.
+        let desired_input_height = match self
+            .inline_approval_rows(ApprovalLane::Discussion, area.width)
+            .or(choice_rows)
+        {
+            Some(rows) => usize::from(rows).min(usize::from(area.height / 2).max(3)),
+            None => prompt_lines.min(MAX_INPUT_LINES).saturating_add(2),
+        };
         // The prompt always keeps the full-width bottom strip: a fixed home
         // never jumps when overlays (palette, completion, history search,
         // pickers) open or close, and menus retain their room above it.
@@ -17336,9 +17516,34 @@ impl NewSessionControl {
                     state.set_status("New session ready");
                 }
                 JobOutcome::Failed(error) => {
-                    state.restore_submitted_input(job.submitted);
-                    state.push_message(MessageRole::Error, error.to_string());
-                    state.set_status("Request failed");
+                    // Received-but-unused inputs are the one refusal the
+                    // operator can resolve on the spot: offer to drop them.
+                    let pending: Vec<(String, String)> = job
+                        .owner
+                        .try_lock()
+                        .ok()
+                        .and_then(|agent| {
+                            crate::input_queue::InputQueue::recover(
+                                agent.session(),
+                                Default::default(),
+                            )
+                            .ok()
+                        })
+                        .map(|queue| {
+                            queue
+                                .pending_received()
+                                .map(|input| (input.id.clone(), input.text.clone()))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    if !pending.is_empty() && error.to_string().contains("pending input") {
+                        state.offer_new_session_choice(job.project.clone(), pending);
+                        state.set_status("New session needs a decision");
+                    } else {
+                        state.restore_submitted_input(job.submitted);
+                        state.push_message(MessageRole::Error, error.to_string());
+                        state.set_status("Request failed");
+                    }
                 }
                 JobOutcome::Cancelled => {
                     state.restore_submitted_input(job.submitted);
@@ -20752,6 +20957,19 @@ fn run_tui_loop(
                                     }
                                 ) {
                                     let project = state.active_project().to_owned();
+                                    // The operator chose to discard these inputs
+                                    // in the /new prompt choice. The owner is
+                                    // idle here, so each cancel commits at once.
+                                    for input_id in state.take_discard_before_new(&project) {
+                                        input_controls.submit(
+                                            &mut state,
+                                            &shared,
+                                            crate::protocol::InputQueueAction::Cancel {
+                                                input_id: input_id.clone(),
+                                            },
+                                            format!("/input cancel {input_id}"),
+                                        );
+                                    }
                                     // A periodic resource snapshot only reads the
                                     // project directory and process table; its
                                     // result would merely be stale for the new
