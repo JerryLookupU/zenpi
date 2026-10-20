@@ -20752,6 +20752,18 @@ fn run_tui_loop(
                                     }
                                 ) {
                                     let project = state.active_project().to_owned();
+                                    // A periodic resource snapshot only reads the
+                                    // project directory and process table; its
+                                    // result would merely be stale for the new
+                                    // session, so drop it and refresh afterwards
+                                    // instead of refusing `/new` while it runs.
+                                    if active_resource_job.is_some()
+                                        && active_resource_project == project
+                                    {
+                                        active_resource_job = None;
+                                        last_resource_refresh =
+                                            Instant::now() - RESOURCE_REFRESH_INTERVAL;
+                                    }
                                     let busy_reasons: Vec<&str> = [
                                         (active_job.is_some()
                                             && active_job_project.as_deref()
@@ -20773,9 +20785,6 @@ fn run_tui_loop(
                                             .approval_views
                                             .contains_key(&project)
                                             .then_some("pending approvals"),
-                                        (active_resource_job.is_some()
-                                            && active_resource_project == project)
-                                            .then_some("active resource job"),
                                         editor
                                             .active()
                                             .then_some("external editor (save and close)"),
